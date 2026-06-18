@@ -1,0 +1,28 @@
+# OpenMasjidOS — core service definition
+# This file is written by install.sh and managed by the installer.
+# Edit with care; re-running install.sh will refresh it.
+
+version: "3.8"
+
+services:
+  core:
+    image: openmasjid/core:latest
+    container_name: openmasjid-core
+    restart: unless-stopped
+    ports:
+      - "8723:8723"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/openmasjid:/data
+    environment:
+      - DATA_DIR=/data
+      - PORT=8723
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8723/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.openmasjid.core=true"

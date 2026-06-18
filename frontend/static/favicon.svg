@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Crescent moon -->
+  <path
+    d="M16 4
+       a10 10 0 1 0 0 24
+       a7 7 0 1 1 0 -24z"
+    fill="#1FA37A"
+  />
+  <!-- Star -->
+  <polygon
+    points="23,8 23.9,10.8 26.9,10.8 24.5,12.5 25.4,15.3 23,13.6 20.6,15.3 21.5,12.5 19.1,10.8 22.1,10.8"
+    fill="#1FA37A"
+  />
+</svg>

@@ -1,0 +1,51 @@
+{
+  "app": {
+    "name": "OpenMasjidOS",
+    "tagline": "Your masjid, your software"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "appStore": "App Store",
+    "settings": "Settings"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "welcome": "Welcome to OpenMasjidOS",
+    "noApps": "No apps installed yet",
+    "noAppsHint": "Browse the App Store to find apps for your masjid.",
+    "browseStore": "Browse App Store",
+    "installedApps": "Installed Apps",
+    "systemStatus": "System Status"
+  },
+  "appStore": {
+    "title": "App Store",
+    "loading": "Loading available apps...",
+    "empty": "No apps found",
+    "install": "Install",
+    "installed": "Installed",
+    "update": "Update available"
+  },
+  "status": {
+    "running": "Running",
+    "stopped": "Stopped",
+    "installing": "Installing",
+    "error": "Something went wrong",
+    "updating": "Updating"
+  },
+  "actions": {
+    "open": "Open",
+    "stop": "Turn off",
+    "start": "Turn on",
+    "restart": "Restart",
+    "remove": "Remove",
+    "update": "Update",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "back": "Back"
+  },
+  "errors": {
+    "generic": "Something went wrong. Please try again.",
+    "network": "Cannot reach the server. Check your connection and try again.",
+    "viewDetails": "View technical details"
+  }
+}

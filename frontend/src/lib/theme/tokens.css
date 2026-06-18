@@ -1,0 +1,156 @@
+/*
+ * tokens.css — OpenMasjidOS Design Tokens
+ *
+ * All color, shadow, radius, and decorative tokens are defined here as CSS
+ * custom properties. Switching theme is done by toggling data-theme="dark|light"
+ * on the <html> element. Never hardcode hex values in components — always
+ * reference a token from this file.
+ *
+ * Color contrast meets WCAG AA in both themes.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Dark theme — the default
+ * Applied to :root (which defaults to dark) and explicitly via data-theme="dark"
+ * --------------------------------------------------------------------------- */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces — deep night-sky charcoal-green base */
+  --color-surface: #0E1814;
+  --color-surface-raised: #162219;
+  --color-surface-overlay: #1E2E25;
+
+  /* Primary — emerald/teal */
+  --color-primary: #1FA37A;
+  --color-primary-hover: #23B887;
+  --color-primary-subtle: rgba(31, 163, 122, 0.12);
+
+  /* Accent — warm gold, used sparingly for highlights and active states */
+  --color-gold: #D4AF37;
+  --color-gold-subtle: rgba(212, 175, 55, 0.12);
+
+  /* Ink — text colors with green undertone */
+  --color-ink: #E8F0EC;
+  --color-ink-muted: #8FA897;
+  --color-ink-faint: #4A6558;
+
+  /* Borders */
+  --color-border: rgba(255, 255, 255, 0.08);
+
+  /* Semantic status colors */
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+
+  /* Shadows */
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.6);
+
+  /* Border radii */
+  --radius-card: 1rem;
+  --radius-button: 0.625rem;
+
+  /*
+   * Geometric background pattern — a subtle girih/arabesque tessellation.
+   * The SVG encodes a repeating 8-point star (khatam) motif at very low
+   * opacity so it reads as texture, not decoration. Kept inline so no
+   * external request is needed and the CSP is never challenged.
+   *
+   * Pattern: 60x60px tile of an 8-pointed star grid in stroke-only form.
+   * Opacity is controlled by the consumer via background-opacity or a
+   * wrapper element — the SVG itself uses full opacity so consumers can
+   * tune it independently.
+   */
+  --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%231FA37A' stroke-width='0.5' opacity='0.18'%3E%3C!-- Outer 8-pointed star at center --%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3C!-- Inner connecting square --%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3C!-- Corner quarter-stars — top-left --%3E%3Cpolygon points='0,0 4.5,8 11,2 5,13 16,9 9,17 18,16 12,24 0,22'/%3E%3C!-- Corner quarter-stars — top-right --%3E%3Cpolygon points='60,0 55.5,8 49,2 55,13 44,9 51,17 42,16 48,24 60,22'/%3E%3C!-- Corner quarter-stars — bottom-left --%3E%3Cpolygon points='0,60 4.5,52 11,58 5,47 16,51 9,43 18,44 12,36 0,38'/%3E%3C!-- Corner quarter-stars — bottom-right --%3E%3Cpolygon points='60,60 55.5,52 49,58 55,47 44,51 51,43 42,44 48,36 60,38'/%3E%3C!-- Connecting lines forming the grid lattice --%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3Cline x1='0' y1='0' x2='60' y2='60'/%3E%3Cline x1='60' y1='0' x2='0' y2='60'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* ---------------------------------------------------------------------------
+ * Light theme
+ * Applied via data-theme="light" on the <html> element
+ * --------------------------------------------------------------------------- */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces — warm ivory/parchment */
+  --color-surface: #FAF7F2;
+  --color-surface-raised: #FFFFFF;
+  --color-surface-overlay: #F5F1EA;
+
+  /* Primary — darker emerald tuned for contrast on light backgrounds */
+  --color-primary: #177A5A;
+  --color-primary-hover: #1A8A66;
+  --color-primary-subtle: rgba(23, 122, 90, 0.1);
+
+  /* Accent — deeper gold for contrast on light */
+  --color-gold: #B8941E;
+  --color-gold-subtle: rgba(184, 148, 30, 0.1);
+
+  /* Ink — dark text with green undertone */
+  --color-ink: #1A2E25;
+  --color-ink-muted: #4A6558;
+  --color-ink-faint: #8FA897;
+
+  /* Borders */
+  --color-border: rgba(0, 0, 0, 0.08);
+
+  /* Semantic status colors — same hue, adjusted for light-mode legibility */
+  --color-success: #16A34A;
+  --color-warning: #D97706;
+  --color-danger: #DC2626;
+
+  /* Shadows — much lighter for light theme */
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.08);
+  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.15);
+
+  /* Radius tokens are theme-independent but kept here for completeness */
+  --radius-card: 1rem;
+  --radius-button: 0.625rem;
+
+  /* Geometric pattern — same tile, but with the light-theme primary stroke */
+  --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%23177A5A' stroke-width='0.5' opacity='0.12'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cpolygon points='0,0 4.5,8 11,2 5,13 16,9 9,17 18,16 12,24 0,22'/%3E%3Cpolygon points='60,0 55.5,8 49,2 55,13 44,9 51,17 42,16 48,24 60,22'/%3E%3Cpolygon points='0,60 4.5,52 11,58 5,47 16,51 9,43 18,44 12,36 0,38'/%3E%3Cpolygon points='60,60 55.5,52 49,58 55,47 44,51 51,43 42,44 48,36 60,38'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3Cline x1='0' y1='0' x2='60' y2='60'/%3E%3Cline x1='60' y1='0' x2='0' y2='60'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* ---------------------------------------------------------------------------
+ * Smooth theme transition
+ *
+ * When the user switches themes (or the system preference changes), surfaces,
+ * borders, and text fade gracefully rather than snapping. We intentionally
+ * do NOT transition transform/opacity here — those are handled per-component
+ * with spring physics so we don't interfere with interaction animations.
+ *
+ * The prefers-reduced-motion block below disables this entirely for users
+ * who have asked for less motion.
+ * --------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion — non-negotiable accessibility requirement.
+ *
+ * When the OS/browser reports prefers-reduced-motion: reduce, ALL transitions
+ * and animations are collapsed to instant. Component-level animations must
+ * also respect this — check the lib/animations helpers which enforce it there.
+ * --------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
