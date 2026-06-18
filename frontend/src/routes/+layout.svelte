@@ -1,10 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
   import '$lib/theme/tokens.css';
   import '../app.css';
   import { theme } from '$lib/theme/theme';
   import { t, dir } from '$lib/i18n';
   import { page } from '$app/stores';
+
+  // Svelte 5 + SvelteKit 2: child page content arrives as a snippet prop.
+  // <slot /> no longer works in layouts when using Svelte 5.
+  let { children }: { children: Snippet } = $props();
 
   // Apply theme and text direction to the html element on mount and whenever
   // the store changes — doing it here (root layout) means every page benefits.
@@ -135,9 +140,9 @@
     </div>
   </aside>
 
-  <!-- Main content area — slot renders the active route page -->
+  <!-- Main content area — renders the active route page via Svelte 5 snippet -->
   <main class="main-content" id="main-content">
-    <slot />
+    {@render children()}
   </main>
 </div>
 
