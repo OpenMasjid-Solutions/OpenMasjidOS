@@ -254,11 +254,9 @@ GET    /ws                          # WebSocket upgrade
 OpenMasjidOS v1 supports a single administrator account. There is no multi-user system.
 
 ### First-Run Setup
-On first boot, no credentials exist. The dashboard detects this via a `GET /api/auth/me` returning `{ "setup_required": true }` and routes the user to the setup wizard. The wizard collects:
-1. Admin username and password (with strength feedback)
-2. Masjid profile (name, location, calculation method, timezone, language)
+On first boot, no credentials exist. The dashboard detects this via a `GET /api/auth/me` returning `{ "setup_required": true }` and routes the user to the setup screen, which collects **only** the admin username and password. (Masjid-specific config such as prayer times and location is owned by individual apps, not the platform — see CLAUDE.md §3/§38 — so it is deliberately NOT part of platform setup.)
 
-Until setup is complete, all API routes except `/api/auth/setup` return `403`.
+Until setup is complete, all protected API routes return `403`; `/api/auth/setup` (and the public probes/auth endpoints) remain reachable.
 
 ### Password Hashing
 Passwords are hashed with **argon2id** using the parameters recommended in the OWASP Password Storage Cheat Sheet (memory: 64 MB, iterations: 3, parallelism: 2 at minimum — tuned up if the hardware supports it). The hash, salt, and parameters are stored in `/opt/openmasjid/config/auth.json`. Plaintext passwords never touch disk or logs.
@@ -269,7 +267,9 @@ argon2id was chosen over bcrypt because:
 - Go's `golang.org/x/crypto/argon2` implementation is stable and well-maintained
 
 ### Sessions
-Authentication produces a session token stored in a **secure, HTTP-only, SameSite=Strict cookie**. Sessions are stored in memory (a simple map guarded by a mutex) and optionally persisted to disk on graceful shutdown so they survive container restarts. Session expiry defaults to 24 hours of inactivity.
+Authentication produces a random token stored in an **HTTP-only, SameSite=Strict cookie** (`omos_session`). Sessions live in memory (a map guarded by a mutex) with a sliding 24-hour inactivity expiry; they are intentionally not persisted, so a container restart simply requires signing in again — acceptable for a single-host appliance and avoids writing session tokens to disk.
+
+The cookie is **not** flagged `Secure` in v1 because the dashboard is served over plain HTTP on a trusted LAN (TLS is out of scope — see §11); a `Secure` cookie would never be transmitted and login would silently fail. `HttpOnly` (no JS access → XSS token theft blocked) and `SameSite=Strict` (CSRF protection for same-origin calls) still apply. When the optional TLS/reverse-proxy path lands in v1.1, the cookie should gain `Secure`.
 
 Why cookies over JWT?
 - HTTP-only cookies are not accessible to JavaScript, eliminating an entire class of XSS token-theft attacks

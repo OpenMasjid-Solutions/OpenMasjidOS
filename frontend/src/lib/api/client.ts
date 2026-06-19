@@ -30,7 +30,32 @@ export interface HealthResponse {
   version: string;
 }
 
+export interface AuthState {
+  setup_required: boolean;
+  authenticated: boolean;
+  username?: string;
+}
+
 export const api = {
   health: () => request<HealthResponse>('/health'),
   ready: () => request<{ ready: boolean }>('/ready'),
+
+  auth: {
+    /** Whether the platform needs setup and whether the caller is signed in. */
+    me: () => request<AuthState>('/auth/me'),
+    /** First-run: create the admin account (also starts a session). */
+    setup: (username: string, password: string) =>
+      request<{ authenticated: boolean; username: string }>('/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }),
+    /** Sign in with the admin credentials. */
+    login: (username: string, password: string) =>
+      request<{ authenticated: boolean; username: string }>('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }),
+    /** Sign out and clear the session cookie. */
+    logout: () => request<{ authenticated: boolean }>('/auth/logout', { method: 'POST' }),
+  },
 };

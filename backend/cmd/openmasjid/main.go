@@ -27,7 +27,11 @@ func main() {
 
 	// Build the HTTP router. All route registration, middleware, and handler
 	// wiring live in the api package — main stays thin.
-	router := api.NewRouter(cfg)
+	router, err := api.NewRouter(cfg)
+	if err != nil {
+		slog.Error("failed to initialise router", "err", err)
+		os.Exit(1)
+	}
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{

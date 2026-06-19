@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/OpenMasjidOS/OpenMasjidOS/internal/auth"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/config"
 )
 
@@ -20,9 +22,20 @@ import (
 // Replaced at link time with -ldflags "-X github.com/OpenMasjidOS/OpenMasjidOS/internal/api.version=x.y.z".
 var version = "0.1.0"
 
+// sessionTTL is the inactivity timeout for an admin session.
+const sessionTTL = 24 * time.Hour
+
 // NewRouter builds and returns the fully configured HTTP handler.
-// It owns all route registration and middleware layering.
-func NewRouter(cfg *config.Config) http.Handler {
+// It owns all route registration and middleware layering. It returns an error
+// if a required dependency (e.g. the credential store) cannot be initialised.
+func NewRouter(cfg *config.Config) (http.Handler, error) {
+	// Credential store + session manager for the single admin account.
+	authStore, err := auth.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	authn := newAuthAPI(authStore, auth.NewSessions(sessionTTL), sessionTTL)
+
 	r := chi.NewRouter()
 
 	// ── Middleware stack ────────────────────────────────────────────────────
@@ -68,24 +81,38 @@ func NewRouter(cfg *config.Config) http.Handler {
 	// ── API subrouter ───────────────────────────────────────────────────────
 
 	r.Route("/api", func(api chi.Router) {
-		// Health: lightweight liveness probe — just confirms the process is up.
-		// GET /api/health → 200 {"status":"ok","version":"0.1.0"}
+		// ── Public probes (no auth — used by Docker healthchecks) ──
+		// GET /api/health → 200 {"status":"ok","version":"..."}
 		api.Get("/health", handleHealth)
-
-		// Ready: will later gate on setup-wizard completion and Docker
-		// connectivity. For now it always returns ready so the UI can boot.
 		// GET /api/ready → 200 {"ready":true}
 		api.Get("/ready", handleReady)
+
+		// ── Public auth endpoints ──
+		// These must be reachable before/without a session so the SPA can
+		// decide whether to show the setup wizard, the login screen, or the app.
+		api.Get("/auth/me", authn.handleMe)
+		api.Post("/auth/setup", authn.handleSetup)
+		api.Post("/auth/login", authn.handleLogin)
+		api.Post("/auth/logout", authn.handleLogout)
+
+		// ── Protected endpoints ──
+		// Everything that manages the masjid's apps/host lives here. Before
+		// setup these return 403; without a session they return 401.
+		api.Group(func(pr chi.Router) {
+			pr.Use(authn.requireAuth)
+			pr.Get("/session", authn.handleSession)
+		})
 	})
 
 	// ── SPA fallback ────────────────────────────────────────────────────────
 	// Serve the embedded SvelteKit static build for every route that is not
-	// under /api. If the requested file does not exist we serve index.html so
-	// that client-side routing (e.g. /store, /settings) works after a hard
-	// refresh.
+	// under /api. The static assets carry no secrets; the SPA itself enforces
+	// auth by calling /api/auth/me and gating on protected API responses. If the
+	// requested file does not exist we serve index.html so client-side routing
+	// (e.g. /store, /settings) works after a hard refresh.
 	r.Handle("/*", spaHandler())
 
-	return r
+	return r, nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

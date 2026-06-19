@@ -9,6 +9,25 @@
   "a11y": {
     "loading": "Loading OpenMasjidOS"
   },
+  "auth": {
+    "setupTitle": "Welcome to OpenMasjidOS",
+    "setupSubtitle": "Let's create your admin account to get started.",
+    "loginTitle": "Welcome back",
+    "loginSubtitle": "Sign in to manage your masjid's apps.",
+    "username": "Username",
+    "usernamePlaceholder": "admin",
+    "password": "Password",
+    "confirmPassword": "Confirm password",
+    "passwordHint": "Use at least 8 characters.",
+    "createAccount": "Create account",
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "working": "Just a moment…",
+    "passwordsMismatch": "Those passwords don't match.",
+    "passwordTooShort": "Your password needs to be at least 8 characters.",
+    "loading": "Loading…",
+    "genericError": "Something went wrong. Please try again."
+  },
   "nav": {
     "dashboard": "Dashboard",
     "appStore": "App Store",

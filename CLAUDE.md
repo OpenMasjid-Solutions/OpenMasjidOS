@@ -29,7 +29,7 @@ Think: **"CasaOS / Umbrel, but purpose-built and themed for masjids, and dead si
 - **A full-lifecycle one-line `curl | bash` installer.** On a fresh machine it runs a complete guided **install**. On a machine that already has OpenMasjidOS, the same command opens a **management menu**: Update / Repair / Reconfigure network / Uninstall. Works on common Linux (Debian/Ubuntu, Raspberry Pi OS, Fedora), architecture-aware (amd64 + arm64).
 - Installer auto-installs Docker + the Docker Compose plugin if missing, sets up OpenMasjidOS as a managed service, and during install also:
   - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §7).
-  - **Sets a hostname and mDNS** so the dashboard is reachable at **`http://openmasjidos.local:8723`** (plus the raw IP as a fallback).
+  - **Sets a hostname and mDNS** so the dashboard is reachable at **`http://openmasjidos.local`** (plus the raw IP as a fallback).
 - **Web UI authentication.** The dashboard is always behind a login. The **first time** the dashboard is opened, the user creates the **admin account**. Sessions use secure, HTTP-only cookies. No part of the UI is reachable unauthenticated except the login/first-run screen.
 - **Core backend (control plane):** REST/JSON API + WebSocket for live updates. Manages container lifecycle via the Docker Engine API.
 - **Dashboard home with live system stats:** CPU %, RAM used/total, disk used/total, uptime, and count of running apps — updated live — alongside the grid of installed apps.
@@ -64,7 +64,7 @@ Think: **"CasaOS / Umbrel, but purpose-built and themed for masjids, and dead si
                        ┌──────────────────────────────────────────┐
                        │             User's browser                │
                        │   OpenMasjidOS Dashboard (SvelteKit SPA)   │
-                       │     reached at openmasjidos.local:8723     │
+                       │       reached at openmasjidos.local        │
                        └───────────────▲────────────────────────────┘
                                        │ HTTPS (JSON + WebSocket)
                                        │   — login required —
@@ -223,8 +223,8 @@ The script must:
    ✅ OpenMasjidOS is ready!
 
    Open it in your browser:
-     →  http://openmasjidos.local:8723      (easiest)
-     →  http://192.168.1.50:8723            (works everywhere on your network)
+     →  http://openmasjidos.local      (easiest)
+     →  http://192.168.1.50             (works everywhere on your network)
 
    First time? You'll be asked to create your admin account.
    Need help? https://openmasjid.org/help
@@ -232,9 +232,9 @@ The script must:
 
 ### 7.3 Flags (for advanced/automated use; interactive is the default)
 Support non-interactive overrides so power users can script installs:
-`--yes` (accept defaults), `--hostname <name>`, `--static-ip <cidr> --gateway <ip> --iface <name>`, `--no-network` (skip static IP **and** hostname changes), `--port <n>` (default `8723`).
+`--yes` (accept defaults), `--hostname <name>`, `--static-ip <cidr> --gateway <ip> --iface <name>`, `--no-network` (skip static IP **and** hostname changes), `--port <n>` (default `80`).
 
-**Default port:** `8723`. **Data dir:** `/opt/openmasjid`.
+**Default port:** `80` (so the dashboard URL needs no port suffix). **Data dir:** `/opt/openmasjid`.
 
 > The installer is piped to bash, so it must stay **readable and commented** — we are asking people to trust it. No obfuscation, ever. Keep it auditable and minimal in privilege.
 

@@ -10,13 +10,22 @@
   import { afterNavigate } from '$app/navigation';
   import { liquidIndicator, pressable, routeRise, khatamSplash } from '$lib/animations';
   import { prefs } from '$lib/stores/prefs';
+  import { api } from '$lib/api/client';
   import SceneBackground from '$lib/components/SceneBackground.svelte';
+  import AuthScreen from '$lib/components/AuthScreen.svelte';
 
   // Svelte 5 + SvelteKit 2: child page content arrives as a snippet prop.
   let { children }: { children: Snippet } = $props();
 
+  // Auth gate: the whole dashboard sits behind a session. 'loading' until the
+  // first /api/auth/me resolves, then setup / login / ready.
+  let authState = $state<'loading' | 'setup' | 'login' | 'ready'>('loading');
+
   let navEl = $state<HTMLElement | undefined>(undefined);
   let indicator: ReturnType<typeof liquidIndicator> | undefined;
+
+  // Guards the async auth check from writing state after the component unmounts.
+  let mounted = true;
 
   // First-load splash overlay (assembling khatam star). Self-dismisses via the
   // khatamSplash action; collapses instantly under reduced-motion / repeat visit.
@@ -25,6 +34,7 @@
   onMount(() => {
     // Re-apply persisted accent colour from prefs.
     prefs.hydrate();
+    checkAuth();
 
     const unsubTheme = theme.subscribe((value) => {
       document.documentElement.setAttribute('data-theme', value);
@@ -33,16 +43,49 @@
       document.documentElement.setAttribute('dir', value);
     });
 
-    if (navEl) {
-      indicator = liquidIndicator(navEl, { activeSelector: '.nav-link--active' });
-    }
-
     return () => {
+      mounted = false;
       unsubTheme();
       unsubDir();
-      indicator?.destroy();
     };
   });
+
+  // The sidebar only mounts once auth resolves to 'ready', which is AFTER
+  // onMount — so create the liquid indicator in an effect keyed on navEl, and
+  // tear it down when the shell unmounts (e.g. on sign-out).
+  $effect(() => {
+    if (!navEl) return;
+    const ind = liquidIndicator(navEl, { activeSelector: '.nav-link--active' });
+    indicator = ind;
+    return () => {
+      ind.destroy();
+      indicator = undefined;
+    };
+  });
+
+  async function checkAuth() {
+    try {
+      const s = await api.auth.me();
+      if (mounted) authState = s.setup_required ? 'setup' : s.authenticated ? 'ready' : 'login';
+    } catch {
+      // Backend unreachable — fall back to the login screen so the user has a
+      // path forward once it comes back up.
+      if (mounted) authState = 'login';
+    }
+  }
+
+  function handleAuthed() {
+    authState = 'ready';
+  }
+
+  async function handleLogout() {
+    try {
+      await api.auth.logout();
+    } catch {
+      /* ignore — clearing client state is what matters */
+    }
+    authState = 'login';
+  }
 
   // Re-place the liquid pill after each client-side navigation (DOM settled).
   afterNavigate(() => {
@@ -69,6 +112,7 @@
 <!-- Ambient scene behind everything -->
 <SceneBackground />
 
+{#if authState === 'ready'}
 <div class="layout">
   <!-- Sidebar navigation (frosted glass) -->
   <aside class="sidebar glass-raised" aria-label={$t('nav.aria.sidebar')}>
@@ -158,6 +202,20 @@
         {/if}
         <span class="nav-label">{$t($theme === 'dark' ? 'theme.light' : 'theme.dark')}</span>
       </button>
+
+      <button
+        class="theme-toggle signout"
+        on:click={handleLogout}
+        use:pressable
+        aria-label={$t('auth.signOut')}
+        title={$t('auth.signOut')}
+        type="button"
+      >
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18" aria-hidden="true">
+          <path d="M8 17 L4 17 Q3 17 3 16 L3 4 Q3 3 4 3 L8 3 M13 14 L17 10 L13 6 M17 10 L8 10"/>
+        </svg>
+        <span class="nav-label">{$t('auth.signOut')}</span>
+      </button>
     </div>
   </aside>
 
@@ -170,6 +228,13 @@
     {/key}
   </main>
 </div>
+{:else if authState === 'setup' || authState === 'login'}
+  <AuthScreen mode={authState} onAuthed={handleAuthed} />
+{:else}
+  <div class="auth-loading" role="status" aria-label={$t('auth.loading')}>
+    <span class="auth-loading__dot"></span>
+  </div>
+{/if}
 
 <!-- First-load splash: assembling khatam star. Skippable; once per session.
      Suppressed when the user turns it off in Settings. -->
@@ -329,6 +394,32 @@
   .theme-toggle:hover {
     background-color: var(--color-surface-hover);
     color: var(--color-ink);
+  }
+
+  .signout:hover {
+    color: var(--color-danger);
+  }
+
+  /* Brief loading state while the first /api/auth/me resolves. */
+  .auth-loading {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .auth-loading__dot {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 50%;
+    background: var(--color-primary);
+    animation: authPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes authPulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.8); }
+    50%      { opacity: 1; transform: scale(1.2); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .auth-loading__dot { animation: none; opacity: 0.8; }
   }
 
   /* Main content */
