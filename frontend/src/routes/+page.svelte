@@ -60,6 +60,7 @@
   // Installed apps
   let installedApps: InstalledApp[] = [];
   let removingId = '';
+  let openMenuId = '';
 
   async function loadApps() {
     try {
@@ -72,7 +73,32 @@
 
   onMount(loadApps);
 
+  // Open the app in a new tab on its first published port, using whatever host
+  // the dashboard is being viewed from.
+  function openApp(app: InstalledApp) {
+    if (!app.ports || app.ports.length === 0) return;
+    window.open(`http://${window.location.hostname}:${app.ports[0]}`, '_blank', 'noopener');
+  }
+
+  function toggleMenu(id: string) {
+    openMenuId = openMenuId === id ? '' : id;
+  }
+
+  async function appAction(kind: 'stop' | 'start' | 'restart', app: InstalledApp) {
+    openMenuId = '';
+    removingId = app.id;
+    try {
+      await api.apps[kind](app.id);
+      await loadApps();
+    } catch {
+      /* leave state as-is on a transient failure */
+    } finally {
+      removingId = '';
+    }
+  }
+
   async function removeApp(app: InstalledApp) {
+    openMenuId = '';
     if (!confirm($t('dashboard.removeConfirm', { name: app.name }))) return;
     removingId = app.id;
     try {
@@ -111,6 +137,9 @@
     return total > 0 ? Math.round((used / total) * 100) : 0;
   }
 </script>
+
+<!-- Close any open ⋮ menu when clicking elsewhere (kebab uses stopPropagation). -->
+<svelte:window on:click={() => (openMenuId = '')} />
 
 <div class="page">
 
@@ -225,7 +254,14 @@
           <!-- Installed apps -->
           <div class="installed-grid">
             {#each installedApps as app (app.id)}
-              <div class="installed-card glass">
+              <div
+                class="installed-card glass"
+                class:clickable={app.ports.length > 0}
+                on:click={() => openApp(app)}
+                role={app.ports.length > 0 ? 'link' : undefined}
+                tabindex={app.ports.length > 0 ? 0 : undefined}
+                on:keydown={(e) => { if (app.ports.length > 0 && (e.key === 'Enter')) openApp(app); }}
+              >
                 <div class="installed-head">
                   <span
                     class="status-dot"
@@ -233,18 +269,45 @@
                     aria-hidden="true"
                   ></span>
                   <span class="installed-name">{app.name}</span>
+
+                  <!-- ⋮ options menu -->
+                  <div class="kebab-wrap">
+                    <button
+                      class="kebab"
+                      aria-label={$t('dashboard.appOptions')}
+                      aria-haspopup="menu"
+                      aria-expanded={openMenuId === app.id}
+                      on:click|stopPropagation={() => toggleMenu(app.id)}
+                    >
+                      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+                        <circle cx="8" cy="3" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="8" cy="13" r="1.4" />
+                      </svg>
+                    </button>
+                    {#if openMenuId === app.id}
+                      <div class="kebab-menu glass-raised" role="menu">
+                        {#if app.ports.length > 0}
+                          <button role="menuitem" on:click|stopPropagation={() => { openMenuId=''; openApp(app); }}>{$t('actions.open')}</button>
+                        {/if}
+                        {#if app.running}
+                          <button role="menuitem" on:click|stopPropagation={() => appAction('restart', app)}>{$t('actions.restart')}</button>
+                          <button role="menuitem" on:click|stopPropagation={() => appAction('stop', app)}>{$t('actions.shutdown')}</button>
+                        {:else}
+                          <button role="menuitem" on:click|stopPropagation={() => appAction('start', app)}>{$t('actions.start')}</button>
+                        {/if}
+                        <button role="menuitem" class="danger" on:click|stopPropagation={() => removeApp(app)}>{$t('actions.uninstall')}</button>
+                      </div>
+                    {/if}
+                  </div>
                 </div>
+
                 <div class="installed-meta">
-                  {app.running ? $t('status.running') : $t('status.stopped')}
+                  <span class="app-tag" class:app-tag--official={!app.custom}>
+                    {app.custom ? $t('dashboard.tagThirdParty') : $t('dashboard.tagOfficial')}
+                  </span>
+                  <span class="installed-status">
+                    {removingId === app.id ? $t('status.updating') : (app.running ? $t('status.running') : $t('status.stopped'))}
+                  </span>
                 </div>
-                <button
-                  class="remove-btn"
-                  on:click={() => removeApp(app)}
-                  use:pressable
-                  disabled={removingId === app.id}
-                >
-                  {removingId === app.id ? $t('status.updating') : $t('actions.remove')}
-                </button>
               </div>
             {/each}
           </div>
@@ -483,7 +546,13 @@
     padding: 1.125rem 1.25rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.625rem;
+    transition: box-shadow 0.15s ease, transform 0.15s var(--ease-settle);
+  }
+  .installed-card.clickable { cursor: pointer; }
+  .installed-card.clickable:hover {
+    box-shadow: var(--glow-primary);
+    transform: translateY(-2px);
   }
   .installed-head { display: flex; align-items: center; gap: 0.5rem; }
   .installed-name {
@@ -492,23 +561,81 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
   }
-  .installed-meta { font-size: 0.8125rem; color: var(--color-ink-muted); }
-  .remove-btn {
-    margin-block-start: 0.25rem;
-    align-self: flex-start;
-    padding: 0.375rem 0.75rem;
-    border-radius: var(--radius-button);
+  .installed-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    font-size: 0.8125rem;
+    color: var(--color-ink-muted);
+  }
+  .installed-status { color: var(--color-ink-muted); }
+
+  /* Source tag */
+  .app-tag {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 0.125rem 0.5rem;
+    border-radius: 2rem;
+    color: var(--color-ink-muted);
+    background: var(--glass-bg-inset);
     border: 1px solid var(--glass-border);
+  }
+  .app-tag--official {
+    color: var(--color-gold);
+    background: var(--color-gold-subtle);
+    border-color: color-mix(in srgb, var(--color-gold) 30%, transparent);
+  }
+
+  /* ⋮ kebab menu */
+  .kebab-wrap { position: relative; flex-shrink: 0; }
+  .kebab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 0.5rem;
+    border: none;
     background: transparent;
     color: var(--color-ink-muted);
-    font-size: 0.8125rem;
-    font-weight: 500;
     cursor: pointer;
-    transition: color 0.15s ease, border-color 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease;
   }
-  .remove-btn:hover:not(:disabled) { color: var(--color-danger); border-color: var(--color-danger); }
-  .remove-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .kebab:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .kebab-menu {
+    position: absolute;
+    inset-inline-end: 0;
+    inset-block-start: calc(100% + 0.25rem);
+    z-index: 5;
+    min-width: 9rem;
+    padding: 0.3125rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+  .kebab-menu button {
+    text-align: start;
+    padding: 0.4375rem 0.625rem;
+    border-radius: 0.4375rem;
+    border: none;
+    background: transparent;
+    color: var(--color-ink);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+  .kebab-menu button:hover { background: var(--color-surface-hover); }
+  .kebab-menu button.danger { color: var(--color-danger); }
+  .kebab-menu button.danger:hover { background: color-mix(in srgb, var(--color-danger) 14%, transparent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .installed-card { transition: none; }
+    .installed-card.clickable:hover { transform: none; }
+  }
 
   /* App grid + skeletons */
   .apps-grid {

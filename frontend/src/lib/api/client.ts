@@ -35,6 +35,7 @@ export interface InstalledApp {
   custom: boolean;
   created_at: string;
   running: boolean;
+  ports: number[];
 }
 
 export interface HealthResponse {
@@ -92,6 +93,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name, compose }),
       }),
+    /** Stop an app's containers (without removing them). */
+    stop: (id: string) => request<{ ok: boolean }>(`/apps/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+    /** Start a stopped app. */
+    start: (id: string) => request<{ ok: boolean }>(`/apps/${encodeURIComponent(id)}/start`, { method: 'POST' }),
+    /** Restart an app. */
+    restart: (id: string) => request<{ ok: boolean }>(`/apps/${encodeURIComponent(id)}/restart`, { method: 'POST' }),
     /** Stop and remove an app (optionally deleting its data). */
     remove: (id: string, data = false) =>
       request<{ removed: string }>(`/apps/${encodeURIComponent(id)}?data=${data}`, {

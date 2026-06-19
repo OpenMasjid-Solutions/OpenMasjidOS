@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -79,6 +80,22 @@ func (a *appsAPI) handleInstallCustom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSONData(w, http.StatusOK, app)
+}
+
+// lifecycleAction wraps a manager method (stop/start/restart) as an HTTP handler.
+func (a *appsAPI) lifecycleAction(action func(ctx context.Context, id string) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if err := action(r.Context(), id); err != nil {
+			if errors.Is(err, apps.ErrNotFound) {
+				JSONError(w, http.StatusNotFound, "That app isn't installed.")
+				return
+			}
+			JSONError(w, http.StatusInternalServerError, "We couldn't complete that action. Please try again.")
+			return
+		}
+		JSONData(w, http.StatusOK, map[string]any{"ok": true})
+	}
 }
 
 // handleRemove stops and removes an installed app.

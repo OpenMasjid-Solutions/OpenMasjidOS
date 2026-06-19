@@ -32,13 +32,15 @@ var (
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// App is the metadata for an installed app. Running is filled in at list time.
+// App is the metadata for an installed app. Running and Ports are filled in at
+// list time (not persisted).
 type App struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Custom    bool   `json:"custom"`
 	CreatedAt string `json:"created_at"`
 	Running   bool   `json:"running"`
+	Ports     []int  `json:"ports"`
 }
 
 // Manager owns the apps directory and the compose lifecycle.
@@ -119,10 +121,40 @@ func (m *Manager) List(ctx context.Context) ([]App, error) {
 			continue // not a managed app dir
 		}
 		app.Running = docker.ComposeRunning(ctx, m.project(app.ID))
+		if app.Running {
+			app.Ports = docker.ProjectPorts(ctx, m.project(app.ID))
+		}
 		apps = append(apps, app)
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].Name < apps[j].Name })
 	return apps, nil
+}
+
+// Stop stops an app's containers (without removing them).
+func (m *Manager) Stop(ctx context.Context, id string) error {
+	if _, err := m.loadMeta(id); err != nil {
+		return ErrNotFound
+	}
+	_, err := docker.ComposeStop(ctx, m.dir(id), m.project(id))
+	return err
+}
+
+// Start starts a previously-stopped app.
+func (m *Manager) Start(ctx context.Context, id string) error {
+	if _, err := m.loadMeta(id); err != nil {
+		return ErrNotFound
+	}
+	_, err := docker.ComposeStart(ctx, m.dir(id), m.project(id))
+	return err
+}
+
+// Restart restarts an app's containers.
+func (m *Manager) Restart(ctx context.Context, id string) error {
+	if _, err := m.loadMeta(id); err != nil {
+		return ErrNotFound
+	}
+	_, err := docker.ComposeRestart(ctx, m.dir(id), m.project(id))
+	return err
 }
 
 // Remove stops an app and deletes its project files. When removeData is true,

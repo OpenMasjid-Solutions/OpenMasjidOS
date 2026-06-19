@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +42,24 @@ func ComposeDown(ctx context.Context, projectDir, project string, removeData boo
 	return run(ctx, args...)
 }
 
+// ComposeStop stops a project's containers without removing them.
+func ComposeStop(ctx context.Context, projectDir, project string) (string, error) {
+	file := filepath.Join(projectDir, composeFileName)
+	return run(ctx, "compose", "-p", project, "-f", file, "stop")
+}
+
+// ComposeStart starts a previously-stopped project.
+func ComposeStart(ctx context.Context, projectDir, project string) (string, error) {
+	file := filepath.Join(projectDir, composeFileName)
+	return run(ctx, "compose", "-p", project, "-f", file, "start")
+}
+
+// ComposeRestart restarts a project's containers.
+func ComposeRestart(ctx context.Context, projectDir, project string) (string, error) {
+	file := filepath.Join(projectDir, composeFileName)
+	return run(ctx, "compose", "-p", project, "-f", file, "restart")
+}
+
 // ComposeRunning reports whether a project currently has any running container.
 func ComposeRunning(ctx context.Context, project string) bool {
 	out, err := run(ctx, "compose", "-p", project, "ps", "--status", "running", "-q")
@@ -46,6 +67,30 @@ func ComposeRunning(ctx context.Context, project string) bool {
 		return false
 	}
 	return strings.TrimSpace(out) != ""
+}
+
+var publishedPortRe = regexp.MustCompile(`:(\d+)->`)
+
+// ProjectPorts returns the unique published host ports for a project's running
+// containers (parsed from `docker ps` output), sorted ascending.
+func ProjectPorts(ctx context.Context, project string) []int {
+	out, err := run(ctx, "ps",
+		"--filter", "label=com.docker.compose.project="+project,
+		"--format", "{{.Ports}}")
+	if err != nil {
+		return nil
+	}
+	seen := map[int]bool{}
+	var ports []int
+	for _, m := range publishedPortRe.FindAllStringSubmatch(out, -1) {
+		p, convErr := strconv.Atoi(m[1])
+		if convErr == nil && !seen[p] {
+			seen[p] = true
+			ports = append(ports, p)
+		}
+	}
+	sort.Ints(ports)
+	return ports
 }
 
 // run executes the docker CLI with the given arguments and returns combined output.

@@ -119,6 +119,9 @@ func NewRouter(cfg *config.Config) (http.Handler, error) {
 			// App management (custom/3rd-party installs).
 			pr.Get("/apps", appsAPI.handleList)
 			pr.Post("/apps/custom", appsAPI.handleInstallCustom)
+			pr.Post("/apps/{id}/stop", appsAPI.lifecycleAction(appsAPI.mgr.Stop))
+			pr.Post("/apps/{id}/start", appsAPI.lifecycleAction(appsAPI.mgr.Start))
+			pr.Post("/apps/{id}/restart", appsAPI.lifecycleAction(appsAPI.mgr.Restart))
 			pr.Delete("/apps/{id}", appsAPI.handleRemove)
 		})
 	})
