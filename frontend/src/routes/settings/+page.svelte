@@ -18,12 +18,13 @@
 
   // Form state — not yet wired to backend
   let masjidName = '';
+  let streetAddress = '';
   let city = '';
+  let state = '';
+  let zipCode = '';
   let country = '';
-  let latitude = '';
-  let longitude = '';
   let calcMethod = 'mwl';
-  let asrMadhab = 'standard';
+  let asrMadhab = 'hanafi';  // Hanafi is the default
   let timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   let language = 'en';
 
@@ -47,9 +48,10 @@
     { value: 'karachi', label: $t('settings.calcMethods.karachi') },
   ];
 
+  // Hanafi is listed first and selected by default
   const asrMethods = [
-    { value: 'standard', label: $t('settings.asrMethods.standard') },
     { value: 'hanafi',   label: $t('settings.asrMethods.hanafi') },
+    { value: 'standard', label: $t('settings.asrMethods.standard') },
   ];
 </script>
 
@@ -85,6 +87,16 @@
             class="form-input"
           />
         </div>
+        <div class="form-group form-group--full">
+          <label for="street-address" class="form-label">{$t('settings.streetAddress')}</label>
+          <input
+            id="street-address"
+            type="text"
+            bind:value={streetAddress}
+            placeholder={$t('settings.streetAddressPlaceholder')}
+            class="form-input"
+          />
+        </div>
         <div class="form-group">
           <label for="city" class="form-label">{$t('settings.city')}</label>
           <input
@@ -96,38 +108,32 @@
           />
         </div>
         <div class="form-group">
+          <label for="state" class="form-label">{$t('settings.state')}</label>
+          <input
+            id="state"
+            type="text"
+            bind:value={state}
+            placeholder={$t('settings.statePlaceholder')}
+            class="form-input"
+          />
+        </div>
+        <div class="form-group">
+          <label for="zip-code" class="form-label">{$t('settings.zipCode')}</label>
+          <input
+            id="zip-code"
+            type="text"
+            bind:value={zipCode}
+            placeholder={$t('settings.zipCodePlaceholder')}
+            class="form-input"
+          />
+        </div>
+        <div class="form-group">
           <label for="country" class="form-label">{$t('settings.country')}</label>
           <input
             id="country"
             type="text"
             bind:value={country}
             placeholder={$t('settings.countryPlaceholder')}
-            class="form-input"
-          />
-        </div>
-        <div class="form-group">
-          <label for="latitude" class="form-label">{$t('settings.latitude')}</label>
-          <input
-            id="latitude"
-            type="number"
-            step="0.0001"
-            min="-90"
-            max="90"
-            bind:value={latitude}
-            placeholder="51.5074"
-            class="form-input"
-          />
-        </div>
-        <div class="form-group">
-          <label for="longitude" class="form-label">{$t('settings.longitude')}</label>
-          <input
-            id="longitude"
-            type="number"
-            step="0.0001"
-            min="-180"
-            max="180"
-            bind:value={longitude}
-            placeholder="-0.1278"
             class="form-input"
           />
         </div>

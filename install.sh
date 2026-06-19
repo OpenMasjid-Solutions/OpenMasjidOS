@@ -66,28 +66,22 @@ ARCH=""
 # Utility functions
 # =============================================================================
 
-# print_banner — show a welcoming header so users know what is running
+# print_banner — show a welcoming header so users know what is running.
+# The ASCII art is output via a heredoc to avoid escaping issues with the
+# single-quote and backtick characters present in the figlet-rendered text.
 print_banner() {
   echo ""
   printf "${CLR_CYAN}${CLR_BOLD}"
-  printf '  ╔═══════════════════════════════════════════════════════╗\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║            *          *          *                    ║\n'
-  printf '  ║           /|\        /|\        /|\                   ║\n'
-  printf '  ║          ( | )      ( | )      ( | )                  ║\n'
-  printf '  ║          _|_|_   .----------.  _|_|_                  ║\n'
-  printf '  ║         |     | /            \ |     |                ║\n'
-  printf '  ║         |     |/   .------.   \|     |                ║\n'
-  printf '  ║         |     /   /        \   \     |                ║\n'
-  printf '  ║         |    |   |          |   |    |                ║\n'
-  printf '  ║         |    |   |          |   |    |                ║\n'
-  printf '  ║         |____|___|__________|___|____|                ║\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║              O p e n M a s j i d O S                  ║\n'
-  printf '  ║         Free, open-source platform for masjids        ║\n'
-  printf '  ║                                                       ║\n'
-  printf '  ╚═══════════════════════════════════════════════════════╝\n'
-  printf "${CLR_RESET}\n"
+  cat << 'BANNER_EOF'
+  ___                   __  __            _ _     _  ___  ____
+ / _ \ _ __   ___ _ __ |  \/  | __ _ ___ (_|_) __| |/ _ \/ ___|
+| | | | '_ \ / _ \ '_ \| |\/| |/ _` / __|| | |/ _` | | | \___ \
+| |_| | |_) |  __/ | | | |  | | (_| \__ \| | | (_| | |_| |___) |
+ \___/| .__/ \___|_| |_|_|  |_|\__,_|___// |_|\__,_|\___/|____/
+      |_|                              |__/
+BANNER_EOF
+  printf "${CLR_RESET}"
+  printf "${CLR_GREEN}  Free, open-source platform for masjids${CLR_RESET}\n"
   echo ""
 }
 
