@@ -69,15 +69,25 @@ ARCH=""
 # print_banner — show a welcoming header so users know what is running
 print_banner() {
   echo ""
-  echo -e "${CLR_CYAN}${CLR_BOLD}"
-  echo "  ╔═══════════════════════════════════════════════════════╗"
-  echo "  ║                                                       ║"
-  echo "  ║              🕌  OpenMasjidOS Installer               ║"
-  echo "  ║                                                       ║"
-  echo "  ║   Free, open-source software platform for masjids    ║"
-  echo "  ║                                                       ║"
-  echo "  ╚═══════════════════════════════════════════════════════╝"
-  echo -e "${CLR_RESET}"
+  printf "${CLR_CYAN}${CLR_BOLD}"
+  printf '  ╔═══════════════════════════════════════════════════════╗\n'
+  printf '  ║                                                       ║\n'
+  printf '  ║            *          *          *                    ║\n'
+  printf '  ║           /|\        /|\        /|\                   ║\n'
+  printf '  ║          ( | )      ( | )      ( | )                  ║\n'
+  printf '  ║          _|_|_   .----------.  _|_|_                  ║\n'
+  printf '  ║         |     | /            \ |     |                ║\n'
+  printf '  ║         |     |/   .------.   \|     |                ║\n'
+  printf '  ║         |     /   /        \   \     |                ║\n'
+  printf '  ║         |    |   |   arch   |   |    |                ║\n'
+  printf '  ║         |    |   |          |   |    |                ║\n'
+  printf '  ║         |____|___|__________|___|____|                ║\n'
+  printf '  ║                                                       ║\n'
+  printf '  ║              O p e n M a s j i d O S                 ║\n'
+  printf '  ║         Free, open-source platform for masjids        ║\n'
+  printf '  ║                                                       ║\n'
+  printf '  ╚═══════════════════════════════════════════════════════╝\n'
+  printf "${CLR_RESET}\n"
   echo ""
 }
 
@@ -489,7 +499,7 @@ print_success() {
   printf "${CLR_GREEN}${CLR_BOLD}"
   printf '  ╔═══════════════════════════════════════════════════════╗\n'
   printf '  ║                                                       ║\n'
-  printf '  ║   🕌  OpenMasjidOS is ready!                         ║\n'
+  printf '  ║   [=]  OpenMasjidOS is ready!                        ║\n'
   printf '  ║                                                       ║\n'
   printf '  ║   Open your browser and go to:                        ║\n'
   printf '  ║                                                       ║\n'

@@ -29,7 +29,7 @@
   });
 
   function toggleTheme() {
-    theme.update((current) => (current === 'dark' ? 'light' : 'dark'));
+    theme.toggle();
   }
 
   // Nav items — labels go through i18n; no hardcoded English in template.

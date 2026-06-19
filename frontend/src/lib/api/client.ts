@@ -14,7 +14,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const json = await res.json();
-  return json.data as T;
+  // API returns the payload directly or wrapped in { data: ... }
+  return (json.data ?? json) as T;
 }
 
 export class ApiError extends Error {
