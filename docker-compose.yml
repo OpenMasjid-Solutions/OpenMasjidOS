@@ -2,8 +2,6 @@
 # This file is written by install.sh and managed by the installer.
 # Edit with care; re-running install.sh will refresh it.
 
-version: "3.8"
-
 services:
   core:
     image: ghcr.io/hasan-ismail/openmasjid-core:latest
@@ -19,7 +17,8 @@ services:
       - OPENMASJID_PORT=80
       - OPENMASJID_LOG_LEVEL=info
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80/api/health"]
+      # Distroless image has no shell/wget/curl; the binary self-checks.
+      test: ["CMD", "/openmasjid", "-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

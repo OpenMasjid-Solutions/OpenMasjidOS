@@ -43,6 +43,15 @@ COPY --from=go-builder /app/openmasjid /openmasjid
 
 EXPOSE 80
 
-USER nonroot:nonroot
+# Runs as root (the default for distroless/static). The core is the control
+# plane: it must read the root-owned Docker socket (/var/run/docker.sock) and
+# write its config/state to the root-owned /data bind mount. A non-root user
+# cannot do either, so "USER nonroot" makes the container crash on startup.
+# Least-privilege still applies to the APP containers the core launches.
+
+# The image is distroless (no shell/wget/curl); the binary self-checks via the
+# -healthcheck flag, invoked by the compose HEALTHCHECK.
+HEALTHCHECK --interval=10s --timeout=5s --retries=6 --start-period=15s \
+  CMD ["/openmasjid", "-healthcheck"]
 
 ENTRYPOINT ["/openmasjid"]

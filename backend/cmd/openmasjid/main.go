@@ -18,6 +18,13 @@ func main() {
 	// Load configuration from environment variables with sensible defaults.
 	cfg := config.Load()
 
+	// Healthcheck mode: the container HEALTHCHECK invokes the binary with
+	// -healthcheck. The final image is distroless (no shell, no wget/curl), so
+	// the binary checks itself by hitting its own /api/health and exiting 0/1.
+	if len(os.Args) > 1 && (os.Args[1] == "-healthcheck" || os.Args[1] == "--healthcheck") {
+		os.Exit(healthcheck(cfg.Port))
+	}
+
 	// Structured JSON logging so log aggregators (e.g. Docker log drivers) can
 	// parse fields without brittle regex. Level is INFO by default.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -72,4 +79,20 @@ func main() {
 	}
 
 	slog.Info("server stopped cleanly")
+}
+
+// healthcheck performs a single GET against the local /api/health endpoint and
+// returns a process exit code (0 = healthy, 1 = not). Used by the container
+// HEALTHCHECK; kept dependency-free so it works in the distroless image.
+func healthcheck(port string) int {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/api/health")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
