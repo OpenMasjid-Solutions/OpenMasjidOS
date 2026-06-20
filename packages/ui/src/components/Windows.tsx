@@ -1,10 +1,9 @@
 /**
- * A tiny window manager for in-dashboard windows (modals/terminals). It tracks
- * minimized windows and renders a tray above the dock so they can be restored —
- * the "minimize to taskbar" behind the yellow traffic-light button.
+ * A tiny window manager for in-dashboard windows (modals/terminals). Minimized
+ * windows are surfaced in the dock (see Dock.tsx) so they can be restored —
+ * the "minimize to the dock" behind the yellow traffic-light button.
  */
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
 
 export interface MinimizedWindow {
   id: number;
@@ -13,11 +12,12 @@ export interface MinimizedWindow {
 }
 
 interface WindowsApi {
+  windows: MinimizedWindow[];
   add: (w: MinimizedWindow) => void;
   remove: (id: number) => void;
 }
 
-const WindowsCtx = createContext<WindowsApi>({ add: () => {}, remove: () => {} });
+const WindowsCtx = createContext<WindowsApi>({ windows: [], add: () => {}, remove: () => {} });
 
 export function useWindows(): WindowsApi {
   return useContext(WindowsCtx);
@@ -38,27 +38,5 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
     setWindows((list) => list.filter((x) => x.id !== id));
   }, []);
 
-  return (
-    <WindowsCtx.Provider value={{ add, remove }}>
-      {children}
-      <div className="min-tray" aria-live="polite">
-        <AnimatePresence>
-          {windows.map((w) => (
-            <motion.button
-              key={w.id}
-              className="min-chip glass-raised"
-              initial={{ opacity: 0, y: 12, scale: 0.9 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.9 }}
-              onClick={() => w.restore()}
-              title={w.title}
-            >
-              <span className="min-chip-dot" />
-              <span className="min-chip-label">{w.title}</span>
-            </motion.button>
-          ))}
-        </AnimatePresence>
-      </div>
-    </WindowsCtx.Provider>
-  );
+  return <WindowsCtx.Provider value={{ windows, add, remove }}>{children}</WindowsCtx.Provider>;
 }

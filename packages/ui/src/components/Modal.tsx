@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
+import { X, Minus, Maximize2 } from 'lucide-react';
 import { springSoft } from '../lib/motion';
 import { useWindows, newWindowId } from './Windows';
 
@@ -89,13 +90,15 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
           >
             <div className="modal-head">
               <div className="traffic" role="group" aria-label="Window controls">
-                <button className="tl tl-close" aria-label={t('common.close')} onClick={onClose} />
-                <button className="tl tl-min" aria-label="Minimize" onClick={minimize} />
-                <button
-                  className="tl tl-full"
-                  aria-label="Fullscreen"
-                  onClick={() => setFullscreen((f) => !f)}
-                />
+                <button className="tl tl-close" aria-label={t('common.close')} onClick={onClose}>
+                  <X size={9} strokeWidth={3.5} />
+                </button>
+                <button className="tl tl-min" aria-label="Minimize" onClick={minimize}>
+                  <Minus size={9} strokeWidth={3.5} />
+                </button>
+                <button className="tl tl-full" aria-label="Fullscreen" onClick={() => setFullscreen((f) => !f)}>
+                  <Maximize2 size={8} strokeWidth={3.5} />
+                </button>
               </div>
               {title && <h2 className="modal-title">{title}</h2>}
             </div>

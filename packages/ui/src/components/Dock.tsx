@@ -6,9 +6,10 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Store as StoreIcon, Settings as SettingsIcon, FolderOpen } from 'lucide-react';
+import { Store as StoreIcon, Settings as SettingsIcon, FolderOpen, AppWindow } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore } from '../lib/prefs';
+import { useWindows } from './Windows';
 import { cn } from '../lib/cn';
 import { openApp, appInitial } from '../lib/apps';
 import { MasjidMark } from './Glyphs';
@@ -17,6 +18,7 @@ export function Dock() {
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const prefs = usePrefs();
+  const { windows } = useWindows();
   const [dropHint, setDropHint] = useState(false);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
   const apps = appsQuery.data ?? [];
@@ -73,6 +75,21 @@ export function Dock() {
           ) : (
             <span className="app-initial">{appInitial(app.name)}</span>
           )}
+        </button>
+      ))}
+
+      {windows.length > 0 && <span className="dock-divider" aria-hidden="true" />}
+
+      {windows.map((w) => (
+        <button
+          key={w.id}
+          className="dock-item dock-item--window"
+          title={w.title}
+          aria-label={w.title}
+          onClick={() => w.restore()}
+        >
+          <AppWindow size={20} />
+          <span className="dock-dot" aria-hidden="true" />
         </button>
       ))}
     </nav>
