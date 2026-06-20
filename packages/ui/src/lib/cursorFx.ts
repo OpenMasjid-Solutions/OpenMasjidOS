@@ -3,13 +3,14 @@
  * cursor moves over it. We set --mx/--my (the cursor position within the hovered
  * pane) and the glass background renders the refraction there (see glass.css).
  *
- * Applies to compact glass surfaces (cards, dock, small panes) — NOT large flat
- * `.panel`s, where a moving highlight both looks like a blob and is expensive
- * (repainting a big surface every frame). One delegated pointermove listener,
- * rAF-throttled, so cost is a single small repaint per frame. Resets the
- * previous pane when the cursor leaves it. Off under reduced motion.
+ * Scoped to small widgets that opt in with `.fx-glint` (stat cards, app cards) —
+ * NOT every glass surface. A moving highlight on big panels looks like a blob
+ * and is expensive (repainting a large surface every frame). One delegated
+ * pointermove listener, rAF-throttled, so cost is a single small repaint per
+ * frame. Resets the previous pane when the cursor leaves it. Off under reduced
+ * motion.
  */
-const GLASS_SELECTOR = '.glass:not(.panel), .glass-raised:not(.panel), .glass-dock';
+const GLASS_SELECTOR = '.fx-glint';
 
 let installed = false;
 

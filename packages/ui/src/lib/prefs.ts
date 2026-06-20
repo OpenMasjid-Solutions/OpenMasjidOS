@@ -5,6 +5,9 @@
  */
 import { useSyncExternalStore } from 'react';
 import i18n from './i18n';
+import { deriveAccentFromImage } from './wallpaperAccent';
+
+const HTTP_URL = /^https?:\/\/[^\s"'()]+$/i;
 
 export interface Prefs {
   theme: 'dark' | 'light' | 'system';
@@ -85,6 +88,33 @@ export function applyWallpaper(id: string): void {
   document.documentElement.setAttribute('data-wallpaper', WALLPAPERS[id] ? id : 'aurora');
 }
 
+/**
+ * Accent resolution: when a custom wallpaper image is set, derive the accent
+ * from the image so the UI matches it; otherwise use the chosen preset accent.
+ * Extraction is async + best-effort (CORS), so we guard against the wallpaper
+ * changing mid-flight and fall back to the preset if the image can't be read.
+ */
+export function applyResolvedAccent(): void {
+  const url = state.wallpaperImage.trim();
+  if (!HTTP_URL.test(url)) {
+    applyAccent(state.accent);
+    return;
+  }
+  void deriveAccentFromImage(url).then((c) => {
+    if (state.wallpaperImage.trim() !== url) return; // wallpaper changed since
+    if (!c) {
+      applyAccent(state.accent);
+      return;
+    }
+    const el = document.documentElement;
+    el.style.setProperty('--color-primary', c.primary);
+    el.style.setProperty('--color-primary-hover', c.hover);
+    el.style.setProperty('--color-primary-subtle', c.subtle);
+    el.style.setProperty('--color-btn', c.primary);
+    el.style.setProperty('--color-btn-hover', c.hover);
+  });
+}
+
 export function applyTheme(theme: Prefs['theme']): void {
   const resolved =
     theme === 'system'
@@ -134,7 +164,8 @@ export const prefsStore = {
   patch(part: Partial<Prefs>) {
     state = { ...state, ...part };
     persist();
-    if (part.accent !== undefined) applyAccent(state.accent);
+    // Accent follows a custom wallpaper when one is set, else the preset.
+    if (part.accent !== undefined || part.wallpaperImage !== undefined) applyResolvedAccent();
     if (part.wallpaper !== undefined) applyWallpaper(state.wallpaper);
     if (part.theme !== undefined) applyTheme(state.theme);
     if (part.language !== undefined) applyLanguage(state.language);
@@ -163,7 +194,7 @@ export const prefsStore = {
   },
   /** Apply all persisted side effects on first load. */
   hydrate() {
-    applyAccent(state.accent);
+    applyResolvedAccent();
     applyWallpaper(state.wallpaper);
     applyTheme(state.theme);
     applyLanguage(state.language);

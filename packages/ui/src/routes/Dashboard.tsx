@@ -15,6 +15,7 @@ import { AppCard } from '../components/AppCard';
 import { Page } from '../components/Page';
 import { MasjidScene } from '../components/Glyphs';
 import { staggerContainer } from '../lib/motion';
+import { cn } from '../lib/cn';
 import type { StatsSnapshot } from '../lib/types';
 
 function greetingKey(): 'morning' | 'afternoon' | 'evening' {
@@ -22,6 +23,14 @@ function greetingKey(): 'morning' | 'afternoon' | 'evening' {
   if (h < 12) return 'morning';
   if (h < 18) return 'afternoon';
   return 'evening';
+}
+
+/** True when any metric is high enough to warrant an "under load" tagline. */
+function isUnderLoad(s: StatsSnapshot | null): boolean {
+  if (!s) return false;
+  const mem = percent(s.memUsed, s.memTotal);
+  const disk = percent(s.diskUsed, s.diskTotal);
+  return s.cpuPercent >= 90 || mem >= 90 || disk >= 90 || (s.cpuTempC != null && s.cpuTempC >= 85);
 }
 
 export function Dashboard() {
@@ -50,13 +59,24 @@ export function Dashboard() {
   const diskPct = percent(stats?.diskUsed ?? 0, stats?.diskTotal ?? 0);
   const diskLow = (stats?.diskTotal ?? 0) > 0 && diskPct >= 80;
 
+  // A random tagline per load (stable across re-renders), switching to the
+  // "under load" set when a metric is high.
+  const [seed] = useState(() => Math.random());
+  const underLoad = isUnderLoad(stats);
+  const taglines = t(underLoad ? 'dashboard.taglinesBusy' : 'dashboard.taglines', {
+    returnObjects: true,
+  }) as unknown as string[];
+  const tagline = Array.isArray(taglines) && taglines.length > 0
+    ? taglines[Math.floor(seed * taglines.length)]
+    : t('dashboard.statusOk');
+
   return (
     <Page>
       <header className="page-head">
         <h1 className="page-title">
           {t(`dashboard.greeting.${greetingKey()}`)}, {name}
         </h1>
-        <p className="page-sub">{t('dashboard.statusOk')}</p>
+        <p className={cn('page-sub', underLoad && 'page-sub--warn')}>{tagline}</p>
       </header>
 
       <motion.section className="stat-strip" variants={staggerContainer} initial="initial" animate="animate" aria-label={t('dashboard.statsTitle')}>

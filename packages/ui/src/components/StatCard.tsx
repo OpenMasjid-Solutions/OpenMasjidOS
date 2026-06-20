@@ -1,5 +1,5 @@
+import { memo, type ReactNode } from 'react';
 import { motion } from 'motion/react';
-import type { ReactNode } from 'react';
 import { staggerItem } from '../lib/motion';
 
 interface StatCardProps {
@@ -13,7 +13,9 @@ interface StatCardProps {
   warn?: boolean;
 }
 
-export function StatCard({ label, value, sub, percent, icon, warn }: StatCardProps) {
+// Memoized so the ~2s live-stats tick only re-renders cards whose value
+// actually changed (CPU/RAM), not the steady ones (temp/uptime/apps).
+export const StatCard = memo(function StatCard({ label, value, sub, percent, icon, warn }: StatCardProps) {
   return (
     <motion.div className="stat-card glass fx-glint" variants={staggerItem}>
       <div className="stat-label">
@@ -30,4 +32,4 @@ export function StatCard({ label, value, sub, percent, icon, warn }: StatCardPro
       )}
     </motion.div>
   );
-}
+});
