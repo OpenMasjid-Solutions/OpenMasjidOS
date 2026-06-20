@@ -86,16 +86,19 @@ export function AppCard({ app }: { app: InstalledApp }) {
   return (
     <>
       <motion.div
-        className="app-card glass"
+        className="app-card glass fx-glint"
         variants={staggerItem}
         draggable
+        // The card has a Motion transform (a stacking context), which traps the
+        // ⋮ menu below the dock; lift the whole card above the dock while open.
+        style={menuOpen ? { zIndex: 200 } : undefined}
         onDragStart={(e) => e.dataTransfer.setData('application/omos-app', app.id)}
         onClick={launch}
       >
         <div className="app-card__top">
           <AppIcon app={app} />
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div className="app-name">{app.name}</div>
+            <div className="app-name" title={app.name}>{app.name}</div>
             <div className="app-meta">
               <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
               <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
@@ -107,7 +110,7 @@ export function AppCard({ app }: { app: InstalledApp }) {
               <MoreVertical size={18} />
             </button>
             {menuOpen && (
-              <div className="menu glass-raised" style={{ position: 'absolute', insetInlineEnd: 0, insetBlockStart: '2.4rem', minWidth: '12rem' }}>
+              <div className="menu glass-raised" style={{ position: 'absolute', insetInlineEnd: 0, insetBlockStart: '2.4rem', minWidth: '10.5rem' }}>
                 {app.running && (
                   <button className="menu-item" onClick={() => { close(); openApp(app); }}>
                     <ExternalLink size={16} /> {t('actions.open')}

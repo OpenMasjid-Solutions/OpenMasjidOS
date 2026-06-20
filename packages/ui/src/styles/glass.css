@@ -182,7 +182,7 @@
   background-position: center;
   background-repeat: no-repeat;
 }
-/* A custom image is the whole wallpaper — drop the aurora and the geometric
-   pattern so they don't overlay it (keep the edge vignette for legibility). */
+/* A custom image is the whole wallpaper — drop the aurora AND the geometric
+   khatam pattern overlay entirely so nothing sits on top of the image. */
 .scene--image::before { display: none; }
-.scene--image::after { background-image: none; }
+.scene--image::after { display: none; }

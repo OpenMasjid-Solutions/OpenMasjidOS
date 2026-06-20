@@ -28,7 +28,9 @@ export function installCursorFx(): void {
   window.addEventListener(
     'pointermove',
     (e) => {
-      const el = (e.target as Element | null)?.closest?.('.glass, .glass-raised') as HTMLElement | null;
+      // Only small interactive cards opt in (via .fx-glint), so big panels and
+      // list containers don't show a stray halo.
+      const el = (e.target as Element | null)?.closest?.('.fx-glint') as HTMLElement | null;
       if (el !== last) {
         if (last) {
           last.style.removeProperty('--mx');

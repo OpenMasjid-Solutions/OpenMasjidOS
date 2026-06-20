@@ -128,6 +128,7 @@
     "installTitle": "Install {{name}}",
     "installCta": "Install now",
     "installing": "Installing…",
+    "installingHint": "Installing… downloading the app, this can take a minute.",
     "installError": "Something went wrong while installing. Please try again."
   },
   "custom": {
@@ -171,7 +172,10 @@
     "loadingApps": "Loading community apps…",
     "noApps": "No apps found in your app stores.",
     "addRepoError": "Couldn't read that app store. Check the link points to a CasaOS-compatible repository.",
-    "casaNote": "Tip: use CasaOS-compatible app stores. Paste the link to the store's repository (a .zip or GitHub repo URL)."
+    "casaNote": "Tip: use CasaOS-compatible app stores. Paste the link to the store's repository (a .zip or GitHub repo URL).",
+    "installTitle": "Install {{name}}",
+    "thirdPartyNotice": "This is a community app from outside the official store — it isn't reviewed by us. Only install apps from sources you trust.",
+    "installing": "Installing… downloading the app, this can take a minute."
   },
   "appDetail": {
     "back": "Back to dashboard",
@@ -222,8 +226,9 @@
     "updates": "Updates",
     "checkUpdates": "Check for updates",
     "checking": "Checking…",
+    "updateNow": "Update now",
     "upToDate": "You're on the latest version.",
-    "updateAvailable": "Version {{version}} is available. Re-run the installer to update.",
+    "updateAvailable": "Version {{version}} is available.",
     "network": "Network",
     "hostname": "Hostname",
     "address": "Address",
@@ -244,6 +249,13 @@
     "sourceCodeHint": "OpenMasjidOS is free and open source (AGPL-3.0).",
     "about": "About",
     "version": "Version"
+  },
+  "update": {
+    "title": "Updating OpenMasjidOS",
+    "restarting": "Applying the update and restarting — reconnecting…",
+    "done": "Updated to v{{version}}.",
+    "doneGeneric": "Update applied.",
+    "reload": "Reload dashboard"
   },
   "status": { "running": "Running", "stopped": "Stopped" },
   "errors": {

@@ -6,29 +6,12 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
-import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { getSettings } from '../settings/store';
 import { rootTerminal, appTerminal, type TermSession } from '../docker/terminal';
 import { isAllowedWsOrigin } from '../util/origin';
 import { isValidAppId } from '../util/id';
+import { wsAuthed } from './ws-auth';
 import { log } from '../logger';
-
-function parseCookie(header: string | undefined, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx !== -1 && part.slice(0, idx).trim() === name) {
-      return decodeURIComponent(part.slice(idx + 1).trim());
-    }
-  }
-  return null;
-}
-
-function isAuthed(req: FastifyRequest): boolean {
-  const token =
-    (req.cookies && req.cookies[COOKIE_NAME]) ?? parseCookie(req.headers?.cookie, COOKIE_NAME);
-  return Boolean(getSessionUser(token));
-}
 
 function clampDim(n: unknown): number {
   const v = Math.floor(Number(n));
@@ -80,7 +63,7 @@ function bridge(socket: WebSocket, session: TermSession): void {
 export function registerTerminals(server: FastifyInstance): void {
   server.get('/api/terminal/root', { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
     if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
-    if (!isAuthed(req)) return socket.close(4401, 'Please sign in.');
+    if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
     if (!getSettings().rootTerminal) return socket.close(4403, 'Root terminal is turned off.');
     try {
       bridge(socket, await rootTerminal());
@@ -100,7 +83,7 @@ export function registerTerminals(server: FastifyInstance): void {
     { websocket: true },
     async (socket: WebSocket, req: FastifyRequest) => {
       if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
-      if (!isAuthed(req)) return socket.close(4401, 'Please sign in.');
+      if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
       if (!getSettings().webTerminal) return socket.close(4403, 'The web terminal is turned off.');
       const id = (req.params as { id: string }).id;
       if (!isValidAppId(id)) return socket.close(4400, 'Invalid app id.');

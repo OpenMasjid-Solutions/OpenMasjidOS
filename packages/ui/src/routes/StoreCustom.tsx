@@ -80,7 +80,9 @@ function CommunityTab() {
   const [repoUrl, setRepoUrl] = useState('');
   const [repoError, setRepoError] = useState('');
   const [query, setQuery] = useState('');
-  const [ackApp, setAckApp] = useState<CommunityApp | null>(null);
+  const [confirmApp, setConfirmApp] = useState<CommunityApp | null>(null);
+  const [needsAck, setNeedsAck] = useState(false);
+  const [installError, setInstallError] = useState('');
 
   const visibleApps = (apps.data ?? []).filter((a) => {
     const q = query.trim().toLowerCase();
@@ -106,24 +108,29 @@ function CommunityTab() {
   const install = trpc.community.install.useMutation({
     onSuccess: () => {
       utils.apps.list.invalidate();
-      setAckApp(null);
+      setConfirmApp(null);
+      setNeedsAck(false);
       toast(t('common.saved'), 'success');
     },
-    onError: (e, vars) => {
-      if (e.message.includes('powerful permissions')) {
-        // Re-prompt with an explicit risk acknowledgement.
-        const app = apps.data?.find((a) => a.name === vars.name && a.compose === vars.compose);
-        if (app) setAckApp(app);
-      } else {
-        toast(e.message || t('custom.error'), 'error');
-      }
+    onError: (e) => {
+      // The server asks for an explicit risk ack when the compose is dangerous.
+      if (e.message.includes('powerful permissions')) setNeedsAck(true);
+      else setInstallError(e.message || t('custom.error'));
     },
   });
 
-  function doInstall(app: CommunityApp, acknowledgeRisk = false) {
+  function openConfirm(app: CommunityApp) {
+    setConfirmApp(app);
+    setNeedsAck(false);
+    setInstallError('');
+  }
+
+  function confirmInstall() {
+    if (!confirmApp) return;
+    setInstallError('');
     // The install input requires a valid URL for icon, so drop non-http icons.
-    const icon = app.icon && /^https?:\/\//i.test(app.icon) ? app.icon : undefined;
-    install.mutate({ name: app.name, compose: app.compose, icon, acknowledgeRisk });
+    const icon = confirmApp.icon && /^https?:\/\//i.test(confirmApp.icon) ? confirmApp.icon : undefined;
+    install.mutate({ name: confirmApp.name, compose: confirmApp.compose, icon, acknowledgeRisk: needsAck });
   }
 
   return (
@@ -177,7 +184,7 @@ function CommunityTab() {
       ) : (
         <div className="app-grid">
           {visibleApps.map((app) => (
-            <div key={app.id} className="app-card glass">
+            <div key={app.id} className="app-card glass fx-glint">
               <div className="app-card__top">
                 <div className="app-icon" style={{ background: app.icon ? 'var(--color-surface-overlay)' : appColor(app.id) }}>
                   {app.icon ? <img src={app.icon} alt="" /> : appInitial(app.name)}
@@ -188,7 +195,7 @@ function CommunityTab() {
                 </div>
               </div>
               <div className="app-card__actions">
-                <button className="btn btn--sm btn--primary" style={{ marginInlineStart: 'auto' }} disabled={install.isPending} onClick={() => doInstall(app)}>
+                <button className="btn btn--sm btn--primary" style={{ marginInlineStart: 'auto' }} onClick={() => openConfirm(app)}>
                   {t('actions.install')}
                 </button>
               </div>
@@ -197,17 +204,36 @@ function CommunityTab() {
         </div>
       )}
 
-      <Modal open={!!ackApp} onClose={() => setAckApp(null)} title={ackApp?.name}>
+      <Modal
+        open={!!confirmApp}
+        onClose={() => !install.isPending && setConfirmApp(null)}
+        title={t('community.installTitle', { name: confirmApp?.name ?? '' })}
+      >
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', marginBottom: '1rem' }}>
           <AlertTriangle size={20} style={{ color: 'var(--color-warning)', flexShrink: 0 }} />
-          <span>{t('custom.warning')}</span>
+          <span>{t('community.thirdPartyNotice')}</span>
         </div>
-        <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
-          <button className="btn" onClick={() => setAckApp(null)}>{t('common.cancel')}</button>
-          <button className="btn btn--primary" disabled={install.isPending} onClick={() => ackApp && doInstall(ackApp, true)}>
-            {t('custom.riskAck')}
-          </button>
-        </div>
+        {needsAck && (
+          <div className="glass-inset panel" style={{ marginBottom: '1rem' }}>
+            <strong style={{ color: 'var(--color-warning)' }}>{t('custom.dangersTitle')}</strong>
+            <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>
+          </div>
+        )}
+        {install.isPending ? (
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <span className="spinner" /> {t('community.installing')}
+          </p>
+        ) : (
+          <>
+            {installError && <p className="form-error">{installError}</p>}
+            <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setConfirmApp(null)}>{t('common.cancel')}</button>
+              <button className="btn btn--primary" onClick={confirmInstall}>
+                {needsAck ? t('custom.riskAck') : t('actions.install')}
+              </button>
+            </div>
+          </>
+        )}
       </Modal>
     </>
   );

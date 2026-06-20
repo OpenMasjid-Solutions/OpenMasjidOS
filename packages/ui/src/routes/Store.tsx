@@ -91,7 +91,7 @@ export function Store() {
           {filtered.map((app) => {
             const isInstalled = installedIds.has(app.id);
             return (
-              <motion.div key={app.id} className="app-card glass" variants={staggerItem}>
+              <motion.div key={app.id} className="app-card glass fx-glint" variants={staggerItem}>
                 <div className="app-card__top">
                   <div className="app-icon">{app.icon ? <img src={app.icon} alt="" /> : appInitial(app.name)}</div>
                   <div style={{ minWidth: 0 }}>
@@ -177,13 +177,18 @@ function InstallModal({
           )}
         </div>
       ))}
-      <button
-        className="btn btn--primary btn--block"
-        disabled={install.isPending}
-        onClick={() => install.mutate({ id: app.id, settings: values })}
-      >
-        {install.isPending ? t('store.installing') : t('store.installCta')}
-      </button>
+      {install.isPending ? (
+        <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <span className="spinner" /> {t('store.installingHint')}
+        </p>
+      ) : (
+        <button
+          className="btn btn--primary btn--block"
+          onClick={() => install.mutate({ id: app.id, settings: values })}
+        >
+          {t('store.installCta')}
+        </button>
+      )}
     </Modal>
   );
 }

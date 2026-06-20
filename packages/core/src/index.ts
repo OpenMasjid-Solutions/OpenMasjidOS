@@ -23,6 +23,7 @@ import { dockerReachable } from './docker/client';
 import { backupStream, backupFilename } from './system/backup';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
+import { registerUpdate } from './api/update';
 import { COOKIE_NAME, getSessionUser } from './auth/sessions';
 
 async function main() {
@@ -77,6 +78,9 @@ async function main() {
 
   // File explorer download/upload (streaming, cookie-authenticated).
   registerFiles(server);
+
+  // Live self-update over WebSocket (pull + recreate, streamed to the UI).
+  registerUpdate(server);
 
   // Static UI + SPA fallback. In local dev the UI is served by Vite, so dist may
   // not exist — guard the registration so the daemon still boots.

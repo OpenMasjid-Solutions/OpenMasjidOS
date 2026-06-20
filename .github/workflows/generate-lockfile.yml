@@ -1,0 +1,35 @@
+name: Generate lockfile
+
+# One-shot helper: resolves the dependency tree and commits package-lock.json so
+# the image build can use `npm ci` (reproducible, integrity-pinned). Run it from
+# the Actions tab (or `gh workflow run "Generate lockfile"`) whenever manifests
+# change and you want to refresh the lockfile.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Resolve lockfile
+        run: npm install --package-lock-only
+      - name: Commit lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if git diff --staged --quiet; then
+            echo "Lockfile already up to date."
+          else
+            git commit -m "chore: update package-lock.json for reproducible builds"
+            git push
+          fi

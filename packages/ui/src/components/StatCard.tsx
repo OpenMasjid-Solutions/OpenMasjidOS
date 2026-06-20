@@ -13,7 +13,7 @@ interface StatCardProps {
 
 export function StatCard({ label, value, sub, percent, icon }: StatCardProps) {
   return (
-    <motion.div className="stat-card glass" variants={staggerItem}>
+    <motion.div className="stat-card glass fx-glint" variants={staggerItem}>
       <div className="stat-label">
         {icon}
         <span>{label}</span>

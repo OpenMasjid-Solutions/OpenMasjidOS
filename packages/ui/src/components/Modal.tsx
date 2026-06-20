@@ -20,7 +20,10 @@ interface ModalProps {
  */
 export function Modal({ open, onClose, title, wide, children }: ModalProps) {
   const { t } = useTranslation();
-  const windows = useWindows();
+  // Destructure the STABLE add/remove callbacks — depending on the whole context
+  // value (which changes identity whenever the window list changes) made the
+  // cleanup below fire on every add and instantly un-minimize the window.
+  const { add, remove } = useWindows();
   const idRef = useRef(newWindowId());
   const [fullscreen, setFullscreen] = useState(false);
   const [minimized, setMinimized] = useState(false);
@@ -34,28 +37,28 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // Reset window state and clear any tray entry when the modal closes.
+  // Reset window state and clear any dock entry when the modal closes.
   useEffect(() => {
     if (!open) {
       setMinimized(false);
       setFullscreen(false);
-      windows.remove(idRef.current);
+      remove(idRef.current);
     }
-  }, [open, windows]);
+  }, [open, remove]);
 
   useEffect(() => {
     const id = idRef.current;
-    return () => windows.remove(id);
-  }, [windows]);
+    return () => remove(id);
+  }, [remove]);
 
   function minimize() {
     setMinimized(true);
-    windows.add({
+    add({
       id: idRef.current,
       title: title ?? 'Window',
       restore: () => {
         setMinimized(false);
-        windows.remove(idRef.current);
+        remove(idRef.current);
       },
     });
   }

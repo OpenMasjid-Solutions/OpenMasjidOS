@@ -399,7 +399,7 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Enable app shells** (off by default) → adds an "Open shell" option to each app (a browser terminal into that app's container, via the Docker API with a TTY).
 - **Enable root terminal** (off by default) → a root shell into the OpenMasjidOS core itself, launched from Advanced. Clearly marked as powerful.
 - **Network info:** show current hostname, `.local` address, and IP (read-only here; changes are made via the installer's "Reconfigure network").
-- **Update channel & "Check for updates"** for the core.
+- **"Check for updates" + one-click live update** for the core: the dashboard pulls the new image and recreates the core itself (via a detached helper container), streaming progress to a live log window and reconnecting when it's back — no terminal needed. Installed apps are never touched (golden rule).
 - **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one.
 
 ---

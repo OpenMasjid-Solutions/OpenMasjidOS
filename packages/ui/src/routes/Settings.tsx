@@ -11,6 +11,7 @@ import { Toggle } from '../components/Toggle';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
 import { Terminal } from '../components/Terminal';
+import { UpdateModal } from '../components/UpdateModal';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 
@@ -24,6 +25,7 @@ export function Settings() {
   const sysInfo = trpc.system.info.useQuery();
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
   const [rootTermOpen, setRootTermOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
 
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: () => utils.settings.get.invalidate(),
@@ -193,9 +195,16 @@ export function Settings() {
                 : ''}
             </div>
           </div>
-          <button className="btn" onClick={() => updateInfo.refetch()} disabled={updateInfo.isFetching}>
-            <RefreshCw size={15} /> {updateInfo.isFetching ? t('settings.checking') : t('settings.checkUpdates')}
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button className="btn" onClick={() => updateInfo.refetch()} disabled={updateInfo.isFetching}>
+              <RefreshCw size={15} /> {updateInfo.isFetching ? t('settings.checking') : t('settings.checkUpdates')}
+            </button>
+            {updateInfo.data?.updateAvailable && (
+              <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
+                <Download size={15} /> {t('settings.updateNow')}
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="setting-row">
@@ -238,6 +247,8 @@ export function Settings() {
       <Modal open={rootTermOpen} onClose={() => setRootTermOpen(false)} wide title={t('settings.rootTerminalTitle')}>
         {rootTermOpen && <Terminal wsPath="/api/terminal/root" />}
       </Modal>
+
+      <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} currentVersion={sysInfo.data?.version ?? ''} />
     </Page>
   );
 }
