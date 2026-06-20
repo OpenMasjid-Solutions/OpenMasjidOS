@@ -132,8 +132,8 @@
   --glass-highlight: rgba(255, 255, 255, 0.90);
   --glass-border: rgba(2, 132, 199, 0.16);
   --glass-glow: rgba(2, 132, 199, 0.08);
-  --glint: rgba(255, 255, 255, 0.45);
-  --glint-strong: rgba(255, 255, 255, 0.75);
+  --glint: rgba(255, 255, 255, 0.32);
+  --glint-strong: rgba(255, 255, 255, 0.55);
   --glass-shadow:
     inset 0 1px 0 0 var(--glass-highlight),
     0 8px 28px -10px rgba(13, 38, 76, 0.18),

@@ -4,18 +4,18 @@
  */
 
 /*
- * Cursor refraction: light caught in the glass as the pointer moves over it
- * (--mx/--my set per-surface in cursorFx.ts, system-wide on every glass pane).
- * It's not a flat circle — a tight VERTICAL specular streak (elliptical) sits
- * over a broad soft sheen, so it reads like light bending through the pane
- * rather than a spotlight. Painted below content, so text never washes out.
+ * Cursor refraction (Apple "liquid glass"): a small, tight, subtle specular
+ * highlight that follows the pointer (--mx/--my set in cursorFx.ts). Kept
+ * deliberately compact + low-intensity so it reads as light catching the glass,
+ * not a spotlight or a big oval. Only applied to compact panes (cards, dock) —
+ * cursorFx skips large flat panels, both for the look and to avoid repainting a
+ * huge surface every frame. Painted below content, so text never washes out.
  */
 .glass {
   position: relative;
   border-radius: var(--radius-card);
   background-image:
-    radial-gradient(6rem 11rem at var(--mx, -200%) var(--my, -200%), var(--glint-strong), transparent 66%),
-    radial-gradient(20rem 16rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
+    radial-gradient(7rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 55%),
     linear-gradient(var(--glass-tint), var(--glass-tint));
   background-color: var(--glass-bg);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -27,8 +27,7 @@
   position: relative;
   border-radius: var(--radius-card);
   background-image:
-    radial-gradient(6rem 11rem at var(--mx, -200%) var(--my, -200%), var(--glint-strong), transparent 66%),
-    radial-gradient(20rem 16rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
+    radial-gradient(7rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 55%),
     linear-gradient(var(--glass-tint), var(--glass-tint));
   background-color: var(--glass-bg-raised);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
