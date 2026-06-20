@@ -8,6 +8,9 @@ import { stdin, stdout } from 'node:process';
 import { isConfigured, getUsername, setCredentials } from './auth/store';
 import { hashPassword, MIN_PASSWORD_LENGTH } from './auth/passwords';
 import { destroyAllSessions } from './auth/sessions';
+import { docker } from './docker/client';
+
+const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 
 async function main() {
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -37,10 +40,25 @@ async function main() {
     break;
   }
 
+  // Write the new credentials to disk (synchronous + atomic).
   setCredentials(username, await hashPassword(password));
   destroyAllSessions();
-  stdout.write('\n✅ Password updated. You can sign in now.\n\n');
   rl.close();
+
+  // The running daemon loaded the old hash into memory at startup and won't
+  // re-read auth.json, so the new password won't work until it restarts. Restart
+  // the core container automatically (this exec session ends as it does — that's
+  // expected). Apps are separate compose projects and are untouched.
+  stdout.write('\n✅ Password updated. Restarting OpenMasjidOS so it takes effect…\n');
+  stdout.write('   Give it a few seconds, then sign in with your new password.\n\n');
+  try {
+    await docker.getContainer(CORE_CONTAINER).restart({ t: 3 });
+  } catch (err) {
+    stdout.write(
+      `Couldn't restart automatically (${(err as Error).message}).\n` +
+        `Please restart it yourself:  docker restart ${CORE_CONTAINER}\n\n`,
+    );
+  }
 }
 
 main().catch((err) => {

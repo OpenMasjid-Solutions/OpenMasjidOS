@@ -39,6 +39,7 @@ export function Files() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const list = trpc.files.list.useQuery({ path });
@@ -121,7 +122,31 @@ export function Files() {
         <input ref={fileInput} type="file" multiple className="visually-hidden" onChange={(e) => onUpload(e.target.files)} />
       </div>
 
-      <div className="glass panel" style={{ padding: 0, overflow: 'hidden' }}>
+      <div
+        className={`glass panel${dragActive ? ' drop-active' : ''}`}
+        style={{ padding: 0, overflow: 'hidden', position: 'relative' }}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault();
+            setDragActive(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragActive(false);
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return;
+          e.preventDefault();
+          setDragActive(false);
+          void onUpload(e.dataTransfer.files);
+        }}
+      >
+        {dragActive && (
+          <div className="drop-overlay">
+            <Upload size={28} />
+            <span>{t('files.dropHint')}</span>
+          </div>
+        )}
         {list.isLoading ? (
           <div style={{ padding: '1rem' }}>
             {Array.from({ length: 5 }).map((_, i) => (

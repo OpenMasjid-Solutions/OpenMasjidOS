@@ -169,21 +169,43 @@ export function readTextFile(rel: string): { content: string } {
 }
 
 /** Save text back to a file. The parent folder must already exist; the path is
- *  always confined to the sandbox. */
+ *  always confined to the sandbox.
+ *
+ *  Security: we resolve the PARENT directory (which exists, so resolve() applies
+ *  the realpath/symlink check), then attach the safe basename. Resolving the
+ *  file path directly would skip the symlink check for a not-yet-existing file,
+ *  letting a symlinked parent (e.g. planted by a malicious app/backup) redirect
+ *  the write outside the sandbox. We also refuse to follow a symlink target that
+ *  escapes, and never overwrite a directory. */
 export function writeTextFile(rel: string, content: string): void {
   if (typeof content !== 'string') throw new FileError('Nothing to save.', 'BAD_NAME');
   if (Buffer.byteLength(content, 'utf8') > MAX_TEXT_BYTES) {
     throw new FileError('That file is too large to save from the editor.', 'TOO_LARGE');
   }
-  const full = resolve(rel);
-  if (full === ROOT) throw new FileError('That item cannot be edited.', 'BAD_NAME');
-  if (fs.existsSync(full) && fs.statSync(full).isDirectory()) {
-    throw new FileError('That is a folder, not a file.', 'IS_DIR');
-  }
-  const dir = path.dirname(full);
+
+  const cleaned = path.posix.normalize('/' + String(rel ?? '').replace(/\\/g, '/'));
+  const base = path.posix.basename(cleaned);
+  if (!base || base === '.' || base === '..') throw new FileError('That item cannot be edited.', 'BAD_NAME');
+
+  // resolve() the parent: it exists, so its realpath is verified inside ROOT.
+  const dir = resolve(path.posix.dirname(cleaned));
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw new FileError('That folder does not exist.', 'NOT_FOUND');
   }
+
+  const full = path.join(dir, safeName(base));
+  if (!within(full)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
+
+  if (fs.existsSync(full)) {
+    const st = fs.lstatSync(full);
+    if (st.isDirectory()) throw new FileError('That is a folder, not a file.', 'IS_DIR');
+    if (st.isSymbolicLink()) {
+      // Don't write through a symlink that points outside the sandbox.
+      const real = fs.realpathSync(full);
+      if (!within(real)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
+    }
+  }
+
   fs.writeFileSync(full, content, 'utf8');
 }
 

@@ -10,9 +10,24 @@ import { X, Minus, Maximize2 } from 'lucide-react';
 import { useWindows, type WindowState } from './Windows';
 
 export function WindowManager() {
-  const { windows } = useWindows();
+  const { windows, close } = useWindows();
   // Stack by focus order so the most-recently-focused window is on top.
   const ordered = [...windows].sort((a, b) => a.z - b.z);
+
+  // Escape closes only the front-most (highest-z) non-minimized window — one
+  // listener here, not one per frame (which would close them all at once).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const visible = windows.filter((w) => !w.minimized);
+      if (visible.length === 0) return;
+      const front = visible.reduce((a, b) => (b.z > a.z ? b : a));
+      close(front.id);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [windows, close]);
+
   return (
     <>
       {ordered.map((w, i) => (
@@ -27,15 +42,10 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
   const { close, minimize, focus, toggleFullscreen } = useWindows();
   const frameRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-
-  // Close the front-most window on Escape.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !win.minimized) close(win.id);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [win.id, win.minimized, close]);
+  // Tear down any in-flight drag listeners if the window unmounts mid-drag,
+  // so a closed window can't leak a pointermove handler.
+  const dragCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanup.current?.(), []);
 
   function startDrag(e: ReactPointerEvent) {
     if (win.fullscreen) return;
@@ -56,7 +66,9 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      dragCleanup.current = null;
     };
+    dragCleanup.current = onUp;
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     e.preventDefault();

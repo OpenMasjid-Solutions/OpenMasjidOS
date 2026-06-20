@@ -170,6 +170,16 @@ button {
   background: var(--color-border);
   margin-inline: 0.15rem;
 }
+/* Pinned-app reorder group — lays its items out like the rest of the dock row. */
+.dock-reorder {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dock-reorder .dock-item { touch-action: none; }
 .dock-drop-hint {
   outline: 2px dashed var(--color-primary);
   outline-offset: 4px;
@@ -679,9 +689,6 @@ button {
   gap: 0.4rem;
   min-height: 2.4rem;
 }
-/* Dragging a pinned app to reorder. */
-.dock-item--drag-over { box-shadow: inset 0.18rem 0 0 var(--color-primary); }
-
 /* ── Warning banner (e.g. low disk) ─────────────────────────────────────── */
 .warn-banner {
   display: flex;
@@ -826,6 +833,21 @@ button {
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { color: var(--color-ink-muted); font-size: 0.82rem; font-variant-numeric: tabular-nums; min-width: 4rem; text-align: end; }
 .file-actions { display: flex; align-items: center; gap: 0.15rem; flex-shrink: 0; }
+.drop-active { outline: 2px dashed var(--color-primary); outline-offset: -5px; }
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-raised));
+  pointer-events: none;
+}
 
 /* ── Auth screen ────────────────────────────────────────────────────────── */
 .auth-wrap {

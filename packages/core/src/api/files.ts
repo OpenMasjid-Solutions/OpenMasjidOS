@@ -21,6 +21,7 @@ export function registerFiles(server: FastifyInstance): void {
     try {
       const { full, name } = resolveFile(p);
       reply.header('content-disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+      reply.header('X-Content-Type-Options', 'nosniff');
       reply.type('application/octet-stream');
       return reply.send(fs.createReadStream(full));
     } catch (err) {

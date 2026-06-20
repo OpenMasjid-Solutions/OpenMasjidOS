@@ -1,12 +1,13 @@
 /**
  * The floating bottom dock (umbrelOS-style, our own implementation). Primary
- * nav + pinned apps + minimized windows. Drag an app card here to pin it; drag
- * pinned apps to reorder them; hover any item for its name, or a live window's
- * preview. The dock lives in AppShell, so it (and minimized windows) persist
- * across every route.
+ * nav + pinned apps + open/minimized windows. Drag an app card here to pin it;
+ * drag pinned apps to push them around and reorder (Motion Reorder); hover any
+ * item for its name, or a live window's preview. The dock lives in AppShell, so
+ * it (and minimized windows) persist across every route.
  */
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
+import { Reorder } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Store as StoreIcon, Settings as SettingsIcon, FolderOpen, AppWindow } from 'lucide-react';
 import { trpc } from '../lib/trpc';
@@ -16,7 +17,6 @@ import { cn } from '../lib/cn';
 import { openApp, appInitial } from '../lib/apps';
 import { MasjidMark } from './Glyphs';
 
-const PIN_MIME = 'application/omos-pin';
 const APP_MIME = 'application/omos-app';
 
 export function Dock() {
@@ -24,38 +24,31 @@ export function Dock() {
   const prefs = usePrefs();
   const { windows, restore } = useWindows();
   const [dropHint, setDropHint] = useState(false);
-  const [dragOver, setDragOver] = useState<string | null>(null);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
   const apps = appsQuery.data ?? [];
 
   const pinnedApps = prefs.pinnedApps
     .map((id) => apps.find((a) => a.id === id))
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
-
-  const openWindows = windows; // minimized + visible; clicking restores/focuses
+  const pinnedIds = pinnedApps.map((a) => a.id);
 
   return (
     <nav
       className={cn('dock glass-dock', dropHint && 'dock-drop-hint')}
       aria-label={t('nav.aria.primary')}
       onDragOver={(e) => {
-        const types = e.dataTransfer.types;
-        if (types.includes(APP_MIME)) {
+        if (e.dataTransfer.types.includes(APP_MIME)) {
           e.preventDefault();
           setDropHint(true);
-        } else if (types.includes(PIN_MIME)) {
-          // Allow dropping a reordered pin onto empty dock space (→ move to end).
-          e.preventDefault();
         }
       }}
       onDragLeave={() => setDropHint(false)}
       onDrop={(e) => {
+        const appId = e.dataTransfer.getData(APP_MIME);
+        if (!appId) return;
         e.preventDefault();
         setDropHint(false);
-        const appId = e.dataTransfer.getData(APP_MIME);
-        if (appId) prefsStore.pin(appId);
-        const pinId = e.dataTransfer.getData(PIN_MIME);
-        if (pinId) prefsStore.movePin(pinId, null); // dropped on empty dock area → move to end
+        prefsStore.pin(appId);
       }}
     >
       <DockLink to="/" end icon={<MasjidMark size={22} />} label={t('nav.dashboard')} />
@@ -65,46 +58,46 @@ export function Dock() {
 
       {pinnedApps.length > 0 && <span className="dock-divider" aria-hidden="true" />}
 
-      {pinnedApps.map((app) => (
-        <button
-          key={app.id}
-          className={cn('dock-item', dragOver === app.id && 'dock-item--drag-over')}
-          aria-label={app.name}
-          draggable
-          onDragStart={(e) => {
-            e.dataTransfer.setData(PIN_MIME, app.id);
-            e.dataTransfer.effectAllowed = 'move';
+      {pinnedApps.length > 0 && (
+        <Reorder.Group
+          as="div"
+          axis="x"
+          className="dock-reorder"
+          values={pinnedIds}
+          onReorder={(ids) => {
+            // Preserve any pinned ids that aren't currently visible (e.g. an app
+            // whose list entry is mid-refetch) instead of dropping them.
+            const visible = new Set(pinnedIds);
+            const hidden = prefs.pinnedApps.filter((id) => !visible.has(id));
+            prefsStore.setPins([...(ids as string[]), ...hidden]);
           }}
-          onDragOver={(e) => {
-            if (e.dataTransfer.types.includes(PIN_MIME)) {
-              e.preventDefault();
-              setDragOver(app.id);
-            }
-          }}
-          onDragLeave={() => setDragOver((cur) => (cur === app.id ? null : cur))}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setDragOver(null);
-            const pinId = e.dataTransfer.getData(PIN_MIME);
-            if (pinId && pinId !== app.id) prefsStore.movePin(pinId, app.id);
-          }}
-          onClick={() => openApp(app)}
         >
-          {app.icon ? (
-            <span className="app-initial" style={{ background: 'transparent' }}>
-              <img src={app.icon} alt="" style={{ width: '100%', height: '100%', borderRadius: '0.85rem', objectFit: 'cover' }} />
-            </span>
-          ) : (
-            <span className="app-initial">{appInitial(app.name)}</span>
-          )}
-          <span className="dock-pop"><span className="dock-tip glass-raised">{app.name}</span></span>
-        </button>
-      ))}
+          {pinnedApps.map((app) => (
+            <Reorder.Item
+              key={app.id}
+              value={app.id}
+              as="button"
+              className="dock-item"
+              aria-label={app.name}
+              whileDrag={{ scale: 1.12, zIndex: 20 }}
+              onClick={() => openApp(app)}
+            >
+              {app.icon ? (
+                <span className="app-initial" style={{ background: 'transparent' }}>
+                  <img src={app.icon} alt="" style={{ width: '100%', height: '100%', borderRadius: '0.85rem', objectFit: 'cover' }} />
+                </span>
+              ) : (
+                <span className="app-initial">{appInitial(app.name)}</span>
+              )}
+              <span className="dock-pop"><span className="dock-tip glass-raised">{app.name}</span></span>
+            </Reorder.Item>
+          ))}
+        </Reorder.Group>
+      )}
 
-      {openWindows.length > 0 && <span className="dock-divider" aria-hidden="true" />}
+      {windows.length > 0 && <span className="dock-divider" aria-hidden="true" />}
 
-      {openWindows.map((w) => (
+      {windows.map((w) => (
         <button
           key={w.id}
           className="dock-item dock-item--window"

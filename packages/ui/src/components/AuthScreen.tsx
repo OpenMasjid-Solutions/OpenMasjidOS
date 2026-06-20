@@ -67,7 +67,6 @@ export function AuthScreen({
               id="username"
               className="input glass-inset"
               autoComplete="username"
-              placeholder={t('auth.usernamePlaceholder')}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
