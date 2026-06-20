@@ -8,19 +8,22 @@ services:
     container_name: openmasjid-core
     restart: unless-stopped
     ports:
-      - "8723:8723"
+      - "80:80"
     volumes:
       # The Docker socket — the core manages app containers through it.
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistent data: config, app state, per-app volumes.
       - /opt/openmasjid:/data
+      # Host /proc (read-only) so memory/CPU stats reflect the machine/LXC.
+      - /proc:/host/proc:ro
     environment:
       - OPENMASJID_DATA_DIR=/data
-      - OPENMASJID_PORT=8723
+      - OPENMASJID_PORT=80
+      - HOST_PROC=/host/proc
       - NODE_ENV=production
     healthcheck:
       # Alpine ships busybox wget — a tiny HTTP check against the daemon.
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8723/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -1,5 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/space-grotesk';
+import '@xterm/xterm/css/xterm.css';
 import './index.css';
 import './styles/tokens.css';
 import './styles/glass.css';

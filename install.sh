@@ -34,7 +34,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # Constants — change these if you need a non-standard setup
 # -----------------------------------------------------------------------------
-PORT=8723
+PORT=80
 DATA_DIR=/opt/openmasjid
 IMAGE=ghcr.io/hasan-ismail/openmasjid-core:latest
 COMPOSE_PROJECT=openmasjid
@@ -384,11 +384,17 @@ services:
       # across core container restarts and upgrades.
       - ${DATA_DIR}:/data
 
+      # Mount the host's /proc read-only so system stats (esp. memory) reflect
+      # the MACHINE (or LXC, via lxcfs) rather than the bare host underneath.
+      - /proc:/host/proc:ro
+
     environment:
       # Tell the core where its data lives inside the container
       OPENMASJID_DATA_DIR: /data
       # The port the daemon binds to inside the container
       OPENMASJID_PORT: "${PORT}"
+      # Point the stats collector at the mounted host /proc.
+      HOST_PROC: /host/proc
       NODE_ENV: production
 
     healthcheck:

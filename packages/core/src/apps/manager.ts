@@ -93,7 +93,10 @@ export async function listInstalled(): Promise<InstalledApp[]> {
   // 2. Running/known projects without metadata — recover them (golden rule).
   for (const disc of discovered.values()) {
     if (byId.has(disc.id)) continue;
-    const kind = disc.kind === 'custom' || disc.id.startsWith('custom-') ? 'custom' : 'catalog';
+    // We can't vet a recovered app, so never claim it's "Official". Honour a
+    // kind label if Docker has one, otherwise treat it as Custom.
+    const kind: AppMeta['kind'] =
+      disc.kind === 'catalog' || disc.kind === 'community' ? disc.kind : 'custom';
     const recovered: AppMeta = {
       id: disc.id,
       name: disc.name || prettify(disc.id),
@@ -148,27 +151,49 @@ export async function installCatalogApp(
 }
 
 /**
- * Install a pre-validated custom app. The compose text + env are written and
- * started under project omos-<id>. Risk-checking happens in the router.
+ * Install a pre-validated app from raw compose text (custom-paste or community
+ * app store). The compose + env are written and started under project omos-<id>.
+ * Risk-checking happens in the router before this is called.
  */
-export async function installCustomApp(opts: {
+async function installStack(opts: {
   id: string;
   name: string;
+  kind: AppMeta['kind'];
   composeText: string;
   env: Record<string, string>;
   icon?: string;
 }): Promise<InstalledApp> {
-  const { id, name, composeText, env, icon } = opts;
+  const { id, name, kind, composeText, env, icon } = opts;
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
   writeEnvFile(id, env);
-  saveMeta({ id, name, kind: 'custom', icon, createdAt: new Date().toISOString() });
+  saveMeta({ id, name, kind, icon, createdAt: new Date().toISOString() });
 
   const res = await composeUp(projectOf(id), composePath(id), envPath(id));
   if (res.code !== 0) {
     throw new Error(res.stderr.trim() || 'The app failed to start.');
   }
   return (await getInstalled(id))!;
+}
+
+export function installCustomApp(opts: {
+  id: string;
+  name: string;
+  composeText: string;
+  env: Record<string, string>;
+  icon?: string;
+}): Promise<InstalledApp> {
+  return installStack({ ...opts, kind: 'custom' });
+}
+
+export function installCommunityApp(opts: {
+  id: string;
+  name: string;
+  composeText: string;
+  env: Record<string, string>;
+  icon?: string;
+}): Promise<InstalledApp> {
+  return installStack({ ...opts, kind: 'community' });
 }
 
 export async function startApp(id: string): Promise<void> {

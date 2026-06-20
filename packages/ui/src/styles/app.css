@@ -88,9 +88,10 @@ button {
   margin-block-end: 1.5rem;
 }
 .page-title {
+  font-family: var(--font-display);
   font-size: 1.9rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 .page-sub {
@@ -98,8 +99,10 @@ button {
   margin-block-start: 0.25rem;
 }
 .section-title {
+  font-family: var(--font-display);
   font-size: 1.15rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   margin: 0 0 0.9rem;
 }
 
@@ -226,10 +229,12 @@ button {
   gap: 0.4rem;
 }
 .stat-value {
+  font-family: var(--font-display);
   font-size: 1.6rem;
-  font-weight: 700;
+  font-weight: 600;
   margin-block-start: 0.35rem;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 .stat-value small {
   font-size: 0.9rem;
@@ -456,7 +461,7 @@ button {
 
 /* ── Cards / panels ─────────────────────────────────────────────────────── */
 .panel { padding: 1.25rem 1.4rem; margin-block-end: 1.25rem; }
-.panel-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 0.9rem; }
+.panel-title { font-family: var(--font-display); font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.9rem; }
 
 /* ── Modal ──────────────────────────────────────────────────────────────── */
 .modal-backdrop {
@@ -476,7 +481,7 @@ button {
   overflow: auto;
   padding: 1.5rem;
 }
-.modal-title { font-size: 1.2rem; font-weight: 700; margin: 0 0 0.4rem; }
+.modal-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.4rem; }
 .modal-body { color: var(--color-ink-muted); }
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */

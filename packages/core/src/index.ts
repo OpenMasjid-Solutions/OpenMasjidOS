@@ -20,6 +20,7 @@ import { appRouter, type AppRouter } from './trpc/router';
 import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
 import { backupStream, backupFilename } from './system/backup';
+import { registerTerminals } from './api/terminals';
 import { COOKIE_NAME, getSessionUser } from './auth/sessions';
 
 async function main() {
@@ -62,6 +63,9 @@ async function main() {
       .header('content-disposition', `attachment; filename="${backupFilename()}"`);
     return reply.send(backupStream());
   });
+
+  // WebSocket terminals (root shell + per-app shell), gated by settings + auth.
+  registerTerminals(server);
 
   // Static UI + SPA fallback. In local dev the UI is served by Vite, so dist may
   // not exist — guard the registration so the daemon still boots.

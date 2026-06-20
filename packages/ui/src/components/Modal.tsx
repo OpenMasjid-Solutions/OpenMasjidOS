@@ -8,10 +8,12 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   title?: string;
+  /** Wider modal (e.g. for terminals). */
+  wide?: boolean;
   children: ReactNode;
 }
 
-export function Modal({ open, onClose, title, children }: ModalProps) {
+export function Modal({ open, onClose, title, wide, children }: ModalProps) {
   const { t } = useTranslation();
 
   useEffect(() => {
@@ -35,6 +37,7 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
         >
           <motion.div
             className="modal glass-raised"
+            style={wide ? { width: 'min(60rem, 100%)' } : undefined}
             initial={{ opacity: 0, scale: 0.94, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0, transition: springSoft }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}

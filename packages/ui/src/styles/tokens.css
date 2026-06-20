@@ -25,15 +25,15 @@
   --color-gold: #F59E0B;
   --color-gold-subtle: rgba(245, 158, 11, 0.1);
 
-  --color-ink: #E0F2FE;
-  --color-ink-muted: #7FC8E8;
-  --color-ink-faint: #2C6985;
+  --color-ink: #F4F7FB;
+  --color-ink-muted: #9FACC2;
+  --color-ink-faint: #5C6B83;
 
-  --color-border: rgba(34, 211, 238, 0.1);
+  --color-border: rgba(148, 175, 210, 0.14);
 
-  --color-success: #22C55E;
-  --color-warning: #F59E0B;
-  --color-danger: #EF4444;
+  --color-success: #34D399;
+  --color-warning: #FBBF24;
+  --color-danger: #F87171;
 
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.7);
@@ -165,9 +165,10 @@
   --lift-y: -6px;
   --tilt-max: 7deg;
 
-  /* Soft, rounded, friendly type (no web fonts — CSP-safe). */
-  --font-sans: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", "Comic Sans MS", "Segoe UI", system-ui, sans-serif;
-  --font-display: var(--font-sans);
+  /* Two bundled families (umbrelOS-like): Inter for UI/body, Space Grotesk for
+     display headings. Both self-hosted via @fontsource (no external CDN). */
+  --font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk Variable", "Space Grotesk", var(--font-sans);
 }
 
 /* Wallpapers — selectable in Settings (applied via data-wallpaper on <html>). */

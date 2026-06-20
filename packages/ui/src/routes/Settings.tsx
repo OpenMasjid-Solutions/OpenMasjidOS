@@ -4,11 +4,13 @@
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, GitBranch, RefreshCw, Check } from 'lucide-react';
+import { Download, GitBranch, RefreshCw, Check, SquareTerminal } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
 import { Page } from '../components/Page';
+import { Modal } from '../components/Modal';
+import { Terminal } from '../components/Terminal';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 
@@ -21,6 +23,7 @@ export function Settings() {
   const serverSettings = trpc.settings.get.useQuery();
   const sysInfo = trpc.system.info.useQuery();
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
+  const [rootTermOpen, setRootTermOpen] = useState(false);
 
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: () => utils.settings.get.invalidate(),
@@ -147,6 +150,41 @@ export function Settings() {
 
         <div className="setting-row">
           <div className="setting-row__text">
+            <div className="setting-row__title">{t('settings.webTerminal')}</div>
+            <div className="setting-row__hint">{t('settings.webTerminalHint')}</div>
+          </div>
+          <Toggle
+            checked={serverSettings.data?.webTerminal ?? false}
+            onChange={(v) => updateSettings.mutate({ webTerminal: v })}
+            label={t('settings.webTerminal')}
+          />
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-row__text">
+            <div className="setting-row__title">{t('settings.rootTerminal')}</div>
+            <div className="setting-row__hint">{t('settings.rootTerminalHint')}</div>
+          </div>
+          <Toggle
+            checked={serverSettings.data?.rootTerminal ?? false}
+            onChange={(v) => updateSettings.mutate({ rootTerminal: v })}
+            label={t('settings.rootTerminal')}
+          />
+        </div>
+
+        {serverSettings.data?.rootTerminal && (
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('settings.rootTerminalOpen')}</div>
+            </div>
+            <button className="btn" onClick={() => setRootTermOpen(true)}>
+              <SquareTerminal size={15} /> {t('settings.rootTerminalOpen')}
+            </button>
+          </div>
+        )}
+
+        <div className="setting-row">
+          <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.updates')}</div>
             <div className="setting-row__hint">
               {updateInfo.data
@@ -165,9 +203,7 @@ export function Settings() {
           <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.network')}</div>
             <div className="setting-row__hint">
-              {sysInfo.data
-                ? `${t('settings.hostname')}: ${sysInfo.data.network.localDomain} · ${t('settings.address')}: ${(sysInfo.data.network.addresses[0] ?? '—')}:${sysInfo.data.network.port}`
-                : ''}
+              {`${t('settings.address')}: ${window.location.host}`}
             </div>
           </div>
         </div>
@@ -197,6 +233,10 @@ export function Settings() {
           <span style={{ color: 'var(--color-ink-muted)', fontVariantNumeric: 'tabular-nums' }}>v{sysInfo.data?.version ?? '—'}</span>
         </div>
       </section>
+
+      <Modal open={rootTermOpen} onClose={() => setRootTermOpen(false)} wide title={t('settings.rootTerminalTitle')}>
+        {rootTermOpen && <Terminal wsPath="/api/terminal/root" />}
+      </Modal>
     </Page>
   );
 }

@@ -40,7 +40,7 @@ RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates tar
 
 ENV NODE_ENV=production \
     OPENMASJID_DATA_DIR=/data \
-    OPENMASJID_PORT=8723 \
+    OPENMASJID_PORT=80 \
     OPENMASJID_VERSION_FILE=/app/VERSION
 
 # Built output, installed (prod-only) deps, manifests, and the VERSION file.
@@ -52,11 +52,11 @@ COPY --from=build /app/packages/core/dist ./packages/core/dist
 COPY --from=build /app/packages/ui/package.json ./packages/ui/package.json
 COPY --from=build /app/packages/ui/dist ./packages/ui/dist
 
-EXPOSE 8723
+EXPOSE 80
 
 # Runs as root: it must read the root-owned Docker socket and write to /data.
 # Least-privilege still applies to the APP containers the core launches.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=20s \
-  CMD wget -qO- http://127.0.0.1:8723/api/health || exit 1
+  CMD wget -qO- http://127.0.0.1:80/api/health || exit 1
 
 ENTRYPOINT ["node", "packages/core/dist/index.js"]

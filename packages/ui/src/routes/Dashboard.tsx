@@ -28,6 +28,7 @@ export function Dashboard() {
   const { t } = useTranslation();
   const prefs = usePrefs();
 
+  const me = trpc.auth.me.useQuery();
   const initial = trpc.stats.get.useQuery(undefined, { refetchInterval: 5000 });
   const [live, setLive] = useState<StatsSnapshot | null>(null);
   trpc.stats.stream.useSubscription(undefined, {
@@ -38,7 +39,11 @@ export function Dashboard() {
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 5000 });
   const apps = appsQuery.data ?? [];
 
-  const name = prefs.dashboardName.trim() || t('dashboard.yourMasjid');
+  const name = prefs.dashboardName.trim() || me.data?.username || t('dashboard.yourMasjid');
+  const cpuSub =
+    stats && stats.cpuCores
+      ? `${stats.cpuCores} cores${stats.cpuSpeedGHz ? ` · ${stats.cpuSpeedGHz.toFixed(1)} GHz` : ''}`
+      : undefined;
 
   return (
     <Page>
@@ -54,6 +59,7 @@ export function Dashboard() {
           label={t('dashboard.stats.cpu')}
           icon={<Cpu size={15} />}
           value={`${stats?.cpuPercent ?? 0}%`}
+          sub={cpuSub}
           percent={stats?.cpuPercent ?? 0}
         />
         <StatCard

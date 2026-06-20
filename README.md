@@ -11,7 +11,7 @@
 curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh | bash
 ```
 
-After installation, open your browser to **`http://openmasjidos.local:8723`** (or **`http://<your-server-ip>:8723`**) and follow the setup wizard.
+After installation, open your browser to **`http://openmasjidos.local`** (or **`http://<your-server-ip>`**) and follow the setup wizard.
 
 ---
 
@@ -350,7 +350,7 @@ Create a VPS with **Ubuntu 22.04 LTS**, SSH in, and run the one-liner above.
 
 > **Important:** If you host on a VPS, your dashboard is accessible on the public internet. Make sure to:
 > 1. Set a strong admin password in the setup wizard.
-> 2. Configure your VPS firewall to restrict port 8723 to known IPs, or put it behind a reverse proxy with HTTPS.
+> 2. Configure your VPS firewall to restrict port 80 to known IPs, or put it behind a reverse proxy with HTTPS.
 > 3. Consider using a private network/VPN for masjid-internal access.
 
 ---
@@ -467,7 +467,8 @@ npm run build
 npm run image
 ```
 
-The daemon listens on **8723**. In dev, the Vite dev server runs on
+In production the daemon listens on **port 80** (set by the installer/compose).
+In dev it defaults to **8723** (no root needed); the Vite dev server runs on
 `http://localhost:5173` and proxies `/trpc` (HTTP + WebSocket) and `/api` to the
 daemon automatically — open `http://localhost:5173`.
 

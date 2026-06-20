@@ -39,7 +39,7 @@ export interface CatalogApp {
 export interface AppMeta {
   id: string;
   name: string;
-  kind: 'catalog' | 'custom';
+  kind: 'catalog' | 'community' | 'custom';
   icon?: string;
   category?: string;
   version?: string;
@@ -50,7 +50,7 @@ export interface AppMeta {
 export interface InstalledApp {
   id: string;
   name: string;
-  kind: 'catalog' | 'custom';
+  kind: 'catalog' | 'community' | 'custom';
   icon?: string;
   category?: string;
   running: boolean;

@@ -55,7 +55,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 - **A full-lifecycle one-line `curl | bash` installer.** On a fresh machine it runs a complete guided **install**. On a machine that already has OpenMasjidOS, the same command opens a **management menu**: Update / Repair / Reconfigure network / Uninstall. Works on common Linux (Debian/Ubuntu, Raspberry Pi OS, Fedora), architecture-aware (amd64 + arm64).
 - Installer auto-installs Docker + the Docker Compose plugin if missing, sets up OpenMasjidOS as a managed service, and during install also:
   - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §8).
-  - **Sets a hostname and mDNS** so the dashboard is reachable at **`http://openmasjidos.local:8723`** (plus the raw IP as a fallback).
+  - **Sets a hostname and mDNS** so the dashboard is reachable at **`http://openmasjidos.local`** (plus the raw IP as a fallback).
 - **Web UI authentication.** The dashboard is always behind a login. The **first time** the dashboard is opened, the user creates the **admin account**. Sessions use secure, HTTP-only cookies. No part of the UI is reachable unauthenticated except the login/first-run screen.
 - **Core backend (daemon):** a type-safe **tRPC** API (over HTTP, with WebSocket subscriptions for live data). Manages container lifecycle via the Docker Engine API.
 - **Dashboard home with live system stats:** CPU %, RAM used/total, disk used/total, CPU temperature (where available), uptime, and count of running apps — updated live — alongside the grid of installed apps.
@@ -90,7 +90,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
                        ┌──────────────────────────────────────────┐
                        │             User's browser                │
                        │   OpenMasjidOS UI (React + Vite + TW)      │
-                       │     reached at openmasjidos.local:8723     │
+                       │       reached at openmasjidos.local        │
                        └───────────────▲────────────────────────────┘
                                        │ tRPC over HTTPS
                                        │ (+ WebSocket subscriptions)
@@ -268,17 +268,17 @@ The script must:
    ✅ OpenMasjidOS is ready!
 
    Open it in your browser:
-     →  http://openmasjidos.local:8723      (easiest)
-     →  http://192.168.1.50:8723            (works everywhere on your network)
+     →  http://openmasjidos.local      (easiest)
+     →  http://192.168.1.50             (works everywhere on your network)
 
    First time? You'll be asked to create your admin account.
    Need help? https://openmasjid.org/help
    ```
 
 ### 8.3 Flags (for advanced/automated use; interactive is the default)
-Support non-interactive overrides: `--yes` (accept defaults), `--hostname <name>`, `--static-ip <cidr> --gateway <ip> --iface <name>`, `--no-network` (skip static IP **and** hostname changes), `--port <n>` (default `8723`).
+Support non-interactive overrides: `--yes` (accept defaults), `--hostname <name>`, `--static-ip <cidr> --gateway <ip> --iface <name>`, `--no-network` (skip static IP **and** hostname changes), `--port <n>` (default `80`).
 
-**Default port:** `8723`. **Data dir:** `/opt/openmasjid`.
+**Default port:** `80` (so the dashboard URL needs no port suffix). **Data dir:** `/opt/openmasjid`.
 
 > The installer is piped to bash, so it must stay **readable and commented** — we are asking people to trust it. No obfuscation, ever. Keep it auditable and minimal in privilege.
 
@@ -357,7 +357,9 @@ Rules for the core:
 This is **off by default**. It is enabled in **Settings → Advanced → "Allow custom apps"**.
 
 - When enabled, the **App Store gets a "3rd Party App" button** (visually marked as advanced). When disabled, that button does not exist anywhere in the UI.
-- The button opens a **paste-a-compose** UI: a name, an optional icon, a `docker-compose.yml` text area, and an optional `.env` text area.
+- The button opens a hub with two ways in:
+  - **Community apps** — browse + install apps from **CasaOS-compatible app stores** the admin adds by URL (an "Add app store" field; a note recommends CasaOS-compatible repos). Installed community apps are tagged "Community".
+  - **Docker Compose** — a **paste-a-compose** UI: a name, an optional icon, a `docker-compose.yml` text area, and an optional `.env` text area.
 - On submit the core **validates** the YAML before running anything: it must parse; reject or hard-warn on dangerous settings (`privileged: true`, `network_mode: host`, mounting `/var/run/docker.sock`, mounting sensitive host paths). Dangerous stacks require an explicit "I understand the risk" confirmation.
 - The stack runs as project `omos-custom-<slug>`, labeled `com.openmasjid.app=custom-<slug>` and `com.openmasjid.kind=custom`. Data lives under `/opt/openmasjid/apps/custom-<slug>/`.
 - After install it appears in the dashboard's installed-apps grid and is managed exactly like a catalog app (start / stop / logs / remove), but visually tagged "Custom".
@@ -393,6 +395,8 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 
 ### 13.3 Advanced
 - **Allow custom apps** (off by default) → enables the "3rd Party App" button in the App Store (see §11), with a clear risk note.
+- **Enable app shells** (off by default) → adds an "Open shell" option to each app (a browser terminal into that app's container, via the Docker API with a TTY).
+- **Enable root terminal** (off by default) → a root shell into the OpenMasjidOS core itself, launched from Advanced. Clearly marked as powerful.
 - **Network info:** show current hostname, `.local` address, and IP (read-only here; changes are made via the installer's "Reconfigure network").
 - **Update channel & "Check for updates"** for the core.
 - **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one.

@@ -1,7 +1,7 @@
 /**
- * An installed-app tile. The card body opens the app detail page; the Open
- * action launches the running app in a new tab; the ⋯ menu has lifecycle
- * controls. Cards are draggable onto the dock to pin them.
+ * An installed-app tile. The whole card launches the app in a new tab (or opens
+ * its detail page when stopped). The ⋮ menu holds the controls. Cards are
+ * draggable onto the dock to pin them.
  */
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
@@ -11,20 +11,29 @@ import {
   MoreVertical,
   ExternalLink,
   Play,
-  Square,
+  Power,
   RotateCw,
   Pin,
   PinOff,
   Trash2,
   ScrollText,
+  SquareTerminal,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore } from '../lib/prefs';
-import { openApp, appInitial } from '../lib/apps';
+import { openApp } from '../lib/apps';
+import { AppIcon } from './AppIcon';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
+import { Terminal } from './Terminal';
 import { staggerItem } from '../lib/motion';
 import type { InstalledApp } from '../lib/types';
+
+const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
+  catalog: { cls: 'tag--official', key: 'tags.official' },
+  community: { cls: 'tag--community', key: 'tags.community' },
+  custom: { cls: 'tag--custom', key: 'tags.custom' },
+};
 
 export function AppCard({ app }: { app: InstalledApp }) {
   const { t } = useTranslation();
@@ -32,10 +41,12 @@ export function AppCard({ app }: { app: InstalledApp }) {
   const utils = trpc.useUtils();
   const { toast } = useToast();
   const prefs = usePrefs();
+  const settings = trpc.settings.get.useQuery();
   const pinned = prefs.pinnedApps.includes(app.id);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [shellOpen, setShellOpen] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -60,9 +71,17 @@ export function AppCard({ app }: { app: InstalledApp }) {
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
 
-  function handleOpen() {
-    if (!openApp(app)) toast(t('appDetail.notFound'), 'error');
+  const tag = TAG[app.kind] ?? TAG.custom;
+
+  function launch() {
+    if (app.running) {
+      if (!openApp(app)) navigate(`/apps/${encodeURIComponent(app.id)}`);
+    } else {
+      navigate(`/apps/${encodeURIComponent(app.id)}`);
+    }
   }
+
+  const close = () => setMenuOpen(false);
 
   return (
     <>
@@ -71,62 +90,57 @@ export function AppCard({ app }: { app: InstalledApp }) {
         variants={staggerItem}
         draggable
         onDragStart={(e) => e.dataTransfer.setData('application/omos-app', app.id)}
-        onClick={() => navigate(`/apps/${encodeURIComponent(app.id)}`)}
+        onClick={launch}
       >
         <div className="app-card__top">
-          <div className="app-icon">
-            {app.icon ? <img src={app.icon} alt="" /> : appInitial(app.name)}
-          </div>
+          <AppIcon app={app} />
           <div style={{ minWidth: 0, flex: 1 }}>
             <div className="app-name">{app.name}</div>
             <div className="app-meta">
               <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
-              {app.running ? t('status.running') : t('status.stopped')}
-              <span className={`tag ${app.kind === 'custom' ? 'tag--custom' : 'tag--official'}`}>
-                {app.kind === 'custom' ? t('tags.custom') : t('tags.official')}
-              </span>
+              <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
             </div>
           </div>
-        </div>
 
-        <div className="app-card__actions" onClick={(e) => e.stopPropagation()}>
-          <button className="btn btn--sm btn--primary" onClick={handleOpen} disabled={!app.running}>
-            <ExternalLink size={15} /> {t('actions.open')}
-          </button>
-
-          <div style={{ position: 'relative', marginInlineStart: 'auto' }} ref={menuRef}>
-            <button
-              className="icon-btn"
-              aria-label={t('actions.options')}
-              onClick={() => setMenuOpen((o) => !o)}
-            >
+          <div style={{ position: 'relative' }} ref={menuRef} onClick={(e) => e.stopPropagation()}>
+            <button className="icon-btn" aria-label={t('actions.options')} onClick={() => setMenuOpen((o) => !o)}>
               <MoreVertical size={18} />
             </button>
             {menuOpen && (
               <div className="menu glass-raised" style={{ position: 'absolute', insetInlineEnd: 0, insetBlockStart: '2.4rem', minWidth: '12rem' }}>
-                <button className="menu-item" onClick={() => { setMenuOpen(false); navigate(`/apps/${encodeURIComponent(app.id)}`); }}>
-                  <ScrollText size={16} /> {t('actions.viewLogs')}
-                </button>
+                {app.running && (
+                  <button className="menu-item" onClick={() => { close(); openApp(app); }}>
+                    <ExternalLink size={16} /> {t('actions.open')}
+                  </button>
+                )}
                 {app.running ? (
                   <>
-                    <button className="menu-item" onClick={() => { setMenuOpen(false); stop.mutate({ id: app.id }); }}>
-                      <Square size={16} /> {t('actions.stop')}
-                    </button>
-                    <button className="menu-item" onClick={() => { setMenuOpen(false); restart.mutate({ id: app.id }); }}>
+                    <button className="menu-item" onClick={() => { close(); restart.mutate({ id: app.id }); }}>
                       <RotateCw size={16} /> {t('actions.restart')}
+                    </button>
+                    <button className="menu-item" onClick={() => { close(); stop.mutate({ id: app.id }); }}>
+                      <Power size={16} /> {t('actions.shutdown')}
                     </button>
                   </>
                 ) : (
-                  <button className="menu-item" onClick={() => { setMenuOpen(false); start.mutate({ id: app.id }); }}>
+                  <button className="menu-item" onClick={() => { close(); start.mutate({ id: app.id }); }}>
                     <Play size={16} /> {t('actions.start')}
                   </button>
                 )}
-                <button className="menu-item" onClick={() => { setMenuOpen(false); prefsStore.togglePin(app.id); }}>
+                {settings.data?.webTerminal && app.running && (
+                  <button className="menu-item" onClick={() => { close(); setShellOpen(true); }}>
+                    <SquareTerminal size={16} /> {t('actions.shell')}
+                  </button>
+                )}
+                <button className="menu-item" onClick={() => { close(); navigate(`/apps/${encodeURIComponent(app.id)}`); }}>
+                  <ScrollText size={16} /> {t('actions.viewLogs')}
+                </button>
+                <button className="menu-item" onClick={() => { close(); prefsStore.togglePin(app.id); }}>
                   {pinned ? <PinOff size={16} /> : <Pin size={16} />}
                   {pinned ? t('actions.unpin') : t('actions.pin')}
                 </button>
                 <div className="menu-sep" />
-                <button className="menu-item" style={{ color: 'var(--color-danger)' }} onClick={() => { setMenuOpen(false); setConfirmOpen(true); }}>
+                <button className="menu-item" style={{ color: 'var(--color-danger)' }} onClick={() => { close(); setConfirmOpen(true); }}>
                   <Trash2 size={16} /> {t('actions.uninstall')}
                 </button>
               </div>
@@ -151,6 +165,10 @@ export function AppCard({ app }: { app: InstalledApp }) {
             {t('appCard.removeConfirm')}
           </button>
         </div>
+      </Modal>
+
+      <Modal open={shellOpen} onClose={() => setShellOpen(false)} wide title={t('settings.appShellTitle', { name: app.name })}>
+        {shellOpen && <Terminal wsPath={`/api/terminal/app/${encodeURIComponent(app.id)}`} />}
       </Modal>
     </>
   );
