@@ -71,11 +71,14 @@
   --color-on-primary: #00131c;
 
   --scene-base: #020912;
-  --aurora-cyan: rgba(34, 211, 238, 0.28);
+  /* Full-screen wallpaper gradient — the actual "wallpaper" you see behind the
+     glass. Per-wallpaper overrides live in the [data-wallpaper] blocks below. */
+  --scene-gradient: linear-gradient(150deg, #0c3a4d 0%, #082230 48%, #020a12 100%);
+  --aurora-cyan: rgba(34, 211, 238, 0.30);
   --aurora-navy: rgba(15, 32, 64, 0.60);
-  --aurora-gold: rgba(245, 158, 11, 0.13);
+  --aurora-gold: rgba(245, 158, 11, 0.14);
   --aurora-blur: 48px;
-  --scene-vignette: rgba(0, 0, 0, 0.55);
+  --scene-vignette: rgba(0, 0, 0, 0.45);
   --pattern-opacity: 0.5;
 
   --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%2322D3EE' stroke-width='0.5' opacity='0.15'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cpolygon points='0,0 4.5,8 11,2 5,13 16,9 9,17 18,16 12,24 0,22'/%3E%3Cpolygon points='60,0 55.5,8 49,2 55,13 44,9 51,17 42,16 48,24 60,22'/%3E%3Cpolygon points='0,60 4.5,52 11,58 5,47 16,51 9,43 18,44 12,36 0,38'/%3E%3Cpolygon points='60,60 55.5,52 49,58 55,47 44,51 51,43 42,44 48,36 60,38'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3Cline x1='0' y1='0' x2='60' y2='60'/%3E%3Cline x1='60' y1='0' x2='0' y2='60'/%3E%3C/g%3E%3C/svg%3E");
@@ -145,9 +148,10 @@
   --color-on-primary: #FFFFFF;
 
   --scene-base: #EAF6FF;
-  --aurora-cyan: rgba(2, 132, 199, 0.12);
+  --scene-gradient: linear-gradient(150deg, #dbeafe 0%, #eef6ff 50%, #f0f9ff 100%);
+  --aurora-cyan: rgba(2, 132, 199, 0.14);
   --aurora-navy: rgba(186, 230, 253, 0.42);
-  --aurora-gold: rgba(217, 119, 6, 0.06);
+  --aurora-gold: rgba(217, 119, 6, 0.07);
   --aurora-blur: 56px;
   --scene-vignette: rgba(2, 40, 70, 0.06);
   --pattern-opacity: 0.4;
@@ -173,50 +177,61 @@
 
 /* Wallpapers — selectable in Settings (applied via data-wallpaper on <html>).
    Tuned vivid so the liquid-glass refraction has rich colour to bend. */
+[data-wallpaper="aurora"] {
+  --scene-gradient: linear-gradient(150deg, #0c3a4d 0%, #082230 48%, #020a12 100%);
+}
 [data-wallpaper="ocean"] {
   --scene-base: #061427;
+  --scene-gradient: linear-gradient(150deg, #0e4f8a 0%, #0a2750 50%, #04101f 100%);
   --aurora-cyan: rgba(56, 189, 248, 0.42);
   --aurora-navy: rgba(37, 99, 235, 0.42);
   --aurora-gold: rgba(45, 212, 191, 0.20);
 }
 [data-wallpaper="twilight"] {
   --scene-base: #0a0618;
+  --scene-gradient: linear-gradient(150deg, #5b2da6 0%, #2a1457 50%, #0a0618 100%);
   --aurora-cyan: rgba(192, 132, 252, 0.42);
   --aurora-navy: rgba(124, 58, 237, 0.40);
   --aurora-gold: rgba(236, 72, 153, 0.22);
 }
 [data-wallpaper="berry"] {
   --scene-base: #1a0518;
+  --scene-gradient: linear-gradient(150deg, #9d2370 0%, #4a1145 50%, #1a0518 100%);
   --aurora-cyan: rgba(244, 114, 182, 0.40);
   --aurora-navy: rgba(162, 28, 175, 0.42);
   --aurora-gold: rgba(251, 113, 133, 0.22);
 }
 [data-wallpaper="sunset"] {
   --scene-base: #190d08;
+  --scene-gradient: linear-gradient(150deg, #b8632a 0%, #7a2a3a 50%, #190d08 100%);
   --aurora-cyan: rgba(251, 191, 36, 0.36);
   --aurora-navy: rgba(244, 63, 94, 0.34);
   --aurora-gold: rgba(251, 146, 60, 0.30);
 }
 [data-wallpaper="ember"] {
   --scene-base: #190806;
+  --scene-gradient: linear-gradient(150deg, #b54a1e 0%, #7a1d1d 50%, #190806 100%);
   --aurora-cyan: rgba(251, 146, 60, 0.40);
   --aurora-navy: rgba(220, 38, 38, 0.40);
   --aurora-gold: rgba(250, 204, 21, 0.24);
 }
 [data-wallpaper="forest"] {
   --scene-base: #04140e;
+  --scene-gradient: linear-gradient(150deg, #1d7a3e 0%, #0f4023 50%, #04140e 100%);
   --aurora-cyan: rgba(74, 222, 128, 0.38);
   --aurora-navy: rgba(21, 128, 61, 0.42);
   --aurora-gold: rgba(132, 204, 22, 0.22);
 }
 [data-wallpaper="night"] {
   --scene-base: #02060f;
+  --scene-gradient: linear-gradient(150deg, #2a4a8a 0%, #16275a 50%, #02060f 100%);
   --aurora-cyan: rgba(96, 165, 250, 0.30);
   --aurora-navy: rgba(30, 58, 138, 0.55);
   --aurora-gold: rgba(99, 102, 241, 0.16);
 }
 [data-wallpaper="graphite"] {
   --scene-base: #0b0f17;
+  --scene-gradient: linear-gradient(150deg, #3a4757 0%, #232c39 50%, #0b0f17 100%);
   --aurora-cyan: rgba(148, 163, 184, 0.20);
   --aurora-navy: rgba(51, 65, 85, 0.50);
   --aurora-gold: rgba(203, 213, 225, 0.10);

@@ -5,6 +5,7 @@ import { trpc } from './lib/trpc';
 import { makeTrpcClient } from './lib/trpcClient';
 import { SceneBackground } from './components/SceneBackground';
 import { ToastProvider } from './components/ToastProvider';
+import { WindowsProvider } from './components/Windows';
 import { Root } from './Root';
 
 export function App() {
@@ -21,9 +22,11 @@ export function App() {
       <QueryClientProvider client={queryClient}>
         <SceneBackground />
         <ToastProvider>
-          <BrowserRouter>
-            <Root />
-          </BrowserRouter>
+          <WindowsProvider>
+            <BrowserRouter>
+              <Root />
+            </BrowserRouter>
+          </WindowsProvider>
         </ToastProvider>
       </QueryClientProvider>
     </trpc.Provider>

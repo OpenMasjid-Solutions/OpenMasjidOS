@@ -50,19 +50,27 @@ button {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background: var(--scene-base);
+  background: var(--scene-gradient);
   overflow: hidden;
 }
 .scene::before {
-  /* Aurora — static, soft, no perpetual repaint (perf). */
+  /* Aurora light pools that slowly drift. The animation is transform-only
+     (compositor-cheap) and is disabled under prefers-reduced-motion. */
   content: "";
   position: absolute;
-  inset: -20%;
+  inset: -30%;
   background:
     radial-gradient(40% 50% at 20% 25%, var(--aurora-cyan), transparent 70%),
     radial-gradient(45% 55% at 80% 20%, var(--aurora-navy), transparent 70%),
     radial-gradient(50% 50% at 60% 85%, var(--aurora-gold), transparent 75%);
   filter: blur(var(--aurora-blur));
+  will-change: transform;
+  animation: auroraDrift 32s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(2.5%, -2%, 0) scale(1.08) rotate(1.2deg); }
+  100% { transform: translate3d(-2%, 2.5%, 0) scale(1.04) rotate(-1deg); }
 }
 .scene::after {
   /* Geometric khatam pattern + vignette. */
@@ -482,8 +490,59 @@ button {
   overflow: auto;
   padding: 1.5rem;
 }
-.modal-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.4rem; }
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-block-end: 0.85rem;
+}
+.modal-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 .modal-body { color: var(--color-ink-muted); }
+
+/* macOS-style traffic lights */
+.traffic { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
+.tl {
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.25);
+  transition: filter var(--dur-micro) ease, transform var(--dur-micro) var(--ease-settle);
+}
+.tl:hover { filter: brightness(1.18); transform: scale(1.12); }
+.tl-close { background: #FF5F57; }
+.tl-min { background: #FEBC2E; }
+.tl-full { background: #28C840; }
+
+/* Minimized-window tray (sits above the dock) */
+.min-tray {
+  position: fixed;
+  inset-block-end: 5.5rem;
+  inset-inline: 0;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-inline: 1rem;
+  z-index: 90;
+  pointer-events: none;
+}
+.min-chip {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  border: 0;
+  border-radius: 999px;
+  color: var(--color-ink);
+  max-width: 14rem;
+  font-weight: 600;
+}
+.min-chip-dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--color-warning); flex-shrink: 0; }
+.min-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */
 .toast-wrap {
