@@ -5,7 +5,9 @@
  * present for HTTP, where a Fastify reply exists.
  */
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
+import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';
+import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -18,6 +20,8 @@ const COOKIE_OPTS = {
 export interface Context {
   username: string | null;
   sessionToken: string | null;
+  /** Client IP, used for per-source login throttling. */
+  ip: string;
   setSessionCookie?: (token: string) => void;
   clearSessionCookie?: () => void;
 }
@@ -35,6 +39,11 @@ function parseCookie(header: string | undefined, name: string): string | null {
 }
 
 export function createContext({ req, res }: CreateFastifyContextOptions): Context {
+  // Reject cross-origin WebSocket upgrades (CSWSH) before doing anything else.
+  if (isWebSocketUpgrade(req) && !isAllowedWsOrigin(req)) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Bad origin.' });
+  }
+
   const token =
     (req.cookies && req.cookies[COOKIE_NAME]) ?? parseCookie(req.headers?.cookie, COOKIE_NAME);
   const username = getSessionUser(token);
@@ -43,6 +52,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   return {
     username,
     sessionToken: token ?? null,
+    ip: req.ip,
     setSessionCookie: canMutateCookies ? (t: string) => res.setCookie(COOKIE_NAME, t, COOKIE_OPTS) : undefined,
     clearSessionCookie: canMutateCookies ? () => res.clearCookie(COOKIE_NAME, { path: '/' }) : undefined,
   };

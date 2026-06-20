@@ -22,7 +22,16 @@ import { discoverApps } from '../docker/discovery';
 import type { AppMeta, InstalledApp, CatalogApp } from './types';
 
 const projectOf = (id: string) => `omos-${id}`;
-const appDir = (id: string) => path.join(APPS_DIR, id);
+
+// Defense-in-depth: ids are already validated at every API/catalog boundary,
+// but never let a path escape APPS_DIR even if a bad id slips through.
+const appDir = (id: string) => {
+  const dir = path.join(APPS_DIR, id);
+  if (dir !== APPS_DIR && !dir.startsWith(APPS_DIR + path.sep)) {
+    throw new Error(`Refusing to use an app path outside the apps directory: ${id}`);
+  }
+  return dir;
+};
 const composePath = (id: string) => path.join(appDir(id), 'compose.yml');
 const envPath = (id: string) => path.join(appDir(id), '.env');
 const metaPath = (id: string) => path.join(appDir(id), 'meta.json');

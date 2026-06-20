@@ -16,17 +16,62 @@ export interface ComposeCheck {
   services: string[];
 }
 
-const SENSITIVE_HOST_PATHS = [
-  '/',
+// Sensitive host directories. We flag a bind mount whose source equals OR is
+// UNDER any of these (ancestor match), so e.g. /etc/cron.d and /root/.ssh are
+// caught — not just the exact roots (the old exact-match was trivially bypassed).
+const SENSITIVE_ROOTS = [
   '/etc',
   '/root',
   '/home',
-  '/var/run',
-  '/var/run/docker.sock',
+  '/var',
+  '/run',
   '/proc',
   '/sys',
+  '/dev',
   '/boot',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/lib',
+  '/lib64',
 ];
+
+/** Pull the host-side source from a string or long-form volume entry, or null
+ *  for named volumes / anonymous volumes / tmpfs (which aren't host binds). */
+function bindSource(v: unknown): string | null {
+  if (typeof v === 'string') {
+    if (!v.includes(':')) return null; // anonymous volume (container path), not a host bind
+    return v.split(':')[0];
+  }
+  if (v && typeof v === 'object') {
+    const obj = v as { type?: string; source?: string };
+    if (obj.type && obj.type !== 'bind') return null; // volume/tmpfs/npipe
+    return obj.source ?? null;
+  }
+  return null;
+}
+
+function checkVolume(name: string, v: unknown, dangers: string[]): void {
+  const raw = bindSource(v);
+  if (!raw) return;
+  const norm = String(raw).trim().replace(/\/+$/, '') || '/';
+  if (!norm.startsWith('/')) return; // relative path / named volume
+
+  if (norm.endsWith('docker.sock') || norm === '/var/run/docker.sock') {
+    dangers.push(`"${name}" mounts the Docker socket — that grants control of every container on the machine.`);
+    return;
+  }
+  if (norm === '/') {
+    dangers.push(`"${name}" mounts the entire host filesystem.`);
+    return;
+  }
+  for (const root of SENSITIVE_ROOTS) {
+    if (norm === root || norm.startsWith(root + '/')) {
+      dangers.push(`"${name}" mounts a sensitive host path: ${norm}`);
+      return;
+    }
+  }
+}
 
 export function checkCompose(text: string): ComposeCheck {
   let doc: unknown;
@@ -61,23 +106,25 @@ export function checkCompose(text: string): ComposeCheck {
     if (svc.pid === 'host') {
       dangers.push(`"${name}" shares the host process space.`);
     }
-    const caps = svc.cap_add;
-    if (Array.isArray(caps) && caps.map(String).some((c) => c.toUpperCase() === 'SYS_ADMIN')) {
-      dangers.push(`"${name}" requests the powerful SYS_ADMIN capability.`);
+    if (svc.ipc === 'host') {
+      dangers.push(`"${name}" shares the host IPC namespace.`);
     }
-    const volumes = svc.volumes;
-    if (Array.isArray(volumes)) {
-      for (const v of volumes) {
-        const src = typeof v === 'string' ? v.split(':')[0] : (v as { source?: string })?.source;
-        if (!src) continue;
-        const norm = src.trim();
-        if (SENSITIVE_HOST_PATHS.includes(norm)) {
-          dangers.push(`"${name}" mounts a sensitive host path: ${norm}`);
-        }
-        if (norm.endsWith('docker.sock')) {
-          dangers.push(`"${name}" mounts the Docker socket (can control all containers).`);
-        }
-      }
+    if (svc.userns_mode === 'host') {
+      dangers.push(`"${name}" disables user-namespace isolation (userns_mode: host).`);
+    }
+    const caps = svc.cap_add;
+    if (Array.isArray(caps) && caps.length > 0) {
+      dangers.push(`"${name}" adds extra Linux capabilities: ${caps.map(String).join(', ')}.`);
+    }
+    if (Array.isArray(svc.devices) && svc.devices.length > 0) {
+      dangers.push(`"${name}" passes host devices into the container.`);
+    }
+    const secopt = svc.security_opt;
+    if (Array.isArray(secopt) && secopt.map(String).some((s) => /unconfined/i.test(s))) {
+      dangers.push(`"${name}" weakens kernel sandboxing (security_opt: unconfined).`);
+    }
+    if (Array.isArray(svc.volumes)) {
+      for (const v of svc.volumes) checkVolume(name, v, dangers);
     }
   }
 

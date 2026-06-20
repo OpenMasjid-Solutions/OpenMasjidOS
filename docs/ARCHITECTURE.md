@@ -77,6 +77,42 @@ labels it "coming soon").
 - Data dir **/opt/openmasjid** → mounted at `/data`. Config in `/data/config`,
   per-app state in `/data/apps/<id>/`.
 
+## Security posture
+
+Trust model: one trusted admin behind a login; everything is same-origin. Notes
+from the security audit (and the hardening applied):
+
+- **App ids are strictly validated** (`^[a-z0-9][a-z0-9-]*$`) wherever they
+  become a filesystem segment or compose project name — at the API schemas, at
+  catalog ingestion (untrusted external data), and defensively in the apps
+  manager (a path that would escape `APPS_DIR` throws). Prevents traversal via a
+  crafted/poisoned id.
+- **WebSocket Origin is validated** on the terminal endpoints and the tRPC WS in
+  production. SameSite=Strict alone is insufficient because the cookie is
+  non-Secure on plain-HTTP LAN and the browser "site" excludes the port (an app
+  on another port of the same host would otherwise be same-site). Set
+  `OPENMASJID_ALLOWED_ORIGINS` for reverse-proxy/HTTPS setups.
+- **Compose risk-checks use ancestor matching** (not exact match): any bind under
+  a sensitive root, the Docker socket, added capabilities, devices, host
+  namespaces, and unconfined security opts are flagged and require an explicit
+  acknowledgement before a custom/community app installs.
+- **Community repo fetches are bounded**: SSRF guard (DNS-resolved private-range
+  blocking, manual+revalidated redirects, http(s) only), a streamed download cap,
+  a timeout, and filtered decompression — so a zip/decompression bomb can't OOM
+  the root core.
+- **Login is throttled per source IP** with escalating backoff (a flood from one
+  IP can't lock out the admin), and password verification runs in uniform time.
+- The root daemon installs `uncaughtException`/`unhandledRejection` guards and
+  the terminal bridge handles stream errors, so a single failure can't crash the
+  control plane.
+- Supply chain: a CI `audit` job resolves the tree and fails on high/critical
+  advisories. The fuller fix is a committed lockfile + `npm ci` (run `npm
+  install` once on a Node machine and commit `package-lock.json`).
+
+Accepted tradeoffs (documented, not bugs): plain-HTTP on the LAN (no Secure
+cookie), and the core running as root with the Docker socket mounted (the
+standard single-host control-plane model, same as CasaOS/Umbrel/Portainer).
+
 ## Version
 `VERSION` at the repo root is the single source of truth. The Docker build copies
 it to `/app/VERSION`; the daemon reads it (`OPENMASJID_VERSION_FILE`). Shown in

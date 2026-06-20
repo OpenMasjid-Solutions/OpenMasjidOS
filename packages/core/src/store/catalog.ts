@@ -6,6 +6,7 @@
  */
 import { CATALOG_URL } from '../config';
 import { log } from '../logger';
+import { isValidAppId } from '../util/id';
 import type { CatalogApp } from '../apps/types';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -17,7 +18,10 @@ export async function fetchCatalog(force = false): Promise<CatalogApp[]> {
     return cache.apps;
   }
   try {
-    const res = await fetch(CATALOG_URL, { headers: { accept: 'application/json' } });
+    const res = await fetch(CATALOG_URL, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!res.ok) throw new Error(`catalog HTTP ${res.status}`);
     const data = (await res.json()) as unknown;
     const apps = normalise(data);
@@ -38,7 +42,12 @@ function normalise(data: unknown): CatalogApp[] {
       : [];
   return arr.filter(
     (a): a is CatalogApp =>
-      typeof a === 'object' && a !== null && typeof (a as CatalogApp).id === 'string',
+      typeof a === 'object' &&
+      a !== null &&
+      typeof (a as CatalogApp).id === 'string' &&
+      // The catalog is untrusted external data — drop any entry whose id could
+      // escape the apps dir when used as a path segment (security audit).
+      isValidAppId((a as CatalogApp).id),
   );
 }
 

@@ -29,6 +29,11 @@ async function main() {
   ensureDir(CONFIG_DIR);
   ensureDir(APPS_DIR);
 
+  // Defense-in-depth: the core runs as root and is the single control plane —
+  // a stray async error (e.g. a hijacked terminal stream) must never crash it.
+  process.on('uncaughtException', (err) => log.error('Uncaught exception (continuing).', err));
+  process.on('unhandledRejection', (err) => log.error('Unhandled rejection (continuing).', err));
+
   const server = Fastify({ maxParamLength: 5000, bodyLimit: 25 * 1024 * 1024 });
 
   await server.register(fastifyCookie);

@@ -12,6 +12,23 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/openmasjid-core
 
 jobs:
+  # Supply-chain signal: resolve the dependency tree and fail on known high/
+  # critical advisories. (A committed lockfile + `npm ci` is the fuller fix —
+  # run `npm install` once on a Node machine and commit package-lock.json.)
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Resolve lockfile
+        run: npm install --package-lock-only
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
   build:
     runs-on: ubuntu-latest
     permissions:

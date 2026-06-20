@@ -59,7 +59,10 @@ function isNewer(a: string, b: string): boolean {
 export async function checkForUpdate(): Promise<UpdateInfo> {
   let latest: string | null = null;
   try {
-    const res = await fetch(VERSION_CHECK_URL, { headers: { accept: 'text/plain' } });
+    const res = await fetch(VERSION_CHECK_URL, {
+      headers: { accept: 'text/plain' },
+      signal: AbortSignal.timeout(10_000),
+    });
     if (res.ok) {
       const raw = (await res.text()).trim();
       if (/^\d+\.\d+\.\d+/.test(raw)) latest = raw;

@@ -20,11 +20,33 @@ import {
   destroyAllSessions,
 } from '../../auth/sessions';
 
-// Very small in-memory login throttle: after repeated failures, brief cooldown.
+// Per-source login throttle. Keyed by client IP so a flood from one source can
+// never lock out the legitimate admin (the previous global counter could).
+// Backoff escalates with repeated failures and resets on success.
 const MAX_ATTEMPTS = 5;
-const COOLDOWN_MS = 30_000;
-let failures = 0;
-let cooldownUntil = 0;
+const BASE_COOLDOWN_MS = 30_000;
+interface Attempt {
+  failures: number;
+  cooldownUntil: number;
+}
+const attempts = new Map<string, Attempt>();
+
+function getAttempt(ip: string): Attempt {
+  let a = attempts.get(ip);
+  if (!a) {
+    a = { failures: 0, cooldownUntil: 0 };
+    attempts.set(ip, a);
+  }
+  return a;
+}
+
+function pruneAttempts(): void {
+  if (attempts.size < 2000) return;
+  const now = Date.now();
+  for (const [ip, a] of attempts) {
+    if (a.failures === 0 && a.cooldownUntil < now) attempts.delete(ip);
+  }
+}
 
 const credentials = z.object({
   username: z.string().trim().min(1, 'Please enter a username.').max(64),
@@ -58,23 +80,28 @@ export const authRouter = router({
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      if (Date.now() < cooldownUntil) {
+      const attempt = getAttempt(ctx.ip);
+      if (Date.now() < attempt.cooldownUntil) {
         throw new TRPCError({
           code: 'TOO_MANY_REQUESTS',
           message: 'Too many attempts. Please wait a moment and try again.',
         });
       }
       const okUser = input.username === getUsername();
-      const okPass = okUser && (await verifyPassword(getPasswordHash() ?? '', input.password));
+      // Always run argon2 verify (even for a wrong username) so response timing
+      // doesn't reveal whether the username is correct.
+      const okPass = await verifyPassword(getPasswordHash() ?? '', input.password);
       if (!okUser || !okPass) {
-        failures += 1;
-        if (failures >= MAX_ATTEMPTS) {
-          cooldownUntil = Date.now() + COOLDOWN_MS;
-          failures = 0;
+        attempt.failures += 1;
+        if (attempt.failures >= MAX_ATTEMPTS) {
+          const steps = Math.min(8, attempt.failures - MAX_ATTEMPTS + 1);
+          attempt.cooldownUntil = Date.now() + BASE_COOLDOWN_MS * steps;
         }
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
-      failures = 0;
+      attempt.failures = 0;
+      attempt.cooldownUntil = 0;
+      pruneAttempts();
       const token = createSession(input.username);
       ctx.setSessionCookie?.(token);
       return { authenticated: true, username: input.username };
