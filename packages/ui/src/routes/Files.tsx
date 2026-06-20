@@ -119,8 +119,8 @@ export function Files() {
               <li key={entry.name} className="file-row">
                 <button
                   className="file-main"
+                  type="button"
                   onClick={() => entry.isDir && setPath(joinPath(path, entry.name))}
-                  disabled={!entry.isDir}
                   style={{ cursor: entry.isDir ? 'pointer' : 'default' }}
                 >
                   <span className="file-icon">
