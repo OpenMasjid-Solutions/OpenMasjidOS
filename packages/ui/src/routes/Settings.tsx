@@ -9,7 +9,7 @@ import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
 import { Page } from '../components/Page';
-import { Terminal } from '../components/Terminal';
+import { LazyTerminal } from '../components/LazyTerminal';
 import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
@@ -68,7 +68,7 @@ export function Settings() {
       dedupeKey: 'root-terminal',
       wide: true,
       icon: <SquareTerminal size={15} />,
-      node: <Terminal wsPath="/api/terminal/root" />,
+      node: <LazyTerminal wsPath="/api/terminal/root" />,
     });
   }
 

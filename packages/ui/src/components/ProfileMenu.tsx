@@ -17,6 +17,7 @@ export function ProfileMenu({ onSignedOut }: { onSignedOut: () => void }) {
 
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
   const logout = trpc.auth.logout.useMutation({ onSettled: onSignedOut });
+  const sysInfo = trpc.system.info.useQuery();
 
   useEffect(() => {
     if (!open) return;
@@ -48,6 +49,9 @@ export function ProfileMenu({ onSignedOut }: { onSignedOut: () => void }) {
           <button className="menu-item" onClick={() => logout.mutate()}>
             <LogOut size={16} /> {t('profile.signOut')}
           </button>
+          {sysInfo.data?.version && (
+            <div className="menu-version">OpenMasjidOS v{sysInfo.data.version}</div>
+          )}
         </div>
       )}
     </div>

@@ -1,15 +1,22 @@
 /**
- * Apple-style pointer reactivity: a soft light that follows the cursor across
- * glass surfaces. We set --mx/--my (the cursor position within the hovered
- * pane) and the glass background's radial-gradient renders the highlight there.
+ * Apple-style pointer reactivity: light refracting through the glass as the
+ * cursor moves over it. We set --mx/--my (the cursor position within the hovered
+ * pane) and the glass background renders the refraction there (see glass.css).
  *
- * One delegated pointermove listener, rAF-throttled, so it's cheap regardless
- * of how many cards are on screen. Resets the previous pane when the cursor
- * leaves it. Disabled for users who prefer reduced motion.
+ * System-wide: it applies to EVERY glass surface (.glass / .glass-raised /
+ * .glass-dock). One delegated pointermove listener, rAF-throttled, so cost is a
+ * single element repaint per frame regardless of how many panes are on screen.
+ * Resets the previous pane when the cursor leaves it. Off under reduced motion.
  */
+const GLASS_SELECTOR = '.glass, .glass-raised, .glass-dock';
+
+let installed = false;
+
 export function installCursorFx(): void {
   if (typeof window === 'undefined') return;
+  if (installed) return; // idempotent — never stack duplicate listeners
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  installed = true;
 
   let last: HTMLElement | null = null;
   let target: HTMLElement | null = null;
@@ -28,9 +35,9 @@ export function installCursorFx(): void {
   window.addEventListener(
     'pointermove',
     (e) => {
-      // Only small interactive cards opt in (via .fx-glint), so big panels and
-      // list containers don't show a stray halo.
-      const el = (e.target as Element | null)?.closest?.('.fx-glint') as HTMLElement | null;
+      // Highlight the nearest glass pane under the cursor. closest() returns the
+      // innermost match, so a glass card inside a glass panel lights up the card.
+      const el = (e.target as Element | null)?.closest?.(GLASS_SELECTOR) as HTMLElement | null;
       if (el !== last) {
         if (last) {
           last.style.removeProperty('--mx');

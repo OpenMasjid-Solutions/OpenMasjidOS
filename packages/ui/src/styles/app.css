@@ -193,20 +193,23 @@ button {
 .clock-widget {
   display: flex;
   flex-direction: column;
-  line-height: 1.1;
-  padding: 0.45rem 0.85rem;
-  border-radius: var(--radius-button);
+  justify-content: center;
+  line-height: 1.15;
+  padding: 0.6rem 1.3rem;
+  min-width: 10.5rem;
+  border-radius: var(--radius-card);
 }
 .clock-time {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 1.15rem;
+  font-size: 1.7rem;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
 .clock-date {
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   color: var(--color-ink-muted);
+  margin-block-start: 0.1rem;
 }
 .profile-btn {
   width: 2.6rem;
@@ -246,6 +249,13 @@ button {
 .menu-item svg { flex-shrink: 0; }
 .menu-item:hover { background: var(--color-surface-hover); }
 .menu-sep { height: 1px; background: var(--color-border); margin: 0.3rem 0; }
+.menu-version {
+  padding: 0.4rem 0.6rem 0.2rem;
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── Stat cards ─────────────────────────────────────────────────────────── */
 .stat-strip {

@@ -90,7 +90,22 @@ async function main() {
   // not exist — guard the registration so the daemon still boots.
   const haveUI = fs.existsSync(UI_DIR);
   if (haveUI) {
-    await server.register(fastifyStatic, { root: UI_DIR, prefix: '/', wildcard: false });
+    await server.register(fastifyStatic, {
+      root: UI_DIR,
+      prefix: '/',
+      wildcard: false,
+      cacheControl: false,
+      // Vite fingerprints everything under /assets/ — cache those forever so
+      // repeat visits are instant. index.html must always revalidate so a new
+      // build is picked up immediately.
+      setHeaders: (res, filePath) => {
+        if (/[\\/]assets[\\/]/.test(filePath)) {
+          res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('cache-control', 'no-cache');
+        }
+      },
+    });
   } else {
     log.warn(`UI build not found at ${UI_DIR} — serving API only (run the UI dev server).`);
   }

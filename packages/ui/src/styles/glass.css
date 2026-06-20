@@ -3,14 +3,19 @@
  * Tailwind so these classes win ties. Every value is token-driven (tokens.css).
  */
 
+/*
+ * Cursor refraction: light caught in the glass as the pointer moves over it
+ * (--mx/--my set per-surface in cursorFx.ts, system-wide on every glass pane).
+ * It's not a flat circle — a tight VERTICAL specular streak (elliptical) sits
+ * over a broad soft sheen, so it reads like light bending through the pane
+ * rather than a spotlight. Painted below content, so text never washes out.
+ */
 .glass {
   position: relative;
   border-radius: var(--radius-card);
-  /* Top layer: a soft light that follows the cursor (set via --mx/--my in
-     cursorFx.ts) — the "refraction reacts to the pointer". Backgrounds always
-     paint below content, so it never washes out text. Then the brand tint. */
   background-image:
-    radial-gradient(14rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
+    radial-gradient(6rem 11rem at var(--mx, -200%) var(--my, -200%), var(--glint-strong), transparent 66%),
+    radial-gradient(20rem 16rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
     linear-gradient(var(--glass-tint), var(--glass-tint));
   background-color: var(--glass-bg);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -22,7 +27,8 @@
   position: relative;
   border-radius: var(--radius-card);
   background-image:
-    radial-gradient(14rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
+    radial-gradient(6rem 11rem at var(--mx, -200%) var(--my, -200%), var(--glint-strong), transparent 66%),
+    radial-gradient(20rem 16rem at var(--mx, -200%) var(--my, -200%), var(--glint), transparent 60%),
     linear-gradient(var(--glass-tint), var(--glass-tint));
   background-color: var(--glass-bg-raised);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));

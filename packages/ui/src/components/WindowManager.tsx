@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { useTranslation } from 'react-i18next';
 import { X, Minus, Maximize2 } from 'lucide-react';
 import { useWindows, type WindowState } from './Windows';
+import { ErrorBoundary } from './ErrorBoundary';
 
 export function WindowManager() {
   const { windows, close } = useWindows();
@@ -105,7 +106,9 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
             <span>{win.title}</span>
           </h2>
         </header>
-        <div className="win-body">{win.node}</div>
+        <div className="win-body">
+          <ErrorBoundary>{win.node}</ErrorBoundary>
+        </div>
       </div>
     </div>
   );

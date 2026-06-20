@@ -25,7 +25,7 @@ import { openApp } from '../lib/apps';
 import { AppIcon } from './AppIcon';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
-import { Terminal } from './Terminal';
+import { LazyTerminal } from './LazyTerminal';
 import { AppLogs } from './AppLogs';
 import { useWindows } from './Windows';
 import { staggerItem } from '../lib/motion';
@@ -58,7 +58,7 @@ export function AppCard({ app }: { app: InstalledApp }) {
       dedupeKey: `shell:${app.id}`,
       wide: true,
       icon: <SquareTerminal size={15} />,
-      node: <Terminal wsPath={`/api/terminal/app/${encodeURIComponent(app.id)}`} />,
+      node: <LazyTerminal wsPath={`/api/terminal/app/${encodeURIComponent(app.id)}`} />,
     });
   }
 
