@@ -32,7 +32,13 @@ export interface StatsSnapshot {
   appsRunning: number;
 }
 
-/** Read MemTotal/MemAvailable from a mounted host /proc/meminfo. */
+/**
+ * Read memory from a mounted host /proc/meminfo. We report used = MemTotal −
+ * MemFree, which equals the cgroup's memory.current under lxcfs and matches what
+ * Proxmox/`free` show for a container (page cache counts as used). Using
+ * MemAvailable instead would subtract reclaimable cache and badly under-report
+ * (e.g. 65 MB when the box is really using ~940 MB).
+ */
 function readHostMeminfo(): { total: number; used: number } | null {
   try {
     const txt = fs.readFileSync(`${HOST_PROC}/meminfo`, 'utf8');
@@ -42,10 +48,47 @@ function readHostMeminfo(): { total: number; used: number } | null {
     };
     const total = kb('MemTotal');
     if (!total) return null;
-    const avail = kb('MemAvailable');
-    if (avail != null) return { total, used: Math.max(0, total - avail) };
-    const free = kb('MemFree') ?? 0;
-    return { total, used: Math.max(0, total - free) };
+    const free = kb('MemFree');
+    if (free != null) return { total, used: Math.max(0, total - free) };
+    const avail = kb('MemAvailable') ?? 0;
+    return { total, used: Math.max(0, total - avail) };
+  } catch {
+    return null;
+  }
+}
+
+// CPU% is derived from successive /proc/stat readings (the jiffies delta between
+// two collections), so it reflects the machine/LXC, not the core container.
+let prevCpu: { total: number; idle: number } | null = null;
+function readHostCpuPercent(): number | null {
+  try {
+    const txt = fs.readFileSync(`${HOST_PROC}/stat`, 'utf8');
+    const line = txt.split('\n').find((l) => l.startsWith('cpu '));
+    if (!line) return null;
+    const nums = line.trim().split(/\s+/).slice(1).map((n) => Number.parseInt(n, 10));
+    if (nums.length < 4 || nums.some((n) => !Number.isFinite(n))) return null;
+    const idle = (nums[3] ?? 0) + (nums[4] ?? 0); // idle + iowait
+    const total = nums.reduce((a, b) => a + b, 0);
+    const prev = prevCpu;
+    prevCpu = { total, idle };
+    if (!prev) return null; // need a baseline first
+    const dt = total - prev.total;
+    const di = idle - prev.idle;
+    if (dt <= 0) return null;
+    return Math.max(0, Math.min(100, Math.round(((dt - di) / dt) * 100)));
+  } catch {
+    return null;
+  }
+}
+
+/** Machine/LXC uptime from the mounted host /proc/uptime (os.uptime() would
+ *  report the bare host kernel's uptime, not the container's). */
+function readHostUptime(): number | null {
+  try {
+    const secs = Number.parseFloat(
+      fs.readFileSync(`${HOST_PROC}/uptime`, 'utf8').trim().split(/\s+/)[0],
+    );
+    return Number.isFinite(secs) ? Math.round(secs) : null;
   } catch {
     return null;
   }
@@ -142,8 +185,13 @@ export async function collectStats(): Promise<StatsSnapshot> {
   const tempMain = temp?.main;
   const cpuTempC = typeof tempMain === 'number' && tempMain > 0 ? Math.round(tempMain) : null;
 
+  // Prefer the host /proc/stat delta; fall back to systeminformation's figure.
+  const hostCpu = readHostCpuPercent();
+  const cpuPercent =
+    hostCpu ?? (load ? Math.max(0, Math.min(100, Math.round(load.currentLoad))) : 0);
+
   return {
-    cpuPercent: load ? Math.max(0, Math.min(100, Math.round(load.currentLoad))) : 0,
+    cpuPercent,
     cpuCores: cpu.cores,
     cpuSpeedGHz: cpu.speedGHz,
     memUsed: memory.used,
@@ -151,7 +199,7 @@ export async function collectStats(): Promise<StatsSnapshot> {
     diskUsed: disk.used,
     diskTotal: disk.total,
     cpuTempC,
-    uptimeSec: Math.round(si.time().uptime ?? 0),
+    uptimeSec: readHostUptime() ?? Math.round(si.time().uptime ?? 0),
     appsRunning,
   };
 }

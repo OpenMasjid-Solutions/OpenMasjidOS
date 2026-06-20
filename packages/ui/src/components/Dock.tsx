@@ -1,13 +1,19 @@
 /**
  * The floating bottom dock (umbrelOS-style, our own implementation). Primary
  * nav + pinned apps + open/minimized windows. Drag an app card here to pin it;
- * drag pinned apps to push them around and reorder (Motion Reorder); hover any
- * item for its name, or a live window's preview. The dock lives in AppShell, so
- * it (and minimized windows) persist across every route.
+ * drag pinned apps to push them around and reorder; hover any item for its name,
+ * or a live window's preview. The dock lives in AppShell, so it (and minimized
+ * windows) persist across every route.
+ *
+ * Reorder uses native HTML5 drag (reliable + works through the dock's transform)
+ * for the interaction, and a Motion `layout` wrapper per item for the smooth
+ * "push around" slide. We deliberately do NOT use Motion's <Reorder>: on motion
+ * components `onDragStart`/`onDragEnd` are Framer's own gesture callbacks, which
+ * fought the click-to-open + native drag and broke reordering.
  */
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Reorder } from 'motion/react';
+import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Store as StoreIcon, Settings as SettingsIcon, FolderOpen, AppWindow } from 'lucide-react';
 import { trpc } from '../lib/trpc';
@@ -18,19 +24,39 @@ import { openApp, appInitial } from '../lib/apps';
 import { MasjidMark } from './Glyphs';
 
 const APP_MIME = 'application/omos-app';
+const reorderSpring = { type: 'spring' as const, stiffness: 600, damping: 38 };
+
+function sameOrder(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
 
 export function Dock() {
   const { t } = useTranslation();
   const prefs = usePrefs();
   const { windows, restore } = useWindows();
   const [dropHint, setDropHint] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
   const apps = appsQuery.data ?? [];
 
   const pinnedApps = prefs.pinnedApps
     .map((id) => apps.find((a) => a.id === id))
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
-  const pinnedIds = pinnedApps.map((a) => a.id);
+
+  // Move `srcId` to before/after `targetId` in the persisted pin order. The
+  // midpoint rule + no-op guard keep it stable (no oscillation while hovering).
+  function reorderPins(srcId: string, targetId: string, after: boolean) {
+    if (srcId === targetId) return;
+    const order = [...prefs.pinnedApps];
+    const from = order.indexOf(srcId);
+    if (from === -1) return;
+    order.splice(from, 1);
+    let to = order.indexOf(targetId);
+    if (to === -1) return;
+    if (after) to += 1;
+    order.splice(to, 0, srcId);
+    if (!sameOrder(order, prefs.pinnedApps)) prefsStore.setPins(order);
+  }
 
   return (
     <nav
@@ -58,42 +84,45 @@ export function Dock() {
 
       {pinnedApps.length > 0 && <span className="dock-divider" aria-hidden="true" />}
 
-      {pinnedApps.length > 0 && (
-        <Reorder.Group
-          as="div"
-          axis="x"
-          className="dock-reorder"
-          values={pinnedIds}
-          onReorder={(ids) => {
-            // Preserve any pinned ids that aren't currently visible (e.g. an app
-            // whose list entry is mid-refetch) instead of dropping them.
-            const visible = new Set(pinnedIds);
-            const hidden = prefs.pinnedApps.filter((id) => !visible.has(id));
-            prefsStore.setPins([...(ids as string[]), ...hidden]);
-          }}
-        >
-          {pinnedApps.map((app) => (
-            <Reorder.Item
-              key={app.id}
-              value={app.id}
-              as="button"
-              className="dock-item"
-              aria-label={app.name}
-              whileDrag={{ scale: 1.12, zIndex: 20 }}
-              onClick={() => openApp(app)}
-            >
-              {app.icon ? (
-                <span className="app-initial" style={{ background: 'transparent' }}>
-                  <img src={app.icon} alt="" style={{ width: '100%', height: '100%', borderRadius: '0.85rem', objectFit: 'cover' }} />
-                </span>
-              ) : (
-                <span className="app-initial">{appInitial(app.name)}</span>
-              )}
-              <span className="dock-pop"><span className="dock-tip glass-raised">{app.name}</span></span>
-            </Reorder.Item>
-          ))}
-        </Reorder.Group>
-      )}
+      {pinnedApps.map((app) => (
+        <motion.div key={app.id} layout transition={reorderSpring} className="dock-pin">
+          <button
+            className={cn('dock-item', dragId === app.id && 'dock-item--dragging')}
+            aria-label={app.name}
+            draggable
+            onDragStart={(e) => {
+              setDragId(app.id);
+              e.dataTransfer.effectAllowed = 'move';
+              try {
+                e.dataTransfer.setData('text/plain', app.id);
+              } catch {
+                /* some browsers require data to be set */
+              }
+            }}
+            onDragOver={(e) => {
+              if (!dragId || dragId === app.id) return;
+              e.preventDefault();
+              const r = e.currentTarget.getBoundingClientRect();
+              reorderPins(dragId, app.id, e.clientX > r.left + r.width / 2);
+            }}
+            onDragEnd={() => setDragId(null)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragId(null);
+            }}
+            onClick={() => openApp(app)}
+          >
+            {app.icon ? (
+              <span className="app-initial" style={{ background: 'transparent' }}>
+                <img src={app.icon} alt="" style={{ width: '100%', height: '100%', borderRadius: '0.85rem', objectFit: 'cover' }} />
+              </span>
+            ) : (
+              <span className="app-initial">{appInitial(app.name)}</span>
+            )}
+            <span className="dock-pop"><span className="dock-tip glass-raised">{app.name}</span></span>
+          </button>
+        </motion.div>
+      ))}
 
       {windows.length > 0 && <span className="dock-divider" aria-hidden="true" />}
 

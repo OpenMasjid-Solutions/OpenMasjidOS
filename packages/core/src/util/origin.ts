@@ -20,7 +20,13 @@ const EXTRA_ORIGINS = (process.env.OPENMASJID_ALLOWED_ORIGINS ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 
-export function isAllowedWsOrigin(req: FastifyRequest): boolean {
+/**
+ * True when the request's Origin matches the host it arrived on (or is absent /
+ * allowlisted). Used for WS handshakes AND state-changing HTTP routes that are
+ * authenticated by the cookie alone (e.g. file/backup upload), which would
+ * otherwise be CSRF-able from a same-site app on another port.
+ */
+export function isAllowedOrigin(req: FastifyRequest): boolean {
   if (!IS_PRODUCTION) return true;
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -33,6 +39,9 @@ export function isAllowedWsOrigin(req: FastifyRequest): boolean {
     return false;
   }
 }
+
+/** Back-compat alias — WS routes call this name. */
+export const isAllowedWsOrigin = isAllowedOrigin;
 
 /** True when this request is a WebSocket upgrade. */
 export function isWebSocketUpgrade(req: FastifyRequest): boolean {

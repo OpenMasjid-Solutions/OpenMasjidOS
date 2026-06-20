@@ -2,15 +2,17 @@
  * Platform settings only (CLAUDE.md §13) — appearance, language, account,
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
 import { Page } from '../components/Page';
 import { Terminal } from '../components/Terminal';
 import { UpdateModal } from '../components/UpdateModal';
+import { RestoreModal } from '../components/RestoreModal';
+import { Modal } from '../components/Modal';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
@@ -26,6 +28,29 @@ export function Settings() {
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
   const windows = useWindows();
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreUploading, setRestoreUploading] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const restoreInput = useRef<HTMLInputElement>(null);
+
+  async function uploadAndRestore(file: File) {
+    setRestoreUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/restore/upload', { method: 'POST', credentials: 'include', body: fd });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || t('errors.generic'));
+      }
+      setRestoreFile(null);
+      setRestoreOpen(true);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setRestoreUploading(false);
+    }
+  }
 
   function openRootTerminal() {
     windows.open({
@@ -231,11 +256,27 @@ export function Settings() {
         <div className="setting-row">
           <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.backup')}</div>
-            <div className="setting-row__hint">{t('settings.backupHint')} · {t('settings.restoreSoon')}</div>
+            <div className="setting-row__hint">{t('settings.backupHint')}</div>
           </div>
-          <a className="btn" href="/api/backup">
-            <Download size={15} /> {t('settings.downloadBackup')}
-          </a>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <a className="btn" href="/api/backup">
+              <Download size={15} /> {t('settings.downloadBackup')}
+            </a>
+            <button className="btn" disabled={restoreUploading} onClick={() => restoreInput.current?.click()}>
+              <Upload size={15} /> {restoreUploading ? t('settings.restoreUploading') : t('settings.restore')}
+            </button>
+            <input
+              ref={restoreInput}
+              type="file"
+              accept=".gz,.tgz,application/gzip"
+              className="visually-hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                if (f) setRestoreFile(f);
+                e.target.value = '';
+              }}
+            />
+          </div>
         </div>
 
         <div className="setting-row">
@@ -255,6 +296,24 @@ export function Settings() {
       </section>
 
       <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} currentVersion={sysInfo.data?.version ?? ''} />
+
+      <Modal open={!!restoreFile} onClose={() => !restoreUploading && setRestoreFile(null)} title={t('settings.restoreConfirmTitle')}>
+        <p>{t('settings.restoreConfirmBody')}</p>
+        {restoreUploading ? (
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '1rem' }}>
+            <span className="spinner" /> {t('settings.restoreUploading')}
+          </p>
+        ) : (
+          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+            <button className="btn" onClick={() => setRestoreFile(null)}>{t('common.cancel')}</button>
+            <button className="btn btn--danger" onClick={() => restoreFile && uploadAndRestore(restoreFile)}>
+              {t('settings.restore')}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      <RestoreModal open={restoreOpen} onClose={() => setRestoreOpen(false)} />
     </Page>
   );
 }

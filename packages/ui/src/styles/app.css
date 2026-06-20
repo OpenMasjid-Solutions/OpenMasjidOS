@@ -170,16 +170,10 @@ button {
   background: var(--color-border);
   margin-inline: 0.15rem;
 }
-/* Pinned-app reorder group — lays its items out like the rest of the dock row. */
-.dock-reorder {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.dock-reorder .dock-item { touch-action: none; }
+/* Each pinned app sits in a Motion `layout` wrapper so siblings slide smoothly
+   ("push around") while one is dragged to reorder. */
+.dock-pin { display: flex; align-items: center; }
+.dock-item--dragging { opacity: 0.4; }
 .dock-drop-hint {
   outline: 2px dashed var(--color-primary);
   outline-offset: 4px;

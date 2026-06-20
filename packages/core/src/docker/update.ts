@@ -26,7 +26,7 @@ async function inspectSelf(): Promise<{ image: string; hostDataDir: string | nul
   }
 }
 
-function streamSpawn(cmd: string, args: string[], onLine: (s: string) => void): Promise<number> {
+export function streamSpawn(cmd: string, args: string[], onLine: (s: string) => void): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args);
     const handle = (buf: Buffer) => {
@@ -46,10 +46,30 @@ function streamSpawn(cmd: string, args: string[], onLine: (s: string) => void): 
   });
 }
 
+/**
+ * Recreate the core via a DETACHED helper container (it survives the core's
+ * restart). Used by both the live update and restore. Returns true once the
+ * helper is launched; the core will then be restarted under us.
+ */
+export async function recreateCore(onLine: (s: string) => void): Promise<boolean> {
+  const { image, hostDataDir } = await inspectSelf();
+  const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
+  if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
+  args.push(
+    '--entrypoint',
+    'sh',
+    image,
+    '-c',
+    `sleep 2; docker compose -p ${CORE_PROJECT} -f /data/docker-compose.yml up -d --force-recreate`,
+  );
+  const code = await streamSpawn('docker', args, onLine);
+  return code === 0;
+}
+
 /** Run the update, streaming progress through onLine. Resolves once the helper
  *  has been launched (the core will then be restarted under us). */
 export async function runUpdate(onLine: (s: string) => void): Promise<void> {
-  const { image, hostDataDir } = await inspectSelf();
+  const { image } = await inspectSelf();
 
   onLine('Checking for the latest version…');
   onLine(`Downloading ${image}`);
@@ -62,19 +82,7 @@ export async function runUpdate(onLine: (s: string) => void): Promise<void> {
 
   onLine('');
   onLine('Download complete. Applying the update and restarting…');
-
-  // Detached helper recreates the core from the installer's compose file.
-  const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
-  if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
-  args.push(
-    '--entrypoint',
-    'sh',
-    image,
-    '-c',
-    `sleep 2; docker compose -p ${CORE_PROJECT} -f /data/docker-compose.yml up -d --force-recreate`,
-  );
-  const runCode = await streamSpawn('docker', args, onLine);
-  if (runCode !== 0) {
+  if (!(await recreateCore(onLine))) {
     onLine('Could not start the updater. You can update by re-running the installer.');
     return;
   }

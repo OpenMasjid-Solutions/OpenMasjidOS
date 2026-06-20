@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
+import { isAllowedOrigin } from '../util/origin';
 import { resolveFile, uploadPath, rawMime, FileError } from '../files/manager';
 
 function authed(req: FastifyRequest): boolean {
@@ -54,6 +55,7 @@ export function registerFiles(server: FastifyInstance): void {
 
   // Upload a file into a directory (multipart).
   server.post('/api/files/upload', async (req, reply) => {
+    if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
     if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
     const dir = (req.query as { path?: string }).path ?? '/';
     try {

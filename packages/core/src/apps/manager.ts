@@ -205,6 +205,31 @@ export function installCommunityApp(opts: {
   return installStack({ ...opts, kind: 'community' });
 }
 
+/**
+ * Bring every installed app back up from its on-disk compose file. Used after a
+ * restore so apps run with the restored data (and so a fresh-box restore
+ * actually recreates them). Streams a friendly line per app via onLine.
+ */
+export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
+  const ids = listMetaIds().filter((id) => fs.existsSync(composePath(id)));
+  if (ids.length === 0) {
+    onLine('No apps to restart.');
+    return;
+  }
+  for (const id of ids) {
+    const name = loadMeta(id)?.name ?? id;
+    onLine(`• ${name}`);
+    try {
+      const res = await composeUp(projectOf(id), composePath(id), envPath(id));
+      if (res.code !== 0) {
+        onLine(`  (couldn't start — ${res.stderr.trim().split('\n')[0] || 'error'})`);
+      }
+    } catch (err) {
+      onLine(`  (couldn't start — ${(err as Error).message})`);
+    }
+  }
+}
+
 export async function startApp(id: string): Promise<void> {
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.

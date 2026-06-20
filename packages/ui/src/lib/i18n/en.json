@@ -251,8 +251,10 @@
     "backup": "Backup & restore",
     "downloadBackup": "Download a backup",
     "backupHint": "Saves a copy of your settings and app data as a single file.",
-    "restore": "Restore from a backup",
-    "restoreSoon": "Restore is coming soon.",
+    "restore": "Restore",
+    "restoreUploading": "Uploading…",
+    "restoreConfirmTitle": "Restore from a backup?",
+    "restoreConfirmBody": "This replaces your current settings and app data with the backup, then restarts your apps and the dashboard. This can't be undone — download a backup first if you're unsure.",
     "sourceCode": "Source code",
     "sourceCodeHint": "OpenMasjidOS is free and open source (AGPL-3.0).",
     "about": "About",
@@ -264,6 +266,11 @@
     "done": "Updated to v{{version}}.",
     "doneGeneric": "Update applied.",
     "reload": "Reload dashboard"
+  },
+  "restore": {
+    "title": "Restoring from backup",
+    "restarting": "Restarting OpenMasjidOS — reconnecting…",
+    "done": "Restore complete."
   },
   "status": { "running": "Running", "stopped": "Stopped" },
   "errors": {
