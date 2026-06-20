@@ -17,6 +17,7 @@ import (
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/apps"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/auth"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/config"
+	"github.com/OpenMasjidOS/OpenMasjidOS/internal/files"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/settings"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/stats"
 )
@@ -53,6 +54,13 @@ func NewRouter(cfg *config.Config) (http.Handler, error) {
 	}
 	settingsAPI := newSettingsAPI(settingsStore)
 	terminalAPI := newTerminalAPI(settingsStore)
+
+	// Sandboxed file manager, rooted at the data dir.
+	filesManager, err := files.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	filesAPI := newFilesAPI(filesManager)
 
 	r := chi.NewRouter()
 
@@ -140,6 +148,14 @@ func NewRouter(cfg *config.Config) (http.Handler, error) {
 			// Web terminals (WebSocket; each additionally gated by its toggle).
 			pr.Get("/apps/{id}/terminal", terminalAPI.handleAppTerminal)
 			pr.Get("/terminal/root", terminalAPI.handleRootTerminal)
+
+			// File manager (sandboxed to the data dir).
+			pr.Get("/files", filesAPI.handleList)
+			pr.Get("/files/download", filesAPI.handleDownload)
+			pr.Post("/files/upload", filesAPI.handleUpload)
+			pr.Post("/files/mkdir", filesAPI.handleMkdir)
+			pr.Post("/files/rename", filesAPI.handleRename)
+			pr.Delete("/files", filesAPI.handleDelete)
 		})
 	})
 

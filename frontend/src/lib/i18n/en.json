@@ -37,6 +37,7 @@
   "nav": {
     "dashboard": "Dashboard",
     "appStore": "App Store",
+    "files": "Files",
     "settings": "Settings",
     "aria": {
       "sidebar": "Sidebar navigation",
@@ -149,6 +150,24 @@
     "save": "Save changes",
     "saving": "Saving…",
     "saved": "Changes saved"
+  },
+  "files": {
+    "title": "Files",
+    "subtitle": "Browse the files and data for your apps.",
+    "home": "Home",
+    "newFolder": "New folder",
+    "newFolderPrompt": "Name for the new folder:",
+    "upload": "Upload",
+    "uploading": "Uploading…",
+    "download": "Download",
+    "rename": "Rename",
+    "delete": "Delete",
+    "deleteConfirm": "Delete \"{name}\"? This can't be undone.",
+    "loading": "Loading…",
+    "empty": "This folder is empty.",
+    "loadError": "Couldn't open that folder.",
+    "uploadError": "Upload failed. Please try again.",
+    "genericError": "Something went wrong. Please try again."
   },
   "status": {
     "running": "Running",

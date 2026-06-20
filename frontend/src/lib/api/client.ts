@@ -34,6 +34,13 @@ export interface ServerSettings {
   root_terminal: boolean;
 }
 
+export interface FileEntry {
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified: string;
+}
+
 export interface InstalledApp {
   id: string;
   name: string;
@@ -87,6 +94,37 @@ export const api = {
       }),
     /** Sign out and clear the session cookie. */
     logout: () => request<{ authenticated: boolean }>('/auth/logout', { method: 'POST' }),
+  },
+
+  files: {
+    /** List a directory inside the sandbox. */
+    list: (path: string) =>
+      request<{ path: string; entries: FileEntry[] }>('/files?path=' + encodeURIComponent(path)),
+    /** Same-origin download URL (cookie sent automatically). */
+    downloadUrl: (path: string) => `${BASE}/files/download?path=` + encodeURIComponent(path),
+    /** Upload a file into a directory (multipart — not the JSON helper). */
+    async upload(path: string, file: File) {
+      const res = await fetch(`${BASE}/files/upload?path=` + encodeURIComponent(path), {
+        method: 'POST',
+        credentials: 'include',
+        body: (() => {
+          const fd = new FormData();
+          fd.append('file', file);
+          return fd;
+        })(),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }));
+        throw new ApiError(res.status, body.error ?? 'Upload failed', body.meta?.details);
+      }
+      return res.json();
+    },
+    mkdir: (path: string, name: string) =>
+      request<{ ok: boolean }>('/files/mkdir', { method: 'POST', body: JSON.stringify({ path, name }) }),
+    rename: (path: string, name: string) =>
+      request<{ ok: boolean }>('/files/rename', { method: 'POST', body: JSON.stringify({ path, name }) }),
+    remove: (path: string) =>
+      request<{ ok: boolean }>('/files?path=' + encodeURIComponent(path), { method: 'DELETE' }),
   },
 
   settings: {

@@ -140,6 +140,7 @@
   const navItems = [
     { href: '/',         labelKey: 'nav.dashboard', icon: 'home' },
     { href: '/store',    labelKey: 'nav.appStore',  icon: 'store' },
+    { href: '/files',    labelKey: 'nav.files',     icon: 'files' },
     { href: '/settings', labelKey: 'nav.settings',  icon: 'settings' },
   ];
 
@@ -255,6 +256,10 @@
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
               <path d="M3 9 Q3 5 10 5 Q17 5 17 9 L17 17 Q17 18 16 18 L4 18 Q3 18 3 17 Z"/>
               <path d="M7 18 L7 13 Q7 11 10 11 Q13 11 13 13 L13 18"/>
+            </svg>
+          {:else if item.icon === 'files'}
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+              <path d="M2.5 6 Q2.5 4.5 4 4.5 H8 L9.5 6.5 H16 Q17.5 6.5 17.5 8 V15 Q17.5 16.5 16 16.5 H4 Q2.5 16.5 2.5 15 Z"/>
             </svg>
           {:else if item.icon === 'settings'}
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
