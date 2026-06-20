@@ -1,9 +1,23 @@
 <script lang="ts">
   import { get } from 'svelte/store';
+  import { onMount } from 'svelte';
   import { t, locale } from '$lib/i18n';
   import { theme } from '$lib/theme/theme';
   import { prefs, ACCENTS } from '$lib/stores/prefs';
+  import { serverSettings } from '$lib/stores/serverSettings';
   import { riseIn, pressable, enterGrid } from '$lib/animations';
+  import Terminal from '$lib/components/Terminal.svelte';
+
+  onMount(() => serverSettings.load());
+
+  let showRootTerm = false;
+
+  function setWebTerminal(on: boolean) {
+    serverSettings.update({ ...get(serverSettings), web_terminal: on });
+  }
+  function setRootTerminal(on: boolean) {
+    serverSettings.update({ ...get(serverSettings), root_terminal: on });
+  }
 
   // Live-applied presentation prefs read straight from their stores ($theme,
   // $locale, $prefs.accent). Content fields below are edited locally and
@@ -165,6 +179,46 @@
           </span>
           <input type="checkbox" class="switch" bind:checked={customApps} />
         </label>
+
+        <!-- Web terminal (per-app). Server-enforced toggle. -->
+        <label class="setting-row toggle-row">
+          <span class="toggle-text">
+            <span class="setting-label">{$t('settings.webTerminal')}</span>
+            <span class="setting-hint">{$t('settings.webTerminalHint')}</span>
+          </span>
+          <input
+            type="checkbox"
+            class="switch"
+            checked={$serverSettings.web_terminal}
+            on:change={(e) => setWebTerminal(e.currentTarget.checked)}
+          />
+        </label>
+
+        <!-- Root terminal (core container). Server-enforced toggle. -->
+        <label class="setting-row toggle-row">
+          <span class="toggle-text">
+            <span class="setting-label">{$t('settings.rootTerminal')}</span>
+            <span class="setting-hint">{$t('settings.rootTerminalHint')}</span>
+          </span>
+          <input
+            type="checkbox"
+            class="switch"
+            checked={$serverSettings.root_terminal}
+            on:change={(e) => setRootTerminal(e.currentTarget.checked)}
+          />
+        </label>
+
+        {#if $serverSettings.root_terminal}
+          <div class="setting-row">
+            <span class="setting-label">{$t('settings.rootTerminalOpen')}</span>
+            <button type="button" class="term-launch" use:pressable on:click={() => (showRootTerm = true)}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 4 L6.5 8 L3 12 M8 12 L13 12" />
+              </svg>
+              {$t('settings.rootTerminalButton')}
+            </button>
+          </div>
+        {/if}
       </div>
     </section>
 
@@ -185,6 +239,14 @@
 
   </form>
 </div>
+
+{#if showRootTerm}
+  <Terminal
+    wsPath="/api/terminal/root"
+    title={$t('settings.rootTerminalTitle')}
+    onClose={() => (showRootTerm = false)}
+  />
+{/if}
 
 <style>
   .page {
@@ -418,6 +480,23 @@
     box-shadow: 0 0 0 1px var(--color-success), 0 12px 32px -8px var(--color-success);
   }
   .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .term-launch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    padding: 0.4375rem 0.875rem;
+    border-radius: var(--radius-button);
+    border: 1px solid var(--color-primary);
+    background: var(--color-primary-subtle);
+    color: var(--color-primary);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .term-launch:hover { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
 
   @media (prefers-reduced-motion: reduce) {
     .seg,

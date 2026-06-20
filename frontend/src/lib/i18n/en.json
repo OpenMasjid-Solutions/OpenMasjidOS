@@ -129,6 +129,13 @@
     "advanced": "Advanced",
     "customApps": "Allow custom apps",
     "customAppsHint": "Adds a button to the App Store for installing any app from a Docker Compose file. Only turn this on if you know what you're doing.",
+    "webTerminal": "Enable web terminal",
+    "webTerminalHint": "Adds an \"Open web terminal\" option to each app so you can run commands inside it from the browser. Powerful — anyone signed in gets shell access to your apps.",
+    "rootTerminal": "Enable root terminal",
+    "rootTerminalHint": "Adds a root shell into the OpenMasjidOS core itself (full control of Docker on this server). Only enable this if you understand the risk.",
+    "rootTerminalOpen": "Root terminal",
+    "rootTerminalButton": "Open root terminal",
+    "rootTerminalTitle": "Root terminal — OpenMasjidOS core",
     "save": "Save changes",
     "saving": "Saving…",
     "saved": "Changes saved"
@@ -147,10 +154,12 @@
     "restart": "Restart",
     "shutdown": "Shut down",
     "uninstall": "Uninstall",
+    "terminal": "Web terminal",
     "remove": "Remove",
     "update": "Update",
     "cancel": "Cancel",
     "confirm": "Confirm",
+    "close": "Close",
     "back": "Back"
   },
   "errors": {

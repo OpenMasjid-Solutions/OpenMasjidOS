@@ -29,6 +29,11 @@ export class ApiError extends Error {
   }
 }
 
+export interface ServerSettings {
+  web_terminal: boolean;
+  root_terminal: boolean;
+}
+
 export interface InstalledApp {
   id: string;
   name: string;
@@ -82,6 +87,14 @@ export const api = {
       }),
     /** Sign out and clear the session cookie. */
     logout: () => request<{ authenticated: boolean }>('/auth/logout', { method: 'POST' }),
+  },
+
+  settings: {
+    /** Read the server-enforced platform toggles. */
+    get: () => request<ServerSettings>('/settings'),
+    /** Replace the server-enforced platform toggles. */
+    update: (s: ServerSettings) =>
+      request<ServerSettings>('/settings', { method: 'PUT', body: JSON.stringify(s) }),
   },
 
   apps: {

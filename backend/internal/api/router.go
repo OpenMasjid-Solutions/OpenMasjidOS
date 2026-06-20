@@ -17,6 +17,7 @@ import (
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/apps"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/auth"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/config"
+	"github.com/OpenMasjidOS/OpenMasjidOS/internal/settings"
 	"github.com/OpenMasjidOS/OpenMasjidOS/internal/stats"
 )
 
@@ -44,6 +45,14 @@ func NewRouter(cfg *config.Config) (http.Handler, error) {
 
 	// App lifecycle manager (custom/3rd-party installs via Docker Compose).
 	appsAPI := newAppsAPI(apps.NewManager(cfg.DataDir))
+
+	// Server-enforced platform toggles + the web terminals they gate.
+	settingsStore, err := settings.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	settingsAPI := newSettingsAPI(settingsStore)
+	terminalAPI := newTerminalAPI(settingsStore)
 
 	r := chi.NewRouter()
 
@@ -123,6 +132,14 @@ func NewRouter(cfg *config.Config) (http.Handler, error) {
 			pr.Post("/apps/{id}/start", appsAPI.lifecycleAction(appsAPI.mgr.Start))
 			pr.Post("/apps/{id}/restart", appsAPI.lifecycleAction(appsAPI.mgr.Restart))
 			pr.Delete("/apps/{id}", appsAPI.handleRemove)
+
+			// Platform toggles (web-terminal switches).
+			pr.Get("/settings", settingsAPI.handleGet)
+			pr.Put("/settings", settingsAPI.handleUpdate)
+
+			// Web terminals (WebSocket; each additionally gated by its toggle).
+			pr.Get("/apps/{id}/terminal", terminalAPI.handleAppTerminal)
+			pr.Get("/terminal/root", terminalAPI.handleRootTerminal)
 		})
 	})
 

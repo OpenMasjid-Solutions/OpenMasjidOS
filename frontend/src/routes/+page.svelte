@@ -3,7 +3,14 @@
   import { t } from '$lib/i18n';
   import { api } from '$lib/api/client';
   import type { StatsSnapshot, InstalledApp } from '$lib/api/client';
+  import { serverSettings } from '$lib/stores/serverSettings';
   import { riseIn, tiltCard, pressable, enterGrid } from '$lib/animations';
+  import Terminal from '$lib/components/Terminal.svelte';
+
+  onMount(() => serverSettings.load());
+
+  // App whose web terminal is open (null = none).
+  let termApp: InstalledApp | null = null;
 
   // Health response shape from GET /api/health
   interface HealthResponse {
@@ -288,6 +295,9 @@
                         {#if app.ports.length > 0}
                           <button role="menuitem" on:click|stopPropagation={() => { openMenuId=''; openApp(app); }}>{$t('actions.open')}</button>
                         {/if}
+                        {#if $serverSettings.web_terminal && app.running}
+                          <button role="menuitem" on:click|stopPropagation={() => { openMenuId=''; termApp = app; }}>{$t('actions.terminal')}</button>
+                        {/if}
                         {#if app.running}
                           <button role="menuitem" on:click|stopPropagation={() => appAction('restart', app)}>{$t('actions.restart')}</button>
                           <button role="menuitem" on:click|stopPropagation={() => appAction('stop', app)}>{$t('actions.shutdown')}</button>
@@ -351,6 +361,14 @@
     </div>
   {/if}
 </div>
+
+{#if termApp}
+  <Terminal
+    wsPath={`/api/apps/${termApp.id}/terminal`}
+    title={termApp.name}
+    onClose={() => (termApp = null)}
+  />
+{/if}
 
 <style>
   .page {

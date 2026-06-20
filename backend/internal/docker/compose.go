@@ -93,6 +93,23 @@ func ProjectPorts(ctx context.Context, project string) []int {
 	return ports
 }
 
+// FirstContainer returns the ID of the first running container in a project,
+// used as the target for `docker exec` when opening a web terminal.
+func FirstContainer(ctx context.Context, project string) (string, error) {
+	out, err := run(ctx, "ps",
+		"--filter", "label=com.docker.compose.project="+project,
+		"--format", "{{.ID}}")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if id := strings.TrimSpace(line); id != "" {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("no running container for project %q", project)
+}
+
 // run executes the docker CLI with the given arguments and returns combined output.
 func run(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)

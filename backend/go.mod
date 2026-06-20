@@ -12,4 +12,5 @@ require (
 	golang.org/x/term v0.19.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/shirou/gopsutil/v3 v3.24.4
+	github.com/creack/pty v1.1.21
 )
