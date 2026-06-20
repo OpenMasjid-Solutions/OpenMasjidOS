@@ -48,6 +48,20 @@
     0 0 0 1px var(--glass-border);
 }
 
+/* The dock — the heaviest "liquid glass" surface. Stronger blur + saturation
+   and a pill radius. It's a single small pane, so the extra blur is cheap. */
+.glass-dock {
+  position: relative;
+  background-image: linear-gradient(var(--glass-tint), var(--glass-tint));
+  background-color: var(--glass-bg-raised);
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate-strong));
+  backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate-strong));
+  box-shadow: var(--glass-shadow-raised);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-dock { background-color: var(--color-surface-overlay); }
+}
+
 /* PERFORMANCE CAP — load-bearing. A glass pane inside another glass pane must
    NOT re-run a full backdrop-filter (compositor cost stacks badly). Any nested
    .glass* drops its own blur and leans on its fill. Opt back in deliberately

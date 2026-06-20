@@ -65,9 +65,11 @@
   --radius-button: 0.625rem;
 
   /* ── Glass material ─────────────────────────────────────────────────── */
-  --glass-blur: 10px;            /* kept low — backdrop-filter is the main GPU cost */
-  --glass-blur-inset: 6px;       /* lighter blur for nested wells (no double-blur mush) */
-  --glass-saturate: 140%;
+  --glass-blur: 16px;            /* scene is static, so richer blur is affordable */
+  --glass-blur-inset: 9px;       /* lighter blur for nested wells (no double-blur mush) */
+  --glass-blur-strong: 28px;     /* heavy "liquid glass" for the dock */
+  --glass-saturate: 165%;
+  --glass-saturate-strong: 200%;
   --glass-bg: rgba(10, 24, 40, 0.55);          /* keeps --color-ink AA over brightest aurora */
   --glass-bg-raised: rgba(15, 32, 64, 0.68);
   --glass-bg-inset: rgba(3, 13, 26, 0.45);
@@ -98,9 +100,9 @@
 
   /* ── Ambient scene ──────────────────────────────────────────────────── */
   --scene-base: #020912;         /* solid paint behind aurora — no page-white flash */
-  --aurora-cyan: rgba(34, 211, 238, 0.22);
-  --aurora-navy: rgba(15, 32, 64, 0.55);
-  --aurora-gold: rgba(245, 158, 11, 0.10);
+  --aurora-cyan: rgba(34, 211, 238, 0.28);
+  --aurora-navy: rgba(15, 32, 64, 0.60);
+  --aurora-gold: rgba(245, 158, 11, 0.13);
   --aurora-blur: 48px;
   --scene-vignette: rgba(0, 0, 0, 0.55);
   --pattern-opacity: 0.5;
@@ -158,9 +160,11 @@
   --radius-button: 0.625rem;
 
   /* ── Glass material ─────────────────────────────────────────────────── */
-  --glass-blur: 10px;
-  --glass-blur-inset: 6px;
-  --glass-saturate: 120%;
+  --glass-blur: 16px;
+  --glass-blur-inset: 9px;
+  --glass-blur-strong: 24px;
+  --glass-saturate: 140%;
+  --glass-saturate-strong: 175%;
   --glass-bg: rgba(255, 255, 255, 0.55);
   --glass-bg-raised: rgba(255, 255, 255, 0.72);
   --glass-bg-inset: rgba(240, 249, 255, 0.60);

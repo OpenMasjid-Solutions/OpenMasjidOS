@@ -7,8 +7,7 @@
   import { theme } from '$lib/theme/theme';
   import { t, dir } from '$lib/i18n';
   import { page } from '$app/stores';
-  import { afterNavigate } from '$app/navigation';
-  import { liquidIndicator, pressable, routeRise, khatamSplash } from '$lib/animations';
+  import { pressable, routeRise, khatamSplash } from '$lib/animations';
   import { prefs } from '$lib/stores/prefs';
   import { api } from '$lib/api/client';
   import SceneBackground from '$lib/components/SceneBackground.svelte';
@@ -20,9 +19,6 @@
   // Auth gate: the whole dashboard sits behind a session. 'loading' until the
   // first /api/auth/me resolves, then setup / login / ready.
   let authState = $state<'loading' | 'setup' | 'login' | 'ready'>('loading');
-
-  let navEl = $state<HTMLElement | undefined>(undefined);
-  let indicator: ReturnType<typeof liquidIndicator> | undefined;
 
   // Guards the async auth check from writing state after the component unmounts.
   let mounted = true;
@@ -50,19 +46,6 @@
     };
   });
 
-  // The sidebar only mounts once auth resolves to 'ready', which is AFTER
-  // onMount — so create the liquid indicator in an effect keyed on navEl, and
-  // tear it down when the shell unmounts (e.g. on sign-out).
-  $effect(() => {
-    if (!navEl) return;
-    const ind = liquidIndicator(navEl, { activeSelector: '.nav-link--active' });
-    indicator = ind;
-    return () => {
-      ind.destroy();
-      indicator = undefined;
-    };
-  });
-
   async function checkAuth() {
     try {
       const s = await api.auth.me();
@@ -87,11 +70,6 @@
     authState = 'login';
   }
 
-  // Re-place the liquid pill after each client-side navigation (DOM settled).
-  afterNavigate(() => {
-    indicator?.update();
-  });
-
   function toggleTheme() {
     theme.toggle();
   }
@@ -101,124 +79,23 @@
     return { destroy() { s.skip(); } };
   }
 
-  // Nav items — labels go through i18n; no hardcoded English in template.
+  // Dock items — labels go through i18n; no hardcoded English in template.
   const navItems = [
-    { href: '/',         labelKey: 'nav.dashboard', icon: 'grid' },
+    { href: '/',         labelKey: 'nav.dashboard', icon: 'home' },
     { href: '/store',    labelKey: 'nav.appStore',  icon: 'store' },
     { href: '/settings', labelKey: 'nav.settings',  icon: 'settings' },
   ];
+
+  function isActive(href: string, pathname: string): boolean {
+    return pathname === href || (href !== '/' && pathname.startsWith(href));
+  }
 </script>
 
 <!-- Ambient scene behind everything -->
 <SceneBackground />
 
 {#if authState === 'ready'}
-<div class="layout">
-  <!-- Sidebar navigation (frosted glass) -->
-  <aside class="sidebar glass-raised" aria-label={$t('nav.aria.sidebar')}>
-
-    <!-- Logo / wordmark -->
-    <div class="sidebar-brand">
-      <span class="dome-icon" aria-hidden="true">
-        <!--
-          Logo: OSI-inspired circular badge with a stylised masjid silhouette.
-          Uses currentColor so the icon inherits --color-primary from CSS.
-          The crescent "bite" uses --color-surface-raised to match the sidebar bg.
-        -->
-        <svg viewBox="0 0 40 40" width="34" height="34" fill="none" xmlns="http://www.w3.org/2000/svg" color="var(--color-primary)">
-          <circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="1.8"/>
-          <rect x="8" y="23" width="3" height="8.5" rx="0.8" fill="currentColor"/>
-          <path d="M8 23 Q9.5 19.2 11 23 Z" fill="currentColor"/>
-          <rect x="29" y="23" width="3" height="8.5" rx="0.8" fill="currentColor"/>
-          <path d="M29 23 Q30.5 19.2 32 23 Z" fill="currentColor"/>
-          <rect x="7" y="30.5" width="26" height="2" rx="0.8" fill="currentColor"/>
-          <path d="M11 30.5 Q11 18 20 15 Q29 18 29 30.5 Z" fill="currentColor"/>
-          <circle cx="20" cy="13" r="2.8" fill="currentColor"/>
-          <circle cx="21.4" cy="11.8" r="2.1" fill="var(--color-surface-raised)"/>
-        </svg>
-      </span>
-      <span class="brand-name">{$prefs.dashboardName || $t('brand.name')}</span>
-    </div>
-
-    <!-- Primary navigation links -->
-    <nav class="sidebar-nav" aria-label={$t('nav.aria.primary')} bind:this={navEl}>
-      {#each navItems as item}
-        {@const isActive = $page.url.pathname === item.href ||
-          (item.href !== '/' && $page.url.pathname.startsWith(item.href))}
-        <a
-          href={item.href}
-          class="nav-link"
-          class:nav-link--active={isActive}
-          aria-current={isActive ? 'page' : undefined}
-        >
-          <span class="nav-icon" aria-hidden="true">
-            {#if item.icon === 'grid'}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
-                <rect x="2" y="2" width="7" height="7" rx="1.5"/>
-                <rect x="11" y="2" width="7" height="7" rx="1.5"/>
-                <rect x="2" y="11" width="7" height="7" rx="1.5"/>
-                <rect x="11" y="11" width="7" height="7" rx="1.5"/>
-              </svg>
-            {:else if item.icon === 'store'}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
-                <path d="M3 9 Q3 5 10 5 Q17 5 17 9 L17 17 Q17 18 16 18 L4 18 Q3 18 3 17 Z"/>
-                <path d="M7 18 L7 13 Q7 11 10 11 Q13 11 13 13 L13 18"/>
-              </svg>
-            {:else if item.icon === 'settings'}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
-                <circle cx="10" cy="10" r="2.5"/>
-                <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10
-                         M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78
-                         M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
-              </svg>
-            {/if}
-          </span>
-          <span class="nav-label">{$t(item.labelKey)}</span>
-        </a>
-      {/each}
-    </nav>
-
-    <!-- Theme toggle pinned to bottom of sidebar -->
-    <div class="sidebar-footer">
-      <button
-        class="theme-toggle"
-        on:click={toggleTheme}
-        use:pressable
-        aria-label={$t($theme === 'dark' ? 'theme.switchToLight' : 'theme.switchToDark')}
-        title={$t($theme === 'dark' ? 'theme.switchToLight' : 'theme.switchToDark')}
-        type="button"
-      >
-        {#if $theme === 'dark'}
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18" aria-hidden="true">
-            <circle cx="10" cy="10" r="3.5"/>
-            <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10
-                     M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78
-                     M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
-          </svg>
-        {:else}
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18" aria-hidden="true">
-            <path d="M15 10 A6 6 0 1 1 10 5 A4 4 0 0 0 15 10 Z"/>
-          </svg>
-        {/if}
-        <span class="nav-label">{$t($theme === 'dark' ? 'theme.light' : 'theme.dark')}</span>
-      </button>
-
-      <button
-        class="theme-toggle signout"
-        on:click={handleLogout}
-        use:pressable
-        aria-label={$t('auth.signOut')}
-        title={$t('auth.signOut')}
-        type="button"
-      >
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18" aria-hidden="true">
-          <path d="M8 17 L4 17 Q3 17 3 16 L3 4 Q3 3 4 3 L8 3 M13 14 L17 10 L13 6 M17 10 L8 10"/>
-        </svg>
-        <span class="nav-label">{$t('auth.signOut')}</span>
-      </button>
-    </div>
-  </aside>
-
+<div class="shell">
   <!-- Main content area — route content with a gentle rise transition -->
   <main class="main-content" id="main-content">
     {#key $page.url.pathname}
@@ -227,6 +104,90 @@
       </div>
     {/key}
   </main>
+
+  <!-- Floating glass dock (Umbrel-style app launcher / navigation) -->
+  <nav class="dock glass-dock" aria-label={$t('nav.aria.primary')}>
+    {#each navItems as item}
+      {@const active = isActive(item.href, $page.url.pathname)}
+      <a
+        href={item.href}
+        class="dock-item"
+        class:dock-item--active={active}
+        aria-current={active ? 'page' : undefined}
+        aria-label={$t(item.labelKey)}
+      >
+        <span class="dock-glyph" aria-hidden="true">
+          {#if item.icon === 'home'}
+            <svg viewBox="0 0 40 40" width="26" height="26" fill="none" xmlns="http://www.w3.org/2000/svg" color="currentColor">
+              <circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="1.8"/>
+              <rect x="8" y="23" width="3" height="8.5" rx="0.8" fill="currentColor"/>
+              <path d="M8 23 Q9.5 19.2 11 23 Z" fill="currentColor"/>
+              <rect x="29" y="23" width="3" height="8.5" rx="0.8" fill="currentColor"/>
+              <path d="M29 23 Q30.5 19.2 32 23 Z" fill="currentColor"/>
+              <rect x="7" y="30.5" width="26" height="2" rx="0.8" fill="currentColor"/>
+              <path d="M11 30.5 Q11 18 20 15 Q29 18 29 30.5 Z" fill="currentColor"/>
+              <circle cx="20" cy="13" r="2.8" fill="currentColor"/>
+              <circle cx="21.4" cy="11.8" r="2.1" fill="var(--color-surface-overlay)"/>
+            </svg>
+          {:else if item.icon === 'store'}
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+              <path d="M3 9 Q3 5 10 5 Q17 5 17 9 L17 17 Q17 18 16 18 L4 18 Q3 18 3 17 Z"/>
+              <path d="M7 18 L7 13 Q7 11 10 11 Q13 11 13 13 L13 18"/>
+            </svg>
+          {:else if item.icon === 'settings'}
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+              <circle cx="10" cy="10" r="2.5"/>
+              <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10
+                       M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78
+                       M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
+            </svg>
+          {/if}
+        </span>
+        <span class="dock-tip">{$t(item.labelKey)}</span>
+      </a>
+    {/each}
+
+    <span class="dock-divider" aria-hidden="true"></span>
+
+    <button
+      class="dock-item"
+      on:click={toggleTheme}
+      use:pressable
+      aria-label={$t($theme === 'dark' ? 'theme.switchToLight' : 'theme.switchToDark')}
+      type="button"
+    >
+      <span class="dock-glyph" aria-hidden="true">
+        {#if $theme === 'dark'}
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+            <circle cx="10" cy="10" r="3.5"/>
+            <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10
+                     M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78
+                     M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
+          </svg>
+        {:else}
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+            <path d="M15 10 A6 6 0 1 1 10 5 A4 4 0 0 0 15 10 Z"/>
+          </svg>
+        {/if}
+      </span>
+      <span class="dock-tip">{$t($theme === 'dark' ? 'theme.light' : 'theme.dark')}</span>
+    </button>
+
+    <button
+      class="dock-item dock-item--danger"
+      on:click={handleLogout}
+      use:pressable
+      aria-label={$t('auth.signOut')}
+      type="button"
+    >
+      <span class="dock-glyph" aria-hidden="true">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
+          <path d="M8 17 L4 17 Q3 17 3 16 L3 4 Q3 3 4 3 L8 3 M13 14 L17 10 L13 6 M17 10 L8 10"/>
+        </svg>
+      </span>
+      <span class="dock-tip">{$t('auth.signOut')}</span>
+    </button>
+  </nav>
 </div>
 {:else if authState === 'setup' || authState === 'login'}
   <AuthScreen mode={authState} onAuthed={handleAuthed} />
@@ -267,137 +228,106 @@
 {/if}
 
 <style>
-  /* Layout shell — sidebar + content using logical CSS properties
-     so the flex direction respects RTL automatically. */
-  .layout {
-    display: flex;
-    flex-direction: row;
+  /* Layout shell — full-width content with a floating bottom dock. */
+  .shell {
     min-height: 100vh;
   }
 
-  /* Sidebar — frosted glass (.glass-raised supplies fill/blur/shadow). */
-  .sidebar {
-    display: flex;
-    flex-direction: column;
-    width: 220px;
-    flex-shrink: 0;
-    border-radius: 0;
-    border-inline-end: 1px solid var(--glass-border);
-    padding-block: 1.5rem;
-    padding-inline: 1rem;
-    gap: 0.5rem;
-  }
-
-  /* Brand row */
-  .sidebar-brand {
+  /* ── Floating glass dock (Umbrel-style launcher) ───────────────────── */
+  .dock {
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;                 /* geometric centering — direction-agnostic */
+    transform: translateX(-50%);
+    z-index: 40;
     display: flex;
     align-items: center;
-    gap: 0.625rem;
-    padding-inline: 0.25rem;
-    padding-block-end: 1.25rem;
-    border-block-end: 1px solid var(--color-border);
-    margin-block-end: 0.5rem;
+    gap: 0.375rem;
+    padding: 0.5rem;
+    border-radius: 1.25rem;
+    max-width: calc(100vw - 1.5rem);
   }
 
-  .dome-icon {
+  .dock-divider {
+    width: 1px;
+    align-self: stretch;
+    margin-inline: 0.25rem;
+    margin-block: 0.375rem;
+    background: var(--glass-border);
     flex-shrink: 0;
-    display: flex;
-    align-items: center;
   }
 
-  .brand-name {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--color-ink);
-    letter-spacing: -0.01em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* Nav — position:relative so the liquid indicator (z-index:0) sits behind links */
-  .sidebar-nav {
+  .dock-item {
     position: relative;
     display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    flex: 1;
-  }
-
-  .nav-link {
-    position: relative;
-    z-index: 1;
-    display: flex;
     align-items: center;
-    gap: 0.625rem;
-    padding-block: 0.5rem;
-    padding-inline: 0.75rem;
-    border-radius: 0.5rem;
-    color: var(--color-ink-muted);
-    text-decoration: none;
-    font-size: 0.875rem;
-    font-weight: 500;
-    transition: color 0.15s ease;
-  }
-
-  .nav-link:hover {
-    color: var(--color-ink);
-  }
-
-  .nav-link:hover .nav-icon {
-    transform: scale(1.08);
-  }
-
-  .nav-link--active {
-    color: var(--color-primary);
-    font-weight: 600;
-  }
-
-  .nav-icon {
-    display: flex;
-    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
     flex-shrink: 0;
-    transition: transform var(--dur-settle) var(--ease-settle);
-  }
-
-  .nav-label {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* Footer / theme toggle */
-  .sidebar-footer {
-    padding-block-start: 0.75rem;
-    border-block-start: 1px solid var(--color-border);
-    margin-block-start: auto;
-  }
-
-  .theme-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.625rem;
-    width: 100%;
-    padding-block: 0.5rem;
-    padding-inline: 0.75rem;
-    border-radius: 0.5rem;
-    background: none;
+    border-radius: 0.875rem;
     border: none;
-    cursor: pointer;
+    background: transparent;
     color: var(--color-ink-muted);
-    font-size: 0.875rem;
-    font-weight: 500;
-    text-align: start;
-    transition: background-color 0.15s ease, color 0.15s ease;
+    cursor: pointer;
+    text-decoration: none;
+    transition:
+      transform var(--dur-settle) var(--ease-settle),
+      background-color 0.15s ease,
+      color 0.15s ease;
   }
-
-  .theme-toggle:hover {
-    background-color: var(--color-surface-hover);
+  .dock-item:hover {
     color: var(--color-ink);
+    background: var(--color-surface-hover);
+    transform: translateY(-4px) scale(1.06);
+  }
+  .dock-item--active {
+    color: var(--color-primary);
+    background: var(--color-primary-subtle);
+  }
+  .dock-item--active::after {
+    /* small active dot under the icon (macOS / Umbrel style) */
+    content: "";
+    position: absolute;
+    bottom: -0.3125rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0.25rem;
+    height: 0.25rem;
+    border-radius: 50%;
+    background: var(--color-primary);
+  }
+  .dock-item--danger:hover { color: var(--color-danger); }
+  .dock-glyph { display: flex; align-items: center; justify-content: center; }
+
+  /* Hover/focus tooltip above the icon */
+  .dock-tip {
+    position: absolute;
+    bottom: calc(100% + 0.5rem);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    padding: 0.25rem 0.625rem;
+    border-radius: 0.5rem;
+    background: var(--color-surface-overlay);
+    color: var(--color-ink);
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    box-shadow: var(--shadow-card);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+  }
+  .dock-item:hover .dock-tip,
+  .dock-item:focus-visible .dock-tip {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 
-  .signout:hover {
-    color: var(--color-danger);
+  @media (prefers-reduced-motion: reduce) {
+    .dock-item,
+    .dock-tip { transition: none; }
+    .dock-item:hover { transform: none; }
   }
 
   /* Brief loading state while the first /api/auth/me resolves. */
@@ -422,12 +352,11 @@
     .auth-loading__dot { animation: none; opacity: 0.8; }
   }
 
-  /* Main content */
+  /* Main content — full width; bottom padding leaves room for the dock. */
   .main-content {
-    flex: 1;
-    min-width: 0;
+    min-height: 100vh;
     overflow-y: auto;
-    padding: 2rem;
+    padding: 2rem 2rem 7rem;
   }
 
   .route-wrap {
@@ -488,14 +417,6 @@
 
   /* Accessibility: respect reduced-motion preference. */
   @media (prefers-reduced-motion: reduce) {
-    .nav-link,
-    .nav-icon,
-    .theme-toggle {
-      transition: none;
-    }
-    .nav-link:hover .nav-icon {
-      transform: none;
-    }
     .khatam-splash,
     .khatam-svg,
     .khatam-svg [data-spoke],
@@ -506,24 +427,10 @@
     }
   }
 
-  /* Responsive: collapse sidebar to icon-only on narrow viewports. */
-  @media (max-width: 640px) {
-    .sidebar {
-      width: 56px;
-      padding-inline: 0.5rem;
-    }
-    .brand-name,
-    .nav-label {
-      display: none;
-    }
-    .sidebar-brand {
-      justify-content: center;
-      padding-inline: 0;
-    }
-    .nav-link,
-    .theme-toggle {
-      justify-content: center;
-      padding-inline: 0;
-    }
+  /* Narrow viewports: a touch tighter so the dock fits comfortably. */
+  @media (max-width: 480px) {
+    .main-content { padding: 1.25rem 1rem 6.5rem; }
+    .dock { gap: 0.125rem; padding: 0.375rem; }
+    .dock-item { width: 2.75rem; height: 2.75rem; }
   }
 </style>
