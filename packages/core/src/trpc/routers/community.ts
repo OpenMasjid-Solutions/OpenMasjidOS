@@ -13,8 +13,11 @@ import {
 } from '../../settings/store';
 import { fetchRepoApps, fetchAllCommunityApps } from '../../store/casaos';
 import { checkCompose } from '../../apps/compose-validate';
+import { findPortConflicts, remapPorts } from '../../apps/ports';
 import { installCommunityApp, listInstalled } from '../../apps/manager';
 import { slugify } from '../../util/slug';
+
+const portRemapInput = z.record(z.string(), z.number().int().min(1).max(65535)).optional();
 
 function ensureEnabled() {
   if (!getSettings().allowCustomApps) {
@@ -56,15 +59,9 @@ export const communityRouter = router({
     return fetchAllCommunityApps(getSettings().communityRepos);
   }),
 
-  install: protectedProcedure
-    .input(
-      z.object({
-        name: z.string().trim().min(1).max(80),
-        compose: z.string().min(1),
-        icon: z.string().url().optional(),
-        acknowledgeRisk: z.boolean().optional(),
-      }),
-    )
+  /** Pre-flight a community app's compose: risk warnings + port conflicts. */
+  check: protectedProcedure
+    .input(z.object({ compose: z.string().min(1) }))
     .mutation(async ({ input }) => {
       ensureEnabled();
       let dangers: string[];
@@ -73,10 +70,40 @@ export const communityRouter = router({
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
+      const { conflicts } = await findPortConflicts(input.compose);
+      return { dangers, conflicts, ok: dangers.length === 0 };
+    }),
+
+  install: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1).max(80),
+        compose: z.string().min(1),
+        icon: z.string().url().optional(),
+        acknowledgeRisk: z.boolean().optional(),
+        portRemap: portRemapInput,
+      }),
+    )
+    .mutation(async ({ input }) => {
+      ensureEnabled();
+      const compose = input.portRemap ? remapPorts(input.compose, input.portRemap) : input.compose;
+      let dangers: string[];
+      try {
+        dangers = checkCompose(compose).dangers;
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
       if (dangers.length > 0 && !input.acknowledgeRisk) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: 'This app needs powerful permissions. Please confirm you understand the risk.',
+        });
+      }
+      const { conflicts } = await findPortConflicts(compose);
+      if (conflicts.length > 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Some ports are already in use: ${conflicts.map((c) => c.hostPort).join(', ')}. Please choose different ones.`,
         });
       }
 
@@ -91,7 +118,7 @@ export const communityRouter = router({
         return await installCommunityApp({
           id,
           name: input.name,
-          composeText: input.compose,
+          composeText: compose,
           env: {},
           icon: input.icon,
         });

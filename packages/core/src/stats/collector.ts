@@ -18,6 +18,7 @@ import { DATA_DIR } from '../config';
 import { runningProjectCount } from '../docker/discovery';
 
 const HOST_PROC = process.env.HOST_PROC ?? '/host/proc';
+const HOST_CGROUP = process.env.HOST_CGROUP ?? '/host/sys/fs/cgroup';
 
 export interface StatsSnapshot {
   cpuPercent: number;
@@ -132,7 +133,73 @@ function readCgroupMemory(): { used: number; limit: number } | null {
   return null;
 }
 
+/** Parse a "key value\n" cgroup file (e.g. memory.stat) into a map. */
+function readCgroupKv(file: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      const [k, v] = line.trim().split(/\s+/);
+      if (k && v != null) {
+        const n = Number.parseInt(v, 10);
+        if (Number.isFinite(n)) out[k] = n;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/**
+ * Read the machine/LXC memory from the host cgroup the SAME way Proxmox does:
+ * used = memory.current − inactive_file (the reclaimable page cache). This is the
+ * authoritative source; lxcfs's /proc/meminfo can badly disagree (reporting most
+ * memory as free). Requires the host cgroup mounted at HOST_CGROUP (installer).
+ * Total comes from /proc/meminfo (the LXC limit), falling back to the cgroup max.
+ */
+function readHostCgroupMemory(): { used: number; total: number } | null {
+  const meminfoTotal = readHostMeminfo()?.total ?? 0;
+  // cgroup v2
+  try {
+    const current = Number.parseInt(fs.readFileSync(`${HOST_CGROUP}/memory.current`, 'utf8').trim(), 10);
+    if (Number.isFinite(current)) {
+      const inactiveFile = readCgroupKv(`${HOST_CGROUP}/memory.stat`)['inactive_file'] ?? 0;
+      const used = Math.max(0, current - inactiveFile);
+      const maxRaw = fs.readFileSync(`${HOST_CGROUP}/memory.max`, 'utf8').trim();
+      const total = meminfoTotal > 0 ? meminfoTotal : maxRaw === 'max' ? 0 : Number.parseInt(maxRaw, 10);
+      if (total > 0) return { used: Math.min(used, total), total };
+    }
+  } catch {
+    /* not cgroup v2 / not mounted */
+  }
+  // cgroup v1
+  try {
+    const usage = Number.parseInt(
+      fs.readFileSync(`${HOST_CGROUP}/memory/memory.usage_in_bytes`, 'utf8').trim(),
+      10,
+    );
+    if (Number.isFinite(usage)) {
+      const stat = readCgroupKv(`${HOST_CGROUP}/memory/memory.stat`);
+      const cache = stat['total_inactive_file'] ?? stat['inactive_file'] ?? 0;
+      const used = Math.max(0, usage - cache);
+      const limit = Number.parseInt(
+        fs.readFileSync(`${HOST_CGROUP}/memory/memory.limit_in_bytes`, 'utf8').trim(),
+        10,
+      );
+      const total = meminfoTotal > 0 ? meminfoTotal : limit;
+      if (total > 0) return { used: Math.min(used, total), total };
+    }
+  } catch {
+    /* not cgroup v1 / not mounted */
+  }
+  return null;
+}
+
 function resolveMemory(mem: Systeminformation.MemData | null): { used: number; total: number } {
+  // The LXC/host cgroup is authoritative and matches Proxmox; prefer it.
+  const cg = readHostCgroupMemory();
+  if (cg && cg.total > 0) return cg;
+
   const host = readHostMeminfo();
   if (host && host.total > 0) return host;
 

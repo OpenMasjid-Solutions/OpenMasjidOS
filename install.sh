@@ -388,13 +388,19 @@ services:
       # the MACHINE (or LXC, via lxcfs) rather than the bare host underneath.
       - /proc:/host/proc:ro
 
+      # Mount the host cgroup read-only so memory usage matches what Proxmox/the
+      # host reports (memory.current minus reclaimable cache) — lxcfs meminfo can
+      # disagree significantly inside an LXC.
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+
     environment:
       # Tell the core where its data lives inside the container
       OPENMASJID_DATA_DIR: /data
       # The port the daemon binds to inside the container
       OPENMASJID_PORT: "${PORT}"
-      # Point the stats collector at the mounted host /proc.
+      # Point the stats collector at the mounted host /proc + cgroup.
       HOST_PROC: /host/proc
+      HOST_CGROUP: /host/sys/fs/cgroup
       NODE_ENV: production
 
     healthcheck:

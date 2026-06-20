@@ -4,7 +4,7 @@
  *   - Docker Compose: paste your own compose file.
  * Both validate + risk-check before anything runs.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ShieldCheck, Plus, Trash2, Store as StoreIcon, Search } from 'lucide-react';
@@ -12,6 +12,7 @@ import { trpc } from '../lib/trpc';
 import { appInitial, appColor } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
+import { PortConflicts, initialRemap } from '../components/PortConflicts';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import type { CommunityApp } from '../lib/types';
@@ -83,6 +84,14 @@ function CommunityTab() {
   const [confirmApp, setConfirmApp] = useState<CommunityApp | null>(null);
   const [needsAck, setNeedsAck] = useState(false);
   const [installError, setInstallError] = useState('');
+  const [portRemap, setPortRemap] = useState<Record<string, number>>({});
+
+  const check = trpc.community.check.useMutation();
+  const conflicts = check.data?.conflicts ?? [];
+
+  useEffect(() => {
+    if (check.data) setPortRemap(initialRemap(check.data.conflicts));
+  }, [check.data]);
 
   const visibleApps = (apps.data ?? []).filter((a) => {
     const q = query.trim().toLowerCase();
@@ -123,6 +132,9 @@ function CommunityTab() {
     setConfirmApp(app);
     setNeedsAck(false);
     setInstallError('');
+    setPortRemap({});
+    check.reset();
+    check.mutate({ compose: app.compose }); // surface port conflicts before install
   }
 
   function confirmInstall() {
@@ -130,7 +142,13 @@ function CommunityTab() {
     setInstallError('');
     // The install input requires a valid URL for icon, so drop non-http icons.
     const icon = confirmApp.icon && /^https?:\/\//i.test(confirmApp.icon) ? confirmApp.icon : undefined;
-    install.mutate({ name: confirmApp.name, compose: confirmApp.compose, icon, acknowledgeRisk: needsAck });
+    install.mutate({
+      name: confirmApp.name,
+      compose: confirmApp.compose,
+      icon,
+      acknowledgeRisk: needsAck,
+      portRemap: conflicts.length > 0 ? portRemap : undefined,
+    });
   }
 
   return (
@@ -219,6 +237,7 @@ function CommunityTab() {
             <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>
           </div>
         )}
+        <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
         {install.isPending ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span className="spinner" /> {t('community.installing')}
@@ -249,6 +268,7 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
   const [env, setEnv] = useState('');
   const [ack, setAck] = useState(false);
   const [error, setError] = useState('');
+  const [portRemap, setPortRemap] = useState<Record<string, number>>({});
 
   const check = trpc.custom.check.useMutation();
   const install = trpc.custom.install.useMutation({
@@ -259,6 +279,12 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
     onError: (e) => setError(e.message || t('custom.error')),
   });
   const dangers = check.data?.dangers ?? [];
+  const conflicts = check.data?.conflicts ?? [];
+
+  // Pre-fill the remap with suggested free ports whenever a check finds conflicts.
+  useEffect(() => {
+    if (check.data) setPortRemap(initialRemap(check.data.conflicts));
+  }, [check.data]);
 
   return (
     <>
@@ -300,6 +326,8 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
           </div>
         )}
 
+        <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
+
         {error && <p className="form-error">{error}</p>}
 
         <div style={{ display: 'flex', gap: '0.6rem' }}>
@@ -313,7 +341,13 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
               setError('');
               if (!name.trim()) return setError(t('custom.nameRequired'));
               if (!compose.trim()) return setError(t('custom.composeRequired'));
-              install.mutate({ name, compose, env: parseEnv(env), acknowledgeRisk: ack });
+              install.mutate({
+                name,
+                compose,
+                env: parseEnv(env),
+                acknowledgeRisk: ack,
+                portRemap: conflicts.length > 0 ? portRemap : undefined,
+              });
             }}
           >
             {install.isPending ? t('custom.installing') : t('custom.install')}

@@ -42,6 +42,12 @@
     "open": "Open window",
     "minimized": "Minimized — click to reopen"
   },
+  "ports": {
+    "title": "Port already in use",
+    "body": "This app wants a port that something else is already using. Pick a free one and we'll set it up for you.",
+    "inUse": "Port {{port}} is in use",
+    "newPort": "New port for {{port}}"
+  },
   "profile": {
     "menu": "Account menu",
     "darkMode": "Dark mode",

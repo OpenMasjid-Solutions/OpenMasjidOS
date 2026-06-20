@@ -8,8 +8,11 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { getSettings } from '../../settings/store';
 import { checkCompose } from '../../apps/compose-validate';
+import { findPortConflicts, remapPorts } from '../../apps/ports';
 import { installCustomApp, listInstalled } from '../../apps/manager';
 import { slugify } from '../../util/slug';
+
+const portRemapInput = z.record(z.string(), z.number().int().min(1).max(65535)).optional();
 
 function ensureEnabled() {
   if (!getSettings().allowCustomApps) {
@@ -29,13 +32,14 @@ function safeCheck(text: string) {
 }
 
 export const customRouter = router({
-  /** Pre-flight: parse + risk-check a pasted compose without installing. */
+  /** Pre-flight: parse + risk-check a pasted compose, and flag port conflicts. */
   check: protectedProcedure
     .input(z.object({ compose: z.string().min(1) }))
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       ensureEnabled();
       const { services, dangers } = safeCheck(input.compose);
-      return { services, dangers, ok: dangers.length === 0 };
+      const { conflicts } = await findPortConflicts(input.compose);
+      return { services, dangers, conflicts, ok: dangers.length === 0 };
     }),
 
   install: protectedProcedure
@@ -46,15 +50,25 @@ export const customRouter = router({
         env: z.record(z.string(), z.string()).default({}),
         icon: z.string().url().optional(),
         acknowledgeRisk: z.boolean().optional(),
+        portRemap: portRemapInput,
       }),
     )
     .mutation(async ({ input }) => {
       ensureEnabled();
-      const { dangers } = safeCheck(input.compose);
+      const compose = input.portRemap ? remapPorts(input.compose, input.portRemap) : input.compose;
+      const { dangers } = safeCheck(compose);
       if (dangers.length > 0 && !input.acknowledgeRisk) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: 'This app needs powerful permissions. Please confirm you understand the risk.',
+        });
+      }
+      // Re-check ports on the final compose so we never start into a taken port.
+      const { conflicts } = await findPortConflicts(compose);
+      if (conflicts.length > 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Some ports are already in use: ${conflicts.map((c) => c.hostPort).join(', ')}. Please choose different ones.`,
         });
       }
 
@@ -70,7 +84,7 @@ export const customRouter = router({
         return await installCustomApp({
           id,
           name: input.name,
-          composeText: input.compose,
+          composeText: compose,
           env: input.env,
           icon: input.icon,
         });
