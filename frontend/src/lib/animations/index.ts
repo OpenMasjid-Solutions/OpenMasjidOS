@@ -46,13 +46,17 @@ export function riseIn(_node: Element, { delay = 0, duration = 300 } = {}): Tran
 
 /** Route in-transition: gentle crossfade + slight rise. Pair inside a
  *  {#key page.url.pathname} block. */
-export function routeRise(_node: Element, { duration = 380, delay = 0 } = {}): TransitionConfig {
+export function routeRise(_node: Element, { duration = 420, delay = 0 } = {}): TransitionConfig {
   if (rm()) return { duration: 0, css: () => '' };
   return {
     delay,
     duration,
     easing: cubicOut,
-    css: (t: number) => `opacity:${t}; transform:translateY(${(1 - t) * 10}px);`,
+    // Gentle rise + a touch of scale + a fading blur — a soft "glassy" settle.
+    css: (t: number) => {
+      const e = 1 - t;
+      return `opacity:${t}; transform:translateY(${e * 12}px) scale(${0.985 + t * 0.015}); filter:blur(${e * 3}px);`;
+    },
   };
 }
 

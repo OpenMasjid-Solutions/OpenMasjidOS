@@ -7,9 +7,11 @@
   import { theme } from '$lib/theme/theme';
   import { t, dir } from '$lib/i18n';
   import { page } from '$app/stores';
+  import { afterNavigate } from '$app/navigation';
   import { pressable, routeRise, khatamSplash } from '$lib/animations';
   import { prefs } from '$lib/stores/prefs';
   import { api } from '$lib/api/client';
+  import type { InstalledApp } from '$lib/api/client';
   import SceneBackground from '$lib/components/SceneBackground.svelte';
   import AuthScreen from '$lib/components/AuthScreen.svelte';
 
@@ -49,7 +51,10 @@
   async function checkAuth() {
     try {
       const s = await api.auth.me();
-      if (mounted) authState = s.setup_required ? 'setup' : s.authenticated ? 'ready' : 'login';
+      if (mounted) {
+        authState = s.setup_required ? 'setup' : s.authenticated ? 'ready' : 'login';
+        if (authState === 'ready') loadDockApps();
+      }
     } catch {
       // Backend unreachable — fall back to the login screen so the user has a
       // path forward once it comes back up.
@@ -59,7 +64,13 @@
 
   function handleAuthed() {
     authState = 'ready';
+    loadDockApps();
   }
+
+  // Refresh dock apps after navigation (e.g. returning from an install/remove).
+  afterNavigate(() => {
+    if (authState === 'ready') loadDockApps();
+  });
 
   async function handleLogout() {
     try {
@@ -72,6 +83,52 @@
 
   function toggleTheme() {
     theme.toggle();
+  }
+
+  // ── Profile menu (top-right) ────────────────────────────────────────────
+  let profileOpen = $state(false);
+
+  // ── Dock: pinned apps ───────────────────────────────────────────────────
+  // Load all apps once; the dock reactively shows the ones whose id is in
+  // $prefs.pinnedApps, so pinning/unpinning anywhere updates the dock instantly.
+  let dockApps = $state<InstalledApp[]>([]);
+
+  async function loadDockApps() {
+    try {
+      const r = await api.apps.list();
+      dockApps = r.apps ?? [];
+    } catch {
+      /* keep whatever we had */
+    }
+  }
+
+  function appPorts(app: InstalledApp): number[] {
+    return Array.isArray(app.ports) ? app.ports : [];
+  }
+
+  function openApp(app: InstalledApp) {
+    const ports = appPorts(app);
+    if (ports.length === 0) return;
+    window.open(`http://${window.location.hostname}:${ports[0]}`, '_blank', 'noopener');
+  }
+
+  // Drag an app card (from the dashboard) onto the dock to pin it. The card
+  // sets dataTransfer 'application/omos-app' to the app id.
+  let dragOverDock = $state(false);
+  function onDockDragOver(e: DragEvent) {
+    if (e.dataTransfer?.types.includes('application/omos-app')) {
+      e.preventDefault();
+      dragOverDock = true;
+    }
+  }
+  function onDockDrop(e: DragEvent) {
+    dragOverDock = false;
+    const id = e.dataTransfer?.getData('application/omos-app');
+    if (id) {
+      e.preventDefault();
+      prefs.pin(id);
+      loadDockApps();
+    }
   }
 
   function splashAction(node: HTMLElement) {
@@ -94,6 +151,9 @@
 <!-- Ambient scene behind everything -->
 <SceneBackground />
 
+<!-- Close the profile menu on any outside click (button uses stopPropagation). -->
+<svelte:window on:click={() => (profileOpen = false)} />
+
 {#if authState === 'ready'}
 <div class="shell">
   <!-- Main content area — route content with a gentle rise transition -->
@@ -105,8 +165,70 @@
     {/key}
   </main>
 
+  <!-- Profile button + menu (top-right corner) -->
+  <div class="profile">
+    <button
+      class="profile-btn"
+      class:profile-btn--open={profileOpen}
+      on:click|stopPropagation={() => (profileOpen = !profileOpen)}
+      use:pressable
+      aria-haspopup="menu"
+      aria-expanded={profileOpen}
+      aria-label={$t('profile.menu')}
+      type="button"
+    >
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <circle cx="12" cy="8.5" r="3.5"/>
+        <path d="M5 19.5 Q5 14.5 12 14.5 Q19 14.5 19 19.5"/>
+      </svg>
+    </button>
+    {#if profileOpen}
+      <div class="profile-menu glass-raised" role="menu">
+        <button role="menuitem" class="pm-item" on:click|stopPropagation={() => { toggleTheme(); }}>
+          <span class="pm-glyph" aria-hidden="true">
+            {#if $theme === 'dark'}
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
+                <circle cx="10" cy="10" r="3.5"/>
+                <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10 M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78 M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
+              </svg>
+            {:else}
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
+                <path d="M15 10 A6 6 0 1 1 10 5 A4 4 0 0 0 15 10 Z"/>
+              </svg>
+            {/if}
+          </span>
+          {$t($theme === 'dark' ? 'theme.switchToLight' : 'theme.switchToDark')}
+        </button>
+        <a role="menuitem" class="pm-item" href="/settings" on:click={() => (profileOpen = false)}>
+          <span class="pm-glyph" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
+              <circle cx="10" cy="10" r="2.5"/>
+              <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10 M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78 M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
+            </svg>
+          </span>
+          {$t('nav.settings')}
+        </a>
+        <button role="menuitem" class="pm-item pm-item--danger" on:click|stopPropagation={handleLogout}>
+          <span class="pm-glyph" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
+              <path d="M8 17 L4 17 Q3 17 3 16 L3 4 Q3 3 4 3 L8 3 M13 14 L17 10 L13 6 M17 10 L8 10"/>
+            </svg>
+          </span>
+          {$t('auth.signOut')}
+        </button>
+      </div>
+    {/if}
+  </div>
+
   <!-- Floating glass dock (Umbrel-style app launcher / navigation) -->
-  <nav class="dock glass-dock" aria-label={$t('nav.aria.primary')}>
+  <nav
+    class="dock glass-dock"
+    class:dock--dragover={dragOverDock}
+    aria-label={$t('nav.aria.primary')}
+    on:dragover={onDockDragOver}
+    on:drop={onDockDrop}
+    on:dragleave={() => (dragOverDock = false)}
+  >
     {#each navItems as item}
       {@const active = isActive(item.href, $page.url.pathname)}
       <a
@@ -147,46 +269,21 @@
       </a>
     {/each}
 
-    <span class="dock-divider" aria-hidden="true"></span>
-
-    <button
-      class="dock-item"
-      on:click={toggleTheme}
-      use:pressable
-      aria-label={$t($theme === 'dark' ? 'theme.switchToLight' : 'theme.switchToDark')}
-      type="button"
-    >
-      <span class="dock-glyph" aria-hidden="true">
-        {#if $theme === 'dark'}
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
-            <circle cx="10" cy="10" r="3.5"/>
-            <path d="M10 2 L10 4 M10 16 L10 18 M2 10 L4 10 M16 10 L18 10
-                     M4.22 4.22 L5.64 5.64 M14.36 14.36 L15.78 15.78
-                     M4.22 15.78 L5.64 14.36 M14.36 5.64 L15.78 4.22"/>
-          </svg>
-        {:else}
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
-            <path d="M15 10 A6 6 0 1 1 10 5 A4 4 0 0 0 15 10 Z"/>
-          </svg>
-        {/if}
-      </span>
-      <span class="dock-tip">{$t($theme === 'dark' ? 'theme.light' : 'theme.dark')}</span>
-    </button>
-
-    <button
-      class="dock-item dock-item--danger"
-      on:click={handleLogout}
-      use:pressable
-      aria-label={$t('auth.signOut')}
-      type="button"
-    >
-      <span class="dock-glyph" aria-hidden="true">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
-          <path d="M8 17 L4 17 Q3 17 3 16 L3 4 Q3 3 4 3 L8 3 M13 14 L17 10 L13 6 M17 10 L8 10"/>
-        </svg>
-      </span>
-      <span class="dock-tip">{$t('auth.signOut')}</span>
-    </button>
+    {#if $prefs.pinnedApps.length > 0}
+      <span class="dock-divider" aria-hidden="true"></span>
+      {#each dockApps.filter((a) => $prefs.pinnedApps.includes(a.id)) as app (app.id)}
+        <button
+          class="dock-item dock-app"
+          on:click={() => openApp(app)}
+          use:pressable
+          aria-label={app.name}
+          type="button"
+        >
+          <span class="dock-glyph dock-app-glyph" aria-hidden="true">{app.name.slice(0, 1).toUpperCase()}</span>
+          <span class="dock-tip">{app.name}</span>
+        </button>
+      {/each}
+    {/if}
   </nav>
 </div>
 {:else if authState === 'setup' || authState === 'login'}
@@ -328,6 +425,88 @@
     .dock-item,
     .dock-tip { transition: none; }
     .dock-item:hover { transform: none; }
+  }
+
+  /* Dock highlight while dragging an app over it */
+  .dock--dragover {
+    box-shadow: var(--glass-shadow-raised), 0 0 0 2px var(--color-primary);
+  }
+  /* Pinned app icon — rounded-square with the app's initial */
+  .dock-app-glyph {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 0.5rem;
+    background: var(--color-primary-subtle);
+    color: var(--color-primary);
+    font-size: 0.9375rem;
+    font-weight: 700;
+  }
+
+  /* ── Profile button + menu (top-right) ─────────────────────────────── */
+  .profile {
+    position: fixed;
+    top: 1rem;
+    inset-inline-end: 1rem;
+    z-index: 45;
+  }
+  .profile-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background-color: var(--glass-bg-raised);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    color: var(--color-ink-muted);
+    cursor: pointer;
+    box-shadow: var(--glass-shadow);
+    transition: color 0.15s ease, transform var(--dur-micro) var(--ease-settle);
+  }
+  .profile-btn:hover { color: var(--color-ink); }
+  .profile-btn--open { color: var(--color-primary); }
+
+  .profile-menu {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    inset-inline-end: 0;
+    min-width: 12rem;
+    padding: 0.375rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    animation: pmIn 0.16s var(--ease-settle) both;
+  }
+  @keyframes pmIn {
+    from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .pm-item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 0.5rem;
+    border: none;
+    background: transparent;
+    color: var(--color-ink);
+    font-size: 0.875rem;
+    font-family: inherit;
+    text-align: start;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+  .pm-item:hover { background: var(--color-surface-hover); }
+  .pm-item--danger { color: var(--color-danger); }
+  .pm-glyph { display: flex; flex-shrink: 0; color: var(--color-ink-muted); }
+  .pm-item--danger .pm-glyph { color: var(--color-danger); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .profile-btn { transition: none; }
+    .profile-menu { animation: none; }
   }
 
   /* Brief loading state while the first /api/auth/me resolves. */

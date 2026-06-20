@@ -4,8 +4,16 @@
   import { api } from '$lib/api/client';
   import type { StatsSnapshot, InstalledApp } from '$lib/api/client';
   import { serverSettings } from '$lib/stores/serverSettings';
+  import { prefs } from '$lib/stores/prefs';
   import { riseIn, tiltCard, pressable, enterGrid } from '$lib/animations';
   import Terminal from '$lib/components/Terminal.svelte';
+
+  // Time-of-day greeting (Umbrel-style). Computed client-side on render.
+  function greeting(): string {
+    const h = new Date().getHours();
+    const key = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+    return $t('dashboard.greeting.' + key);
+  }
 
   onMount(() => serverSettings.load());
 
@@ -162,11 +170,8 @@
   {:else}
     <header class="hero" in:riseIn>
       <h1 class="hero-title">
-        {$t('dashboard.welcome')}
+        {greeting()}{$prefs.dashboardName ? `, ${$prefs.dashboardName}` : ''}.
       </h1>
-      {#if health?.version && !healthError}
-        <p class="hero-sub">{$t('dashboard.coreVersion', { version: health.version })}</p>
-      {/if}
     </header>
   {/if}
 
@@ -251,9 +256,6 @@
             {/if}
           </p>
         </div>
-        {#if health?.version && !healthError}
-          <span class="version-badge">v{health.version}</span>
-        {/if}
       </div>
 
       <!-- ── Installed Apps section ── -->
@@ -270,6 +272,8 @@
               <div
                 class="installed-card glass"
                 class:clickable={hasPort}
+                draggable="true"
+                on:dragstart={(e) => e.dataTransfer?.setData('application/omos-app', app.id)}
                 on:click={() => openApp(app)}
                 role={hasPort ? 'link' : undefined}
                 tabindex={hasPort ? 0 : undefined}
@@ -310,6 +314,9 @@
                         {:else}
                           <button role="menuitem" on:click|stopPropagation={() => appAction('start', app)}>{$t('actions.start')}</button>
                         {/if}
+                        <button role="menuitem" on:click|stopPropagation={() => { openMenuId=''; prefs.togglePin(app.id); }}>
+                          {$prefs.pinnedApps.includes(app.id) ? $t('actions.unpin') : $t('actions.pin')}
+                        </button>
                         <button role="menuitem" class="danger" on:click|stopPropagation={() => removeApp(app)}>{$t('actions.uninstall')}</button>
                       </div>
                     {/if}
@@ -392,7 +399,7 @@
     gap: 0.25rem;
   }
   .hero-title {
-    font-family: 'Playfair Display', Georgia, serif;
+    font-family: var(--font-display);
     font-size: 2rem;
     font-weight: 600;
     line-height: 1.15;
@@ -508,7 +515,7 @@
 
   /* Apps section */
   .section-title {
-    font-family: 'Playfair Display', Georgia, serif;
+    font-family: var(--font-display);
     font-size: 1.25rem;
     font-weight: 600;
     color: var(--color-ink);

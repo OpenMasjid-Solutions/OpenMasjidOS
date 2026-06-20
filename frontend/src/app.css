@@ -11,7 +11,7 @@
 
   body {
     color: var(--color-ink);
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-sans);
     min-height: 100vh;
     /* The fixed scene provides the visible background; body stays transparent
        so the aurora shows through. */

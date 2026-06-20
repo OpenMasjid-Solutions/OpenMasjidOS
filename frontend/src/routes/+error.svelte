@@ -62,7 +62,7 @@
   }
 
   .error-code {
-    font-family: 'Playfair Display', Georgia, serif;
+    font-family: var(--font-display);
     font-size: 4rem;
     font-weight: 700;
     color: var(--color-primary);

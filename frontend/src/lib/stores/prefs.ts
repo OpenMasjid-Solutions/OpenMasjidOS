@@ -1,9 +1,7 @@
 /*
- * prefs — platform-only dashboard preferences (theme/accent live elsewhere).
+ * prefs — platform-only dashboard preferences (presentation + dock pins).
  *
- * Per CLAUDE.md §3/§38 the platform owns ONLY presentation + advanced toggles;
- * masjid/prayer config belongs to individual apps, never here. These prefs are
- * persisted to localStorage so they survive reloads. (Backend persistence will
+ * Persisted to localStorage so they survive reloads. (Backend persistence will
  * arrive with the settings API; localStorage is the honest interim store.)
  */
 
@@ -11,14 +9,18 @@ import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
 export interface Prefs {
-  /** Optional custom name shown in the sidebar instead of "OpenMasjidOS". */
+  /** Optional custom name shown in the greeting / dock. */
   dashboardName: string;
   /** Accent colour id — see ACCENTS. Applied live to the primary CSS tokens. */
   accent: string;
+  /** Wallpaper id — see WALLPAPERS. Applied via data-wallpaper on <html>. */
+  wallpaper: string;
   /** Advanced: when on, the App Store exposes a "3rd Party App" installer. */
   customApps: boolean;
   /** Whether to play the first-load khatam splash. */
   showSplash: boolean;
+  /** App ids pinned to the dock. */
+  pinnedApps: string[];
 }
 
 const KEY = 'omos-prefs';
@@ -26,8 +28,10 @@ const KEY = 'omos-prefs';
 const DEFAULTS: Prefs = {
   dashboardName: '',
   accent: 'cyan',
+  wallpaper: 'aurora',
   customApps: false,
   showSplash: true,
+  pinnedApps: [],
 };
 
 /** Selectable accent presets. Each live-applies to the primary tokens. */
@@ -37,6 +41,16 @@ export const ACCENTS: Record<string, { label: string; primary: string; hover: st
   sky:    { label: 'Sky',    primary: '#38BDF8', hover: '#7DD3FC', subtle: 'rgba(56,189,248,0.12)' },
   violet: { label: 'Violet', primary: '#A78BFA', hover: '#C4B5FD', subtle: 'rgba(167,139,250,0.14)' },
   gold:   { label: 'Gold',   primary: '#FBBF24', hover: '#FCD34D', subtle: 'rgba(251,191,36,0.14)' },
+};
+
+/** Selectable wallpapers. `preview` is a CSS gradient for the settings swatch;
+ *  the actual scene colours live in tokens.css under [data-wallpaper="<id>"]. */
+export const WALLPAPERS: Record<string, { label: string; preview: string }> = {
+  aurora:   { label: 'Aurora',   preview: 'radial-gradient(circle at 30% 30%, #22D3EE, #0A1828 70%)' },
+  twilight: { label: 'Twilight', preview: 'radial-gradient(circle at 30% 30%, #A78BFA, #0a0618 70%)' },
+  sunset:   { label: 'Sunset',   preview: 'radial-gradient(circle at 30% 30%, #FB923C, #1a0d08 70%)' },
+  forest:   { label: 'Forest',   preview: 'radial-gradient(circle at 30% 30%, #22C55E, #04140e 70%)' },
+  night:    { label: 'Night',    preview: 'radial-gradient(circle at 30% 30%, #385AA0, #02060f 75%)' },
 };
 
 function load(): Prefs {
@@ -58,14 +72,8 @@ function persist(p: Prefs): void {
   }
 }
 
-/**
- * Live-apply an accent to the primary CSS custom properties.
- *
- * The default 'cyan' REMOVES any inline override so each theme's own tuned
- * --color-primary applies (#22D3EE dark / #0284C7 light) — keeping light-theme
- * contrast correct. Only a non-default accent writes an inline override (an
- * opt-in preview; persistence + full per-theme tuning arrive with the backend).
- */
+/** Live-apply an accent to the primary CSS custom properties. The default
+ *  'cyan' removes the inline override so each theme's tuned primary applies. */
 export function applyAccent(id: string): void {
   if (!browser) return;
   const el = document.documentElement;
@@ -81,17 +89,44 @@ export function applyAccent(id: string): void {
   el.style.setProperty('--color-primary-subtle', a.subtle);
 }
 
+/** Live-apply a wallpaper by setting data-wallpaper on <html>. */
+export function applyWallpaper(id: string): void {
+  if (!browser) return;
+  document.documentElement.setAttribute('data-wallpaper', WALLPAPERS[id] ? id : 'aurora');
+}
+
 function createPrefs() {
   const { subscribe, set, update } = writable<Prefs>(load());
 
   return {
     subscribe,
-    /** Merge a partial update, persist, and apply side effects (accent). */
+    /** Merge a partial update, persist, and apply side effects. */
     patch(part: Partial<Prefs>) {
       update((p) => {
         const next = { ...p, ...part };
         persist(next);
         if (part.accent !== undefined) applyAccent(next.accent);
+        if (part.wallpaper !== undefined) applyWallpaper(next.wallpaper);
+        return next;
+      });
+    },
+    /** Toggle an app's presence in the dock pins. */
+    togglePin(id: string) {
+      update((p) => {
+        const pinned = p.pinnedApps.includes(id)
+          ? p.pinnedApps.filter((x) => x !== id)
+          : [...p.pinnedApps, id];
+        const next = { ...p, pinnedApps: pinned };
+        persist(next);
+        return next;
+      });
+    },
+    /** Pin an app to the dock (idempotent — used by drag-and-drop). */
+    pin(id: string) {
+      update((p) => {
+        if (p.pinnedApps.includes(id)) return p;
+        const next = { ...p, pinnedApps: [...p.pinnedApps, id] };
+        persist(next);
         return next;
       });
     },
@@ -100,6 +135,7 @@ function createPrefs() {
       const p = load();
       set(p);
       applyAccent(p.accent);
+      applyWallpaper(p.wallpaper);
     },
   };
 }

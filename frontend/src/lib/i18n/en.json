@@ -43,6 +43,9 @@
       "primary": "Main navigation"
     }
   },
+  "profile": {
+    "menu": "Account menu"
+  },
   "theme": {
     "switchToLight": "Switch to light mode",
     "switchToDark": "Switch to dark mode",
@@ -52,6 +55,11 @@
   "dashboard": {
     "title": "Dashboard",
     "welcome": "Welcome to OpenMasjidOS",
+    "greeting": {
+      "morning": "Good morning",
+      "afternoon": "Good afternoon",
+      "evening": "Good evening"
+    },
     "yourMasjid": "your masjid",
     "coreVersion": "Core v{version}",
     "noAppsTitle": "No apps installed yet",
@@ -114,6 +122,8 @@
     "themeDark": "Dark",
     "themeLight": "Light",
     "accent": "Accent colour",
+    "wallpaper": "Wallpaper",
+    "version": "OpenMasjidOS",
     "dashboardName": "Dashboard name",
     "dashboardNamePlaceholder": "OpenMasjidOS",
     "dashboardNameHint": "Shown in the sidebar. Leave blank for the default.",
@@ -154,6 +164,8 @@
     "restart": "Restart",
     "shutdown": "Shut down",
     "uninstall": "Uninstall",
+    "pin": "Pin to dock",
+    "unpin": "Remove from dock",
     "terminal": "Web terminal",
     "remove": "Remove",
     "update": "Update",

@@ -3,12 +3,23 @@
   import { onMount } from 'svelte';
   import { t, locale } from '$lib/i18n';
   import { theme } from '$lib/theme/theme';
-  import { prefs, ACCENTS } from '$lib/stores/prefs';
+  import { prefs, ACCENTS, WALLPAPERS } from '$lib/stores/prefs';
   import { serverSettings } from '$lib/stores/serverSettings';
+  import { api } from '$lib/api/client';
   import { riseIn, pressable, enterGrid } from '$lib/animations';
   import Terminal from '$lib/components/Terminal.svelte';
 
-  onMount(() => serverSettings.load());
+  let version = '';
+
+  onMount(() => {
+    serverSettings.load();
+    api.health().then((h) => (version = h.version)).catch(() => {});
+  });
+
+  const wallpaperList = Object.entries(WALLPAPERS).map(([id, w]) => ({ id, ...w }));
+  function chooseWallpaper(id: string) {
+    prefs.patch({ wallpaper: id });
+  }
 
   let showRootTerm = false;
 
@@ -112,6 +123,26 @@
                 title={a.label}
                 use:pressable
                 on:click={() => chooseAccent(a.id)}
+              ></button>
+            {/each}
+          </div>
+        </div>
+
+        <!-- Wallpaper -->
+        <div class="setting-row setting-row--stack">
+          <span class="setting-label">{$t('settings.wallpaper')}</span>
+          <div class="wallpapers" role="group" aria-label={$t('settings.wallpaper')}>
+            {#each wallpaperList as w}
+              <button
+                type="button"
+                class="wallpaper"
+                class:wallpaper--active={$prefs.wallpaper === w.id}
+                style="--wp: {w.preview}"
+                aria-pressed={$prefs.wallpaper === w.id}
+                aria-label={w.label}
+                title={w.label}
+                use:pressable
+                on:click={() => chooseWallpaper(w.id)}
               ></button>
             {/each}
           </div>
@@ -238,6 +269,8 @@
     </div>
 
   </form>
+
+  <p class="version-line">{$t('settings.version')} {version ? `v${version}` : '…'}</p>
 </div>
 
 {#if showRootTerm}
@@ -256,7 +289,7 @@
 
   .page-header { margin-block-end: 2rem; }
   .page-title {
-    font-family: 'Playfair Display', Georgia, serif;
+    font-family: var(--font-display);
     font-size: 1.75rem;
     font-weight: 600;
     color: var(--color-ink);
@@ -370,6 +403,42 @@
   .swatch:hover { transform: scale(1.12); }
   .swatch--active {
     box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--sw);
+  }
+
+  /* Wallpaper picker */
+  .wallpapers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+  }
+  .wallpaper {
+    width: 3.5rem;
+    height: 2.25rem;
+    border-radius: 0.5rem;
+    border: 2px solid transparent;
+    background: var(--wp);
+    background-size: cover;
+    cursor: pointer;
+    padding: 0;
+    box-shadow: 0 0 0 1px var(--color-border);
+    transition: transform 0.15s var(--ease-settle), box-shadow 0.15s ease;
+  }
+  .wallpaper:hover { transform: scale(1.06); }
+  .wallpaper--active {
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary);
+  }
+
+  /* Version line (footer) */
+  .version-line {
+    margin: 1.5rem 0 0;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--color-ink-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wallpaper { transition: none; }
+    .wallpaper:hover { transform: none; }
   }
 
   /* Recessed fields */
