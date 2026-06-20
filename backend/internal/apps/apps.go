@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -105,9 +106,9 @@ func (m *Manager) InstallCustom(ctx context.Context, name, composeYAML string) (
 func (m *Manager) List(ctx context.Context) ([]App, error) {
 	entries, err := os.ReadDir(m.appsDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return []App{}, nil
-	}
-	if err != nil {
+		slog.Info("apps list: no apps dir yet", "dir", m.appsDir)
+		entries = nil
+	} else if err != nil {
 		return nil, err
 	}
 
@@ -134,11 +135,14 @@ func (m *Manager) List(ctx context.Context) ([]App, error) {
 	for _, a := range apps {
 		known[a.ID] = true
 	}
-	for _, project := range docker.RunningProjects(ctx) {
+	discovered := docker.RunningProjects(ctx)
+	slog.Info("apps list", "from_metadata", len(apps), "docker_projects", discovered)
+	for _, project := range discovered {
 		id := strings.TrimPrefix(project, "omos-")
 		if id == "" || known[id] {
 			continue
 		}
+		slog.Info("apps list: recovering orphaned app", "project", project, "id", id)
 		recovered := App{
 			ID:        id,
 			Name:      id,

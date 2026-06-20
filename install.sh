@@ -81,7 +81,11 @@ print_banner() {
       |_|                              |__/
 BANNER_EOF
   printf "${CLR_RESET}"
-  printf "${CLR_GREEN}  Free, open-source platform for masjids${CLR_RESET}\n"
+  echo ""
+  print_mosque
+  echo ""
+  printf "${CLR_GREEN}${CLR_BOLD}        Free, open-source software for your masjid${CLR_RESET}\n"
+  printf "${CLR_GREEN}     Prayer times, donations, displays & more — on your own server${CLR_RESET}\n"
   echo ""
 }
 
@@ -99,6 +103,35 @@ warn() {
 error() {
   echo -e "${CLR_RED}[✗] Error:${CLR_RESET} $*" >&2
   exit 1
+}
+
+# print_mosque — a little decorative masjid, shown in the banner and success box.
+print_mosque() {
+  printf "${CLR_CYAN}"
+  cat << 'MOSQUE'
+                        .
+                       /|\
+                      ( | )
+                    __'-|-'__
+                .-''    |    ''-.
+              .'      .-'-.      '.
+       __    /       /     \       \    __
+      |  |  |       |  .-.  |       |  |  |
+      |  |  |       | |   | |       |  |  |
+      |  |  |       | |   | |       |  |  |
+      |__|__|_______|_|___|_|_______|__|__|
+MOSQUE
+  printf "${CLR_RESET}"
+}
+
+# step — friendly, numbered progress header (set STEP_TOTAL before using).
+STEP_TOTAL=6
+STEP_NUM=0
+step() {
+  STEP_NUM=$((STEP_NUM + 1))
+  echo ""
+  printf "${CLR_CYAN}${CLR_BOLD}  ◆  Step %s of %s${CLR_RESET}  %s\n" "${STEP_NUM}" "${STEP_TOTAL}" "$*"
+  printf "${CLR_CYAN}  ──────────────────────────────────────────────${CLR_RESET}\n"
 }
 
 # =============================================================================
@@ -386,12 +419,12 @@ EOF
 # =============================================================================
 
 pull_and_start() {
-  info "Pulling the latest OpenMasjidOS image (this may take a minute on first install)..."
+  info "Downloading OpenMasjidOS — a one-time download that can take a minute or two on slower internet. Please wait..."
 
   # Pull explicitly first so progress is visible and errors are clear
   docker pull "${IMAGE}"
 
-  info "Starting OpenMasjidOS..."
+  info "Starting OpenMasjidOS up..."
 
   # -p sets the Compose project name so it is consistent regardless of the
   # directory name. --detach runs it in the background.
@@ -549,10 +582,13 @@ menu_fresh() {
   if [ ! -r /dev/tty ]; then echo "install"; return; fi
   {
     echo ""
-    echo "  Welcome to OpenMasjidOS."
-    echo "    1) Install"
-    echo "    2) Exit"
-    printf "  Choose [1]: "
+    printf "${CLR_CYAN}${CLR_BOLD}  ┌─ Welcome! Let's get you set up ───────────────${CLR_RESET}\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}1)${CLR_RESET} Install  ${CLR_BOLD}—${CLR_RESET} set up OpenMasjidOS now\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}2)${CLR_RESET} Exit     ${CLR_BOLD}—${CLR_RESET} do nothing\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}\n"
+    printf "${CLR_CYAN}${CLR_BOLD}  └───────────────────────────────────────────────${CLR_RESET}\n"
+    printf "  Type a number and press Enter ${CLR_BOLD}[1]${CLR_RESET}: "
   } > /dev/tty
   local r=""; read -r r < /dev/tty || r=""
   case "$r" in
@@ -565,13 +601,16 @@ menu_existing() {
   if [ ! -r /dev/tty ]; then echo "update"; return; fi
   {
     echo ""
-    echo "  OpenMasjidOS is already installed on this machine."
-    echo "  What would you like to do?"
-    echo "    1) Update   — get the latest version (keeps all your apps & data)"
-    echo "    2) Repair   — re-apply config, re-pull, and restart the core"
-    echo "    3) Remove   — uninstall OpenMasjidOS"
-    echo "    4) Quit"
-    printf "  Choose [1]: "
+    printf "${CLR_CYAN}${CLR_BOLD}  ┌─ OpenMasjidOS is already installed ───────────${CLR_RESET}\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   What would you like to do?\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}1)${CLR_RESET} Update  ${CLR_BOLD}—${CLR_RESET} get the latest version (keeps your apps & data)\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}2)${CLR_RESET} Repair  ${CLR_BOLD}—${CLR_RESET} fix a broken install and restart\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}3)${CLR_RESET} Remove  ${CLR_BOLD}—${CLR_RESET} uninstall (your apps & data stay safe)\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}4)${CLR_RESET} Quit    ${CLR_BOLD}—${CLR_RESET} do nothing\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}\n"
+    printf "${CLR_CYAN}${CLR_BOLD}  └───────────────────────────────────────────────${CLR_RESET}\n"
+    printf "  Type a number and press Enter ${CLR_BOLD}[1]${CLR_RESET}: "
   } > /dev/tty
   local r=""; read -r r < /dev/tty || r=""
   case "$r" in
@@ -584,13 +623,29 @@ menu_existing() {
 
 # do_install — first-time guided install.
 do_install() {
+  echo ""
+  echo "  Setting up OpenMasjidOS on this machine. This takes a minute or two —"
+  echo "  grab a cup of tea and we'll let you know when it's ready. ☕"
+
+  step "Checking your computer"
   check_root
   detect_os
+
+  step "Making sure Docker is installed (the engine that runs the apps)"
   install_docker
+
+  step "Creating a safe place for your data"
   setup_data_dir
+
+  step "Writing the configuration"
   write_compose_file
+
+  step "Downloading OpenMasjidOS and starting it up"
   pull_and_start
+
+  step "Waiting for everything to be ready"
   wait_for_health
+
   print_success
 }
 

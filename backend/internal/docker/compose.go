@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -100,21 +101,26 @@ func ProjectPorts(ctx context.Context, project string) []int {
 	return ports
 }
 
-// RunningProjects returns the unique OpenMasjidOS compose project names
-// ("omos-*") that currently have at least one running container. Used to recover
-// apps whose on-disk metadata was lost, so a running app never vanishes from the UI.
+// RunningProjects returns the OpenMasjidOS compose project names ("omos-*")
+// currently known to Docker (running or stopped). Used to recover apps whose
+// on-disk metadata was lost, so a running app never vanishes from the UI.
+// Uses `docker compose ls` (the canonical project list) rather than a ps label
+// template, which is more reliable across CLI versions.
 func RunningProjects(ctx context.Context) []string {
-	out, err := run(ctx, "ps", "--format", `{{.Label "com.docker.compose.project"}}`)
+	out, err := run(ctx, "compose", "ls", "--all", "--format", "json")
 	if err != nil {
 		return nil
 	}
-	seen := map[string]bool{}
+	var entries []struct {
+		Name string `json:"Name"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &entries) != nil {
+		return nil
+	}
 	var projects []string
-	for _, line := range strings.Split(out, "\n") {
-		p := strings.TrimSpace(line)
-		if strings.HasPrefix(p, "omos-") && !seen[p] {
-			seen[p] = true
-			projects = append(projects, p)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name, "omos-") {
+			projects = append(projects, e.Name)
 		}
 	}
 	return projects
