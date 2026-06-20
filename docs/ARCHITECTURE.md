@@ -113,6 +113,33 @@ Accepted tradeoffs (documented, not bugs): plain-HTTP on the LAN (no Secure
 cookie), and the core running as root with the Docker socket mounted (the
 standard single-host control-plane model, same as CasaOS/Umbrel/Portainer).
 
+### UI windows: a top-level window manager, separate from dialogs
+In-dashboard windows (app shells, app logs, the root terminal, and file
+viewers/editors) are owned by a **window manager** (`components/Windows.tsx` +
+`WindowManager.tsx`) mounted once in `AppShell`, **above** the routed page. This
+is deliberate:
+- Windows survive route changes — minimizing a shell and navigating to Settings
+  keeps it alive (and in the dock). Earlier these lived inside route components,
+  so navigation unmounted them.
+- Window content stays **mounted while minimized** (hidden with CSS), so a live
+  terminal or log stream is never disconnected by minimize/restore.
+- Windows are floating + draggable, stack by focus order (bounded z-index), and
+  carry the macOS traffic lights (close / minimize / fullscreen).
+
+`Modal` is now strictly a **centered dialog** (confirmations, short forms, the
+3rd-party install notice) — no traffic lights, no minimize. The split keeps the
+two concepts from bleeding into each other.
+
+### File viewing/editing (sandboxed)
+The file manager can edit text files and view images/video/audio. Two new
+sandboxed paths, both confined to the data dir like the rest of the manager:
+- `files.read` / `files.write` tRPC procedures (2 MiB cap; binary content — any
+  NUL byte — is rejected for the text editor).
+- `GET /api/files/raw` streams media **inline** with `Content-Type` from a
+  known-media allowlist (anything else → `application/octet-stream`), plus
+  `X-Content-Type-Options: nosniff` and a strict `Content-Security-Policy:
+  sandbox` so user-supplied HTML/SVG can never execute scripts same-origin.
+
 ## Version
 `VERSION` at the repo root is the single source of truth. The Docker build copies
 it to `/app/VERSION`; the daemon reads it (`OPENMASJID_VERSION_FILE`). Shown in
