@@ -755,6 +755,10 @@ do_uninstall() {
   else
     info "Kept all your apps and data."
   fi
+
+  # A grateful farewell — the same credits shown on install/update/repair.
+  print_acknowledgements
+  echo "  Thank you for running OpenMasjidOS. You're welcome back any time."
   echo ""
 }
 
