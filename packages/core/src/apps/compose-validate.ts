@@ -51,11 +51,39 @@ function bindSource(v: unknown): string | null {
   return null;
 }
 
+/**
+ * True if a value contains a docker-compose interpolation reference (`${VAR}`,
+ * `${VAR:-default}` or `$VAR`) that isn't an escaped `$$`. We validate the RAW
+ * text, but `docker compose up` interpolates first — so a dangerous setting
+ * hidden behind a variable (e.g. `privileged: ${X:-true}`) would parse as a
+ * harmless string here and only turn dangerous at runtime. We therefore treat
+ * any interpolation in a security-sensitive field as a danger (fail closed).
+ */
+function hasInterpolation(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  return /\$(\{|[A-Za-z_])/.test(v.replace(/\$\$/g, ''));
+}
+
 function checkVolume(name: string, v: unknown, dangers: string[]): void {
+  // A variable anywhere in a mount can't be statically verified — fail closed.
+  if (typeof v === 'string' && hasInterpolation(v)) {
+    dangers.push(`"${name}" uses a variable in a volume mount, so we can't check it's safe.`);
+    return;
+  }
   const raw = bindSource(v);
   if (!raw) return;
+  if (hasInterpolation(raw)) {
+    dangers.push(`"${name}" uses a variable in a volume mount, so we can't check it's safe.`);
+    return;
+  }
   const norm = String(raw).trim().replace(/\/+$/, '') || '/';
-  if (!norm.startsWith('/')) return; // relative path / named volume
+  // A bind source that climbs out of the app folder ("..") resolves to an
+  // arbitrary host path at runtime even though it isn't an absolute path here.
+  if (/(^|\/)\.\.(\/|$)/.test(norm)) {
+    dangers.push(`"${name}" mounts a path that escapes the app folder (it contains "..").`);
+    return;
+  }
+  if (!norm.startsWith('/')) return; // relative path inside the app folder / named volume
 
   if (norm.endsWith('docker.sock') || norm === '/var/run/docker.sock') {
     dangers.push(`"${name}" mounts the Docker socket — that grants control of every container on the machine.`);
@@ -94,8 +122,24 @@ export function checkCompose(text: string): ComposeCheck {
   }
 
   const dangers: string[] = [];
+  // `include:`/`extends:` pull in configuration from other files that we never
+  // see here but `docker compose up` merges in — so they could smuggle dangerous
+  // settings past this check. Refuse to vouch for them.
+  if (parsed.include) {
+    dangers.push('This file uses "include", which pulls in settings we can\'t check.');
+  }
   for (const [name, svc] of Object.entries(services)) {
     if (!svc || typeof svc !== 'object') continue;
+
+    if ('extends' in svc) {
+      dangers.push(`"${name}" uses "extends", which merges settings we can't check.`);
+    }
+    // Sensitive flags hidden behind a variable can't be verified statically.
+    for (const field of ['privileged', 'network_mode', 'pid', 'ipc', 'userns_mode'] as const) {
+      if (hasInterpolation((svc as Record<string, unknown>)[field])) {
+        dangers.push(`"${name}" uses a variable for "${field}", a security-sensitive setting we can't verify.`);
+      }
+    }
 
     if (svc.privileged === true) {
       dangers.push(`"${name}" runs in privileged mode (full access to this machine).`);

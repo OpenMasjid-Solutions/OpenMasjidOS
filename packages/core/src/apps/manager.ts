@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { APPS_DIR } from '../config';
 import { log } from '../logger';
 import { readJson, writeJson, ensureDir } from '../util/json-store';
@@ -63,11 +64,72 @@ function saveMeta(meta: AppMeta): void {
   writeJson(metaPath(meta.id), meta);
 }
 
+// A valid env-var name. We refuse anything else as a KEY so a newline/`=` in a
+// setting key can't inject extra lines into the .env (security audit).
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 function writeEnvFile(id: string, env: Record<string, string>): void {
-  const lines = Object.entries(env).map(
-    ([k, v]) => `${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`,
-  );
+  const lines: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    if (!ENV_KEY_RE.test(k)) {
+      log.warn(`Ignoring invalid env key for ${id}: ${JSON.stringify(k)}`);
+      continue;
+    }
+    // Strip CR/LF from values so a single value can never span multiple lines.
+    lines.push(`${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`);
+  }
   fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
+}
+
+/**
+ * Resolve the platform base URL we hand to apps for SSO. Order:
+ *   1. an explicit OPENMASJID_BASE_URL on the core (the recommended source for
+ *      reverse-proxy / multi-host setups — see docs/NETWORKING.md),
+ *   2. the host the admin reached us on (passed from the install request) — but
+ *      only if it's a clean host[:port] with no credentials/path/whitespace, so a
+ *      poisoned Host header can't become a credential-forwarding target,
+ *   3. a best-effort LAN interface address.
+ */
+function cleanHost(host?: string | null): string | null {
+  if (!host) return null;
+  const h = host.trim();
+  if (/^[A-Za-z0-9.-]{1,253}(:\d{1,5})?$/.test(h)) return h; // hostname[:port] or IPv4[:port]
+  if (/^\[[0-9a-fA-F:]+\](:\d{1,5})?$/.test(h)) return h; // [IPv6][:port]
+  return null;
+}
+
+function resolveBaseUrl(reqHost?: string | null): string {
+  const explicit = process.env.OPENMASJID_BASE_URL;
+  if (explicit) return /^https?:\/\//i.test(explicit) ? explicit : `http://${explicit}`;
+  const host = cleanHost(reqHost);
+  if (host) return `http://${host}`;
+  const net = networkInfo();
+  if (net.addresses[0]) return `http://${net.addresses[0]}:${net.port}`;
+  return '';
+}
+
+/** Constant-time string compare (avoids leaking the secret via timing). */
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+/**
+ * Resolve an installed app by the SSO secret it presents, but ONLY for apps that
+ * opted into SSO. Returns the app id, or null. The SSO introspection endpoint
+ * uses this to bind a session check to the calling app's identity, so one
+ * installed app can't validate the shared omos_session as another (security
+ * audit #1 / Display PLATFORM_INTEGRATION.md Part B).
+ */
+export function findSsoAppBySecret(secret: string | undefined | null): string | null {
+  if (!secret || secret.length < 16) return null;
+  for (const id of listMetaIds()) {
+    const meta = loadMeta(id);
+    if (meta?.sso && meta.ssoSecret && safeEqual(meta.ssoSecret, secret)) return id;
+  }
+  return null;
 }
 
 /**
@@ -78,16 +140,17 @@ function writeEnvFile(id: string, env: Record<string, string>): void {
  * that don't use them simply ignore them. Override the base with the
  * OPENMASJID_BASE_URL env on the core.
  */
-function platformEnv(id: string, baseUrl?: string | null): Record<string, string> {
+function platformEnv(
+  id: string,
+  baseUrl?: string | null,
+  ssoSecret?: string,
+): Record<string, string> {
   const env: Record<string, string> = { OPENMASJID_APP_ID: id };
-  // Prefer an explicit override, then the host the admin reached us on (passed
-  // from the install request), then a best-effort interface IP as a last resort.
-  let base = process.env.OPENMASJID_BASE_URL || baseUrl || '';
-  if (!base) {
-    const net = networkInfo();
-    if (net.addresses[0]) base = `http://${net.addresses[0]}:${net.port}`;
-  }
-  if (base) env.OPENMASJID_BASE_URL = /^https?:\/\//i.test(base) ? base : `http://${base}`;
+  const base = resolveBaseUrl(baseUrl);
+  if (base) env.OPENMASJID_BASE_URL = base;
+  // Only SSO-capable apps get a secret — it's what lets them (and only them)
+  // introspect the dashboard session at ${OPENMASJID_BASE_URL}/api/auth/session.
+  if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
   return env;
 }
 
@@ -168,7 +231,11 @@ export async function installCatalogApp(
 ): Promise<InstalledApp> {
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
-  writeEnvFile(app.id, { ...settings, ...platformEnv(app.id, baseUrl) });
+  // SSO is opt-in per app. A capable app gets a fresh per-app secret so it can
+  // prove its identity when introspecting the dashboard session.
+  const sso = app.sso === true;
+  const ssoSecret = sso ? crypto.randomBytes(32).toString('base64url') : undefined;
+  writeEnvFile(app.id, { ...settings, ...platformEnv(app.id, baseUrl, ssoSecret) });
   saveMeta({
     id: app.id,
     name: app.name,
@@ -177,6 +244,8 @@ export async function installCatalogApp(
     category: app.category,
     version: app.version,
     createdAt: new Date().toISOString(),
+    sso,
+    ssoSecret,
   });
 
   const res = await composeUp(projectOf(app.id), composePath(app.id), envPath(app.id));

@@ -45,6 +45,7 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `description` | – | Markdown, shown on the app detail page. |
 | `settings` | – | Fields collected from the user before install (below). |
 | `ports` | – | `{ container: number, label?: string }[]` — informational only. |
+| `sso` | – | `true` to opt into single sign-on (below). The platform then issues the app a per-app secret at install and will honour its `/api/auth/session` calls. Omit/false = no SSO. |
 
 ### `settings` fields (`SettingField`)
 
@@ -102,21 +103,39 @@ are absent or the platform is unreachable, the app uses its own appearance + its
   (`{ v:1, theme, wallpaper, wallpaperImage, accent, lang }`). It's public and **CORS-enabled**
   (`Access-Control-Allow-Origin: *`), so an app's browser can poll it to follow theme changes.
 
-**Single sign-on (so the app can share the dashboard login)**
-- On install the platform injects into the app's env:
+**Single sign-on (so the app can share the dashboard login)** — opt in with `sso: true` in the
+manifest. SSO is **identity-bound**: the platform issues each SSO app a per-app secret at install and
+only honours session checks that present it, so the shared `omos_session` cookie can't let one
+installed app validate (or impersonate) the session as another.
+
+- On install the platform injects into an `sso: true` app's env:
   - `OPENMASJID_APP_ID` — the app's id.
-  - `OPENMASJID_BASE_URL` — where the platform is reachable (derived from the install request's
-    host; override on the core with the `OPENMASJID_BASE_URL` env).
-- The session cookie (`omos_session`, HttpOnly, SameSite=Strict) is sent by the browser to the
-  app's port too (same host, different port = same-site). The app's **backend** forwards that cookie
-  to `GET ${OPENMASJID_BASE_URL}/api/auth/session`, which replies
-  `{ "authenticated": true, "username": "…" }` or `{ "authenticated": false }`. If authenticated,
-  treat the request as signed-in; otherwise fall back to the app's own login.
-- This call is **server→server** (the app backend → the platform). `/api/auth/session` is **not**
-  CORS-enabled on purpose, so a cross-origin page can't read someone's auth status. Never trust a
-  browser-supplied username/header — only ever trust what `/api/auth/session` confirms for the
-  cookie on that request. Cache a positive result briefly (~30–60 s) per token.
+  - `OPENMASJID_BASE_URL` — where the platform is reachable. **A platform-set trust input** — it is
+    the address the app forwards the user's cookie to. The platform pins it to its own LAN address
+    (and validates the install `Host`); override on the core with the `OPENMASJID_BASE_URL` env for
+    reverse-proxy/multi-host setups. An app must not let this be set by anyone but the platform.
+  - `OPENMASJID_APP_SECRET` — a random per-app secret. **Treat it as a credential** (don't log/expose
+    it). Injected only for `sso: true` apps.
+- The session cookie (`omos_session`, HttpOnly, SameSite=Strict) is sent by the browser to the app's
+  port too (same host, different port = same-site). The app's **backend** calls
+  `GET ${OPENMASJID_BASE_URL}/api/auth/session` with **two** things:
+  - the user's cookie, forwarded verbatim: `Cookie: omos_session=<value>` (read it **only** from the
+    incoming request's cookie — never a query/header/body), and
+  - the app's own identity: header **`X-OpenMasjid-App-Secret: ${OPENMASJID_APP_SECRET}`**.
+  The platform replies `{ "authenticated": true, "username": "…" }` only when the cookie is valid
+  **and** the secret matches a known SSO-capable app; otherwise `{ "authenticated": false }`. Treat
+  `username` as an untrusted display string (cap/escape it). If `authenticated`, treat the request as
+  signed-in; otherwise fall back to the app's own login.
+- This call is **server→server** (app backend → platform). `/api/auth/session` is **not** CORS-enabled
+  on purpose, so a cross-origin page can't read someone's auth status. It **fails closed**: a missing/
+  garbage/revoked cookie, or a missing/unknown app secret, returns `authenticated:false`. Never trust a
+  browser-supplied username/header — only ever trust what `/api/auth/session` confirms for the cookie
+  on that request. Cache a positive result briefly (~30–60 s) per token.
+- **Revocation:** the platform flips to `authenticated:false` immediately on logout/password change, so
+  keep the positive cache short (~45 s) and cap the SSO-minted session (e.g. ~1 h) so a stale session
+  can't linger.
 
 > Same-host assumption: cookie-based SSO works because the dashboard and the app share a host on
 > different ports. An app on a different host simply won't see the cookie and falls back to its own
-> login — which is fine.
+> login. **Transport:** this is fine on a plain-HTTP LAN with `SameSite=Strict`; if the platform or an
+> app ever runs cross-host, `/api/auth/session` must be HTTPS-only and `omos_session` must be `Secure`.

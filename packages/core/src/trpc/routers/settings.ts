@@ -22,7 +22,12 @@ export const settingsRouter = router({
           .object({
             theme: z.enum(['system', 'dark', 'light']),
             wallpaper: z.string().max(64),
-            wallpaperImage: z.string().max(2048),
+            // Served by the public appearance endpoint, so reject anything that
+            // isn't an http(s) URL (no javascript:/data:/credentialed schemes).
+            wallpaperImage: z
+              .string()
+              .max(2048)
+              .refine((v) => v === '' || /^https?:\/\//i.test(v), 'Must be an http(s) URL.'),
             accent: z.string().max(32),
             lang: z.string().max(16),
           })

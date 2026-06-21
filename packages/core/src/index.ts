@@ -28,6 +28,7 @@ import { registerRestore } from './api/restore';
 import { registerAppUpdate } from './api/app-update';
 import { registerIntegration } from './api/integration';
 import { COOKIE_NAME, getSessionUser } from './auth/sessions';
+import { isAllowedOrigin } from './util/origin';
 
 async function main() {
   ensureDir(CONFIG_DIR);
@@ -58,6 +59,30 @@ async function main() {
   };
   await server.register(fastifyTRPCPlugin, trpcPluginOptions);
 
+  // Security headers on every response. frame-ancestors/X-Frame-Options stop the
+  // dashboard from being framed by a malicious app on another port (same host =
+  // same-site, so the cookie would ride along) — clickjacking defence. We don't
+  // overwrite a route's own CSP (the file raw-viewer sets a strict sandbox CSP).
+  server.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('X-Frame-Options', 'SAMEORIGIN');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'no-referrer');
+    if (!reply.getHeader('content-security-policy')) {
+      reply.header('Content-Security-Policy', "frame-ancestors 'self'");
+    }
+    return payload;
+  });
+
+  // CSRF defence for the tRPC HTTP path: a state-changing call (POST) carrying the
+  // session cookie must come from our own origin. Same-site apps on another port
+  // share the cookie, so this stops one from driving the admin's control plane.
+  // GET (queries) and dev are unaffected; absent Origin (non-browser) is allowed.
+  server.addHook('onRequest', async (req, reply) => {
+    if (req.url.startsWith('/trpc') && req.method !== 'GET' && !isAllowedOrigin(req)) {
+      return reply.code(403).send({ error: 'This request came from an unexpected place.' });
+    }
+  });
+
   // Health — unauthenticated, used by the installer and the container healthcheck.
   server.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
 
@@ -66,6 +91,7 @@ async function main() {
   // Backup download — a gzipped tar of platform config + app data. Authenticated
   // by the session cookie directly (it's a browser download, not a tRPC call).
   server.get('/api/backup', async (req, reply) => {
+    if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
     const token = req.cookies?.[COOKIE_NAME];
     if (!getSessionUser(token)) {
       return reply.code(401).send({ error: 'Please sign in.' });

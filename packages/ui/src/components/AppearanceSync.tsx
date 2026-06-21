@@ -13,10 +13,18 @@ export function AppearanceSync() {
   const update = trpc.settings.update.useMutation();
   const mutateRef = useRef(update.mutate);
   mutateRef.current = update.mutate;
+  const firstRun = useRef(true);
 
   const { theme, wallpaper, wallpaperImage, accent, language } = prefs;
 
   useEffect(() => {
+    // Skip the initial mount: a passive page load shouldn't overwrite the
+    // server's appearance with this browser's prefs (it would also fight a
+    // second browser). Only deliberate changes during the session sync.
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
     const id = setTimeout(() => {
       mutateRef.current({ appearance: { theme, wallpaper, wallpaperImage, accent, lang: language } });
     }, 600);

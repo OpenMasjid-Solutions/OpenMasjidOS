@@ -157,7 +157,11 @@ function parseApp(folder: string, text: string): CatalogApp | null {
   if (!doc || typeof doc !== 'object' || !doc.services) return null;
 
   const x = (doc['x-casaos'] ?? {}) as Record<string, unknown>;
-  const icon = typeof x.icon === 'string' ? x.icon : undefined;
+  // The icon URL is rendered as <img src> in the admin's browser and persisted,
+  // so only accept http(s) — never data:/javascript:/relative — from an
+  // untrusted community repo (security audit).
+  const icon =
+    typeof x.icon === 'string' && /^https?:\/\//i.test(x.icon) ? x.icon : undefined;
   return {
     id: `community-${slugify(folder)}`,
     name: localized(x.title, folder),

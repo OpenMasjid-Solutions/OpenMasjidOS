@@ -17,6 +17,7 @@ function authed(req: FastifyRequest): boolean {
 export function registerFiles(server: FastifyInstance): void {
   // Download a file as an attachment.
   server.get('/api/files/download', async (req, reply) => {
+    if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
     if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
     const p = (req.query as { path?: string }).path ?? '';
     try {
@@ -36,6 +37,9 @@ export function registerFiles(server: FastifyInstance): void {
   // a plain download type. A strict CSP sandbox + nosniff neutralises any
   // attempt to get HTML/JS to execute same-origin from user content.
   server.get('/api/files/raw', async (req, reply) => {
+    // Inline <img>/<video> loads send no Origin (allowed); a scripted cross-port
+    // fetch carries one and is rejected.
+    if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
     if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
     const p = (req.query as { path?: string }).path ?? '';
     try {
