@@ -12,6 +12,16 @@ When it finishes, open **`http://openmasjidos.local`** (or **`http://<your-serve
 
 ---
 
+## Acknowledgements
+
+Created by **Hasan Ismail**, with immense help from **Moulana Ijaz** and **Osman Sayed**.
+
+Resources for this project were generously sponsored by the **An-Noor Institute**, the **Rihlatul Ilm Foundation**, and **AsmaTec Inc.**
+
+May Allah reward everyone who made it possible.
+
+---
+
 ## A look inside
 
 <p align="center"><img src="docs/screenshots/01-dashboard.png" alt="OpenMasjidOS dashboard — live system stats and installed apps" width="100%"></p>
