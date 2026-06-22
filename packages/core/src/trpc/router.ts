@@ -13,6 +13,7 @@ import { communityRouter } from './routers/community';
 import { filesRouter } from './routers/files';
 import { settingsRouter } from './routers/settings';
 import { systemRouter } from './routers/system';
+import { notificationsRouter } from './routers/notifications';
 
 export const appRouter = router({
   auth: authRouter,
@@ -24,6 +25,7 @@ export const appRouter = router({
   files: filesRouter,
   settings: settingsRouter,
   system: systemRouter,
+  notifications: notificationsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -32,6 +32,19 @@ export const settingsRouter = router({
             lang: z.string().max(16),
           })
           .optional(),
+        notifications: z
+          .object({
+            enabled: z.boolean(),
+            type: z.enum(['slack', 'discord', 'generic']),
+            // A webhook URL the platform POSTs to. http(s) only (LAN webhooks
+            // are allowed); apps never see it.
+            url: z
+              .string()
+              .max(2048)
+              .refine((v) => v === '' || /^https?:\/\//i.test(v), 'Must be an http(s) URL.'),
+            label: z.string().max(80),
+          })
+          .optional(),
       }),
     )
     .mutation(({ input }) => updateSettings(input)),

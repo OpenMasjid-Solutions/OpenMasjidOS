@@ -46,6 +46,7 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `settings` | – | Fields collected from the user before install (below). |
 | `ports` | – | `{ container: number, label?: string }[]` — informational only. |
 | `sso` | – | `true` to opt into single sign-on (below). The platform then issues the app a per-app secret at install and will honour its `/api/auth/session` calls. Omit/false = no SSO. |
+| `notifications` | – | `true` to opt into Fabric notifications (below) — the app may POST `/api/fabric/notify` to relay messages to the masjid's configured webhook. Issues the same per-app secret. Omit/false = no notifications. |
 
 ### `settings` fields (`SettingField`)
 
@@ -141,3 +142,23 @@ installed app validate (or impersonate) the session as another.
 > different ports. An app on a different host simply won't see the cookie and falls back to its own
 > login. **Transport:** this is fine on a plain-HTTP LAN with `SameSite=Strict`; if the platform or an
 > app ever runs cross-host, `/api/auth/session` must be HTTPS-only and `omos_session` must be `Secure`.
+
+**Notifications (so an app can alert the masjid)** — opt in with `notifications: true`. The masjid
+admin configures ONE webhook (Slack / Discord / generic) in **Settings → Notifications**; apps relay
+through the platform and **never see the webhook URL** (the platform owns the destination, so an app
+can't point it anywhere — no SSRF from apps).
+
+- The app's **backend** posts to the platform with its per-app secret:
+  ```
+  POST ${OPENMASJID_BASE_URL}/api/fabric/notify
+    X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
+    Content-Type: application/json
+    { "text": "A new donation of $50 was received.", "title": "Donation", "level": "success" }
+  → 200 { "delivered": true }   |   { "delivered": false, "reason": "disabled" | "rate_limited" | … }
+  ```
+- `text` is required; `title` and `level` (`info`|`success`|`warning`|`error`) are optional. The
+  platform formats the message for the configured service and posts it server-side.
+- Requires the **notifications capability** (the secret alone isn't enough — an SSO-only app can't
+  send). Rate-limited per app (≈20/min) and platform-wide, so one app can't flood Slack/Discord.
+- Fails soft: if the admin hasn't enabled notifications, the call returns `{delivered:false}` rather
+  than an error — so the app keeps working. This is server→server and not CORS-enabled.

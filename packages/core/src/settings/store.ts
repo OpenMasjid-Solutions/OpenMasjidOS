@@ -19,6 +19,20 @@ export interface Appearance {
   lang: string;
 }
 
+/**
+ * Notification webhook config (OpenMasjidOS Fabric). The admin sets one
+ * destination; apps relay messages through the platform (POST /api/fabric/notify)
+ * and never see the URL. `url` is a secret — only exposed via the protected
+ * settings API, never on the public appearance endpoint.
+ */
+export interface NotificationConfig {
+  enabled: boolean;
+  type: 'slack' | 'discord' | 'generic';
+  url: string;
+  /** Optional short label prefixed to each message (e.g. the masjid's name). */
+  label: string;
+}
+
 export interface PlatformSettings {
   /** Gates the App Store "3rd Party App" button (CLAUDE.md §11). */
   allowCustomApps: boolean;
@@ -32,6 +46,8 @@ export interface PlatformSettings {
   updateChannel: 'stable' | 'beta';
   /** Mirror of the dashboard's presentation prefs, exposed to apps. */
   appearance: Appearance;
+  /** Notification webhook for the Fabric (apps relay through it). */
+  notifications: NotificationConfig;
 }
 
 const SETTINGS_PATH = path.join(CONFIG_DIR, 'settings.json');
@@ -42,6 +58,7 @@ const DEFAULTS: PlatformSettings = {
   communityRepos: [],
   updateChannel: 'stable',
   appearance: { theme: 'dark', wallpaper: 'aurora', wallpaperImage: '', accent: 'cyan', lang: 'en' },
+  notifications: { enabled: false, type: 'slack', url: '', label: '' },
 };
 
 let cache: PlatformSettings = readJson(SETTINGS_PATH, DEFAULTS);

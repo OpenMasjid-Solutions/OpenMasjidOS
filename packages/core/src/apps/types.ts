@@ -38,6 +38,12 @@ export interface CatalogApp {
    * set this can't introspect the dashboard session — least privilege.
    */
   sso?: boolean;
+  /**
+   * Opt in to OpenMasjidOS Fabric notifications. When true, the platform issues
+   * this app the per-app secret and the app may POST /api/fabric/notify to relay
+   * messages to the admin's configured webhook (Slack/Discord/generic).
+   */
+  notifications?: boolean;
   /** Raw docker-compose.yml text for this app (with ${SETTING} placeholders). */
   compose: string;
 }
@@ -53,10 +59,13 @@ export interface AppMeta {
   createdAt: string;
   /** True if this app opted into single sign-on (CatalogApp.sso). */
   sso?: boolean;
+  /** True if this app opted into Fabric notifications (CatalogApp.notifications). */
+  notify?: boolean;
   /**
-   * Per-app SSO secret (random, base64url). The app presents it back to
-   * GET /api/auth/session to prove which app is asking. Server-side only —
-   * never included in the InstalledApp DTO sent to the dashboard.
+   * Per-app Fabric secret (random, base64url), issued when the app opts into any
+   * Fabric capability (sso and/or notifications). The app presents it in the
+   * X-OpenMasjid-App-Secret header to prove which app is asking. Server-side only
+   * — never included in the InstalledApp DTO sent to the dashboard.
    */
   ssoSecret?: string;
 }

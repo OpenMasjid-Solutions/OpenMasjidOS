@@ -19,7 +19,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
-import { findSsoAppBySecret } from '../apps/manager';
+import { findFabricApp } from '../apps/manager';
+import { sendNotification } from '../notify/notify';
 import { getSettings } from '../settings/store';
 import { log } from '../logger';
 
@@ -36,14 +37,41 @@ export function registerFabric(server: FastifyInstance): void {
     const username = getSessionUser(req.cookies?.[COOKIE_NAME]);
     if (!username) return { authenticated: false };
     const presented = req.headers['x-openmasjid-app-secret'];
-    const appId = findSsoAppBySecret(typeof presented === 'string' ? presented : null);
-    if (!appId) {
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.sso) {
       // Valid session, but the caller didn't prove a known SSO-capable identity.
       log.debug('SSO introspection denied: missing or unrecognised app secret.');
       return { authenticated: false };
     }
-    log.info(`SSO introspection: app "${appId}" validated a session.`);
+    log.info(`SSO introspection: app "${app.id}" validated a session.`);
     return { authenticated: true, username };
+  });
+
+  // Fabric notifications — an app relays a message to the admin's configured
+  // webhook. Server→server (the app proves itself with its per-app secret); the
+  // app never sees the webhook URL, and must hold the notify capability. The
+  // platform owns the destination, so there is no SSRF vector from the app. Not
+  // CORS-enabled.
+  server.post('/api/fabric/notify', async (req, reply) => {
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.notify) {
+      return reply.code(403).send({ delivered: false, error: 'This app is not allowed to send notifications.' });
+    }
+    const body = (req.body ?? {}) as { title?: unknown; text?: unknown; level?: unknown };
+    const text = typeof body.text === 'string' ? body.text : '';
+    if (!text.trim()) {
+      return reply.code(400).send({ delivered: false, error: 'A message ("text") is required.' });
+    }
+    const levels = ['info', 'success', 'warning', 'error'] as const;
+    const level = (levels as readonly string[]).includes(String(body.level))
+      ? (body.level as (typeof levels)[number])
+      : 'info';
+    const result = await sendNotification(
+      { title: typeof body.title === 'string' ? body.title : undefined, text, level },
+      app.id,
+    );
+    return reply.send(result);
   });
 
   // A2 — public presentation prefs, readable cross-origin by apps.

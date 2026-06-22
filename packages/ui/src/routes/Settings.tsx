@@ -2,9 +2,9 @@
  * Platform settings only (CLAUDE.md §13) — appearance, language, account,
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
@@ -218,6 +218,9 @@ export function Settings() {
 
       {/* Account */}
       <ChangePassword />
+
+      {/* Notifications */}
+      <NotificationsPanel />
 
       {/* Advanced */}
       <section className="glass-raised panel">
@@ -453,6 +456,126 @@ function ChangePassword() {
       >
         <Check size={15} /> {t('settings.changePassword')}
       </button>
+    </section>
+  );
+}
+
+type NotifType = 'slack' | 'discord' | 'generic';
+
+function NotificationsPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const settings = trpc.settings.get.useQuery();
+  const save = trpc.settings.update.useMutation({ onSuccess: () => utils.settings.get.invalidate() });
+  const test = trpc.notifications.test.useMutation({
+    onSuccess: () => toast(t('settings.notificationsTestSent'), 'success'),
+    onError: (e) => toast(e.message || t('settings.notificationsTestFailed'), 'error'),
+  });
+
+  const n = settings.data?.notifications;
+  // URL/label are edited locally and saved on blur; enabled/type save immediately.
+  const [url, setUrl] = useState('');
+  const [label, setLabel] = useState('');
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (n && !seeded.current) {
+      setUrl(n.url);
+      setLabel(n.label);
+      seeded.current = true;
+    }
+  }, [n]);
+
+  if (!n) return null;
+
+  const config = (next: { enabled?: boolean; type?: NotifType; url?: string; label?: string }) => ({
+    enabled: n.enabled,
+    type: n.type,
+    url,
+    label,
+    ...next,
+  });
+  const patch = (next: Parameters<typeof config>[0]) => save.mutate({ notifications: config(next) });
+
+  const types: Array<{ id: NotifType; label: string }> = [
+    { id: 'slack', label: t('settings.notificationsSlack') },
+    { id: 'discord', label: t('settings.notificationsDiscord') },
+    { id: 'generic', label: t('settings.notificationsGeneric') },
+  ];
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title">{t('settings.notifications')}</h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.notificationsHint')}</p>
+
+      <div className="setting-row">
+        <div className="setting-row__text"><div className="setting-row__title">{t('settings.notificationsEnable')}</div></div>
+        <Toggle checked={n.enabled} onChange={(v) => patch({ enabled: v })} label={t('settings.notificationsEnable')} />
+      </div>
+
+      {n.enabled && (
+        <>
+          <div className="setting-row">
+            <div className="setting-row__text"><div className="setting-row__title">{t('settings.notificationsService')}</div></div>
+            <div className="segmented glass-inset">
+              {types.map((ty) => (
+                <button key={ty.id} className={cn(n.type === ty.id && 'is-active')} onClick={() => patch({ type: ty.id })}>
+                  {ty.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('settings.notificationsUrl')}</div>
+              <div className="setting-row__hint">{t('settings.notificationsUrlHint')}</div>
+            </div>
+            <input
+              className="input glass-inset"
+              style={{ maxWidth: '18rem' }}
+              type="url"
+              placeholder="https://hooks.slack.com/…"
+              value={url}
+              onChange={(e) => setUrl(e.target.value.trim())}
+              onBlur={() => patch({})}
+            />
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('settings.notificationsLabel')}</div>
+              <div className="setting-row__hint">{t('settings.notificationsLabelHint')}</div>
+            </div>
+            <input
+              className="input glass-inset"
+              style={{ maxWidth: '14rem' }}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              onBlur={() => patch({})}
+            />
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text"><div className="setting-row__title">{t('settings.notificationsTest')}</div></div>
+            <button
+              className="btn"
+              disabled={test.isPending || !url}
+              onClick={async () => {
+                // Persist the latest URL/label first so the test uses them.
+                try {
+                  await save.mutateAsync({ notifications: config({}) });
+                } catch {
+                  /* surfaced below if the test then fails */
+                }
+                test.mutate();
+              }}
+            >
+              <Bell size={15} /> {test.isPending ? t('settings.notificationsTesting') : t('settings.notificationsTest')}
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }

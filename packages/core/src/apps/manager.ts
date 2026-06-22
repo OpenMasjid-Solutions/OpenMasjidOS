@@ -116,18 +116,27 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ba, bb);
 }
 
+export interface FabricApp {
+  id: string;
+  sso: boolean;
+  notify: boolean;
+}
+
 /**
- * Resolve an installed app by the SSO secret it presents, but ONLY for apps that
- * opted into SSO. Returns the app id, or null. The SSO introspection endpoint
- * uses this to bind a session check to the calling app's identity, so one
- * installed app can't validate the shared omos_session as another (security
- * audit #1 / Display PLATFORM_INTEGRATION.md Part B).
+ * Resolve an installed app by the per-app Fabric secret it presents (constant-
+ * time), returning which Fabric capabilities it holds. The SSO endpoint requires
+ * `.sso`, the notify endpoint requires `.notify` — so one installed app can't act
+ * as another, and an app can't use a capability it didn't opt into. Only apps
+ * that opted into a Fabric capability are issued a secret, so this returns null
+ * for everything else (security audit #1 / Display PLATFORM_INTEGRATION.md Part B).
  */
-export function findSsoAppBySecret(secret: string | undefined | null): string | null {
+export function findFabricApp(secret: string | undefined | null): FabricApp | null {
   if (!secret || secret.length < 16) return null;
   for (const id of listMetaIds()) {
     const meta = loadMeta(id);
-    if (meta?.sso && meta.ssoSecret && safeEqual(meta.ssoSecret, secret)) return id;
+    if (meta?.ssoSecret && safeEqual(meta.ssoSecret, secret)) {
+      return { id, sso: meta.sso === true, notify: meta.notify === true };
+    }
   }
   return null;
 }
@@ -231,10 +240,11 @@ export async function installCatalogApp(
 ): Promise<InstalledApp> {
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
-  // SSO is opt-in per app. A capable app gets a fresh per-app secret so it can
-  // prove its identity when introspecting the dashboard session.
+  // Fabric capabilities are opt-in per app. An app that uses SSO and/or
+  // notifications gets a fresh per-app secret so it can prove its identity.
   const sso = app.sso === true;
-  const ssoSecret = sso ? crypto.randomBytes(32).toString('base64url') : undefined;
+  const notify = app.notifications === true;
+  const ssoSecret = sso || notify ? crypto.randomBytes(32).toString('base64url') : undefined;
   writeEnvFile(app.id, { ...settings, ...platformEnv(app.id, baseUrl, ssoSecret) });
   saveMeta({
     id: app.id,
@@ -245,6 +255,7 @@ export async function installCatalogApp(
     version: app.version,
     createdAt: new Date().toISOString(),
     sso,
+    notify,
     ssoSecret,
   });
 
