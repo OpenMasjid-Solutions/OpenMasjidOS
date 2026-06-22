@@ -81,6 +81,23 @@ function writeEnvFile(id: string, env: Record<string, string>): void {
   fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
 }
 
+/** Parse an app's .env back into a map. Used on update to keep the user's
+ *  settings + the install-time base URL while reconciling the Fabric secret. */
+function readEnvFile(id: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    for (const line of fs.readFileSync(envPath(id), 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const i = t.indexOf('=');
+      if (i > 0) out[t.slice(0, i)] = t.slice(i + 1);
+    }
+  } catch {
+    /* no env file yet */
+  }
+  return out;
+}
+
 /**
  * Resolve the platform base URL we hand to apps for SSO. Order:
  *   1. an explicit OPENMASJID_BASE_URL on the core (the recommended source for
@@ -405,6 +422,24 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   // New compose; keep the user's saved settings (.env) untouched.
   fs.writeFileSync(composePath(id), app.compose, 'utf8');
 
+  // Reconcile Fabric capabilities from the REFRESHED entry so an author can add
+  // OR revoke sso/notifications on update — the capability gate reads meta, so a
+  // withdrawn capability must stop working. Keep the user's settings + the
+  // install-time OPENMASJID_BASE_URL; only the per-app secret tracks capability.
+  const sso = app.sso === true;
+  const notify = app.notifications === true;
+  let ssoSecret = meta.ssoSecret;
+  if (sso || notify) {
+    if (!ssoSecret) ssoSecret = crypto.randomBytes(32).toString('base64url');
+  } else {
+    ssoSecret = undefined;
+  }
+  const env = readEnvFile(id);
+  env.OPENMASJID_APP_ID = id;
+  if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
+  else delete env.OPENMASJID_APP_SECRET;
+  writeEnvFile(id, env);
+
   onLine('');
   onLine('Downloading the new version…');
   if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
@@ -427,6 +462,9 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     icon: app.icon ?? meta.icon,
     category: app.category ?? meta.category,
     version: app.version,
+    sso,
+    notify,
+    ssoSecret,
   });
   onLine('');
   onLine(`Done — ${meta.name} is now on v${app.version}.`);

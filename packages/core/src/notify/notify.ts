@@ -6,8 +6,9 @@
  *
  * Security: apps choose only the message, never the destination — so there is no
  * SSRF vector from an app (the admin alone picks the target). We still require
- * an http(s) URL, never follow redirects, time out fast, and rate-limit per app
- * so one app can't flood Slack/Discord (and get the masjid throttled/banned).
+ * an http(s) URL, never follow redirects, time out fast, rate-limit per app so
+ * one app can't flood Slack/Discord, and neutralize broadcast/mention tokens so
+ * an app's message can't mass-ping the masjid's workspace.
  */
 import { getSettings } from '../settings/store';
 import { log } from '../logger';
@@ -19,6 +20,8 @@ export interface NotifyInput {
 }
 
 export type NotifyResult = { delivered: true } | { delivered: false; reason: string };
+
+type NotificationType = 'slack' | 'discord' | 'generic';
 
 const TITLE_MAX = 200;
 const TEXT_MAX = 2000;
@@ -46,16 +49,28 @@ function clamp(s: unknown, max: number): string {
   return String(s ?? '').slice(0, max);
 }
 
-/** Shape the message for the configured service. */
+/** Stop Slack broadcast tokens (<!channel>, <!here>, <!everyone>, <!subteam…>)
+ *  from resolving: escaping the leading `<` makes Slack render them as literal
+ *  text instead of pinging the workspace. Real links (<https…>) are untouched. */
+function neutralizeSlack(s: string): string {
+  return s.replace(/<!/g, '&lt;!');
+}
+
+/** Shape the message for the configured service. App text is untrusted display
+ *  text — never let it resolve as a mention/broadcast. */
 function buildBody(type: NotificationType, n: NotifyInput, label: string): unknown {
   const title = clamp(n.title, TITLE_MAX).trim();
   const text = clamp(n.text, TEXT_MAX);
   const prefix = label ? `[${label}] ` : '';
   if (type === 'slack') {
-    return { text: prefix + (title ? `*${title}*\n${text}` : text) };
+    return { text: neutralizeSlack(prefix + (title ? `*${title}*\n${text}` : text)) };
   }
   if (type === 'discord') {
-    return { content: (prefix + (title ? `**${title}**\n${text}` : text)).slice(0, 2000) };
+    // allowed_mentions parse:[] → @everyone/@here/role/user mentions never resolve.
+    return {
+      content: (prefix + (title ? `**${title}**\n${text}` : text)).slice(0, 2000),
+      allowed_mentions: { parse: [] },
+    };
   }
   // generic: a small, predictable JSON envelope
   return {
@@ -67,8 +82,6 @@ function buildBody(type: NotificationType, n: NotifyInput, label: string): unkno
   };
 }
 
-type NotificationType = 'slack' | 'discord' | 'generic';
-
 /**
  * Deliver a notification to the configured webhook. `appId` is used only for
  * rate-limit keying and is never sent anywhere. Fails soft (never throws).
@@ -78,7 +91,9 @@ export async function sendNotification(n: NotifyInput, appId: string): Promise<N
   if (!cfg?.enabled || !cfg.url) return { delivered: false, reason: 'disabled' };
   if (!/^https?:\/\//i.test(cfg.url)) return { delivered: false, reason: 'bad_url' };
   if (!clamp(n.text, TEXT_MAX).trim()) return { delivered: false, reason: 'empty' };
-  if (!rateOk('__global__', GLOBAL_MAX) || !rateOk(`app:${appId}`, PER_APP_MAX)) {
+  // Per-app first so one app over its own cap never burns the shared global
+  // budget on rejected attempts (which would starve well-behaved apps).
+  if (!rateOk(`app:${appId}`, PER_APP_MAX) || !rateOk('__global__', GLOBAL_MAX)) {
     return { delivered: false, reason: 'rate_limited' };
   }
 

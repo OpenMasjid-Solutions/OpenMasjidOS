@@ -176,7 +176,7 @@ export function checkCompose(text: string): ComposeCheck {
       dangers.push(`"${name}" uses "extends", which merges settings we can't check.`);
     }
     // Sensitive flags hidden behind a variable can't be verified statically.
-    for (const field of ['privileged', 'network_mode', 'pid', 'ipc', 'userns_mode'] as const) {
+    for (const field of ['privileged', 'network_mode', 'pid', 'ipc', 'userns_mode', 'cgroup', 'uts'] as const) {
       if (hasInterpolation((svc as Record<string, unknown>)[field])) {
         dangers.push(`"${name}" uses a variable for "${field}", a security-sensitive setting we can't verify.`);
       }
@@ -196,6 +196,12 @@ export function checkCompose(text: string): ComposeCheck {
     }
     if (svc.userns_mode === 'host') {
       dangers.push(`"${name}" disables user-namespace isolation (userns_mode: host).`);
+    }
+    if (svc.cgroup === 'host') {
+      dangers.push(`"${name}" shares the host cgroup namespace.`);
+    }
+    if (svc.uts === 'host') {
+      dangers.push(`"${name}" shares the host UTS namespace (can read/alter the machine's hostname).`);
     }
     const caps = toArr(svc.cap_add);
     if (caps.length > 0) {
