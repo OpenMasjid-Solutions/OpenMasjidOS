@@ -32,6 +32,9 @@ export const storeRouter = router({
       if (!isValidAppId(app.id)) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'That app has an invalid id.' });
       }
+      if (app.comingSoon) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'That app is coming soon — it isn\'t available to install yet.' });
+      }
       if (!app.compose) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'That app is missing its setup file.' });
       }

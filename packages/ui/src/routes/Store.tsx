@@ -91,7 +91,12 @@ export function Store() {
           {filtered.map((app) => {
             const isInstalled = installedIds.has(app.id);
             return (
-              <motion.div key={app.id} className="app-card glass fx-glint" variants={staggerItem}>
+              <motion.div
+                key={app.id}
+                className="app-card glass fx-glint"
+                variants={staggerItem}
+                style={app.comingSoon ? { opacity: 0.92 } : undefined}
+              >
                 <div className="app-card__top">
                   <div className="app-icon">{app.icon ? <img src={app.icon} alt="" /> : appInitial(app.name)}</div>
                   <div style={{ minWidth: 0 }}>
@@ -100,7 +105,9 @@ export function Store() {
                   </div>
                 </div>
                 <div className="app-card__actions">
-                  {isInstalled ? (
+                  {app.comingSoon ? (
+                    <span className="tag tag--custom" style={{ marginInlineStart: 'auto' }}>{t('store.comingSoon')}</span>
+                  ) : isInstalled ? (
                     <span className="btn btn--sm" style={{ marginInlineStart: 'auto' }}>
                       <Check size={15} /> {t('store.installedAlready')}
                     </span>

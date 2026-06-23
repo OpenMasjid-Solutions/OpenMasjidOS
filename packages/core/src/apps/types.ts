@@ -44,6 +44,12 @@ export interface CatalogApp {
    * messages to the admin's configured webhook (Slack/Discord/generic).
    */
   notifications?: boolean;
+  /**
+   * A teaser entry for an app that isn't released yet. Coming-soon apps have no
+   * repo/compose; the App Store shows them with a "Coming soon" badge and no
+   * install action, and the platform refuses to install them.
+   */
+  comingSoon?: boolean;
   /** Raw docker-compose.yml text for this app (with ${SETTING} placeholders). */
   compose: string;
 }
