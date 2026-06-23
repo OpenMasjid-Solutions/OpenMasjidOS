@@ -111,7 +111,11 @@ manifest. SSO is **identity-bound**: the platform issues each SSO app a per-app 
 only honours session checks that present it, so the shared `omos_session` cookie can't let one
 installed app validate (or impersonate) the session as another.
 
-- On install the platform injects into an `sso: true` app's env:
+- On install the platform makes these available to an `sso: true` (or `notifications: true`) app.
+  **Delivery is `${VAR}` substitution, not auto-set container env:** the platform writes the app's
+  `.env` and runs `docker compose --env-file …` (exactly like `settings`), so the app's compose **must
+  reference** them in `environment:` (`OPENMASJID_BASE_URL: ${OPENMASJID_BASE_URL:-}`, etc.) or they
+  never reach the container and the Fabric silently no-ops. The vars:
   - `OPENMASJID_APP_ID` — the app's id.
   - `OPENMASJID_BASE_URL` — where the platform is reachable. **A platform-set trust input** — it is
     the address the app forwards the user's cookie to. The platform pins it to its own LAN address
