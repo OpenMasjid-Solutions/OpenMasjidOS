@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
@@ -42,6 +42,7 @@ export function Settings() {
   const [restoreUploading, setRestoreUploading] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const restoreInput = useRef<HTMLInputElement>(null);
+  const updateClicks = useRef<number[]>([]);
 
   async function uploadAndRestore(file: File) {
     setRestoreUploading(true);
@@ -70,6 +71,35 @@ export function Settings() {
       icon: <SquareTerminal size={15} />,
       node: <LazyTerminal wsPath="/api/terminal/root" />,
     });
+  }
+
+  // Check for a core update and clearly report the result (the old version only
+  // updated a tiny hint, so it felt like nothing happened). Spam-clicking it pops
+  // a small, grateful easter egg — we're only human!
+  async function checkUpdates() {
+    const now = Date.now();
+    updateClicks.current = [...updateClicks.current.filter((ts) => now - ts < 4000), now];
+    if (updateClicks.current.length >= 6) {
+      updateClicks.current = [];
+      windows.open({
+        title: t('settings.eagerTitle'),
+        dedupeKey: 'update-eager',
+        icon: <Heart size={15} />,
+        node: <EagerNote sourceUrl={sysInfo.data?.sourceUrl} />,
+      });
+    }
+    if (updateInfo.isFetching) return; // don't stack checks/toasts during a spam burst
+    const r = await updateInfo.refetch();
+    if (r.data) {
+      toast(
+        r.data.updateAvailable
+          ? t('settings.updateAvailable', { version: r.data.latest })
+          : t('settings.upToDate'),
+        'success',
+      );
+    } else {
+      toast(t('errors.generic'), 'error');
+    }
   }
 
   const updateSettings = trpc.settings.update.useMutation({
@@ -285,7 +315,7 @@ export function Settings() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn" onClick={() => updateInfo.refetch()} disabled={updateInfo.isFetching}>
+            <button className="btn" onClick={checkUpdates}>
               <RefreshCw size={15} /> {updateInfo.isFetching ? t('settings.checking') : t('settings.checkUpdates')}
             </button>
             {updateInfo.data?.updateAvailable && (
@@ -457,6 +487,21 @@ function ChangePassword() {
         <Check size={15} /> {t('settings.changePassword')}
       </button>
     </section>
+  );
+}
+
+/** Easter egg — shown when the "Check for updates" button is spam-clicked. */
+function EagerNote({ sourceUrl }: { sourceUrl?: string }) {
+  const { t } = useTranslation();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '0.85rem', padding: '0.5rem 0.25rem' }}>
+      <Heart size={40} style={{ color: 'var(--color-primary)' }} />
+      <h3 style={{ margin: 0, fontFamily: 'var(--font-display)' }}>{t('settings.eagerTitle')}</h3>
+      <p style={{ color: 'var(--color-ink-muted)', maxWidth: '30rem', lineHeight: 1.55 }}>{t('settings.eagerBody')}</p>
+      <a className="btn btn--primary" href={sourceUrl ?? 'https://github.com/hasan-ismail/OpenMasjidOS'} target="_blank" rel="noopener noreferrer">
+        <Heart size={15} /> {t('settings.eagerDonate')}
+      </a>
+    </div>
   );
 }
 
