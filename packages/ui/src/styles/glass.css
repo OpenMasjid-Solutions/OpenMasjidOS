@@ -70,6 +70,16 @@
   backdrop-filter: blur(var(--glass-blur-inset)) saturate(var(--glass-saturate));
 }
 
+/* GLINT CAP — a glass pane nested inside a glinting pane (e.g. a card's ⋮ menu
+   inside an .fx-glint card) would INHERIT the parent's --mx/--my, which are
+   measured in the PARENT's coordinate box. Rendered in the child's own box the
+   refraction lands offset and seems to lag the cursor. Reset to the off-screen
+   default so the child carries no stray glint (cursorFx only drives .fx-glint). */
+.fx-glint :where(.glass, .glass-raised) {
+  --mx: -200%;
+  --my: -200%;
+}
+
 /* FALLBACK — opaque fills when backdrop-filter is unsupported. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass        { background-color: var(--color-surface-raised); }
