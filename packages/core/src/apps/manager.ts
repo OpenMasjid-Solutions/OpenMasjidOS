@@ -532,6 +532,17 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   else delete env.OPENMASJID_APP_SECRET;
   writeEnvFile(id, env);
 
+  // Reconcile per-app HTTPS the same way — an app can gain (or lose) the Stripe
+  // HTTPS requirement on update. Keep an already-assigned port; allocate one if
+  // it just turned on.
+  const wantsHttps = app.https === true;
+  let httpsPort = meta.httpsPort;
+  if (wantsHttps) {
+    if (httpsPort == null) httpsPort = pickHttpsPort() ?? undefined;
+  } else {
+    httpsPort = undefined;
+  }
+
   onLine('');
   onLine('Downloading the new version…');
   if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
@@ -557,7 +568,18 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     sso,
     notify,
     ssoSecret,
+    https: wantsHttps && httpsPort != null,
+    httpsPort: httpsPort ?? undefined,
   });
+
+  // Start (or tear down) the per-app HTTPS proxy to match the new state.
+  if (wantsHttps && httpsPort != null) {
+    const cur = await getInstalled(id);
+    if (cur?.ports[0] != null) ensureProxy(id, httpsPort, cur.ports[0]);
+  } else {
+    stopProxy(id);
+  }
+
   onLine('');
   onLine(`Done — ${meta.name} is now on v${app.version}.`);
 }
