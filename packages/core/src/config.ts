@@ -24,8 +24,13 @@ export const CONFIG_DIR = path.join(DATA_DIR, 'config');
 /** Where each installed app keeps its compose, env, metadata, and volumes. */
 export const APPS_DIR = path.join(DATA_DIR, 'apps');
 
-/** TCP port the daemon binds to. Matches the installer + compose default. */
+/** TCP port the daemon binds to. Matches the installer + compose default.
+ *  In production this is the HTTP front door (health, Fabric, and a redirect to
+ *  HTTPS); the dashboard itself is served over TLS_PORT. */
 export const PORT = envInt('OPENMASJID_PORT', 8723);
+
+/** HTTPS port the dashboard is served on (forced HTTPS in production). */
+export const TLS_PORT = envInt('OPENMASJID_TLS_PORT', 443);
 
 /** Bind address — all interfaces, so the LAN can reach the dashboard. */
 export const HOST = process.env.OPENMASJID_HOST ?? '0.0.0.0';

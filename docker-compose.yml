@@ -8,7 +8,9 @@ services:
     container_name: openmasjid-core
     restart: unless-stopped
     ports:
+      # 80 = HTTP front door (health, Fabric, redirect to HTTPS); 443 = dashboard.
       - "80:80"
+      - "443:443"
     volumes:
       # The Docker socket — the core manages app containers through it.
       - /var/run/docker.sock:/var/run/docker.sock

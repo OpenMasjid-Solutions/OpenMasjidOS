@@ -7,6 +7,7 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { VERSION } from '../../version';
 import { networkInfo, checkForUpdate, SOURCE_URL } from '../../system/system';
+import { certInfo, regenerateSelfSignedLive, setCustomCertLive } from '../../system/tls';
 import { isValidSshKey, addRootSshKey } from '../../system/ssh';
 import { pruneUnusedImages } from '../../docker/compose';
 
@@ -18,6 +19,34 @@ export const systemRouter = router({
   })),
 
   checkUpdate: protectedProcedure.query(() => checkForUpdate()),
+
+  /** Current TLS certificate details (type, subject, expiry, fingerprint). */
+  tlsInfo: protectedProcedure.query(() => certInfo()),
+
+  /** Generate a fresh self-signed cert and apply it to the live server. */
+  regenerateCert: protectedProcedure.mutation(() => {
+    try {
+      regenerateSelfSignedLive();
+      return certInfo();
+    } catch (err) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not generate a certificate. Is OpenSSL available on this build?',
+      });
+    }
+  }),
+
+  /** Install an admin-supplied certificate + private key (bring-your-own). */
+  setCustomCert: protectedProcedure
+    .input(z.object({ cert: z.string().min(1).max(100_000), key: z.string().min(1).max(100_000) }))
+    .mutation(({ input }) => {
+      try {
+        setCustomCertLive(input.cert, input.key);
+        return certInfo();
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+    }),
 
   /** Reclaim disk: remove images no app is using anymore. Returns how much
    *  space was freed (parsed from Docker's output), e.g. "1.2GB". */

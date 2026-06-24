@@ -35,7 +35,8 @@ WORKDIR /app
 
 # The core installs/removes apps by shelling out to `docker` + `docker compose`
 # against the mounted host socket, so the CLI and compose plugin must be present.
-RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates tar
+# openssl generates the self-signed TLS cert for the dashboard's forced HTTPS.
+RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates tar openssl
 
 ENV NODE_ENV=production \
     OPENMASJID_DATA_DIR=/data \
@@ -51,7 +52,7 @@ COPY --from=build /app/packages/core/dist ./packages/core/dist
 COPY --from=build /app/packages/ui/package.json ./packages/ui/package.json
 COPY --from=build /app/packages/ui/dist ./packages/ui/dist
 
-EXPOSE 80
+EXPOSE 80 443
 
 # Runs as root: it must read the root-owned Docker socket and write to /data.
 # Least-privilege still applies to the APP containers the core launches.

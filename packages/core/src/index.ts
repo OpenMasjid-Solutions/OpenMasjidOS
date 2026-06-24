@@ -13,8 +13,9 @@ import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
 
-import { HOST, PORT, UI_DIR, CONFIG_DIR, APPS_DIR } from './config';
+import { HOST, PORT, TLS_PORT, UI_DIR, CONFIG_DIR, APPS_DIR } from './config';
 import { VERSION } from './version';
+import { ensureCert, loadCert, setLiveServer } from './system/tls';
 import { log } from './logger';
 import { ensureDir } from './util/json-store';
 import { appRouter, type AppRouter } from './trpc/router';
@@ -40,7 +41,22 @@ async function main() {
   process.on('uncaughtException', (err) => log.error('Uncaught exception (continuing).', err));
   process.on('unhandledRejection', (err) => log.error('Unhandled rejection (continuing).', err));
 
-  const server = Fastify({ maxParamLength: 5000, bodyLimit: 25 * 1024 * 1024 });
+  // Forced HTTPS: serve the dashboard over TLS. Self-signed by default (a LAN box
+  // can't get a public cert), regenerable / replaceable from Settings. If no cert
+  // can be made (local dev without openssl) we fall back to plain HTTP.
+  let tls: { key: Buffer; cert: Buffer } | null = null;
+  try {
+    ensureCert();
+    tls = loadCert();
+  } catch (err) {
+    log.warn('TLS unavailable — serving plain HTTP (expected in local dev without openssl).', err);
+  }
+
+  const server = Fastify({
+    maxParamLength: 5000,
+    bodyLimit: 25 * 1024 * 1024,
+    ...(tls ? { https: tls } : {}),
+  });
 
   await server.register(fastifyCookie);
   await server.register(fastifyWebsocket);
@@ -161,8 +177,35 @@ async function main() {
     return reply.code(404).send({ error: 'Not found' });
   });
 
-  await server.listen({ host: HOST, port: PORT });
-  log.info(`OpenMasjidOS core v${VERSION} listening on http://${HOST}:${PORT}`);
+  // A plain-HTTP front door on PORT: answers the container health check, keeps the
+  // Fabric API reachable over HTTP for app backends (which can't trust a
+  // self-signed cert for server-to-server calls), and 308-redirects every other
+  // request to the HTTPS dashboard. So browsers are forced to HTTPS while apps and
+  // the healthcheck keep working — and a bare URL still leads somewhere.
+  async function startHttpFront(): Promise<void> {
+    const front = Fastify({ maxParamLength: 5000 });
+    await front.register(fastifyCookie);
+    front.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
+    front.get('/api/ready', async () => ({ ready: await dockerReachable() }));
+    registerFabric(front);
+    front.setNotFoundHandler((req, reply) => {
+      const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
+      if (!host) return reply.code(400).send({ error: 'Bad request.' });
+      const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
+      return reply.code(308).redirect(`https://${target}${req.url}`);
+    });
+    await front.listen({ host: HOST, port: PORT });
+  }
+
+  if (tls) {
+    setLiveServer(server);
+    await server.listen({ host: HOST, port: TLS_PORT });
+    await startHttpFront();
+    log.info(`OpenMasjidOS core v${VERSION} on https://${HOST}:${TLS_PORT} (HTTP→HTTPS redirect on ${PORT})`);
+  } else {
+    await server.listen({ host: HOST, port: PORT });
+    log.info(`OpenMasjidOS core v${VERSION} listening on http://${HOST}:${PORT}`);
+  }
 }
 
 main().catch((err) => {

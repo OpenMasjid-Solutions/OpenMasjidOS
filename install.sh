@@ -35,6 +35,9 @@ set -euo pipefail
 # Constants — change these if you need a non-standard setup
 # -----------------------------------------------------------------------------
 PORT=80
+# The dashboard is served over HTTPS on this port; PORT (80) is the HTTP front
+# door that redirects to it (and answers the health check + the Fabric API).
+TLS_PORT=443
 DATA_DIR=/opt/openmasjid
 IMAGE=ghcr.io/hasan-ismail/openmasjid-core:latest
 COMPOSE_PROJECT=openmasjid
@@ -402,9 +405,10 @@ services:
     restart: unless-stopped
 
     ports:
-      # The dashboard is available on port ${PORT}.
-      # Change the left side (e.g. "8080:${PORT}") to use a different external port.
+      # ${PORT} = HTTP front door (health, Fabric API, and a redirect to HTTPS).
+      # ${TLS_PORT} = the dashboard itself, over HTTPS (self-signed by default).
       - "${PORT}:${PORT}"
+      - "${TLS_PORT}:${TLS_PORT}"
 
     volumes:
       # Mount the Docker socket so the core can manage app containers on this host.
@@ -428,8 +432,9 @@ services:
     environment:
       # Tell the core where its data lives inside the container
       OPENMASJID_DATA_DIR: /data
-      # The port the daemon binds to inside the container
+      # The HTTP front-door port, and the HTTPS port the dashboard is served on.
       OPENMASJID_PORT: "${PORT}"
+      OPENMASJID_TLS_PORT: "${TLS_PORT}"
       # Point the stats collector at the mounted host /proc + cgroup.
       HOST_PROC: /host/proc
       HOST_CGROUP: /host/sys/fs/cgroup
@@ -581,8 +586,8 @@ print_acknowledgements() {
 print_success() {
   local server_ip dashboard_url url_len pad
   server_ip="$(get_server_ip)"
-  dashboard_url="http://${server_ip}"
-  [ "${PORT}" != "80" ] && dashboard_url="${dashboard_url}:${PORT}"
+  dashboard_url="https://${server_ip}"
+  [ "${TLS_PORT}" != "443" ] && dashboard_url="${dashboard_url}:${TLS_PORT}"
   url_len="${#dashboard_url}"
 
   # Interior of the box is 53 chars wide (between the two ║ chars).
@@ -619,6 +624,11 @@ print_success() {
   echo ""
   printf "  Your data is stored in ${CLR_BOLD}%s${CLR_RESET} and will survive upgrades.\n" "${DATA_DIR}"
   printf "  To update OpenMasjidOS in the future, simply re-run this installer.\n"
+  echo ""
+  printf "  ${CLR_BOLD}A note about the lock icon:${CLR_RESET} the dashboard uses a self-signed\n"
+  printf "  certificate, so the first time each device opens it the browser shows a\n"
+  printf "  \"Not secure\" warning. That's expected — click ${CLR_BOLD}Advanced -> Proceed${CLR_RESET} once.\n"
+  printf "  (You can upload your own certificate later in Settings -> Security.)\n"
   echo ""
 }
 
