@@ -5,6 +5,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { withKey } from '../lib/session';
 
 export function Terminal({ wsPath }: { wsPath: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -25,7 +26,8 @@ export function Terminal({ wsPath }: { wsPath: string }) {
     fit.fit();
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
+    // The handshake can't carry a header, so the dashboard key rides in ?k=.
+    const ws = new WebSocket(`${proto}//${window.location.host}${withKey(wsPath)}`);
     ws.binaryType = 'arraybuffer';
 
     const sendResize = () => {

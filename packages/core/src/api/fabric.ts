@@ -24,6 +24,29 @@ import { sendNotification } from '../notify/notify';
 import { getSettings } from '../settings/store';
 import { log } from '../logger';
 
+// Lightweight per-IP fixed-window limiter for the secret-gated Fabric routes,
+// which are reachable without a session. It runs BEFORE any lookup so a flood of
+// bad-secret requests can't tie up the event loop (security audit, defence-in-
+// depth on top of the in-memory secret index).
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 120; // requests per IP per minute across the Fabric routes
+const fabricHits = new Map<string, { count: number; resetAt: number }>();
+
+function fabricRateOk(ip: string): boolean {
+  const now = Date.now();
+  if (fabricHits.size > 5000) {
+    for (const [k, w] of fabricHits) if (w.resetAt <= now) fabricHits.delete(k);
+  }
+  const w = fabricHits.get(ip);
+  if (!w || w.resetAt <= now) {
+    fabricHits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (w.count >= RATE_MAX) return false;
+  w.count += 1;
+  return true;
+}
+
 export function registerFabric(server: FastifyInstance): void {
   // B1 — single sign-on introspection. Returns whether the omos_session cookie
   // ON THIS REQUEST is valid. It is the trust anchor (an app mints a signed-in
@@ -33,7 +56,8 @@ export function registerFabric(server: FastifyInstance): void {
   // enough — that stops one installed app, which the browser also hands the shared
   // cookie, from validating (or impersonating) the session as another app. The
   // token is read ONLY from the cookie, never a query/header/body. Not CORS-enabled.
-  server.get('/api/auth/session', async (req) => {
+  server.get('/api/auth/session', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ authenticated: false });
     const username = getSessionUser(req.cookies?.[COOKIE_NAME]);
     if (!username) return { authenticated: false };
     const presented = req.headers['x-openmasjid-app-secret'];
@@ -53,6 +77,9 @@ export function registerFabric(server: FastifyInstance): void {
   // platform owns the destination, so there is no SSRF vector from the app. Not
   // CORS-enabled.
   server.post('/api/fabric/notify', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) {
+      return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
+    }
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
     if (!app || !app.notify) {
@@ -70,6 +97,7 @@ export function registerFabric(server: FastifyInstance): void {
     const result = await sendNotification(
       { title: typeof body.title === 'string' ? body.title : undefined, text, level },
       app.id,
+      app.name,
     );
     return reply.send(result);
   });

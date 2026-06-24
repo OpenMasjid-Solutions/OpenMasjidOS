@@ -10,7 +10,7 @@ import { getSettings } from '../settings/store';
 import { rootTerminal, appTerminal, type TermSession } from '../docker/terminal';
 import { isAllowedWsOrigin } from '../util/origin';
 import { isValidAppId } from '../util/id';
-import { wsAuthed } from './ws-auth';
+import { wsAuthed, requestCsrfOk } from './ws-auth';
 import { log } from '../logger';
 
 function clampDim(n: unknown): number {
@@ -64,6 +64,7 @@ export function registerTerminals(server: FastifyInstance): void {
   server.get('/api/terminal/root', { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
     if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
     if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
+    if (!requestCsrfOk(req)) return socket.close(4403, 'This request came from an unexpected place.');
     if (!getSettings().rootTerminal) return socket.close(4403, 'Root terminal is turned off.');
     try {
       bridge(socket, await rootTerminal());
@@ -84,6 +85,7 @@ export function registerTerminals(server: FastifyInstance): void {
     async (socket: WebSocket, req: FastifyRequest) => {
       if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
       if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
+      if (!requestCsrfOk(req)) return socket.close(4403, 'This request came from an unexpected place.');
       if (!getSettings().webTerminal) return socket.close(4403, 'The web terminal is turned off.');
       const id = (req.params as { id: string }).id;
       if (!isValidAppId(id)) return socket.close(4400, 'Invalid app id.');

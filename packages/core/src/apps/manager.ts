@@ -22,6 +22,7 @@ import {
   composeUpStream,
 } from '../docker/compose';
 import { discoverApps } from '../docker/discovery';
+import { checkCompose } from './compose-validate';
 import { findCatalogApp } from '../store/catalog';
 import { networkInfo } from '../system/system';
 import { isNewerVersion } from '../util/version';
@@ -62,6 +63,7 @@ function loadMeta(id: string): AppMeta | null {
 
 function saveMeta(meta: AppMeta): void {
   writeJson(metaPath(meta.id), meta);
+  invalidateFabricIndex(); // a secret/capability may have changed
 }
 
 // A valid env-var name. We refuse anything else as a KEY so a newline/`=` in a
@@ -135,24 +137,55 @@ function safeEqual(a: string, b: string): boolean {
 
 export interface FabricApp {
   id: string;
+  /** Display name — used to attribute relayed notifications (server-resolved, so
+   *  an app can't spoof being another app in the masjid's Slack/Discord). */
+  name: string;
   sso: boolean;
   notify: boolean;
 }
 
+interface FabricEntry extends FabricApp {
+  ssoSecret: string;
+}
+
+// In-memory index of issued Fabric secrets. /api/fabric/* is reachable
+// unauthenticated (it's secret-gated), so resolving the secret must NOT scan the
+// apps dir from disk on every request — that synchronous fs work on the event
+// loop was a DoS lever (security audit). We build the index once and rebuild it
+// only when an app is installed / updated / removed.
+let fabricCache: FabricEntry[] | null = null;
+
+/** Drop the cached Fabric secret index; rebuilt lazily on next lookup. */
+export function invalidateFabricIndex(): void {
+  fabricCache = null;
+}
+
+function fabricEntries(): FabricEntry[] {
+  if (fabricCache) return fabricCache;
+  const out: FabricEntry[] = [];
+  for (const id of listMetaIds()) {
+    const meta = loadMeta(id);
+    if (meta?.ssoSecret) {
+      out.push({ id, name: meta.name ?? id, sso: meta.sso === true, notify: meta.notify === true, ssoSecret: meta.ssoSecret });
+    }
+  }
+  fabricCache = out;
+  return out;
+}
+
 /**
  * Resolve an installed app by the per-app Fabric secret it presents (constant-
- * time), returning which Fabric capabilities it holds. The SSO endpoint requires
- * `.sso`, the notify endpoint requires `.notify` — so one installed app can't act
- * as another, and an app can't use a capability it didn't opt into. Only apps
- * that opted into a Fabric capability are issued a secret, so this returns null
- * for everything else (security audit #1 / Display PLATFORM_INTEGRATION.md Part B).
+ * time), returning its identity + which Fabric capabilities it holds. The SSO
+ * endpoint requires `.sso`, the notify endpoint requires `.notify` — so one
+ * installed app can't act as another, and an app can't use a capability it didn't
+ * opt into. Only apps that opted into a Fabric capability are issued a secret, so
+ * this returns null for everything else (security audit #1).
  */
 export function findFabricApp(secret: string | undefined | null): FabricApp | null {
   if (!secret || secret.length < 16) return null;
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
-    if (meta?.ssoSecret && safeEqual(meta.ssoSecret, secret)) {
-      return { id, sso: meta.sso === true, notify: meta.notify === true };
+  for (const e of fabricEntries()) {
+    if (safeEqual(e.ssoSecret, secret)) {
+      return { id: e.id, name: e.name, sso: e.sso, notify: e.notify };
     }
   }
   return null;
@@ -346,6 +379,20 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
   for (const id of ids) {
     const name = loadMeta(id)?.name ?? id;
     onLine(`• ${name}`);
+    // A backup is an opaque, externally-craftable file — so re-run each restored
+    // stack through the SAME risk gate a fresh install uses. We never auto-start
+    // a dangerous compose (privileged, host namespaces, socket/sensitive binds…)
+    // that a crafted backup could smuggle in without the usual consent (audit).
+    try {
+      const { dangers } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
+      if (dangers.length > 0) {
+        onLine(`  (not started — needs review: ${dangers[0]})`);
+        continue;
+      }
+    } catch (err) {
+      onLine(`  (not started — couldn't check it safely: ${(err as Error).message})`);
+      continue;
+    }
     try {
       const res = await composeUp(projectOf(id), composePath(id), envPath(id));
       if (res.code !== 0) {
@@ -488,4 +535,5 @@ export async function removeApp(id: string, deleteData = false): Promise<void> {
   } catch (err) {
     log.warn(`Cleanup after removing ${id} had a problem.`, err);
   }
+  invalidateFabricIndex(); // the app's secret (if any) is gone
 }

@@ -18,6 +18,10 @@ import { reupAllApps } from '../apps/manager';
 export const RESTORE_PATH = path.join(DATA_DIR, '.restore.tar.gz');
 const STAGING_DIR = path.join(DATA_DIR, '.restore-staging');
 const ALLOWED_TOP = new Set(['config', 'apps']);
+// Hard ceiling on the DECOMPRESSED size, so a small but highly-compressible
+// archive (a gzip bomb) can't balloon to fill the data disk and take the
+// platform offline (security audit).
+const MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB
 
 function capture(cmd: string, args: string[]): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
@@ -39,6 +43,29 @@ export async function quickCheckArchive(): Promise<string | null> {
   if (res.code !== 0) return "That file isn't a valid backup archive.";
   if (res.out.split('\n').some((l) => l.trim())) return null;
   return 'That backup is empty.';
+}
+
+/** Reject before extracting if the archive's total uncompressed size would
+ *  exceed a hard ceiling or most of the free disk. Sizes come from `tar -tzvf`
+ *  (3rd whitespace field for both GNU and busybox tar). Returns an error, or null. */
+async function archiveTooLarge(): Promise<string | null> {
+  const res = await capture('tar', ['-tzvf', RESTORE_PATH]);
+  if (res.code !== 0) return null; // listing already validated by quickCheckArchive
+  let total = 0;
+  for (const line of res.out.split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const size = Number(parts[2]);
+    if (Number.isFinite(size)) total += size;
+  }
+  let cap = MAX_UNCOMPRESSED_BYTES;
+  try {
+    const st = fs.statfsSync(DATA_DIR);
+    cap = Math.min(cap, Math.floor(st.bsize * st.bavail * 0.9));
+  } catch {
+    /* statfs unavailable — fall back to the hard ceiling alone */
+  }
+  return total > cap ? 'That backup is too large to restore safely (it would fill the disk).' : null;
 }
 
 /** Validate the REAL extracted tree: only config/ + apps/ at the top, and no
@@ -88,60 +115,73 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
     return;
   }
 
-  const cleanup = () => {
+  // A finally guarantees the staging tree + uploaded archive are removed even on
+  // a mid-extract failure (e.g. an ENOSPC from a too-large archive), so a failed
+  // restore never leaves a partial tree wasting disk.
+  try {
+    onLine('Checking your backup…');
+    const tooLarge = await archiveTooLarge();
+    if (tooLarge) {
+      onLine(tooLarge);
+      return;
+    }
     fs.rmSync(STAGING_DIR, { recursive: true, force: true });
-    fs.rmSync(RESTORE_PATH, { force: true });
-  };
+    fs.mkdirSync(STAGING_DIR, { recursive: true });
 
-  onLine('Checking your backup…');
-  fs.rmSync(STAGING_DIR, { recursive: true, force: true });
-  fs.mkdirSync(STAGING_DIR, { recursive: true });
+    // Extract into the fresh staging dir. A fresh empty target means there are no
+    // pre-existing symlinks to traverse, and GNU tar refuses absolute/`..` paths.
+    const code = await streamSpawn(
+      'tar',
+      ['-xzf', RESTORE_PATH, '-C', STAGING_DIR, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir'],
+      onLine,
+    );
+    if (code !== 0) {
+      onLine('Restore failed while reading the backup.');
+      return;
+    }
 
-  // Extract into the fresh staging dir. A fresh empty target means there are no
-  // pre-existing symlinks to traverse, and GNU tar refuses absolute/`..` paths.
-  const code = await streamSpawn(
-    'tar',
-    ['-xzf', RESTORE_PATH, '-C', STAGING_DIR, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir'],
-    onLine,
-  );
-  if (code !== 0) {
-    cleanup();
-    onLine('Restore failed while reading the backup.');
-    return;
+    const err = validateExtracted(STAGING_DIR);
+    if (err) {
+      onLine(err);
+      return;
+    }
+
+    onLine('Restoring your settings and app data…');
+    let moved = 0;
+    for (const name of ALLOWED_TOP) {
+      const src = path.join(STAGING_DIR, name);
+      if (!fs.existsSync(src)) continue;
+      const dest = path.join(DATA_DIR, name);
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.renameSync(src, dest); // same filesystem → atomic
+      moved++;
+    }
+    if (moved === 0) {
+      onLine('That backup had nothing to restore.');
+      return;
+    }
+
+    onLine('');
+    onLine('Starting your apps…');
+    await reupAllApps(onLine);
+
+    onLine('');
+    onLine('Finishing up and restarting OpenMasjidOS…');
+    if (!(await recreateCore(onLine))) {
+      onLine('Restore finished, but the dashboard could not restart on its own. Re-run the installer if needed.');
+      return;
+    }
+    onLine('The dashboard is restarting now — this page will reconnect automatically.');
+  } finally {
+    try {
+      fs.rmSync(STAGING_DIR, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    try {
+      fs.rmSync(RESTORE_PATH, { force: true });
+    } catch {
+      /* best effort */
+    }
   }
-
-  const err = validateExtracted(STAGING_DIR);
-  if (err) {
-    cleanup();
-    onLine(err);
-    return;
-  }
-
-  onLine('Restoring your settings and app data…');
-  let moved = 0;
-  for (const name of ALLOWED_TOP) {
-    const src = path.join(STAGING_DIR, name);
-    if (!fs.existsSync(src)) continue;
-    const dest = path.join(DATA_DIR, name);
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.renameSync(src, dest); // same filesystem → atomic
-    moved++;
-  }
-  cleanup();
-  if (moved === 0) {
-    onLine('That backup had nothing to restore.');
-    return;
-  }
-
-  onLine('');
-  onLine('Starting your apps…');
-  await reupAllApps(onLine);
-
-  onLine('');
-  onLine('Finishing up and restarting OpenMasjidOS…');
-  if (!(await recreateCore(onLine))) {
-    onLine('Restore finished, but the dashboard could not restart on its own. Re-run the installer if needed.');
-    return;
-  }
-  onLine('The dashboard is restarting now — this page will reconnect automatically.');
 }

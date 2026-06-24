@@ -3,6 +3,7 @@
  * Used by the live updater (and reusable for other long-running actions).
  */
 import { useEffect, useRef, useState } from 'react';
+import { withKey } from '../lib/session';
 
 export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () => void }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -10,7 +11,8 @@ export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () 
 
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
+    // The handshake can't carry a header, so the dashboard key rides in ?k=.
+    const ws = new WebSocket(`${proto}//${window.location.host}${withKey(wsPath)}`);
     ws.onmessage = (e) => setText((t) => t + String(e.data));
     ws.onclose = () => onClosed?.();
     return () => {

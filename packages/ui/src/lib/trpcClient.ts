@@ -5,6 +5,7 @@
  */
 import { createWSClient, wsLink, splitLink, httpBatchLink } from '@trpc/client';
 import { trpc } from './trpc';
+import { getCsrf } from './session';
 
 function wsUrl(): string {
   const { protocol, host } = window.location;
@@ -19,7 +20,16 @@ export function makeTrpcClient() {
       splitLink({
         condition: (op) => op.type === 'subscription',
         true: wsLink({ client: wsClient }),
-        false: httpBatchLink({ url: '/trpc' }),
+        // Every cookie-authenticated HTTP call carries the dashboard key so the
+        // platform can tell a real dashboard request from a replay of the shared
+        // session cookie by an installed app on another port.
+        false: httpBatchLink({
+          url: '/trpc',
+          headers: () => {
+            const key = getCsrf();
+            return key ? { 'x-omos-csrf': key } : {};
+          },
+        }),
       }),
     ],
   });

@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
-import { wsAuthed } from './ws-auth';
+import { wsAuthed, requestCsrfOk } from './ws-auth';
 import { isAllowedWsOrigin } from '../util/origin';
 import { isValidAppId } from '../util/id';
 import { updateCatalogApp } from '../apps/manager';
@@ -15,6 +15,7 @@ export function registerAppUpdate(server: FastifyInstance): void {
   server.get('/api/apps/update', { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
     if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
     if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
+    if (!requestCsrfOk(req)) return socket.close(4403, 'This request came from an unexpected place.');
 
     const id = (req.query as { id?: string }).id ?? '';
     const send = (line: string) => {

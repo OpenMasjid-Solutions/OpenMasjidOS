@@ -34,6 +34,10 @@ const SENSITIVE_ROOTS = [
   '/sbin',
   '/lib',
   '/lib64',
+  // The platform's own data dir on the host: app config/.env/secrets and the
+  // admin credential store live here, so a stack must never bind-mount it
+  // (security audit — symlink-into-the-sandbox planting).
+  '/opt/openmasjid',
 ];
 
 /** Pull the host-side source from a string or long-form volume entry, or null
@@ -213,8 +217,18 @@ export function checkCompose(text: string): ComposeCheck {
     if (toArr(svc.device_cgroup_rules).length > 0) {
       dangers.push(`"${name}" sets device cgroup rules (direct host device access).`);
     }
+    // These two match on VALUE CONTENT, so a `${VAR}` token slips past the
+    // literal check and only turns dangerous after `docker compose` interpolates
+    // the user-controlled .env (e.g. security_opt: ["${X}"], X=seccomp=unconfined).
+    // Fail closed on any interpolation here, mirroring the namespace fields above.
+    if (toArr(svc.group_add).some((g) => hasInterpolation(g))) {
+      dangers.push(`"${name}" uses a variable in "group_add", which we can't verify is safe.`);
+    }
     if (toArr(svc.group_add).map(String).some((g) => /^(0|root|docker)$/i.test(g.trim()))) {
       dangers.push(`"${name}" joins a privileged host group (group_add: root/docker).`);
+    }
+    if (toArr(svc.security_opt).some((s) => hasInterpolation(s))) {
+      dangers.push(`"${name}" uses a variable in "security_opt", a security-sensitive setting we can't verify.`);
     }
     if (toArr(svc.security_opt).map(String).some((s) => /unconfined/i.test(s))) {
       dangers.push(`"${name}" weakens kernel sandboxing (security_opt: unconfined).`);

@@ -16,6 +16,7 @@ export const notificationsRouter = router({
         level: 'success',
       },
       '__test__',
+      'Dashboard',
     );
     if (!result.delivered) {
       const message =

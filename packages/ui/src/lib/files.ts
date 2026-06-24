@@ -1,12 +1,13 @@
 /** Helpers for the file explorer's streaming endpoints (download/upload). */
+import { getCsrf, withKey } from './session';
 
 export function filesDownloadUrl(p: string): string {
-  return `/api/files/download?path=${encodeURIComponent(p)}`;
+  return withKey(`/api/files/download?path=${encodeURIComponent(p)}`);
 }
 
 /** Inline-viewable URL for images/video/audio (see /api/files/raw). */
 export function filesRawUrl(p: string): string {
-  return `/api/files/raw?path=${encodeURIComponent(p)}`;
+  return withKey(`/api/files/raw?path=${encodeURIComponent(p)}`);
 }
 
 export type FileKind = 'image' | 'video' | 'audio' | 'text';
@@ -30,6 +31,7 @@ export async function uploadFile(dir: string, file: File): Promise<void> {
   const res = await fetch(`/api/files/upload?path=${encodeURIComponent(dir)}`, {
     method: 'POST',
     credentials: 'include',
+    headers: { 'x-omos-csrf': getCsrf() },
     body: fd,
   });
   if (!res.ok) {

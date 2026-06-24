@@ -49,19 +49,23 @@ function clamp(s: unknown, max: number): string {
   return String(s ?? '').slice(0, max);
 }
 
-/** Stop Slack broadcast tokens (<!channel>, <!here>, <!everyone>, <!subteam…>)
- *  from resolving: escaping the leading `<` makes Slack render them as literal
- *  text instead of pinging the workspace. Real links (<https…>) are untouched. */
+/** Stop Slack from resolving any app-supplied entity token. Escaping the leading
+ *  `<` of the broadcast (<!…>), user (<@U…>) and channel (<#C…>) forms makes Slack
+ *  render them as literal text instead of pinging/linking the workspace. Real
+ *  links (<https…>) start with `<h` and are untouched. */
 function neutralizeSlack(s: string): string {
-  return s.replace(/<!/g, '&lt;!');
+  return s.replace(/<([!@#])/g, '&lt;$1');
 }
 
 /** Shape the message for the configured service. App text is untrusted display
- *  text — never let it resolve as a mention/broadcast. */
-function buildBody(type: NotificationType, n: NotifyInput, label: string): unknown {
+ *  text — never let it resolve as a mention/broadcast. `appName` is the
+ *  server-resolved sending app (an app can't forge being another). */
+function buildBody(type: NotificationType, n: NotifyInput, label: string, appName: string): unknown {
   const title = clamp(n.title, TITLE_MAX).trim();
   const text = clamp(n.text, TEXT_MAX);
-  const prefix = label ? `[${label}] ` : '';
+  // Attribution the app cannot overwrite: [workspace label · AppName].
+  const tag = [label, appName].map((s) => s.trim()).filter(Boolean).join(' · ');
+  const prefix = tag ? `[${tag}] ` : '';
   if (type === 'slack') {
     return { text: neutralizeSlack(prefix + (title ? `*${title}*\n${text}` : text)) };
   }
@@ -75,7 +79,7 @@ function buildBody(type: NotificationType, n: NotifyInput, label: string): unkno
   // generic: a small, predictable JSON envelope
   return {
     source: 'openmasjidos',
-    app: label || undefined,
+    app: appName || label || undefined,
     title: title || undefined,
     text,
     level: n.level ?? 'info',
@@ -83,10 +87,12 @@ function buildBody(type: NotificationType, n: NotifyInput, label: string): unkno
 }
 
 /**
- * Deliver a notification to the configured webhook. `appId` is used only for
- * rate-limit keying and is never sent anywhere. Fails soft (never throws).
+ * Deliver a notification to the configured webhook. `appId` keys the rate limit;
+ * `appName` is the server-resolved sending app, stamped into the message so one
+ * app can't impersonate another in the masjid's workspace (security audit).
+ * Fails soft (never throws).
  */
-export async function sendNotification(n: NotifyInput, appId: string): Promise<NotifyResult> {
+export async function sendNotification(n: NotifyInput, appId: string, appName = ''): Promise<NotifyResult> {
   const cfg = getSettings().notifications;
   if (!cfg?.enabled || !cfg.url) return { delivered: false, reason: 'disabled' };
   if (!/^https?:\/\//i.test(cfg.url)) return { delivered: false, reason: 'bad_url' };
@@ -101,7 +107,7 @@ export async function sendNotification(n: NotifyInput, appId: string): Promise<N
     const res = await fetch(cfg.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(buildBody(cfg.type, n, cfg.label?.trim() || '')),
+      body: JSON.stringify(buildBody(cfg.type, n, cfg.label?.trim() || '', appName)),
       signal: AbortSignal.timeout(TIMEOUT_MS),
       redirect: 'error', // never follow a redirect to a different host
     });

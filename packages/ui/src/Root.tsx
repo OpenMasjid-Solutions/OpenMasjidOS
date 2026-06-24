@@ -4,6 +4,7 @@
  */
 import { Routes, Route } from 'react-router-dom';
 import { trpc } from './lib/trpc';
+import { getCsrf } from './lib/session';
 import { AuthScreen } from './components/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { Splash } from './components/Splash';
@@ -23,7 +24,10 @@ export function Root() {
   if (me.isLoading) return <Splash />;
 
   const data = me.data;
-  if (!data || data.setupRequired || !data.authenticated) {
+  // Also require the dashboard key: a valid cookie without it (e.g. storage was
+  // cleared) can't make authenticated calls, so send them through login to mint
+  // a fresh key rather than into a shell whose every request would fail.
+  if (!data || data.setupRequired || !data.authenticated || !getCsrf()) {
     return <AuthScreen setupRequired={data?.setupRequired ?? true} onAuthed={reload} />;
   }
 

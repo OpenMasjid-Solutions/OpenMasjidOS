@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
 import { Toggle } from '../components/Toggle';
 import { Page } from '../components/Page';
@@ -49,7 +50,12 @@ export function Settings() {
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch('/api/restore/upload', { method: 'POST', credentials: 'include', body: fd });
+      const res = await fetch('/api/restore/upload', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'x-omos-csrf': getCsrf() },
+        body: fd,
+      });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error || t('errors.generic'));
@@ -353,7 +359,7 @@ export function Settings() {
             <div className="setting-row__hint">{t('settings.backupHint')}</div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <a className="btn" href="/api/backup">
+            <a className="btn" href={withKey('/api/backup')}>
               <Download size={15} /> {t('settings.downloadBackup')}
             </a>
             <button className="btn" disabled={restoreUploading} onClick={() => restoreInput.current?.click()}>
@@ -458,7 +464,9 @@ function ChangePassword() {
   const [error, setError] = useState('');
 
   const change = trpc.auth.changePassword.useMutation({
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // Changing the password rotates the session (and its dashboard key).
+      setCsrf(res.csrf);
       setCurrent('');
       setNext('');
       setError('');

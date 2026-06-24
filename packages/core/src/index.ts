@@ -28,6 +28,7 @@ import { registerRestore } from './api/restore';
 import { registerAppUpdate } from './api/app-update';
 import { registerFabric } from './api/fabric';
 import { COOKIE_NAME, getSessionUser } from './auth/sessions';
+import { requestCsrfOk } from './api/ws-auth';
 import { isAllowedOrigin, isWebSocketUpgrade } from './util/origin';
 
 async function main() {
@@ -97,6 +98,9 @@ async function main() {
     if (!getSessionUser(token)) {
       return reply.code(401).send({ error: 'Please sign in.' });
     }
+    // The download URL is a plain <a href> (no header), so the dashboard key
+    // rides in ?k= — an app that captured the cookie can't forge it.
+    if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
     reply
       .header('content-type', 'application/gzip')
       .header('content-disposition', `attachment; filename="${backupFilename()}"`);

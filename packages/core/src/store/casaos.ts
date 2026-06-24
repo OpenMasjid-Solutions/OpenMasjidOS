@@ -15,6 +15,8 @@
  */
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 import { unzipSync, strFromU8 } from 'fflate';
 import YAML from 'yaml';
 import { log } from '../logger';
@@ -60,82 +62,100 @@ function ipIsPrivate(ip: string): boolean {
   return false;
 }
 
-async function isSafeUrl(raw: string): Promise<boolean> {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  if (host.toLowerCase() === 'localhost') return false;
-  if (net.isIP(host)) return !ipIsPrivate(host);
+/** Resolve a host to a single vetted PUBLIC address, or null if it's a literal
+ *  private IP / resolves to any private/loopback/metadata address. */
+async function resolveVetted(host: string): Promise<{ ip: string; family: number } | null> {
+  if (host.toLowerCase() === 'localhost') return null;
+  if (net.isIP(host)) return ipIsPrivate(host) ? null : { ip: host, family: net.isIP(host) };
   try {
     const addrs = await dns.lookup(host, { all: true });
-    return addrs.length > 0 && addrs.every((a) => !ipIsPrivate(a.address));
+    if (addrs.length === 0 || addrs.some((a) => ipIsPrivate(a.address))) return null;
+    return { ip: addrs[0].address, family: addrs[0].family };
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** Fetch an archive with SSRF checks, a size cap, a timeout, and manual,
- *  re-validated redirect following. Returns null on any failure. */
+/** One GET, with the socket PINNED to a pre-vetted IP via a custom `lookup` so
+ *  the address we validated is exactly the address we connect to — closing the
+ *  DNS-rebinding (TOCTOU) gap a separate fetch-time resolution would reopen.
+ *  TLS servername stays the hostname, so certificate validation is unaffected.
+ *  Returns the body (≤ cap), or a redirect location, or null. */
+function getPinned(
+  url: string,
+  pinnedIp: string,
+  family: number,
+): Promise<{ status: number; location: string | null; body: Uint8Array | null }> {
+  return new Promise((resolve) => {
+    let u: URL;
+    try {
+      u = new URL(url);
+    } catch {
+      return resolve({ status: 0, location: null, body: null });
+    }
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request(
+      url,
+      { method: 'GET', lookup: (_h, _o, cb) => cb(null, pinnedIp, family), timeout: FETCH_TIMEOUT_MS },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status >= 300 && status < 400) {
+          res.resume();
+          return resolve({ status, location: res.headers.location ?? null, body: null });
+        }
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return resolve({ status, location: null, body: null });
+        }
+        const declared = Number(res.headers['content-length'] ?? '0');
+        if (declared && declared > MAX_DOWNLOAD_BYTES) {
+          res.destroy();
+          return resolve({ status, location: null, body: null });
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        res.on('data', (c: Buffer) => {
+          total += c.length;
+          if (total > MAX_DOWNLOAD_BYTES) {
+            res.destroy();
+            resolve({ status, location: null, body: null });
+            return;
+          }
+          chunks.push(c);
+        });
+        res.on('end', () => resolve({ status, location: null, body: new Uint8Array(Buffer.concat(chunks)) }));
+        res.on('error', () => resolve({ status, location: null, body: null }));
+      },
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve({ status: 0, location: null, body: null }));
+    req.end();
+  });
+}
+
+/** Fetch an archive with SSRF checks (pinned per hop), a size cap, a timeout,
+ *  and manual, re-validated redirect following. Returns null on any failure. */
 async function downloadArchive(startUrl: string): Promise<Uint8Array | null> {
   let url = startUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!(await isSafeUrl(url))) return null;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    let u: URL;
     try {
-      const res = await fetch(url, { redirect: 'manual', signal: ctrl.signal });
-      if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get('location');
-        if (!loc) return null;
-        url = new URL(loc, url).toString();
-        continue;
-      }
-      if (!res.ok) return null;
-      const declared = Number(res.headers.get('content-length') ?? '0');
-      if (declared && declared > MAX_DOWNLOAD_BYTES) return null;
-      return await readCapped(res);
+      u = new URL(url);
     } catch {
       return null;
-    } finally {
-      clearTimeout(timer);
     }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    const vetted = await resolveVetted(u.hostname.replace(/^\[|\]$/g, ''));
+    if (!vetted) return null;
+    const res = await getPinned(url, vetted.ip, vetted.family);
+    if (res.status >= 300 && res.status < 400) {
+      if (!res.location) return null;
+      url = new URL(res.location, url).toString();
+      continue;
+    }
+    return res.body;
   }
   return null;
-}
-
-async function readCapped(res: Response): Promise<Uint8Array> {
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error('Archive too large.');
-    return buf;
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      total += value.length;
-      if (total > MAX_DOWNLOAD_BYTES) {
-        await reader.cancel();
-        throw new Error('Archive too large.');
-      }
-      chunks.push(value);
-    }
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.length;
-  }
-  return out;
 }
 
 function localized(value: unknown, fallback = ''): string {

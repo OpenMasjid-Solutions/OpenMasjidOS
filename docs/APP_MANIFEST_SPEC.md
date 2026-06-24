@@ -141,6 +141,12 @@ installed app validate (or impersonate) the session as another.
 - **Revocation:** the platform flips to `authenticated:false` immediately on logout/password change, so
   keep the positive cache short (~45 s) and cap the SSO-minted session (e.g. ~1 h) so a stale session
   can't linger.
+- **The session is an IDENTITY signal only — never a platform credential.** `/api/auth/session` tells
+  your app *who is viewing it*; it does **not** grant your app any authority over the platform. The
+  dashboard's own API now requires an origin-bound key the platform UI holds in its own browser storage
+  (which your app, on a different port, can't read), so the shared cookie alone can't drive the
+  platform's API — and your app must never try to. Use the SSO result to log the viewer into **your
+  app**, nothing more.
 
 > Same-host assumption: cookie-based SSO works because the dashboard and the app share a host on
 > different ports. An app on a different host simply won't see the cookie and falls back to its own

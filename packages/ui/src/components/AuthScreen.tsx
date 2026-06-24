@@ -6,6 +6,7 @@ import { useState, type FormEvent } from 'react';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
+import { setCsrf } from '../lib/session';
 import { MasjidMark } from './Glyphs';
 import { Modal } from './Modal';
 import { fadeRise } from '../lib/motion';
@@ -32,13 +33,17 @@ export function AuthScreen({
     e.preventDefault();
     setError('');
     try {
+      let res;
       if (setupRequired) {
         if (password.length < 8) return setError(t('auth.passwordTooShort'));
         if (password !== confirm) return setError(t('auth.passwordsMismatch'));
-        await setup.mutateAsync({ username, password });
+        res = await setup.mutateAsync({ username, password });
       } else {
-        await login.mutateAsync({ username, password });
+        res = await login.mutateAsync({ username, password });
       }
+      // Persist the dashboard key BEFORE the gate re-renders, so the first
+      // authenticated calls carry it.
+      setCsrf(res.csrf);
       onAuthed();
     } catch (err) {
       setError((err as Error).message || t('auth.genericError'));

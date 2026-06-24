@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Moon, Sun, Settings as SettingsIcon, LogOut, User } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { clearCsrf } from '../lib/session';
 import { usePrefs, prefsStore } from '../lib/prefs';
 
 export function ProfileMenu({ onSignedOut }: { onSignedOut: () => void }) {
@@ -16,7 +17,12 @@ export function ProfileMenu({ onSignedOut }: { onSignedOut: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
 
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-  const logout = trpc.auth.logout.useMutation({ onSettled: onSignedOut });
+  const logout = trpc.auth.logout.useMutation({
+    onSettled: () => {
+      clearCsrf();
+      onSignedOut();
+    },
+  });
   const sysInfo = trpc.system.info.useQuery();
 
   useEffect(() => {

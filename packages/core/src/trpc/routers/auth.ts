@@ -20,33 +20,19 @@ import {
   destroyAllSessions,
 } from '../../auth/sessions';
 
-// Per-source login throttle. Keyed by client IP so a flood from one source can
-// never lock out the legitimate admin (the previous global counter could).
-// Backoff escalates with repeated failures and resets on success.
-const MAX_ATTEMPTS = 5;
-const BASE_COOLDOWN_MS = 30_000;
-interface Attempt {
-  failures: number;
-  cooldownUntil: number;
-}
-const attempts = new Map<string, Attempt>();
+// Login throttle. A hard per-IP LOCKOUT is the wrong tool here: behind Docker's
+// default port publishing every LAN client is SNATed to the bridge-gateway IP,
+// so a lockout keyed on req.ip collapses to a single bucket an attacker can
+// weaponise to deny the real admin (security audit). Instead we apply a growing
+// per-attempt DELAY on consecutive FAILURES (global, reset on success): a wrong
+// password just gets slower, while a correct password always succeeds with no
+// delay — so brute-force is bounded (on top of argon2) but the admin can never
+// be locked out.
+const FAIL_DELAY_STEP_MS = 400;
+const FAIL_DELAY_MAX_MS = 4_000;
+let consecutiveFailures = 0;
 
-function getAttempt(ip: string): Attempt {
-  let a = attempts.get(ip);
-  if (!a) {
-    a = { failures: 0, cooldownUntil: 0 };
-    attempts.set(ip, a);
-  }
-  return a;
-}
-
-function pruneAttempts(): void {
-  if (attempts.size < 2000) return;
-  const now = Date.now();
-  for (const [ip, a] of attempts) {
-    if (a.failures === 0 && a.cooldownUntil < now) attempts.delete(ip);
-  }
-}
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const credentials = z.object({
   username: z.string().trim().min(1, 'Please enter a username.').max(64),
@@ -68,9 +54,9 @@ export const authRouter = router({
     }
     const hash = await hashPassword(input.password);
     setCredentials(input.username, hash);
-    const token = createSession(input.username);
+    const { token, csrf } = createSession(input.username);
     ctx.setSessionCookie?.(token);
-    return { authenticated: true, username: input.username };
+    return { authenticated: true, username: input.username, csrf };
   }),
 
   /** Sign in with the admin credentials. */
@@ -80,31 +66,20 @@ export const authRouter = router({
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      const attempt = getAttempt(ctx.ip);
-      if (Date.now() < attempt.cooldownUntil) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many attempts. Please wait a moment and try again.',
-        });
-      }
       const okUser = input.username === getUsername();
       // Always run argon2 verify (even for a wrong username) so response timing
       // doesn't reveal whether the username is correct.
       const okPass = await verifyPassword(getPasswordHash() ?? '', input.password);
       if (!okUser || !okPass) {
-        attempt.failures += 1;
-        if (attempt.failures >= MAX_ATTEMPTS) {
-          const steps = Math.min(8, attempt.failures - MAX_ATTEMPTS + 1);
-          attempt.cooldownUntil = Date.now() + BASE_COOLDOWN_MS * steps;
-        }
+        consecutiveFailures += 1;
+        // Slow down repeated failures without ever denying the real admin.
+        await wait(Math.min(consecutiveFailures * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
-      attempt.failures = 0;
-      attempt.cooldownUntil = 0;
-      pruneAttempts();
-      const token = createSession(input.username);
+      consecutiveFailures = 0;
+      const { token, csrf } = createSession(input.username);
       ctx.setSessionCookie?.(token);
-      return { authenticated: true, username: input.username };
+      return { authenticated: true, username: input.username, csrf };
     }),
 
   /** Sign out: drop this session and clear the cookie. */
@@ -129,8 +104,8 @@ export const authRouter = router({
       }
       updatePasswordHash(await hashPassword(input.newPassword));
       destroyAllSessions();
-      const token = createSession(ctx.username);
+      const { token, csrf } = createSession(ctx.username);
       ctx.setSessionCookie?.(token);
-      return { ok: true };
+      return { ok: true, csrf };
     }),
 });

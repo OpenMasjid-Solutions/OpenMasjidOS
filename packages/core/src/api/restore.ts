@@ -9,7 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
-import { wsAuthed } from './ws-auth';
+import { wsAuthed, requestCsrfOk } from './ws-auth';
 import { isAllowedWsOrigin, isAllowedOrigin } from '../util/origin';
 import { RESTORE_PATH, quickCheckArchive, runRestore } from '../system/restore';
 import { log } from '../logger';
@@ -17,6 +17,14 @@ import { log } from '../logger';
 function authed(req: FastifyRequest): boolean {
   return Boolean(getSessionUser(req.cookies?.[COOKIE_NAME]));
 }
+
+// Never write the uploaded archive THROUGH a symlink planted at RESTORE_PATH.
+// (cast: createWriteStream types `flags` as string but forwards it to fs.open,
+// which accepts a numeric flag set, so we can OR in O_NOFOLLOW.)
+const NOFOLLOW_WRITE = (fs.constants.O_WRONLY |
+  fs.constants.O_CREAT |
+  fs.constants.O_TRUNC |
+  (fs.constants.O_NOFOLLOW ?? 0)) as unknown as string;
 
 export function registerRestore(server: FastifyInstance): void {
   // Upload + sanity-check the backup. Kept separate from the run step so the
@@ -26,10 +34,11 @@ export function registerRestore(server: FastifyInstance): void {
     // port could CSRF an upload (see util/origin.ts).
     if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
     if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
+    if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
     try {
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: 'No backup file was uploaded.' });
-      await pipeline(file.file, fs.createWriteStream(RESTORE_PATH));
+      await pipeline(file.file, fs.createWriteStream(RESTORE_PATH, { flags: NOFOLLOW_WRITE }));
       if (file.file.truncated) {
         fs.rmSync(RESTORE_PATH, { force: true });
         return reply.code(413).send({ error: 'That backup file is too large.' });
@@ -54,6 +63,7 @@ export function registerRestore(server: FastifyInstance): void {
   server.get('/api/restore/run', { websocket: true }, async (socket: WebSocket, req: FastifyRequest) => {
     if (!isAllowedWsOrigin(req)) return socket.close(4403, 'Bad origin.');
     if (!wsAuthed(req)) return socket.close(4401, 'Please sign in.');
+    if (!requestCsrfOk(req)) return socket.close(4403, 'This request came from an unexpected place.');
     const send = (line: string) => {
       if (socket.readyState === socket.OPEN) socket.send(line + '\n');
     };
