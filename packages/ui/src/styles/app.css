@@ -322,7 +322,9 @@ button {
 }
 .app-card:hover {
   transform: translateY(var(--lift-y)) scale(1.012);
-  box-shadow: var(--glass-shadow-raised), 0 0 30px -6px var(--glass-glow);
+  /* --glass-shadow-raised already includes a 28px glow, so we don't stack a
+     second large box-shadow blur on top — the lift is what the eye reads. */
+  box-shadow: var(--glass-shadow-raised);
   --glint: var(--glint-strong); /* light catches the glass a little brighter */
 }
 .app-card:active {

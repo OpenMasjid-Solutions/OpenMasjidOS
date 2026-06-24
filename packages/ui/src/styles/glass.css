@@ -142,7 +142,11 @@
    bottom-right), drawn with the padding + mask-exclude technique so only the
    border shows. Purely decorative; on engines without mask-composite it simply
    doesn't render. This is what gives the panes their "wet glass" edge. */
-.glass::after,
+/* The mask-composite ring is GPU-pricey, so we draw it only on the elevated,
+   low-count surfaces (dock + raised panes/clock/modals) where the "wet glass"
+   edge reads most. The many base .glass cards keep their cheaper box-shadow edge
+   (border + top highlight from --glass-shadow) instead — a tiny visual trade for
+   a big drop in mask-composite passes on a Pi. */
 .glass-raised::after,
 .glass-dock::after {
   content: "";
@@ -169,7 +173,6 @@
   mask-composite: exclude;
   opacity: 0.65;
 }
-[data-theme="light"] .glass::after,
 [data-theme="light"] .glass-raised::after,
 [data-theme="light"] .glass-dock::after {
   background: linear-gradient(
