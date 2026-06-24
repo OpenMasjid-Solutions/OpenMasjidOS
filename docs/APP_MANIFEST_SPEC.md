@@ -124,8 +124,12 @@ installed app validate (or impersonate) the session as another.
     reverse-proxy/multi-host setups. An app must not let this be set by anyone but the platform.
   - `OPENMASJID_APP_SECRET` — a random per-app secret. **Treat it as a credential** (don't log/expose
     it). Injected only for `sso: true` apps.
-- The session cookie (`omos_session`, HttpOnly, SameSite=Strict) is sent by the browser to the app's
-  port too (same host, different port = same-site). The app's **backend** calls
+- The session cookie (`omos_session`, HttpOnly, **SameSite=Lax**, non-Secure) is sent by the browser to
+  the app when the admin opens it. It is `Lax` (not `Strict`) on purpose: the dashboard is HTTPS but
+  most apps are HTTP, so clicking **Open** is a cross-scheme top-level navigation that browsers treat
+  as cross-site — `Strict` would withhold the cookie on that first open (SSO would only work after a
+  reload), whereas `Lax` rides a top-level GET navigation. **So your app must read the cookie from the
+  request that loads it** (the Open navigation carries it). The app's **backend** then calls
   `GET ${OPENMASJID_BASE_URL}/api/auth/session` with **two** things:
   - the user's cookie, forwarded verbatim: `Cookie: omos_session=<value>` (read it **only** from the
     incoming request's cookie — never a query/header/body), and

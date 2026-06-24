@@ -11,9 +11,17 @@ import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
 
 const COOKIE_OPTS = {
   httpOnly: true,
-  sameSite: 'strict' as const,
+  // Lax, not Strict: the dashboard is HTTPS but apps are served over HTTP, so
+  // clicking "Open" is a cross-scheme top-level navigation that browsers treat as
+  // cross-site ("schemeful same-site"). Strict would withhold the cookie there,
+  // breaking SSO on the first open; Lax still rides top-level GET navigations.
+  // CSRF/replay is blocked by the origin-bound dashboard key, not by SameSite.
+  sameSite: 'lax' as const,
   path: '/',
-  // Not Secure: the dashboard is served over plain HTTP on the LAN (CLAUDE.md §9).
+  // Not Secure on purpose: an installed app on an HTTP port must still receive the
+  // forwarded session cookie for SSO. The dashboard itself is HTTPS, so the cookie
+  // is encrypted in transit to it regardless; the dashboard key (not Secure)
+  // prevents an app from replaying the cookie.
   maxAge: Math.floor(SESSION_TTL_MS / 1000),
 };
 

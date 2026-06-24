@@ -1,8 +1,9 @@
 /**
  * Server-side sessions. Tokens are long random strings held in memory and set
- * in an HTTP-only, SameSite=Strict cookie. They are NOT marked Secure because
- * the dashboard is reached over plain HTTP on the LAN (CLAUDE.md). Sessions
- * reset on a daemon restart — the admin simply signs in again.
+ * in an HTTP-only, SameSite=Lax cookie (Lax so the cookie rides the top-level
+ * "Open app" navigation, which is cross-scheme — HTTPS dashboard → HTTP app — and
+ * would drop a Strict cookie). NOT Secure, so HTTP apps still receive it for SSO.
+ * Sessions reset on a daemon restart — the admin simply signs in again.
  *
  * Each session also carries a CSRF token (the "dashboard key"). The cookie is
  * SHARED with any installed app on another port of the same host (cookies aren't
