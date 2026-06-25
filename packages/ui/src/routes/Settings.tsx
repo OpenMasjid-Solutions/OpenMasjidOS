@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -399,6 +399,9 @@ export function Settings() {
         </div>
       </section>
 
+      {/* Off-site backups (scheduled upload to Google Drive / NAS) */}
+      <ScheduledBackupPanel />
+
       <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} currentVersion={sysInfo.data?.version ?? ''} />
 
       <Modal open={!!restoreFile} onClose={() => !restoreUploading && setRestoreFile(null)} title={t('settings.restoreConfirmTitle')}>
@@ -724,5 +727,305 @@ function NotificationsPanel() {
         </>
       )}
     </section>
+  );
+}
+
+type BackupKind = 'drive' | 'sftp' | 'smb' | 'webdav';
+
+/** Scheduled off-site backups — upload the config + app-data backup to Google
+ *  Drive or a NAS (SFTP/SMB/WebDAV) on a schedule. Credentials are entered here
+ *  but only ever stored server-side (rclone config); status never echoes them. */
+function ScheduledBackupPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const status = trpc.backups.status.useQuery();
+  const refresh = () => utils.backups.status.invalidate();
+
+  const [setupOpen, setSetupOpen] = useState(false);
+
+  const update = trpc.backups.update.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const clearDest = trpc.backups.clearDestination.useMutation({
+    onSuccess: () => { refresh(); toast(t('settings.backupRemoved'), 'success'); },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const test = trpc.backups.test.useMutation({
+    onSuccess: (r) => toast(r.message || t('settings.backupTestOk'), r.ok ? 'success' : 'error'),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const runNow = trpc.backups.runNow.useMutation({
+    onSuccess: () => { refresh(); toast(t('settings.backupRunDone'), 'success'); },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+
+  const b = status.data;
+  if (!b) return null;
+
+  const kindLabel: Record<BackupKind, string> = {
+    drive: t('settings.backupTypeDrive'),
+    sftp: t('settings.backupTypeSftp'),
+    smb: t('settings.backupTypeSmb'),
+    webdav: t('settings.backupTypeWebdav'),
+  };
+
+  const lastRun =
+    b.lastResult === 'never' || !b.lastRunAt
+      ? t('settings.backupLastNever')
+      : b.lastResult === 'ok'
+        ? t('settings.backupLastOk', { date: new Date(b.lastRunAt).toLocaleString() })
+        : t('settings.backupLastError', { date: new Date(b.lastRunAt).toLocaleString(), message: b.lastMessage });
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+        <Cloud size={18} /> {t('settings.offsiteBackups')}
+      </h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.offsiteBackupsHint')}</p>
+
+      <div className="setting-row">
+        <div className="setting-row__text">
+          <div className="setting-row__title">{t('settings.backupDestination')}</div>
+          <div className="setting-row__hint">
+            {b.configured && b.destKind !== 'none'
+              ? `${b.destLabel} · ${kindLabel[b.destKind as BackupKind]}`
+              : t('settings.backupNoDestination')}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button className="btn" onClick={() => setSetupOpen(true)}>
+            <Cloud size={15} /> {b.configured ? t('settings.backupChange') : t('settings.backupSetUp')}
+          </button>
+          {b.configured && (
+            <button className="btn" disabled={clearDest.isPending} onClick={() => clearDest.mutate()}>
+              <Trash2 size={15} /> {t('settings.backupRemove')}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {b.configured && (
+        <>
+          <div className="setting-row">
+            <div className="setting-row__text"><div className="setting-row__title">{t('settings.backupEnable')}</div></div>
+            <Toggle checked={b.enabled} onChange={(v) => update.mutate({ enabled: v })} label={t('settings.backupEnable')} />
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text"><div className="setting-row__title">{t('settings.backupSchedule')}</div></div>
+            <div className="segmented glass-inset">
+              <button className={cn(b.schedule === 'daily' && 'is-active')} onClick={() => update.mutate({ schedule: 'daily' })}>
+                {t('settings.backupDaily')}
+              </button>
+              <button className={cn(b.schedule === 'weekly' && 'is-active')} onClick={() => update.mutate({ schedule: 'weekly' })}>
+                {t('settings.backupWeekly')}
+              </button>
+            </div>
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('settings.backupRetention')}</div>
+              <div className="setting-row__hint">{t('settings.backupRetentionHint')}</div>
+            </div>
+            <input
+              className="input glass-inset"
+              style={{ maxWidth: '6rem' }}
+              type="number"
+              min={1}
+              max={365}
+              defaultValue={b.retention}
+              onBlur={(e) => {
+                const n = Math.max(1, Math.min(365, Math.round(Number(e.target.value) || b.retention)));
+                if (n !== b.retention) update.mutate({ retention: n });
+              }}
+            />
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('settings.backupStatus')}</div>
+              <div className="setting-row__hint">{lastRun}</div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button className="btn" disabled={test.isPending} onClick={() => test.mutate()}>
+                <RefreshCw size={15} /> {test.isPending ? t('settings.backupTesting') : t('settings.backupTest')}
+              </button>
+              <button className="btn btn--primary" disabled={runNow.isPending} onClick={() => runNow.mutate()}>
+                <CloudUpload size={15} /> {runNow.isPending ? t('settings.backupRunning') : t('settings.backupRunNow')}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      <BackupDestinationModal open={setupOpen} onClose={() => setSetupOpen(false)} onSaved={() => { setSetupOpen(false); refresh(); }} />
+    </section>
+  );
+}
+
+function BackupDestinationModal({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const [kind, setKind] = useState<BackupKind>('drive');
+  const [folder, setFolder] = useState('OpenMasjidOS-Backups');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('');
+  const [user, setUser] = useState('');
+  const [password, setPassword] = useState('');
+  const [share, setShare] = useState('');
+  const [url, setUrl] = useState('');
+  const [keyPem, setKeyPem] = useState('');
+  const [driveToken, setDriveToken] = useState('');
+  const [error, setError] = useState('');
+
+  const save = trpc.backups.setDestination.useMutation({
+    onSuccess: () => { toast(t('settings.backupSaved'), 'success'); onSaved(); },
+    onError: (e) => setError(e.message || t('errors.generic')),
+  });
+
+  const types: Array<{ id: BackupKind; label: string }> = [
+    { id: 'drive', label: t('settings.backupTypeDrive') },
+    { id: 'sftp', label: t('settings.backupTypeSftp') },
+    { id: 'smb', label: t('settings.backupTypeSmb') },
+    { id: 'webdav', label: t('settings.backupTypeWebdav') },
+  ];
+
+  function submit() {
+    setError('');
+    const trimmedFolder = folder.trim() || undefined;
+    if (kind === 'drive') {
+      save.mutate({ kind, folder: trimmedFolder, driveToken: driveToken.trim() });
+    } else if (kind === 'sftp') {
+      save.mutate({
+        kind,
+        folder: trimmedFolder,
+        host: host.trim(),
+        port: port ? Number(port) : undefined,
+        user: user.trim(),
+        ...(keyPem.trim() ? { keyPem } : { password }),
+      });
+    } else if (kind === 'smb') {
+      save.mutate({ kind, folder: trimmedFolder, host: host.trim(), share: share.trim(), user: user.trim() || undefined, password: password || undefined });
+    } else {
+      save.mutate({ kind, folder: trimmedFolder, url: url.trim(), user: user.trim() || undefined, password: password || undefined });
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={() => !save.isPending && onClose()} title={t('settings.backupSetupTitle')}>
+      <label className="label">{t('settings.backupType')}</label>
+      <div className="segmented glass-inset" style={{ marginBlockEnd: '0.7rem' }}>
+        {types.map((ty) => (
+          <button key={ty.id} className={cn(kind === ty.id && 'is-active')} onClick={() => { setKind(ty.id); setError(''); }}>
+            {ty.label}
+          </button>
+        ))}
+      </div>
+
+      {kind === 'drive' && (
+        <>
+          <p className="setting-row__hint" style={{ whiteSpace: 'pre-line' }}>{t('settings.backupDriveHelp')}</p>
+          <pre className="logs glass-inset" style={{ maxHeight: 'none' }}>rclone authorize "drive"</pre>
+          <label className="label" style={{ marginBlockStart: '0.6rem' }}>{t('settings.backupDriveToken')}</label>
+          <textarea
+            className="textarea glass-inset"
+            style={{ minHeight: '5rem', fontFamily: 'ui-monospace, monospace' }}
+            placeholder='{"access_token":"…","token_type":"Bearer",…}'
+            value={driveToken}
+            onChange={(e) => setDriveToken(e.target.value)}
+          />
+        </>
+      )}
+
+      {kind === 'sftp' && (
+        <>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="field" style={{ flex: 2 }}>
+              <label className="label">{t('settings.backupHost')}</label>
+              <input className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">{t('settings.backupPort')}</label>
+              <input className="input glass-inset" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupUser')}</label>
+            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupPassword')}</label>
+            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+          </div>
+          <details>
+            <summary className="setting-row__hint" style={{ cursor: 'pointer' }}>{t('settings.backupKeyOptional')}</summary>
+            <textarea
+              className="textarea glass-inset"
+              style={{ minHeight: '4.5rem', fontFamily: 'ui-monospace, monospace', marginBlockStart: '0.4rem' }}
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              value={keyPem}
+              onChange={(e) => setKeyPem(e.target.value)}
+            />
+          </details>
+        </>
+      )}
+
+      {kind === 'smb' && (
+        <>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="field" style={{ flex: 2 }}>
+              <label className="label">{t('settings.backupHost')}</label>
+              <input className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">{t('settings.backupShare')}</label>
+              <input className="input glass-inset" value={share} onChange={(e) => setShare(e.target.value)} placeholder="backups" />
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupUser')}</label>
+            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupPassword')}</label>
+            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+          </div>
+        </>
+      )}
+
+      {kind === 'webdav' && (
+        <>
+          <div className="field">
+            <label className="label">{t('settings.backupUrl')}</label>
+            <input className="input glass-inset" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://nas.local/remote.php/dav/files/me/" />
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupUser')}</label>
+            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
+          </div>
+          <div className="field">
+            <label className="label">{t('settings.backupPassword')}</label>
+            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+          </div>
+        </>
+      )}
+
+      <div className="field" style={{ marginBlockStart: '0.4rem' }}>
+        <label className="label">{t('settings.backupFolder')}</label>
+        <input className="input glass-inset" value={folder} onChange={(e) => setFolder(e.target.value)} />
+        <div className="setting-row__hint">{t('settings.backupFolderHint')}</div>
+      </div>
+
+      {error && <p className="form-error">{error}</p>}
+      <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginBlockStart: '1rem' }}>
+        <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
+        <button className="btn btn--primary" disabled={save.isPending} onClick={submit}>
+          {save.isPending ? t('settings.backupSaving') : t('settings.backupSave')}
+        </button>
+      </div>
+    </Modal>
   );
 }

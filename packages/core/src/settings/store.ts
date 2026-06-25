@@ -35,6 +35,32 @@ export interface NotificationConfig {
   label: string;
 }
 
+/**
+ * Scheduled off-site backup config. This holds only NON-secret metadata — the
+ * actual destination credentials (NAS password / SFTP key / Google Drive token)
+ * live ONLY in the rclone config file under the data dir (chmod 600), never here
+ * and never in any API response. See system/backup-upload.ts.
+ */
+export interface BackupConfig {
+  enabled: boolean;
+  schedule: 'daily' | 'weekly';
+  /** Keep the newest N backups on the remote; older ones are pruned. */
+  retention: number;
+  /** Which rclone backend is configured (for display only). 'none' = unset. */
+  destKind: 'none' | 'drive' | 'sftp' | 'smb' | 'webdav';
+  /** Short human label for the destination, e.g. "Google Drive" or "nas.local". */
+  destLabel: string;
+  /** Sub-path/folder on the remote where backups are written. */
+  remotePath: string;
+  /** True once a destination (rclone remote) has been saved. */
+  configured: boolean;
+  /** Last run status (surfaced in Settings). */
+  lastRunAt: string;
+  lastResult: 'ok' | 'error' | 'never';
+  lastMessage: string;
+  lastBackupName: string;
+}
+
 export interface PlatformSettings {
   /** Gates the App Store "3rd Party App" button (CLAUDE.md §11). */
   allowCustomApps: boolean;
@@ -50,6 +76,8 @@ export interface PlatformSettings {
   appearance: Appearance;
   /** Notification webhook for the Fabric (apps relay through it). */
   notifications: NotificationConfig;
+  /** Scheduled off-site backup config (non-secret; creds live in rclone.conf). */
+  backups: BackupConfig;
 }
 
 const SETTINGS_PATH = path.join(CONFIG_DIR, 'settings.json');
@@ -61,9 +89,34 @@ const DEFAULTS: PlatformSettings = {
   updateChannel: 'stable',
   appearance: { theme: 'dark', wallpaper: 'aurora', wallpaperImage: '', accent: 'cyan', lang: 'en' },
   notifications: { enabled: false, type: 'slack', url: '', label: '' },
+  backups: {
+    enabled: false,
+    schedule: 'daily',
+    retention: 7,
+    destKind: 'none',
+    destLabel: '',
+    remotePath: 'OpenMasjidOS-Backups',
+    configured: false,
+    lastRunAt: '',
+    lastResult: 'never',
+    lastMessage: '',
+    lastBackupName: '',
+  },
 };
 
-let cache: PlatformSettings = readJson(SETTINGS_PATH, DEFAULTS);
+/** Merge persisted settings over defaults so a settings.json written by an older
+ *  version (missing newer keys/sections like `backups`) never yields undefined. */
+function withDefaults(s: Partial<PlatformSettings>): PlatformSettings {
+  return {
+    ...DEFAULTS,
+    ...s,
+    appearance: { ...DEFAULTS.appearance, ...(s.appearance ?? {}) },
+    notifications: { ...DEFAULTS.notifications, ...(s.notifications ?? {}) },
+    backups: { ...DEFAULTS.backups, ...(s.backups ?? {}) },
+  };
+}
+
+let cache: PlatformSettings = withDefaults(readJson(SETTINGS_PATH, {} as Partial<PlatformSettings>));
 
 export function getSettings(): PlatformSettings {
   return cache;
@@ -84,4 +137,8 @@ export function addCommunityRepo(url: string): PlatformSettings {
 
 export function removeCommunityRepo(url: string): PlatformSettings {
   return updateSettings({ communityRepos: cache.communityRepos.filter((r) => r !== url) });
+}
+
+export function updateBackups(patch: Partial<BackupConfig>): PlatformSettings {
+  return updateSettings({ backups: { ...cache.backups, ...patch } });
 }

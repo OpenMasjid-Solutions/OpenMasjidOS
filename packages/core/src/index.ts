@@ -25,6 +25,7 @@ import { appRouter, type AppRouter } from './trpc/router';
 import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
 import { backupStream, backupFilename } from './system/backup';
+import { startBackupScheduler } from './system/backup-upload';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -211,6 +212,10 @@ async function main() {
     await server.listen({ host: HOST, port: PORT });
     log.info(`OpenMasjidOS core v${VERSION} listening on http://${HOST}:${PORT}`);
   }
+
+  // Scheduled off-site backups (Google Drive / NAS) — a lightweight tick that
+  // runs a backup when one is due. No-op until the admin configures a destination.
+  startBackupScheduler();
 }
 
 main().catch((err) => {

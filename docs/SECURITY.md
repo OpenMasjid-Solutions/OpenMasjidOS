@@ -68,6 +68,25 @@ Before any app's `docker-compose.yml` runs, it is parsed and risk-checked
 Catalog installs are hard-blocked on any danger; the opt-in 3rd-party (custom)
 installer requires an explicit "I understand the risk" acknowledgement.
 
+## Off-site backups (scheduled)
+
+Settings → **Off-site backups** uploads the platform backup (the same gzipped tar
+of `config/` + `apps/` as the manual download) to Google Drive or a NAS on a
+schedule, via bundled `rclone`.
+
+- **Credentials never leave the host.** The destination's secret (NAS password,
+  SFTP private key, or Google Drive token) is written only to `rclone.conf` (and
+  an optional key file) under the data dir, `chmod 600`. Passwords are stored in
+  rclone's obscured form, not plaintext. `settings.json` and the `backups.status`
+  API hold only non-secret metadata (kind, label, remote path, schedule, last-run
+  status) — a secret is never returned to the browser, even to the admin.
+- The backup tar is **streamed** straight to the remote (`rclone rcat`) — it is
+  not staged on local disk, so a small box won't fill up.
+- Retention prunes the remote to the newest N backups (default 7).
+- Backups capture data **as-is**; if an app stores its own secrets (e.g. Stripe
+  keys) in its data dir, those travel inside the tar — so treat the destination as
+  trusted and prefer one that encrypts at rest.
+
 ## Reporting
 
 OpenMasjidOS is licensed **AGPL-3.0-only** ([`LICENSE`](../LICENSE)); the dashboard

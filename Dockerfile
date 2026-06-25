@@ -38,7 +38,8 @@ WORKDIR /app
 # The core installs/removes apps by shelling out to `docker` + `docker compose`
 # against the mounted host socket, so the CLI and compose plugin must be present.
 # openssl generates the self-signed TLS cert for the dashboard's forced HTTPS.
-RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates tar openssl
+# rclone uploads scheduled backups to Google Drive / a NAS (SFTP/SMB/WebDAV).
+RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates tar openssl rclone
 
 ENV NODE_ENV=production \
     OPENMASJID_DATA_DIR=/data \
