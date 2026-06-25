@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Auth & first-run. The very first visit creates the single admin account;
  * thereafter it's a plain login. Wrong credentials get a friendly, throttled
@@ -20,19 +22,45 @@ import {
   destroyAllSessions,
 } from '../../auth/sessions';
 
-// Login throttle. A hard per-IP LOCKOUT is the wrong tool here: behind Docker's
-// default port publishing every LAN client is SNATed to the bridge-gateway IP,
-// so a lockout keyed on req.ip collapses to a single bucket an attacker can
-// weaponise to deny the real admin (security audit). Instead we apply a growing
-// per-attempt DELAY on consecutive FAILURES (global, reset on success): a wrong
-// password just gets slower, while a correct password always succeeds with no
-// delay — so brute-force is bounded (on top of argon2) but the admin can never
-// be locked out.
-const FAIL_DELAY_STEP_MS = 400;
-const FAIL_DELAY_MAX_MS = 4_000;
+// Login throttle. Brute-force is bounded three ways:
+//   1. argon2id's per-verify cost;
+//   2. the verify is SERIALIZED (one credential check at a time) so a parallel
+//      flood can't multiply throughput past that cost — the real rate cap;
+//   3. a growing per-attempt DELAY on consecutive failures (reset on success).
+// A hard lockout stays OFF by default: behind Docker's port publishing every LAN
+// client is SNATed to the bridge-gateway IP, so a global lockout would let an
+// attacker deny the real admin. Operators who expose the dashboard to the
+// internet can opt in with OPENMASJID_LOGIN_LOCKOUT=1 (a strong setup password is
+// still the primary defence). The delay is applied OUTSIDE the serialization
+// mutex, so the admin's correct attempt is never queued behind attacker delays.
+const FAIL_DELAY_STEP_MS = 500;
+const FAIL_DELAY_MAX_MS = 5_000;
+const LOCKOUT_ENABLED = process.env.OPENMASJID_LOGIN_LOCKOUT === '1';
+const LOCKOUT_THRESHOLD = 10; // consecutive failures before the opt-in cooldown
+const LOCKOUT_MS = 60_000;
 let consecutiveFailures = 0;
+let cooldownUntil = 0;
+// Mutex chain: each credential check awaits the previous, so verifies run
+// strictly one-at-a-time regardless of request concurrency.
+let verifyGate: Promise<void> = Promise.resolve();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function verifyCredentials(username: string, password: string): Promise<boolean> {
+  let release!: () => void;
+  const prev = verifyGate;
+  verifyGate = new Promise<void>((r) => (release = r));
+  await prev;
+  try {
+    const okUser = username === getUsername();
+    // Always run argon2 verify (even for a wrong username) so response timing
+    // doesn't reveal whether the username is correct.
+    const okPass = await verifyPassword(getPasswordHash() ?? '', password);
+    return okUser && okPass;
+  } finally {
+    release();
+  }
+}
 
 const credentials = z.object({
   username: z.string().trim().min(1, 'Please enter a username.').max(64),
@@ -66,17 +94,27 @@ export const authRouter = router({
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      const okUser = input.username === getUsername();
-      // Always run argon2 verify (even for a wrong username) so response timing
-      // doesn't reveal whether the username is correct.
-      const okPass = await verifyPassword(getPasswordHash() ?? '', input.password);
-      if (!okUser || !okPass) {
+      // Opt-in hard cooldown (exposed instances): reject fast without occupying
+      // the verify mutex or spending an argon2 hash.
+      if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many attempts. Please wait a minute and try again.',
+        });
+      }
+      const ok = await verifyCredentials(input.username, input.password);
+      if (!ok) {
         consecutiveFailures += 1;
-        // Slow down repeated failures without ever denying the real admin.
+        if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) {
+          cooldownUntil = Date.now() + LOCKOUT_MS;
+        }
+        // Slow the failing response (outside the mutex, so a correct attempt is
+        // never queued behind these delays).
         await wait(Math.min(consecutiveFailures * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
       consecutiveFailures = 0;
+      cooldownUntil = 0;
       const { token, csrf } = createSession(input.username);
       ctx.setSessionCookie?.(token);
       return { authenticated: true, username: input.username, csrf };

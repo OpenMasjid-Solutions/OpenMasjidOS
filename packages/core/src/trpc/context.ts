@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * tRPC request context. Resolves the signed-in admin from the session cookie
  * for BOTH HTTP requests and the WebSocket upgrade request (we parse the raw
@@ -18,10 +20,17 @@ const COOKIE_OPTS = {
   // CSRF/replay is blocked by the origin-bound dashboard key, not by SameSite.
   sameSite: 'lax' as const,
   path: '/',
-  // Not Secure on purpose: an installed app on an HTTP port must still receive the
-  // forwarded session cookie for SSO. The dashboard itself is HTTPS, so the cookie
-  // is encrypted in transit to it regardless; the dashboard key (not Secure)
-  // prevents an app from replaying the cookie.
+  // Secure is OPT-IN (OPENMASJID_SECURE_COOKIE=1). By default it is OFF because an
+  // installed app on a plain-HTTP port must still receive the forwarded session
+  // cookie for SSO, and a Secure cookie is never sent over HTTP. The dashboard is
+  // HTTPS-forced, so the cookie is already encrypted in transit to the dashboard,
+  // and the origin-bound dashboard key (not the cookie) is what blocks replay — so
+  // leaving this off is safe on a trusted LAN. Turn it ON when the whole
+  // deployment is end-to-end HTTPS (e.g. behind a reverse proxy / Tailscale Serve)
+  // or you don't use HTTP-app SSO, to harden the dashboard cookie on a hostile
+  // network. (A fuller fix would be a separate Secure dashboard-only cookie split
+  // from the cross-app SSO cookie — see docs/SECURITY.md.)
+  secure: process.env.OPENMASJID_SECURE_COOKIE === '1',
   maxAge: Math.floor(SESSION_TTL_MS / 1000),
 };
 

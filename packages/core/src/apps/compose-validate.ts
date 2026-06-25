@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Validates a docker-compose file before we ever run it (CLAUDE.md §11, §15).
  * Two outcomes:
@@ -179,6 +181,12 @@ export function checkCompose(text: string): ComposeCheck {
     if ('extends' in svc) {
       dangers.push(`"${name}" uses "extends", which merges settings we can't check.`);
     }
+    // A `build:` context produces an image we never see — only pre-built, pinned
+    // images can be vouched for (like include/extends, the built image could carry
+    // anything). Catalog apps must ship a published image, not build on the box.
+    if ('build' in svc) {
+      dangers.push(`"${name}" builds its image from a "build" context we can't inspect — use a pre-built, pinned image instead.`);
+    }
     // Sensitive flags hidden behind a variable can't be verified statically.
     for (const field of ['privileged', 'network_mode', 'pid', 'ipc', 'userns_mode', 'cgroup', 'uts'] as const) {
       if (hasInterpolation((svc as Record<string, unknown>)[field])) {
@@ -206,6 +214,15 @@ export function checkCompose(text: string): ComposeCheck {
     }
     if (svc.uts === 'host') {
       dangers.push(`"${name}" shares the host UTS namespace (can read/alter the machine's hostname).`);
+    }
+    // network_mode/pid/ipc can also JOIN another container's or service's
+    // namespace (`container:<name>` / `service:<name>`) — e.g. joining the core's
+    // own namespace for lateral movement. Flag those too, not just ":host".
+    for (const field of ['network_mode', 'pid', 'ipc'] as const) {
+      const v = (svc as Record<string, unknown>)[field];
+      if (typeof v === 'string' && /^\s*(container|service):/i.test(v)) {
+        dangers.push(`"${name}" joins another container's namespace (${field}: ${v.trim()}).`);
+      }
     }
     const caps = toArr(svc.cap_add);
     if (caps.length > 0) {

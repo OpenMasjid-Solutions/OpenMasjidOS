@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * First-run admin creation + login. No part of the app is reachable without
  * passing through here (CLAUDE.md §9). No masjid/prayer details are collected.
@@ -10,6 +12,22 @@ import { setCsrf } from '../lib/session';
 import { MasjidMark } from './Glyphs';
 import { Modal } from './Modal';
 import { fadeRise } from '../lib/motion';
+
+// Keep in step with MIN_PASSWORD_LENGTH on the server (packages/core/src/auth/passwords.ts).
+const MIN_PW = 12;
+const STRENGTH_COLORS = ['#ef4444', '#f59e0b', '#eab308', '#22c55e'];
+const STRENGTH_KEYS = ['auth.pwWeak', 'auth.pwFair', 'auth.pwGood', 'auth.pwStrong'];
+
+/** A rough 0–4 strength score: length tiers + character variety. */
+function passwordScore(pw: string): number {
+  if (!pw) return 0;
+  let s = 0;
+  if (pw.length >= MIN_PW) s += 1;
+  if (pw.length >= 16) s += 1;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s += 1;
+  if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) s += 1;
+  return Math.min(s, 4);
+}
 
 export function AuthScreen({
   setupRequired,
@@ -24,6 +42,7 @@ export function AuthScreen({
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [showReset, setShowReset] = useState(false);
+  const pwScore = passwordScore(password);
 
   const setup = trpc.auth.setup.useMutation();
   const login = trpc.auth.login.useMutation();
@@ -35,7 +54,7 @@ export function AuthScreen({
     try {
       let res;
       if (setupRequired) {
-        if (password.length < 8) return setError(t('auth.passwordTooShort'));
+        if (password.length < MIN_PW) return setError(t('auth.passwordTooShort'));
         if (password !== confirm) return setError(t('auth.passwordsMismatch'));
         res = await setup.mutateAsync({ username, password });
       } else {
@@ -91,7 +110,29 @@ export function AuthScreen({
               onChange={(e) => setPassword(e.target.value)}
               required
             />
-            {setupRequired && <span className="hint">{t('auth.passwordHint')}</span>}
+            {setupRequired && password.length > 0 && (
+              <div style={{ marginBlockStart: '0.45rem' }} aria-hidden="true">
+                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                  {[0, 1, 2, 3].map((i) => (
+                    <span
+                      key={i}
+                      style={{
+                        flex: 1,
+                        height: '4px',
+                        borderRadius: '2px',
+                        background: i < pwScore ? STRENGTH_COLORS[pwScore - 1] : 'var(--glass-border)',
+                        transition: 'background var(--dur-micro) ease',
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            {setupRequired && (
+              <span className="hint">
+                {password.length > 0 && pwScore > 0 ? t(STRENGTH_KEYS[pwScore - 1]) : t('auth.passwordHint')}
+              </span>
+            )}
           </div>
 
           {setupRequired && (

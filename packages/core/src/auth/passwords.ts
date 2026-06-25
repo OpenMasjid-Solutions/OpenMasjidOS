@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Password hashing with argon2id. We use @node-rs/argon2 (prebuilt musl/glibc
  * binaries) rather than the native `argon2` package so the multi-arch Alpine
@@ -26,5 +28,8 @@ export async function verifyPassword(digest: string, plain: string): Promise<boo
   }
 }
 
-/** Minimum admin password length enforced server-side (also enforced in the UI). */
-export const MIN_PASSWORD_LENGTH = 8;
+/** Minimum admin password length enforced server-side (also enforced in the UI).
+ *  Raised to 12: the admin account is effectively host-root (it can install apps
+ *  and open a root shell), so a weak password on an exposed instance is the main
+ *  brute-force risk. The UI shows a strength meter to encourage stronger still. */
+export const MIN_PASSWORD_LENGTH = 12;
