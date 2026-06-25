@@ -4,7 +4,7 @@
 
 services:
   core:
-    image: ghcr.io/hasan-ismail/openmasjid-core:latest
+    image: ghcr.io/openmasjid-solutions/openmasjid-core:latest
     container_name: openmasjid-core
     restart: unless-stopped
     ports:

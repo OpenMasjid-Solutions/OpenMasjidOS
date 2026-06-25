@@ -27,7 +27,7 @@ app repos ──listed in──▶ OpenMasjidAPPS/registry.yaml ──build─�
 ```
 
 **The platform only ever reads `catalog.json`** (default
-`https://raw.githubusercontent.com/hasan-ismail/OpenMasjidAPPS/main/catalog.json`). How that file
+`https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json`). How that file
 is assembled (separate repos via a registry) is OpenMasjidAPPS's concern; the platform contract is
 just the `catalog.json` shape + install mechanics in §10.
 
@@ -240,7 +240,7 @@ bash -c "$(curl -fsSL https://get.openmasjid.org || wget -qO- https://get.openma
 ```
 (The curl-or-wget form means it still works on minimal systems that ship without curl — the
 installer then installs curl itself for the steps that need it. Before a domain exists, swap the
-domain for the raw GitHub URL: `https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh`.)
+domain for the raw GitHub URL: `https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh`.)
 
 ### 8.1 Behaviour: detect state, then branch
 On start the script detects whether OpenMasjidOS is already installed (presence of `/opt/openmasjid` and/or the core container).

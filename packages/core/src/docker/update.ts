@@ -13,7 +13,7 @@ import { docker } from './client';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
-const DEFAULT_IMAGE = 'ghcr.io/hasan-ismail/openmasjid-core:latest';
+const DEFAULT_IMAGE = 'ghcr.io/openmasjid-solutions/openmasjid-core:latest';
 
 async function inspectSelf(): Promise<{ image: string; hostDataDir: string | null }> {
   try {

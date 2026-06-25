@@ -598,7 +598,7 @@ function EagerNote({ sourceUrl }: { sourceUrl?: string }) {
       <Heart size={40} style={{ color: 'var(--color-primary)' }} />
       <h3 style={{ margin: 0, fontFamily: 'var(--font-display)' }}>{t('settings.eagerTitle')}</h3>
       <p style={{ color: 'var(--color-ink-muted)', maxWidth: '30rem', lineHeight: 1.55 }}>{t('settings.eagerBody')}</p>
-      <a className="btn btn--primary" href={sourceUrl ?? 'https://github.com/hasan-ismail/OpenMasjidOS'} target="_blank" rel="noopener noreferrer">
+      <a className="btn btn--primary" href={sourceUrl ?? 'https://github.com/OpenMasjid-Solutions/OpenMasjidOS'} target="_blank" rel="noopener noreferrer">
         <Heart size={15} /> {t('settings.eagerDonate')}
       </a>
     </div>

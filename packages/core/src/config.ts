@@ -49,7 +49,7 @@ export const UI_DIR = process.env.OPENMASJID_UI_DIR
  */
 export const CATALOG_URL =
   process.env.OPENMASJID_CATALOG_URL ??
-  'https://raw.githubusercontent.com/hasan-ismail/OpenMasjidAPPS/main/catalog.json';
+  'https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json';
 
 /** True when running the production build inside the container. */
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';

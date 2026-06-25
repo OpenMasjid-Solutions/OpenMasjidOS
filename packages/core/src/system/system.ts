@@ -7,11 +7,11 @@ import { PORT, MACHINE_HOSTNAME } from '../config';
 import { VERSION } from '../version';
 import { log } from '../logger';
 
-export const SOURCE_URL = 'https://github.com/hasan-ismail/OpenMasjidOS';
+export const SOURCE_URL = 'https://github.com/OpenMasjid-Solutions/OpenMasjidOS';
 
 const VERSION_CHECK_URL =
   process.env.OPENMASJID_VERSION_CHECK_URL ??
-  'https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/VERSION';
+  'https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/VERSION';
 
 export interface NetworkInfo {
   hostname: string;

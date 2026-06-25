@@ -1,7 +1,7 @@
 # App catalog contract (platform side)
 
 > **Where to build an app:** the authoritative, hands-on guide lives in the **OpenMasjidAPPS** repo
-> — its [`CLAUDE.md`](https://github.com/hasan-ismail/OpenMasjidAPPS/blob/main/CLAUDE.md) and
+> — its [`CLAUDE.md`](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS/blob/main/CLAUDE.md) and
 > `docs/BUILDING_AN_APP.md`. **This document is the platform side of the contract** — the exact
 > `catalog.json` shape and install behaviour that OpenMasjidOS guarantees. The two must agree; if
 > they ever diverge, this file and OpenMasjidAPPS's `CLAUDE.md §2` are the things to reconcile.
@@ -20,7 +20,7 @@ app repos (one per app) ──listed in──▶ OpenMasjidAPPS/registry.yaml �
   one and assembles a single **`catalog.json`** at its repo root.
 - **OpenMasjidOS** only ever fetches that one file, from (default, `packages/core/src/config.ts`):
   ```
-  https://raw.githubusercontent.com/hasan-ismail/OpenMasjidAPPS/main/catalog.json
+  https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS/main/catalog.json
   ```
   Overridable with `OPENMASJID_CATALOG_URL`. The catalog is cached briefly and fails soft (an
   unreachable catalog never breaks the dashboard).

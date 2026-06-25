@@ -20,10 +20,10 @@
 # without breaking it or losing your data.
 #
 # Usage (works whether your system has curl OR wget — no need to install one first):
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)"
 #
 # If you prefer to inspect before running (recommended!):
-#   curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh -o install.sh   # or: wget -O install.sh <same URL>
+#   curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh -o install.sh   # or: wget -O install.sh <same URL>
 #   less install.sh      # read it first
 #   bash install.sh      # then run it
 #
@@ -43,7 +43,7 @@ TLS_PORT=443
 APP_TLS_MIN=8443
 APP_TLS_MAX=8452
 DATA_DIR=/opt/openmasjid
-IMAGE=ghcr.io/hasan-ismail/openmasjid-core:latest
+IMAGE=ghcr.io/openmasjid-solutions/openmasjid-core:latest
 COMPOSE_PROJECT=openmasjid
 
 # Colour codes — we check for terminal support before using them
@@ -156,7 +156,7 @@ check_root() {
     echo ""
     echo "  Or in one line (works with curl or wget):"
     echo ""
-    echo '    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh)"'
+    echo '    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)"'
     echo ""
     exit 1
   fi
@@ -194,7 +194,7 @@ detect_os() {
       echo "    • arm64  (Raspberry Pi 4/5, Apple Silicon servers)"
       echo ""
       echo "  If you would like support for your architecture, please open an issue at:"
-      echo "  https://github.com/hasan-ismail/OpenMasjidOS/issues"
+      echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
       echo ""
       exit 1
       ;;
@@ -250,7 +250,7 @@ detect_os() {
           echo "    • Fedora 38+"
           echo ""
           echo "  If you would like support for your distribution, please open an issue at:"
-          echo "  https://github.com/hasan-ismail/OpenMasjidOS/issues"
+          echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
           echo ""
           exit 1
           ;;
@@ -630,7 +630,7 @@ print_success() {
   printf '  ╠═══════════════════════════════════════════════════════╣\n'
   printf '  ║                                                       ║\n'
   printf '  ║   Need help or want to report an issue?               ║\n'
-  printf '  ║   https://github.com/hasan-ismail/OpenMasjidOS       ║\n'
+  printf '  ║   https://github.com/OpenMasjid-Solutions/OpenMasjidOS       ║\n'
   printf '  ║                                                       ║\n'
   printf '  ╚═══════════════════════════════════════════════════════╝\n'
   printf "${CLR_RESET}\n"

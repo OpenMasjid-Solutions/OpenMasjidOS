@@ -3,7 +3,7 @@
 > **Free, open-source software platform for masjids.** Install in one command. Manage everything from a beautiful web dashboard. No technical knowledge required.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)"
 ```
 
 (Works whether your system has `curl` or `wget` — no need to install one first; the installer sets up `curl` for you.) When it finishes, open **`http://openmasjidos.local`** (or **`http://<your-server-ip>`**) on the same network and create your admin account.
@@ -61,7 +61,7 @@ May Allah reward everyone who made it possible.
 Everything lives behind a login on a single, polished dashboard:
 
 - **Live system status** — CPU, memory, storage, temperature, uptime, and apps running, updating in real time.
-- **An App Store** — browse the [OpenMasjidAPPS](https://github.com/hasan-ismail/OpenMasjidAPPS) catalog and install with one click. Each app collects the details it needs (location, prayer-calculation method, etc.) at install time — the platform stays generic.
+- **An App Store** — browse the [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS) catalog and install with one click. Each app collects the details it needs (location, prayer-calculation method, etc.) at install time — the platform stays generic.
 - **Full app control** — open, restart, shut down, update, or remove any app; pin favourites to the dock; watch live logs.
 - **A built-in file manager** — browse, upload (drag & drop), download, edit text, and preview images/video.
 - **A premium, themeable interface** — dark or light, accent colours, wallpapers (or your own image), a glass clock, tasteful motion, and right-to-left support.
@@ -94,7 +94,7 @@ Boot the Pi (ethernet recommended), wait ~90 seconds, then:
 ```bash
 ssh openmasjid@openmasjid.local
 sudo apt update && sudo apt upgrade -y && sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
 ```
 
 Open `http://openmasjidos.local` (or the Pi's IP). For a stable address, add a DHCP reservation in your router.
@@ -115,7 +115,7 @@ Suggested: Unprivileged, hostname `openmasjid`, 16 GB disk, 2 cores, 2048 MiB RA
 
 ```bash
 apt update && apt upgrade -y && apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/hasan-ismail/OpenMasjidOS/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
 ```
 
 Open `http://openmasjid.local` or the container's IP.
@@ -148,7 +148,7 @@ sudo docker ps   # look for "openmasjid-core", status "Up ..."
 
 ## Apps
 
-Each app lives in its **own** repository and is catalogued by **[OpenMasjidAPPS](https://github.com/hasan-ismail/OpenMasjidAPPS)**, which OpenMasjidOS fetches to populate the App Store and to handle install, update, and removal. Advanced users can also add CasaOS-compatible community stores or paste a Docker Compose file (enable *Allow custom apps* in Settings → Advanced). To build an app, start with [OpenMasjidAPPS](https://github.com/hasan-ismail/OpenMasjidAPPS) (its `CLAUDE.md` + `docs/BUILDING_AN_APP.md`); the platform-side contract is in [`docs/APP_MANIFEST_SPEC.md`](docs/APP_MANIFEST_SPEC.md).
+Each app lives in its **own** repository and is catalogued by **[OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS)**, which OpenMasjidOS fetches to populate the App Store and to handle install, update, and removal. Advanced users can also add CasaOS-compatible community stores or paste a Docker Compose file (enable *Allow custom apps* in Settings → Advanced). To build an app, start with [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS) (its `CLAUDE.md` + `docs/BUILDING_AN_APP.md`); the platform-side contract is in [`docs/APP_MANIFEST_SPEC.md`](docs/APP_MANIFEST_SPEC.md).
 
 ---
 
@@ -157,7 +157,7 @@ Each app lives in its **own** repository and is catalogued by **[OpenMasjidAPPS]
 TypeScript monorepo (npm workspaces): a Node + Fastify + tRPC daemon (`packages/core`) and a React + Vite + Tailwind dashboard (`packages/ui`). Requires Node 20+ and Docker.
 
 ```bash
-git clone https://github.com/hasan-ismail/OpenMasjidOS.git && cd OpenMasjidOS
+git clone https://github.com/OpenMasjid-Solutions/OpenMasjidOS.git && cd OpenMasjidOS
 npm install     # install all workspaces
 npm run dev     # daemon + UI with hot reload (UI at http://localhost:5173)
 npm run build   # build UI + bundle daemon
