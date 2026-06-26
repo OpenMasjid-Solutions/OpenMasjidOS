@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- OpenMasjidOS mark. Adapts to the browser's light/dark chrome. -->
+  <style>
+    .m { fill: #16201b; }
+    @media (prefers-color-scheme: dark) { .m { fill: #e8f0ec; } }
+  </style>
+  <defs>
+    <clipPath id="moon"><circle cx="50" cy="50" r="46"/></clipPath>
+    <clipPath id="accent"><circle cx="45" cy="32" r="6.5"/></clipPath>
+  </defs>
+  <g class="m">
+    <path clip-path="url(#moon)" fill-rule="evenodd"
+      d="M50 4a46 46 0 1 0 0 92 46 46 0 1 0 0-92ZM66 12a38 38 0 1 1 0 76 38 38 0 1 1 0-76Z"/>
+    <path clip-path="url(#accent)" fill-rule="evenodd"
+      d="M45 25.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 1 0 0-13ZM48 24a5 5 0 1 1 0 10 5 5 0 1 1 0-10Z"/>
+    <path d="M50 25.2L50.94 27.71L53.61 27.83L51.52 29.49L52.23 32.07L50 30.6L47.77 32.07L48.48 29.49L46.39 27.83L49.06 27.71Z"/>
+    <path d="M64 22.5l1.7 3.8-3.4 0z"/>
+    <circle cx="64" cy="20.6" r="1.7"/>
+    <path d="M64 28c-6.1 0-10 4.7-10 10.4 0 3.3 1.8 6.1 4.5 7.6h11c2.7-1.5 4.5-4.3 4.5-7.6C74 32.7 70.1 28 64 28Z"/>
+    <path d="M56 49.5h16v18.5H56z"/>
+    <path d="M53 47h22v3.2H53z"/>
+    <path d="M43 40.5c-5.5 0-9.2 4.3-9.2 10.2V68h18.4V50.7C52.2 44.8 48.5 40.5 43 40.5Z"/>
+  </g>
+</svg>

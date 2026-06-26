@@ -1,43 +1,61 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Custom masjid glyph set (dome + crescent over an arch). Original artwork,
- * used as the brand mark and empty-state art (CLAUDE.md §14 motifs). No sacred
- * text — geometric/architectural motifs only.
+ * Custom masjid glyph set, used as the brand mark and empty-state art
+ * (CLAUDE.md §14 motifs). No sacred text — geometric/architectural motifs only.
+ *
+ * MasjidMark is the OpenMasjid crescent-and-dome logo, drawn in `currentColor`
+ * so it adapts to the theme (dark/light) at any size. Clip-path IDs are made
+ * unique per instance with useId() so the mark can render many times on a page
+ * (dock + login + splash) without duplicate-id collisions.
  */
+import { useId } from 'react';
+
 interface GlyphProps {
   size?: number;
   className?: string;
 }
 
-/** Dome + crescent + mihrab arch — the OpenMasjidOS mark. */
+/** Crescent cradling a domed masjid + star — the OpenMasjid mark. */
 export function MasjidMark({ size = 28, className }: GlyphProps) {
+  const uid = useId();
+  const moon = `omos-moon-${uid}`;
+  const accent = `omos-accent-${uid}`;
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 48 48"
-      fill="none"
+      viewBox="0 0 100 100"
+      fill="currentColor"
       className={className}
       aria-hidden="true"
     >
-      {/* crescent finial */}
+      <defs>
+        <clipPath id={moon}><circle cx="50" cy="50" r="46" /></clipPath>
+        <clipPath id={accent}><circle cx="45" cy="32" r="6.5" /></clipPath>
+      </defs>
+      {/* Crescent, opening to the right (clip removes the inner circle's overhang) */}
       <path
-        d="M24 3c1.6 0 3 .6 4 1.6A5.6 5.6 0 0 0 24 14a5.6 5.6 0 0 0 4-1.4A5.8 5.8 0 0 1 24 3Z"
-        fill="currentColor"
+        clipPath={`url(#${moon})`}
+        fillRule="evenodd"
+        d="M50 4a46 46 0 1 0 0 92 46 46 0 1 0 0-92ZM66 12a38 38 0 1 1 0 76 38 38 0 1 1 0-76Z"
       />
-      {/* dome */}
+      {/* Accent crescent + star, nestled in the cradle */}
       <path
-        d="M12 26c0-8 5.4-12 12-12s12 4 12 12v2H12v-2Z"
-        fill="currentColor"
-        opacity="0.9"
+        clipPath={`url(#${accent})`}
+        fillRule="evenodd"
+        d="M45 25.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 1 0 0-13ZM48 24a5 5 0 1 1 0 10 5 5 0 1 1 0-10Z"
       />
-      {/* body + mihrab arch */}
-      <path
-        d="M10 28h28v15H10V28Zm10 15V36a4 4 0 0 1 8 0v7h-8Z"
-        fill="currentColor"
-        opacity="0.55"
-      />
+      <path d="M50 25.2L50.94 27.71L53.61 27.83L51.52 29.49L52.23 32.07L50 30.6L47.77 32.07L48.48 29.49L46.39 27.83L49.06 27.71Z" />
+      {/* Masjid: finial + onion dome */}
+      <path d="M64 22.5l1.7 3.8-3.4 0z" />
+      <circle cx="64" cy="20.6" r="1.7" />
+      <path d="M64 28c-6.1 0-10 4.7-10 10.4 0 3.3 1.8 6.1 4.5 7.6h11c2.7-1.5 4.5-4.3 4.5-7.6C74 32.7 70.1 28 64 28Z" />
+      {/* Base + ledge */}
+      <path d="M56 49.5h16v18.5H56z" />
+      <path d="M53 47h22v3.2H53z" />
+      {/* Smaller dome to the left */}
+      <path d="M43 40.5c-5.5 0-9.2 4.3-9.2 10.2V68h18.4V50.7C52.2 44.8 48.5 40.5 43 40.5Z" />
     </svg>
   );
 }

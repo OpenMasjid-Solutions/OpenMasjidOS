@@ -1,5 +1,5 @@
 <p align="center">
-<img src="docs/screenshots/01-dashboard.png" alt="logo gotta be here" width="100%"/>
+  <img src="assets/openmasjid-logo.png" alt="OpenMasjidOS" width="280"/>
 </p>
 
 <h1 align="center"><b>OpenMasjidOS</b></h1>
