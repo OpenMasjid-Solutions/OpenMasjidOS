@@ -42,7 +42,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/Ope
 
 Created by **Hasan Ismail**, with immense help from **Qari Ijaz** and **Osman Sayed**.
 
-Resources for this project were generously sponsored by **An-Noor Institute**, **Rihlatul Ilm Foundation**, and **AsmaTec Inc.**
+Resources for this project were generously sponsored by **[An-Noor Institute](https://www.annoorusa.org/)**, **[Rihlatul Ilm Foundation](https://rifusa.org/)**, and **[AsmaTec Inc.](https://asmatec.com/)**.
 
 May Allah reward everyone who made it possible.
 
