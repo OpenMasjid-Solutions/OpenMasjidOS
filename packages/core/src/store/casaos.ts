@@ -98,7 +98,19 @@ function getPinned(
     const mod = u.protocol === 'https:' ? https : http;
     const req = mod.request(
       url,
-      { method: 'GET', lookup: (_h, _o, cb) => cb(null, pinnedIp, family), timeout: FETCH_TIMEOUT_MS },
+      {
+        method: 'GET',
+        // Pin the socket to the pre-vetted IP. Node invokes a custom lookup with
+        // `options.all = true` for socket connects and then expects an ARRAY of
+        // addresses back; returning the scalar (address, family) form drops the
+        // IP — the connection then fails with "Invalid IP address: undefined".
+        // Handle both shapes so pinning works across Node versions.
+        lookup: (_h, opts, cb) => {
+          if (opts.all) cb(null, [{ address: pinnedIp, family }]);
+          else cb(null, pinnedIp, family);
+        },
+        timeout: FETCH_TIMEOUT_MS,
+      },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status >= 300 && status < 400) {
