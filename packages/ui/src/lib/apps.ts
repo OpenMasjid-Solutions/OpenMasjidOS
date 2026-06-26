@@ -53,9 +53,13 @@ export function appColor(id: string): string {
   return `linear-gradient(150deg, hsl(${h} 70% 55%), hsl(${h2} 75% 45%))`;
 }
 
-export function openApp(app: { https?: boolean; openPort?: number | null }): boolean {
+export function openApp(app: { https?: boolean; openPort?: number | null; fabric?: boolean }): boolean {
   const url = appUrl(app);
   if (!url) return false;
-  window.open(url + appearanceHash(), '_blank', 'noopener,noreferrer');
+  // Only hand the appearance prefs (the OpenMasjidOS Fabric `#omos=` fragment) to
+  // apps that opted into the Fabric. A community/custom 3rd-party app (e.g. Homarr)
+  // never declared support and must NOT receive the platform's prefs in its URL.
+  const target = app.fabric ? url + appearanceHash() : url;
+  window.open(target, '_blank', 'noopener,noreferrer');
   return true;
 }

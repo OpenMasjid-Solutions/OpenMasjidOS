@@ -106,4 +106,12 @@ export interface InstalledApp {
   /** The port to open the app on — the HTTPS proxy port if https, else the first
    *  published HTTP port. Null when the app publishes no web port. */
   openPort: number | null;
+  /**
+   * True only when this app opted into the OpenMasjidOS Fabric (sso and/or
+   * notifications) — i.e. an official catalog app that understands the platform.
+   * The dashboard uses this to decide whether to hand off appearance prefs on
+   * "Open" (the `#omos=…` fragment). Community/custom apps are always false, so
+   * an untrusted 3rd-party app never receives the Fabric payload.
+   */
+  fabric: boolean;
 }

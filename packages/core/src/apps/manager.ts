@@ -277,6 +277,8 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       running: disc?.running ?? false,
       ports: disc?.ports ?? [],
       createdAt: meta.createdAt,
+      // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
+      fabric: meta.sso === true || meta.notify === true,
       ...openTarget(meta, disc?.ports ?? []),
     });
   }
@@ -305,6 +307,7 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       ...recovered,
       running: disc.running,
       ports: disc.ports,
+      fabric: false, // recovered/un-vetted apps never get the Fabric hand-off
       ...openTarget(recovered, disc.ports),
     });
   }
