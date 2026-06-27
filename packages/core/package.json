@@ -9,7 +9,7 @@
   "types": "src/trpc/router.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "esbuild src/index.ts src/reset-password.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outdir=dist --log-level=warning",
+    "build": "esbuild src/index.ts src/reset-password.ts src/reset-auth.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outdir=dist --log-level=warning",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "echo \"(no core tests yet)\""
   },

@@ -697,10 +697,11 @@ menu_existing() {
     printf "${CLR_CYAN}${CLR_BOLD}  ┌─ OpenMasjidOS is already installed ───────────${CLR_RESET}\n"
     printf "${CLR_CYAN}  │${CLR_RESET}   What would you like to do?\n"
     printf "${CLR_CYAN}  │${CLR_RESET}\n"
-    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}1)${CLR_RESET} Update  ${CLR_BOLD}—${CLR_RESET} get the latest version (keeps your apps & data)\n"
-    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}2)${CLR_RESET} Repair  ${CLR_BOLD}—${CLR_RESET} fix a broken install and restart\n"
-    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}3)${CLR_RESET} Remove  ${CLR_BOLD}—${CLR_RESET} uninstall (your apps & data stay safe)\n"
-    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}4)${CLR_RESET} Quit    ${CLR_BOLD}—${CLR_RESET} do nothing\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}1)${CLR_RESET} Update       ${CLR_BOLD}—${CLR_RESET} get the latest version (keeps your apps & data)\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}2)${CLR_RESET} Repair       ${CLR_BOLD}—${CLR_RESET} fix a broken install and restart\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}3)${CLR_RESET} Reset sign-in ${CLR_BOLD}—${CLR_RESET} new password + re-link apps (keeps all data)\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}4)${CLR_RESET} Remove       ${CLR_BOLD}—${CLR_RESET} uninstall (your apps & data stay safe)\n"
+    printf "${CLR_CYAN}  │${CLR_RESET}   ${CLR_GREEN}${CLR_BOLD}5)${CLR_RESET} Quit         ${CLR_BOLD}—${CLR_RESET} do nothing\n"
     printf "${CLR_CYAN}  │${CLR_RESET}\n"
     printf "${CLR_CYAN}${CLR_BOLD}  └───────────────────────────────────────────────${CLR_RESET}\n"
     printf "  Type a number and press Enter ${CLR_BOLD}[1]${CLR_RESET}: "
@@ -708,10 +709,29 @@ menu_existing() {
   local r=""; read -r r < /dev/tty || r=""
   case "$r" in
     2) echo "repair" ;;
-    3) echo "uninstall" ;;
-    4) echo "quit" ;;
+    3) echo "reset-signin" ;;
+    4) echo "uninstall" ;;
+    5) echo "quit" ;;
     *) echo "update" ;;
   esac
+}
+
+# do_reset_signin — full sign-in recovery (e.g. after restoring onto a new
+# machine): set a new admin password, drop all sessions, and rotate every app's
+# Fabric key. Runs the interactive CLI inside the core container. KEEPS all data.
+do_reset_signin() {
+  echo ""
+  info "Resetting the sign-in layer (your apps and their data are kept)."
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^openmasjid-core$'; then
+    warn "OpenMasjidOS isn't running. Starting it first…"
+    do_repair
+  fi
+  # -it gives the CLI a TTY for the password prompts; fall back without it.
+  if [ -t 0 ] && [ -t 1 ]; then
+    docker exec -it openmasjid-core node packages/core/dist/reset-auth.js < /dev/tty
+  else
+    docker exec -i openmasjid-core node packages/core/dist/reset-auth.js
+  fi
 }
 
 # do_install — first-time guided install.
@@ -841,6 +861,7 @@ main() {
       --install)            action="install" ;;
       --update)             action="update" ;;
       --repair)             action="repair" ;;
+      --reset-signin)       action="reset-signin" ;;
       --uninstall|--remove) action="uninstall" ;;
     esac
   done
@@ -855,10 +876,11 @@ main() {
   fi
 
   case "$action" in
-    install)   do_install ;;
-    update)    do_update ;;
-    repair)    do_repair ;;
-    uninstall) do_uninstall ;;
+    install)      do_install ;;
+    update)       do_update ;;
+    repair)       do_repair ;;
+    reset-signin) do_reset_signin ;;
+    uninstall)    do_uninstall ;;
     exit|quit|"") echo "  No changes made."; exit 0 ;;
     *) error "Unknown action: ${action}" ;;
   esac

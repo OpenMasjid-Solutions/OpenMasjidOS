@@ -471,6 +471,30 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
   }
 }
 
+/**
+ * Rotate every Fabric-enabled app's per-app secret (its "sign-in key"). Part of
+ * the full sign-in reset (recovery after a restore/migration): each app's old
+ * OPENMASJID_APP_SECRET is replaced with a fresh one in BOTH its meta.json and
+ * its .env, so apps re-establish trust with the platform under new keys. App
+ * DATA is never touched. Returns how many apps were rotated. The caller must
+ * reup the apps afterwards so the running containers pick up the new env.
+ */
+export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
+  let rotated = 0;
+  for (const id of listMetaIds()) {
+    const meta = loadMeta(id);
+    if (!meta?.ssoSecret) continue; // only apps that opted into the Fabric hold a secret
+    const secret = crypto.randomBytes(32).toString('base64url');
+    saveMeta({ ...meta, ssoSecret: secret });
+    const env = readEnvFile(id);
+    writeEnvFile(id, { ...env, OPENMASJID_APP_SECRET: secret });
+    rotated += 1;
+    onLine?.(`• ${meta.name ?? id}`);
+  }
+  invalidateFabricIndex();
+  return rotated;
+}
+
 export async function startApp(id: string): Promise<void> {
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
