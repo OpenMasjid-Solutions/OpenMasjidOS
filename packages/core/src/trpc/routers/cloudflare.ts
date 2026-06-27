@@ -17,7 +17,7 @@ import {
   cloudflaredRunning,
   publicHost,
 } from '../../system/cloudflared';
-import { listInstalled } from '../../apps/manager';
+import { listInstalled, getAppPath, setAppPath } from '../../apps/manager';
 
 async function status() {
   const cf = getSettings().cloudflare;
@@ -39,13 +39,24 @@ export const cloudflareRouter = router({
         .map((a) => ({
           id: a.id,
           name: a.name,
-          path: `/${a.id}`,
+          path: `/${getAppPath(a.id)}`,
           type: a.https ? 'HTTPS' : 'HTTP',
           service: `${a.https ? 'https' : 'http'}://localhost:${a.openPort}`,
           noTlsVerify: a.https, // self-signed per-app cert → tick "No TLS Verify"
         })),
     };
   }),
+
+  /** Set the public path an app is served under (e.g. "donate"). Blank → app id. */
+  setPath: protectedProcedure
+    .input(z.object({ id: z.string().min(1), path: z.string().max(40) }))
+    .mutation(({ input }) => {
+      try {
+        return { id: input.id, path: `/${setAppPath(input.id, input.path)}` };
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+    }),
 
   save: protectedProcedure
     .input(

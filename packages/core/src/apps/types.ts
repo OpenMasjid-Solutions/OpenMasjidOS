@@ -98,6 +98,9 @@ export interface AppMeta {
   stripe?: boolean;
   /** True if this app opted into Fabric remote-access info (CatalogApp.domain). */
   domain?: boolean;
+  /** Admin-chosen public path segment for remote access (Cloudflare path + the
+   *  Fabric basePath), e.g. "donate". Defaults to the app id when unset. */
+  path?: string;
   /** True if this app must be served over HTTPS (Stripe apps — CatalogApp.https). */
   https?: boolean;
   /** The dedicated host port the platform's TLS proxy serves this app on (https). */

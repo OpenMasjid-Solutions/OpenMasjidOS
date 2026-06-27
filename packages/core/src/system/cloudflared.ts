@@ -22,6 +22,7 @@ import { CONFIG_DIR } from '../config';
 import { composeUp, composeDown } from '../docker/compose';
 import { docker } from '../docker/client';
 import { getSettings } from '../settings/store';
+import { getAppPath } from '../apps/manager';
 import { log } from '../logger';
 
 const CF_DIR = path.join(CONFIG_DIR, 'cloudflare');
@@ -134,11 +135,11 @@ export function publicHost(): string {
   return d.startsWith('omos.') ? d : `omos.${d}`;
 }
 
-/** Each app is served under a path (= its id). This is the Cloudflare public-
- *  hostname Path and the base path the app must mount its routes under. */
+/** Each app is served under a path (admin-configurable, default = its id). This is
+ *  the Cloudflare public-hostname Path and the base path the app mounts under. */
 export function appBasePath(appId: string): string {
   const cf = getSettings().cloudflare;
-  return cf.enabled && cf.domain ? `/${appId}` : '';
+  return cf.enabled && cf.domain ? `/${getAppPath(appId)}` : '';
 }
 
 /** The public base URL an app is reachable at (Fabric `site`), or '' if remote

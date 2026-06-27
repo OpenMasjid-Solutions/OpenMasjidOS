@@ -12,6 +12,10 @@ import { docker } from './client';
 
 const PROJECT_LABEL = 'com.docker.compose.project';
 const PROJECT_PREFIX = 'omos-';
+// OpenMasjidOS's OWN infrastructure also runs as omos-* compose projects (e.g. the
+// Cloudflare tunnel), but those are NOT user apps — exclude them so they never show
+// on the dashboard or count toward "apps running".
+const RESERVED_PROJECTS = new Set(['omos-cloudflared']);
 
 export interface DiscoveredApp {
   /** Compose project, e.g. "omos-prayer-times". */
@@ -41,7 +45,7 @@ export async function discoverApps(): Promise<Map<string, DiscoveredApp>> {
   for (const c of containers) {
     const labels = c.Labels ?? {};
     const project = labels[PROJECT_LABEL];
-    if (!project || !project.startsWith(PROJECT_PREFIX)) continue;
+    if (!project || !project.startsWith(PROJECT_PREFIX) || RESERVED_PROJECTS.has(project)) continue;
 
     const id = project.slice(PROJECT_PREFIX.length);
     const existing = result.get(project) ?? {

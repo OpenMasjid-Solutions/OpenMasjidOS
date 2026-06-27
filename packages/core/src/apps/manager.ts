@@ -509,6 +509,36 @@ export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
   return rotated;
 }
 
+/** Sanitize a public path segment: lowercase, single segment, url-safe. */
+function sanitizePath(p: string): string {
+  return p
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+}
+
+/** The public path an app is served under behind the tunnel — the Cloudflare
+ *  Public-Hostname path AND the Fabric `basePath`. Admin-configurable; defaults
+ *  to the app id (e.g. donations → "donations"; the admin can change it to "donate"). */
+export function getAppPath(id: string): string {
+  const raw = loadMeta(id)?.path;
+  const clean = raw ? sanitizePath(raw) : '';
+  return clean || id;
+}
+
+/** Set an app's public path (or reset to the id when blank). Returns the effective path. */
+export function setAppPath(id: string, path: string): string {
+  const meta = loadMeta(id);
+  if (!meta) throw new Error('That app is not installed.');
+  const clean = sanitizePath(path);
+  saveMeta({ ...meta, path: clean || undefined });
+  return clean || id;
+}
+
 export async function startApp(id: string): Promise<void> {
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.

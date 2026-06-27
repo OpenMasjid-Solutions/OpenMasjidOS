@@ -1205,6 +1205,10 @@ function CloudflarePanel() {
     onSuccess: () => { setToken(''); refresh(); toast(t('settings.cfCleared'), 'success'); },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+  const setPath = trpc.cloudflare.setPath.useMutation({
+    onSuccess: (r) => { utils.cloudflare.routes.invalidate(); toast(t('settings.cfPathSaved', { path: r.path }), 'success'); },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
 
   if (!cf) return null;
 
@@ -1300,7 +1304,19 @@ function CloudflarePanel() {
                   {routes.data?.apps.map((r) => (
                     <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
                       <td style={{ padding: '0.3rem 0.6rem 0.3rem 0', fontFamily: 'var(--font-sans)' }}>{r.name}</td>
-                      <td style={{ padding: '0.3rem 0.6rem' }}>{r.path}</td>
+                      <td style={{ padding: '0.3rem 0.6rem', whiteSpace: 'nowrap' }}>
+                        /
+                        <input
+                          className="input glass-inset"
+                          style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
+                          defaultValue={r.path.replace(/^\//, '')}
+                          aria-label={t('settings.cfColPath')}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
+                          }}
+                        />
+                      </td>
                       <td style={{ padding: '0.3rem 0.6rem' }}>{r.type}{r.noTlsVerify ? ' *' : ''}</td>
                       <td style={{ padding: '0.3rem 0' }}>{r.service}</td>
                     </tr>
