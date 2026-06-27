@@ -32,6 +32,10 @@ import { isNewerVersion } from '../util/version';
 import type { AppMeta, InstalledApp, CatalogApp } from './types';
 
 const projectOf = (id: string) => `omos-${id}`;
+// App ids reserved for OpenMasjidOS's OWN infrastructure (run as omos-* compose
+// projects but NOT user apps). Never listed on the dashboard; an older build may
+// have recovered one into a meta.json, so listInstalled also cleans those up.
+const RESERVED_APP_IDS = new Set(['cloudflared']);
 
 // Defense-in-depth: ids are already validated at every API/catalog boundary,
 // but never let a path escape APPS_DIR even if a bad id slips through.
@@ -275,6 +279,16 @@ export async function listInstalled(): Promise<InstalledApp[]> {
 
   // 1. Apps we have metadata for.
   for (const id of listMetaIds()) {
+    // Never surface OS-internal infra. An older build may have recovered the
+    // Cloudflare tunnel container into a stray meta.json — delete it so it's gone.
+    if (RESERVED_APP_IDS.has(id)) {
+      try {
+        fs.rmSync(appDir(id), { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+      continue;
+    }
     const meta = loadMeta(id);
     if (!meta) continue;
     const disc = discovered.get(projectOf(id));
