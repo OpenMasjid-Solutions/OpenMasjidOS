@@ -9,7 +9,11 @@
 export interface SettingField {
   key: string;
   label: string;
-  type: 'text' | 'select' | 'number' | 'password' | 'boolean';
+  // `stripe-account` is a platform-aware picker: the OS renders a dropdown of the
+  // Stripe accounts the admin configured in Settings → Payments, and passes the
+  // chosen account's NAME as this setting's value (the app then fetches its keys
+  // via the Fabric). The admin never re-types Stripe details in the install dialog.
+  type: 'text' | 'select' | 'number' | 'password' | 'boolean' | 'stripe-account';
   options?: string[];
   default?: string;
 }

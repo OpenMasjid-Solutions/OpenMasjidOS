@@ -4,7 +4,7 @@
  * App Store: browse the OpenMasjidAPPS catalog and one-click install. The
  * "3rd Party App" entry only appears when custom apps are enabled (CLAUDE.md §11).
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
@@ -158,6 +158,24 @@ function InstallModal({
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(fields.map((f) => [f.key, f.default ?? ''])),
   );
+  // A `stripe-account` field is a picker of the Stripe accounts configured in the
+  // OS — the admin chooses one instead of re-typing keys (see Settings → Payments).
+  const hasStripeField = fields.some((f) => f.type === 'stripe-account');
+  const stripeAccounts = trpc.stripe.list.useQuery(undefined, { enabled: hasStripeField });
+  // Default each stripe-account field to the first configured account.
+  useEffect(() => {
+    const accts = stripeAccounts.data;
+    if (!accts || accts.length === 0) return;
+    setValues((v) => {
+      const next = { ...v };
+      let changed = false;
+      for (const f of app.settings ?? []) {
+        if (f.type === 'stripe-account' && !next[f.key]) { next[f.key] = accts[0].id; changed = true; }
+      }
+      return changed ? next : v;
+    });
+  }, [stripeAccounts.data, app.settings]);
+
   const install = trpc.store.install.useMutation({
     onSuccess: onInstalled,
     onError: (e) => toast(e.message || t('store.installError'), 'error'),
@@ -169,7 +187,24 @@ function InstallModal({
       {fields.map((f) => (
         <div className="field" key={f.key}>
           <label className="label">{f.label}</label>
-          {f.type === 'select' ? (
+          {f.type === 'stripe-account' ? (
+            (stripeAccounts.data?.length ?? 0) > 0 ? (
+              <select
+                className="select glass-inset"
+                value={values[f.key] ?? ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              >
+                {stripeAccounts.data!.map((a) => (
+                  <option key={a.id} value={a.id}>{a.label}</option>
+                ))}
+              </select>
+            ) : (
+              <p className="setting-row__hint">
+                {t('store.stripeNone')}{' '}
+                <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('store.stripeNoneLink')}</Link>
+              </p>
+            )
+          ) : f.type === 'select' ? (
             <select
               className="select glass-inset"
               value={values[f.key] ?? ''}

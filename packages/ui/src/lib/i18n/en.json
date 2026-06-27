@@ -196,7 +196,9 @@
     "installCta": "Install now",
     "installing": "Installing…",
     "installingHint": "Installing… downloading the app, this can take a minute.",
-    "installError": "Something went wrong while installing. Please try again."
+    "installError": "Something went wrong while installing. Please try again.",
+    "stripeNone": "No Stripe accounts yet — add one first:",
+    "stripeNoneLink": "Settings → Payments"
   },
   "custom": {
     "title": "Install a custom app",
