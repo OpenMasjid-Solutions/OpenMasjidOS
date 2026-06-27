@@ -586,7 +586,7 @@ function ChangePassword() {
       {error && <p className="form-error">{error}</p>}
       <button
         className="btn btn--primary"
-        disabled={change.isPending || !current || next.length < 8}
+        disabled={change.isPending || !current || next.length < 12}
         onClick={() => change.mutate({ currentPassword: current, newPassword: next })}
       >
         <Check size={15} /> {t('settings.changePassword')}

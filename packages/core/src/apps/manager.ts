@@ -443,6 +443,23 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
       onLine(`  (not started — couldn't check it safely: ${(err as Error).message})`);
       continue;
     }
+    // Migration fix: a backup restored onto a NEW machine carries the old
+    // machine's address baked into each app's OPENMASJID_BASE_URL, so the app
+    // can't reach the platform for SSO and falls back to its standalone setup.
+    // Re-resolve the base URL to THIS machine and rewrite it before starting,
+    // preserving the app's settings + per-app Fabric secret. Best-effort.
+    try {
+      const env = readEnvFile(id);
+      if (env.OPENMASJID_BASE_URL) {
+        const base = resolveBaseUrl(null);
+        if (base && base !== env.OPENMASJID_BASE_URL) {
+          writeEnvFile(id, { ...env, OPENMASJID_BASE_URL: base });
+          onLine(`  (updated platform address → ${base})`);
+        }
+      }
+    } catch {
+      /* keep going — a failed base-URL refresh shouldn't block the restart */
+    }
     try {
       const res = await composeUp(projectOf(id), composePath(id), envPath(id));
       if (res.code !== 0) {

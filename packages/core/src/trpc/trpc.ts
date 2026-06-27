@@ -6,10 +6,23 @@
  * so nothing is reachable unauthenticated (CLAUDE.md §9).
  */
 import { initTRPC, TRPCError } from '@trpc/server';
+import { ZodError } from 'zod';
 import type { Context } from './context';
 import { verifyCsrf } from '../auth/sessions';
 
-const t = initTRPC.context<Context>().create();
+const t = initTRPC.context<Context>().create({
+  // Input-validation (zod) failures otherwise reach the client as a raw JSON
+  // blob of issues in `message` (the change-password screen showed
+  // `[{"code":"too_small",…}]`). Surface the first issue's friendly, already-
+  // localized message instead, so every form shows a clean error.
+  errorFormatter({ shape, error }) {
+    if (error.cause instanceof ZodError) {
+      const first = error.cause.issues[0];
+      if (first?.message) return { ...shape, message: first.message };
+    }
+    return shape;
+  },
+});
 
 export const router = t.router;
 export const publicProcedure = t.procedure;

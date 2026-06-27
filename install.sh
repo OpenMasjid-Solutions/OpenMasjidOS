@@ -599,42 +599,48 @@ print_acknowledgements() {
 # =============================================================================
 
 print_success() {
-  local server_ip dashboard_url url_len pad
+  local server_ip dashboard_url inner border n pad spaces
   server_ip="$(get_server_ip)"
   dashboard_url="https://${server_ip}"
   [ "${TLS_PORT}" != "443" ] && dashboard_url="${dashboard_url}:${TLS_PORT}"
-  url_len="${#dashboard_url}"
 
-  # Interior of the box is 53 chars wide (between the two ║ chars).
-  # Layout: 3 leading spaces + URL + trailing padding = 53.
-  # Guard against an unusually long URL (very rare) by clamping pad to 1.
-  pad=$(( 53 - 3 - url_len ))
-  [ "$pad" -lt 1 ] && pad=1
+  # Box drawn programmatically so the borders always line up regardless of how
+  # long any line is. `inner` is the text width between "║ " and " ║"; it must be
+  # >= the longest line below (the repo URL, 52 chars). Build the horizontal rule
+  # to match with a POSIX loop (no seq/printf-* dependency, so busybox is fine).
+  inner=56
+  border=""; n=$(( inner + 2 ))
+  while [ "$n" -gt 0 ]; do border="${border}═"; n=$(( n - 1 )); done
+
+  # A content line: "║ " + text left-justified to `inner` + " ║".
+  bx() { printf '  ║ %-56s ║\n' "$1"; }
 
   echo ""
   printf "${CLR_GREEN}${CLR_BOLD}"
-  printf '  ╔═══════════════════════════════════════════════════════╗\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║   [=]  OpenMasjidOS is ready!                        ║\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║   Open your browser and go to:                        ║\n'
-  printf '  ║                                                       ║\n'
-  # URL line: cyan for the URL, then back to green+bold for the trailing ║.
-  # ANSI codes have zero visual width so they don't disturb the box alignment.
-  printf "  ║   ${CLR_CYAN}%s${CLR_GREEN}${CLR_BOLD}%${pad}s║\n" "${dashboard_url}" ""
-  printf '  ║                                                       ║\n'
-  printf '  ╠═══════════════════════════════════════════════════════╣\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║   First time?                                         ║\n'
-  printf '  ║   The setup wizard will guide you through creating    ║\n'
-  printf '  ║   your admin account to sign in.                      ║\n'
-  printf '  ║                                                       ║\n'
-  printf '  ╠═══════════════════════════════════════════════════════╣\n'
-  printf '  ║                                                       ║\n'
-  printf '  ║   Need help or want to report an issue?               ║\n'
-  printf '  ║   https://github.com/OpenMasjid-Solutions/OpenMasjidOS       ║\n'
-  printf '  ║                                                       ║\n'
-  printf '  ╚═══════════════════════════════════════════════════════╝\n'
+  printf '  ╔%s╗\n' "$border"
+  bx ""
+  bx "[=]  OpenMasjidOS is ready!"
+  bx ""
+  bx "Open your browser and go to:"
+  bx ""
+  # URL line is coloured cyan; ANSI codes have zero visible width, so pad by hand
+  # rather than with %-*s (which would count the escape bytes).
+  pad=$(( inner - ${#dashboard_url} )); [ "$pad" -lt 0 ] && pad=0
+  spaces=""; n="$pad"; while [ "$n" -gt 0 ]; do spaces="${spaces} "; n=$(( n - 1 )); done
+  printf "  ║ ${CLR_CYAN}%s${CLR_GREEN}${CLR_BOLD}%s ║\n" "${dashboard_url}" "${spaces}"
+  bx ""
+  printf '  ╠%s╣\n' "$border"
+  bx ""
+  bx "First time?"
+  bx "The setup wizard will guide you through creating"
+  bx "your admin account to sign in."
+  bx ""
+  printf '  ╠%s╣\n' "$border"
+  bx ""
+  bx "Need help or want to report an issue?"
+  bx "https://github.com/OpenMasjid-Solutions/OpenMasjidOS"
+  bx ""
+  printf '  ╚%s╝\n' "$border"
   printf "${CLR_RESET}\n"
   echo ""
   printf "  Your data is stored in ${CLR_BOLD}%s${CLR_RESET} and will survive upgrades.\n" "${DATA_DIR}"
