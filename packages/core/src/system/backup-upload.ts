@@ -187,8 +187,8 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
   const name = backupName();
   const dest = `${REMOTE}:${cfg.remotePath}/${name}`;
 
+  const tar = await backupStream();
   const result = await new Promise<{ ok: boolean; message: string }>((resolve) => {
-    const tar = backupStream();
     const rc = spawn('rclone', ['--config', RCLONE_CONF, 'rcat', dest], { stdio: ['pipe', 'ignore', 'pipe'] });
     let err = '';
     rc.stderr.on('data', (d) => (err += d.toString()));

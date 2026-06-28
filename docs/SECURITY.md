@@ -71,8 +71,11 @@ installer requires an explicit "I understand the risk" acknowledgement.
 ## Off-site backups (scheduled)
 
 Settings → **Off-site backups** uploads the platform backup (the same gzipped tar
-of `config/` + `apps/` as the manual download) to Google Drive or a NAS on a
-schedule, via bundled `rclone`.
+as the manual download: `config/` + `apps/` **plus each app's Docker volume** under
+`volumes/<name>.tar.gz`, so the apps' real data — SQLite dbs, uploads — is captured
+too) to Google Drive or a NAS on a schedule, via bundled `rclone`. Volume contents
+are copied in/out with a throwaway `tar` container; restore recreates the volumes
+before starting the apps.
 
 - **Credentials never leave the host.** The destination's secret (NAS password,
   SFTP private key, or Google Drive token) is written only to `rclone.conf` (and

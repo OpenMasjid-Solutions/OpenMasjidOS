@@ -125,7 +125,7 @@ async function main() {
     reply
       .header('content-type', 'application/gzip')
       .header('content-disposition', `attachment; filename="${backupFilename()}"`);
-    return reply.send(backupStream());
+    return reply.send(await backupStream());
   });
 
   // WebSocket terminals (root shell + per-app shell), gated by settings + auth.

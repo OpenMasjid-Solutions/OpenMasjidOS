@@ -19,7 +19,9 @@ import { reupAllApps } from '../apps/manager';
 
 export const RESTORE_PATH = path.join(DATA_DIR, '.restore.tar.gz');
 const STAGING_DIR = path.join(DATA_DIR, '.restore-staging');
-const ALLOWED_TOP = new Set(['config', 'apps']);
+const ALLOWED_TOP = new Set(['config', 'apps', 'volumes']);
+// Must match system/backup.ts — the image used to copy data into a Docker volume.
+const VOL_IMAGE = process.env.OPENMASJID_BACKUP_IMAGE ?? 'alpine';
 // Hard ceiling on the DECOMPRESSED size, so a small but highly-compressible
 // archive (a gzip bomb) can't balloon to fill the data disk and take the
 // platform offline (security audit).
@@ -109,6 +111,39 @@ function validateExtracted(root: string): string | null {
   return null;
 }
 
+/** Recreate each app's Docker volume from volumes/<name>.tar.gz and refill it via
+ *  a throwaway container. Returns how many volumes were restored. Best-effort per
+ *  volume so one bad entry can't abort the whole restore. */
+async function restoreVolumes(volDir: string, onLine: (s: string) => void): Promise<number> {
+  let files: string[];
+  try {
+    files = fs.readdirSync(volDir).filter((f) => f.endsWith('.tar.gz'));
+  } catch {
+    return 0; // no volumes/ in this backup (older format) — nothing to do
+  }
+  if (files.length === 0) return 0;
+
+  onLine('');
+  onLine('Restoring app data…');
+  let n = 0;
+  for (const f of files) {
+    const vol = f.replace(/\.tar\.gz$/, '');
+    // Only well-formed app volume names; never touch OS-internal infra.
+    if (!/^omos-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(vol) || vol.startsWith('omos-cloudflared')) continue;
+    onLine(`• ${vol}`);
+    await capture('docker', ['volume', 'create', vol]);
+    const ok = await new Promise<boolean>((resolve) => {
+      const child = spawn('docker', ['run', '--rm', '-i', '-v', `${vol}:/to`, VOL_IMAGE, 'tar', '-xzf', '-', '-C', '/to']);
+      child.on('error', () => resolve(false));
+      child.on('close', (code) => resolve(code === 0));
+      fs.createReadStream(path.join(volDir, f)).pipe(child.stdin);
+    });
+    if (ok) n++;
+    else onLine(`  (couldn't restore ${vol})`);
+  }
+  return n;
+}
+
 /** Extract the backup, validate the result, move it into place, restart apps,
  *  recreate the core. Streams progress through onLine. */
 export async function runRestore(onLine: (s: string) => void): Promise<void> {
@@ -150,7 +185,9 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
 
     onLine('Restoring your settings and app data…');
     let moved = 0;
-    for (const name of ALLOWED_TOP) {
+    // config/ + apps/ are filesystem trees moved into the data dir. volumes/ is
+    // handled separately (restored into Docker volumes), not moved here.
+    for (const name of ['config', 'apps']) {
       const src = path.join(STAGING_DIR, name);
       if (!fs.existsSync(src)) continue;
       const dest = path.join(DATA_DIR, name);
@@ -158,7 +195,12 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
       fs.renameSync(src, dest); // same filesystem → atomic
       moved++;
     }
-    if (moved === 0) {
+
+    // Restore each app's Docker volume (its real data — SQLite db, uploads, …)
+    // BEFORE starting apps, so `compose up` finds the populated volumes.
+    const restoredVols = await restoreVolumes(path.join(STAGING_DIR, 'volumes'), onLine);
+
+    if (moved === 0 && restoredVols === 0) {
       onLine('That backup had nothing to restore.');
       return;
     }
