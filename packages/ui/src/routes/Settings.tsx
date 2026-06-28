@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -44,8 +44,13 @@ export function Settings() {
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreUploading, setRestoreUploading] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [rebootOpen, setRebootOpen] = useState(false);
   const restoreInput = useRef<HTMLInputElement>(null);
   const updateClicks = useRef<number[]>([]);
+
+  const reboot = trpc.system.reboot.useMutation({
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
 
   async function uploadAndRestore(file: File) {
     setRestoreUploading(true);
@@ -365,6 +370,16 @@ export function Settings() {
 
         <div className="setting-row">
           <div className="setting-row__text">
+            <div className="setting-row__title">{t('settings.reboot')}</div>
+            <div className="setting-row__hint">{t('settings.rebootHint')}</div>
+          </div>
+          <button className="btn btn--danger" onClick={() => setRebootOpen(true)}>
+            <Power size={15} /> {t('settings.reboot')}
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.backup')}</div>
             <div className="setting-row__hint">{t('settings.backupHint')}</div>
           </div>
@@ -427,6 +442,24 @@ export function Settings() {
       </Modal>
 
       <RestoreModal open={restoreOpen} onClose={() => setRestoreOpen(false)} />
+
+      <Modal open={rebootOpen} onClose={() => !reboot.isPending && !reboot.isSuccess && setRebootOpen(false)} title={t('settings.rebootConfirmTitle')}>
+        {reboot.isSuccess ? (
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <span className="spinner" /> {t('settings.rebooting')}
+          </p>
+        ) : (
+          <>
+            <p>{t('settings.rebootConfirmBody')}</p>
+            <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button className="btn" onClick={() => setRebootOpen(false)}>{t('common.cancel')}</button>
+              <button className="btn btn--danger" disabled={reboot.isPending} onClick={() => reboot.mutate()}>
+                <Power size={15} /> {reboot.isPending ? t('settings.rebooting') : t('settings.rebootConfirm')}
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
     </Page>
   );
 }

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { VERSION } from '../../version';
-import { networkInfo, checkForUpdate, SOURCE_URL } from '../../system/system';
+import { networkInfo, checkForUpdate, SOURCE_URL, rebootHost } from '../../system/system';
 import { certInfo, regenerateSelfSignedLive, setCustomCertLive } from '../../system/tls';
 import { reloadProxyCerts } from '../../system/app-proxy';
 import { isValidSshKey, addRootSshKey } from '../../system/ssh';
@@ -22,6 +22,13 @@ export const systemRouter = router({
   })),
 
   checkUpdate: protectedProcedure.query(() => checkForUpdate()),
+
+  /** Reboot the whole server (host machine). The dashboard goes down until it's
+   *  back. Confirmed in the UI before calling. */
+  reboot: protectedProcedure.mutation(() => {
+    rebootHost();
+    return { ok: true };
+  }),
 
   /** Current TLS certificate details (type, subject, expiry, fingerprint). */
   tlsInfo: protectedProcedure.query(() => certInfo()),

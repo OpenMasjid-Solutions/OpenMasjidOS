@@ -5,9 +5,36 @@
  * "Source code" link (CLAUDE.md §3 network clause), and the core update check.
  */
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { PORT, MACHINE_HOSTNAME } from '../config';
 import { VERSION } from '../version';
 import { log } from '../logger';
+
+// A tiny image with a shell to chroot into the host. Reuses the backup image so
+// it's likely already present; override for air-gapped installs.
+const HOST_HELPER_IMAGE = process.env.OPENMASJID_BACKUP_IMAGE ?? 'alpine';
+
+/**
+ * Reboot the HOST machine. The core runs in a container, so it can't reboot the
+ * host directly — it launches a one-shot privileged helper in the host PID
+ * namespace that chroots into the host root (`/proc/1/root`) and runs the host's
+ * own reboot binary. Fire-and-forget: the machine goes down before the helper
+ * would report back. Requires the Docker socket (which the core already has).
+ */
+export function rebootHost(): void {
+  log.warn('Reboot requested — rebooting the host machine.');
+  const child = spawn(
+    'docker',
+    [
+      'run', '--rm', '--privileged', '--pid=host', HOST_HELPER_IMAGE,
+      'chroot', '/proc/1/root', '/bin/sh', '-c',
+      '/sbin/reboot || /usr/sbin/reboot || reboot',
+    ],
+    { detached: true, stdio: 'ignore' },
+  );
+  child.on('error', (err) => log.error('Could not start the reboot helper.', err));
+  child.unref();
+}
 
 export const SOURCE_URL = 'https://github.com/OpenMasjid-Solutions/OpenMasjidOS';
 
