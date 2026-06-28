@@ -4,13 +4,14 @@
  * First-run admin creation + login. No part of the app is reachable without
  * passing through here (CLAUDE.md §9). No masjid/prayer details are collected.
  */
-import { useState, type FormEvent } from 'react';
+import { useState, useRef, type FormEvent } from 'react';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
-import { setCsrf } from '../lib/session';
+import { setCsrf, getCsrf } from '../lib/session';
 import { MasjidMark } from './Glyphs';
 import { Modal } from './Modal';
+import { RestoreModal } from './RestoreModal';
 import { fadeRise } from '../lib/motion';
 
 // Keep in step with MIN_PASSWORD_LENGTH on the server (packages/core/src/auth/passwords.ts).
@@ -42,7 +43,36 @@ export function AuthScreen({
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [showReset, setShowReset] = useState(false);
+  const [restoreUploading, setRestoreUploading] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const restoreInput = useRef<HTMLInputElement>(null);
   const pwScore = passwordScore(password);
+
+  // First-run restore: a fresh box can restore a backup directly — no account to
+  // create first (the backup brings the admin account, settings and all app data).
+  async function uploadAndRestore(file: File) {
+    setRestoreUploading(true);
+    setError('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/restore/upload', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'x-omos-csrf': getCsrf() }, // empty on first run; the server skips the key check then
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || t('auth.genericError'));
+      }
+      setRestoreOpen(true);
+    } catch (err) {
+      setError((err as Error).message || t('auth.genericError'));
+    } finally {
+      setRestoreUploading(false);
+    }
+  }
 
   const setup = trpc.auth.setup.useMutation();
   const login = trpc.auth.login.useMutation();
@@ -159,6 +189,34 @@ export function AuthScreen({
           </button>
         </form>
 
+        {setupRequired && (
+          <>
+            <div className="auth-or" style={{ textAlign: 'center', color: 'var(--color-ink-muted)', margin: '0.85rem 0 0.5rem', fontSize: '0.85rem' }}>
+              {t('auth.or')}
+            </div>
+            <button
+              type="button"
+              className="btn btn--ghost btn--block"
+              disabled={restoreUploading}
+              onClick={() => restoreInput.current?.click()}
+            >
+              {restoreUploading ? t('auth.restoreUploading') : t('auth.restore')}
+            </button>
+            <input
+              ref={restoreInput}
+              type="file"
+              accept=".gz,.tgz,application/gzip"
+              className="visually-hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                if (f) uploadAndRestore(f);
+                e.target.value = '';
+              }}
+            />
+            <p className="hint" style={{ textAlign: 'center', marginTop: '0.45rem' }}>{t('auth.restoreHint')}</p>
+          </>
+        )}
+
         {!setupRequired && (
           <button
             type="button"
@@ -181,6 +239,8 @@ export function AuthScreen({
           {t('auth.resetClose')}
         </button>
       </Modal>
+
+      <RestoreModal open={restoreOpen} onClose={() => setRestoreOpen(false)} />
     </div>
   );
 }
