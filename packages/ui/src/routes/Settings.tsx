@@ -1318,6 +1318,13 @@ function CloudflarePanel() {
           <li>{t('settings.cfStep4')}</li>
         </ol>
 
+        <p
+          className="setting-row__hint"
+          style={{ marginBlockStart: '0.5rem', color: 'var(--color-gold, #d4af37)', fontWeight: 600 }}
+        >
+          {t('settings.cfHttpWarn', { port: routes.data?.ingressPort ?? 80 })}
+        </p>
+
         {/* Where each app ends up — the OS routes these paths for you (NOT added in Cloudflare). */}
         {(routes.data?.apps.length ?? 0) > 0 && (
           <div style={{ marginBlockStart: '0.8rem' }}>
