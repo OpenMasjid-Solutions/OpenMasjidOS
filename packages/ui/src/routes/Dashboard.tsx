@@ -15,6 +15,8 @@ import { formatBytes, formatUptime, percent } from '../lib/format';
 import { StatCard } from '../components/StatCard';
 import { AppCard } from '../components/AppCard';
 import { UpdateModal } from '../components/UpdateModal';
+import { AppUpdate } from '../components/AppUpdate';
+import { useWindows } from '../components/Windows';
 import { Page } from '../components/Page';
 import { MasjidScene } from '../components/Glyphs';
 import { staggerContainer } from '../lib/motion';
@@ -71,6 +73,20 @@ export function Dashboard() {
   const updateQ = trpc.system.checkUpdate.useQuery(undefined, { refetchInterval: 21_600_000 });
   const updateReady = updateQ.data?.updateAvailable ?? false;
   const [updateOpen, setUpdateOpen] = useState(false);
+
+  // App updates — same idea as the core check: surface them right on the dashboard.
+  const appUpdatesQ = trpc.apps.updates.useQuery(undefined, { refetchInterval: 21_600_000 });
+  const appUpdates = appUpdatesQ.data ?? [];
+  const windows = useWindows();
+  function openAppUpdate(u: { id: string; name: string }) {
+    windows.open({
+      title: t('appUpdate.title', { name: u.name }),
+      dedupeKey: `update:${u.id}`,
+      wide: true,
+      icon: <Download size={15} />,
+      node: <AppUpdate id={u.id} name={u.name} />,
+    });
+  }
 
   const name = prefs.dashboardName.trim() || me.data?.username || t('dashboard.yourMasjid');
   const cpuSub =
@@ -151,6 +167,27 @@ export function Dashboard() {
           <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
             <Download size={15} /> {t('settings.updateNow')}
           </button>
+        </div>
+      )}
+
+      {appUpdates.length > 0 && (
+        <div className="warn-banner warn-banner--update glass" role="status">
+          <Sparkles size={22} />
+          <div style={{ flex: 1 }}>
+            <div className="warn-banner__title">{t('dashboard.appUpdateTitle', { count: appUpdates.length })}</div>
+            <div className="warn-banner__body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.35rem' }}>
+              {appUpdates.map((u) => (
+                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {t('dashboard.appUpdateRow', { name: u.name, current: u.current, latest: u.latest })}
+                  </span>
+                  <button className="btn btn--sm btn--primary" onClick={() => openAppUpdate(u)}>
+                    <Download size={14} /> {t('settings.updateNow')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

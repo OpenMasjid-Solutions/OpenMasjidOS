@@ -44,6 +44,21 @@ export const appsRouter = router({
   /** Is a newer version of this catalog app available in the store? */
   checkUpdate: protectedProcedure.input(idInput).query(({ input }) => checkCatalogUpdate(input.id)),
 
+  /** Every installed catalog app that has a newer version in the store — drives the
+   *  dashboard "app updates available" banner, mirroring the core's update check. */
+  updates: protectedProcedure.query(async () => {
+    const apps = await listInstalled();
+    const out: { id: string; name: string; current: string; latest: string }[] = [];
+    for (const a of apps) {
+      if (a.kind !== 'catalog') continue;
+      const u = await checkCatalogUpdate(a.id);
+      if (u.updateAvailable && u.latest) {
+        out.push({ id: a.id, name: a.name, current: u.current, latest: u.latest });
+      }
+    }
+    return out;
+  }),
+
   start: protectedProcedure.input(idInput).mutation(({ input }) =>
     wrap(async () => {
       await startApp(input.id);

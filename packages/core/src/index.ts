@@ -27,6 +27,7 @@ import { dockerReachable } from './docker/client';
 import { backupStream, backupFilename } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
+import { attachIngress } from './system/ingress';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -190,10 +191,18 @@ async function main() {
   async function startHttpFront(): Promise<void> {
     const front = Fastify({ maxParamLength: 5000 });
     await front.register(fastifyCookie);
+    // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
+    // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
+    attachIngress(front);
     front.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
     front.get('/api/ready', async () => ({ ready: await dockerReachable() }));
     registerFabric(front);
     front.setNotFoundHandler((req, reply) => {
+      // Traffic that arrived through the Cloudflare tunnel for a non-app path: don't
+      // 308-redirect (it would loop the tunnel) and don't expose the dashboard —
+      // just 404. The admin UI stays LAN-only; only app paths are public.
+      const viaTunnel = Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
+      if (viaTunnel) return reply.code(404).send({ error: 'Not found.' });
       const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
       if (!host) return reply.code(400).send({ error: 'Bad request.' });
       const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
