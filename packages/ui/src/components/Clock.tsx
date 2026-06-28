@@ -5,8 +5,9 @@
  * and time-zone preferences (Settings → Customize). Display-only — never used
  * for prayer times (that's an app concern, CLAUDE.md §13).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePrefs } from '../lib/prefs';
+import { ambient } from '../lib/ambient';
 
 function format(now: Date, clock24h: boolean, tz: string): { time: string; date: string } {
   const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit', hour12: !clock24h };
@@ -29,6 +30,8 @@ function format(now: Date, clock24h: boolean, tz: string): { time: string; date:
 export function Clock() {
   const prefs = usePrefs();
   const [now, setNow] = useState(() => new Date());
+  // Rapid taps on the clock toggle the optional ambient scene (a quiet extra).
+  const taps = useRef<number[]>([]);
 
   useEffect(() => {
     if (!prefs.showClock) return;
@@ -39,8 +42,17 @@ export function Clock() {
   if (!prefs.showClock) return null;
   const { time, date } = format(now, prefs.clock24h, prefs.timezone);
 
+  function onTap() {
+    const t = Date.now();
+    taps.current = taps.current.filter((p) => t - p < 3000).concat(t);
+    if (taps.current.length >= 15) {
+      taps.current = [];
+      ambient.toggle();
+    }
+  }
+
   return (
-    <div className="clock-widget glass-raised" role="group" aria-label="Clock">
+    <div className="clock-widget glass-raised" role="group" aria-label="Clock" onClick={onTap}>
       <span className="clock-time">{time}</span>
       <span className="clock-date">{date}</span>
     </div>
