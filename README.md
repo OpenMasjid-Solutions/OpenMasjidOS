@@ -105,7 +105,6 @@ Each app runs as its own isolated Docker container, so **updating OpenMasjidOS n
 | **CPU** | 4 Cores | 8 Cores |
 | **RAM** | 4 GB | 8 GB |
 | **Storage** | 8 GB free | 32 GB |
-| **Architecture** | amd64 or arm64 | — |
 
 Docker is installed automatically if it isn't already present. The installer detects your OS/architecture, creates `/opt/openmasjid/` for all data, starts the core as a service that survives reboots, and prints your access URL.
 
