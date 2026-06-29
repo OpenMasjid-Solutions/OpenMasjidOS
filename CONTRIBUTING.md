@@ -22,7 +22,9 @@ please read the licensing section before opening a pull request.
 ## Licensing of your contributions (please read)
 
 OpenMasjidOS is published under the **GNU Affero General Public License v3.0
-(AGPL-3.0-only)** — see [`LICENSE`](./LICENSE).
+(AGPL-3.0-only)** — see [`LICENSE`](./LICENSE) — and contributions are governed by
+the **OpenMasjidOS Contributor License Agreement** — see [`CLA.md`](./CLA.md),
+the canonical legal text. The summary below is for convenience; the CLA controls.
 
 **1. Inbound license + Developer Certificate of Origin.** You contribute under
 the same AGPL-3.0-only as the project, and by submitting a contribution you
@@ -55,10 +57,21 @@ the public AGPL code proprietary.
 hold that are necessarily infringed by your contribution, on the same terms as
 above.
 
-If you cannot agree to the relicensing grant in §2, you may still contribute
-**under AGPL-3.0 only** — say so explicitly in your PR, and we will either accept
-it AGPL-only or discuss an alternative. Contributions without a clear statement
-are taken to be under the terms above.
+### Signing the CLA
+
+You sign the CLA **once**, automatically, on your first pull request: the CLA
+bot comments with a link to [`CLA.md`](./CLA.md) and asks you to reply with the
+exact sentence
+
+> I have read the CLA Document and I hereby sign the CLA
+
+Your signature is recorded under `signatures/` and future PRs are recognised
+automatically.
+
+If you cannot agree to the relicensing grant in §2 of the CLA, you may still
+contribute **under AGPL-3.0 only** — say so explicitly in your PR, and we will
+either accept it AGPL-only or discuss an alternative. Contributions without a
+clear statement, once the CLA is signed, are taken to be under the terms above.
 
 ## Apps are separate
 

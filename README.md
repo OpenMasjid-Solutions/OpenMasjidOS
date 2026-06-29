@@ -212,3 +212,5 @@ In production the daemon serves on **port 80**; in dev it uses **8723** with the
 ## License
 
 GNU Affero General Public License v3.0 (AGPL-3.0) — see [LICENSE](LICENSE). You're free to use, modify, and distribute it; if you deploy a modified version as a network service, you must publish your modified source under the same license, so improvements by one masjid benefit all masjids.
+
+**Contributing:** contributions are made under AGPL-3.0 and a **Contributor License Agreement** ([CLA.md](CLA.md)) that lets the project also offer commercial/dual licenses to organisations that can't accept AGPL — the public tree always stays AGPL-3.0. The CLA is signed automatically on your first pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
