@@ -38,6 +38,19 @@ export function setCredentials(username: string, passwordHash: string): void {
   writeJson(AUTH_PATH, cache);
 }
 
+/** First-run compare-and-set: create the admin ONLY if none exists yet, and
+ *  report whether we did. The check + assignment run synchronously (no await
+ *  between them), so they're atomic within the event loop — this closes the race
+ *  where two concurrent first-run `setup` calls both pass an earlier
+ *  isConfigured() check (before either awaited argon2) and the later write clobbers
+ *  the first admin. Returns false if an admin already exists. */
+export function setCredentialsIfUnset(username: string, passwordHash: string): boolean {
+  if (isConfigured()) return false;
+  cache = { username, passwordHash };
+  writeJson(AUTH_PATH, cache);
+  return true;
+}
+
 /** Replace only the password hash, keeping the username. */
 export function updatePasswordHash(passwordHash: string): void {
   cache = { ...cache, passwordHash };

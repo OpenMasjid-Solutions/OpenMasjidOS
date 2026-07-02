@@ -41,6 +41,16 @@ import { isAllowedOrigin, isWebSocketUpgrade } from './util/origin';
 async function main() {
   ensureDir(CONFIG_DIR);
   ensureDir(APPS_DIR);
+  // Config holds every platform secret (admin password hash, Stripe keys, the
+  // Cloudflare tunnel token, the notification webhook). Lock the directory to
+  // root-only, so even if an individual secret file is briefly created with the
+  // default umask (0o644) before its own chmod, a non-root co-tenant can't
+  // traverse in to read it. The core runs as root, so this never blocks itself.
+  try {
+    fs.chmodSync(CONFIG_DIR, 0o700);
+  } catch {
+    /* best-effort (non-POSIX dev environment) */
+  }
 
   // Defense-in-depth: the core runs as root and is the single control plane —
   // a stray async error (e.g. a hijacked terminal stream) must never crash it.
@@ -194,6 +204,23 @@ async function main() {
     // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
     // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
     attachIngress(front);
+    // LAN-only guard for the SECRET-GATED Fabric routes. App backends always call
+    // these server-to-server over the LAN base URL, never through the public
+    // tunnel. The not-found handler below already 404s tunnel traffic to unknown
+    // paths, but REGISTERED routes (registerFabric) skip it — so a request that
+    // arrived via the tunnel could otherwise reach /api/fabric/stripe and be
+    // handed the live Stripe secret with only a (possibly leaked) app secret.
+    // Block tunnel-origin requests to the secret routes here, before they match.
+    // /api/public/appearance stays public (an app's remote browser may poll it).
+    front.addHook('onRequest', (req, reply, done) => {
+      const url = req.url.split('?')[0];
+      const secretRoute = url === '/api/auth/session' || url.startsWith('/api/fabric');
+      if (!secretRoute) return done();
+      const viaTunnel =
+        Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
+      if (viaTunnel) return reply.code(404).send({ error: 'Not found.' });
+      done();
+    });
     front.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
     front.get('/api/ready', async () => ({ ready: await dockerReachable() }));
     registerFabric(front);
@@ -229,7 +256,17 @@ async function main() {
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.
-  ensureCloudflared().catch((err) => log.error('Could not start the Cloudflare tunnel.', err));
+  // Only in the TLS topology: there the dashboard is on TLS_PORT and only app
+  // paths are exposed on the tunnel-facing PORT. In the plain-HTTP fallback the
+  // full dashboard sits on PORT, so starting the tunnel would expose the admin UI
+  // to the internet — refuse and tell the admin instead.
+  if (tls) {
+    ensureCloudflared().catch((err) => log.error('Could not start the Cloudflare tunnel.', err));
+  } else {
+    log.warn(
+      'Remote access (Cloudflare tunnel) not started: TLS is unavailable, so the tunnel would expose the dashboard. Restore TLS to enable remote access.',
+    );
+  }
 }
 
 main().catch((err) => {

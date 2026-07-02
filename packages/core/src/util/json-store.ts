@@ -20,7 +20,19 @@ export function writeJson(file: string, value: unknown): void {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+  // Create the temp file 0o600 from the first byte so secrets (auth.json's
+  // password hash, settings.json's notification webhook, stripe.json) are never
+  // world-readable — not even briefly. openSync's mode is masked by umask, and is
+  // ignored entirely if the tmp survived a prior crashed write, so also chmod
+  // explicitly before the atomic rename (rename preserves the inode's mode).
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(value, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.chmodSync(tmp, 0o600);
   fs.renameSync(tmp, file);
 }
 

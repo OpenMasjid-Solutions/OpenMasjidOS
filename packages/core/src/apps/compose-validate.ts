@@ -77,6 +77,36 @@ function toArr(v: unknown): unknown[] {
   return Array.isArray(v) ? v : v == null ? [] : [v];
 }
 
+/** Docker Compose coerces several spellings of a boolean field to `true`
+ *  (compose-go's toBoolean: true/yes/on/1/y, case-insensitive, plus the number
+ *  1). A strict `=== true` check missed `privileged: yes|on|1|"true"`, which
+ *  still starts the container privileged — so match the real coercion here. */
+function isTruthyFlag(v: unknown): boolean {
+  if (v === true) return true;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') return /^(true|yes|on|1|y)$/i.test(v.trim());
+  return false;
+}
+
+/** Top-level `secrets:`/`configs:` entries with a `file:` source are bind-mounted
+ *  from the host into the container (non-swarm `docker compose`), so a `file:`
+ *  pointing at the Docker socket, /etc/shadow, the platform data dir, etc. is an
+ *  arbitrary host-file read. Check each file source exactly like a bind mount.
+ *  (Relative, in-folder paths are allowed by checkHostPath's early return.) */
+function checkFileSources(section: string, defs: unknown, dangers: string[]): void {
+  if (!defs || typeof defs !== 'object') return;
+  for (const [name, def] of Object.entries(defs as Record<string, unknown>)) {
+    if (!def || typeof def !== 'object') continue;
+    const file = (def as { file?: unknown }).file;
+    if (typeof file !== 'string') continue;
+    if (hasInterpolation(file)) {
+      dangers.push(`${section} "${name}" uses a variable for its file path, so we can't check it's safe.`);
+      continue;
+    }
+    checkHostPath(`${section} "${name}"`, file, dangers);
+  }
+}
+
 /** Flag a host path (from a service bind mount or a local-driver bind volume) if
  *  it is sensitive, the whole filesystem, the Docker socket, or escapes via "..". */
 function checkHostPath(label: string, raw: string, dangers: string[]): void {
@@ -194,7 +224,7 @@ export function checkCompose(text: string): ComposeCheck {
       }
     }
 
-    if (svc.privileged === true) {
+    if (isTruthyFlag(svc.privileged)) {
       dangers.push(`"${name}" runs in privileged mode (full access to this machine).`);
     }
     if (svc.network_mode === 'host') {
@@ -250,11 +280,43 @@ export function checkCompose(text: string): ComposeCheck {
     if (toArr(svc.security_opt).map(String).some((s) => /unconfined/i.test(s))) {
       dangers.push(`"${name}" weakens kernel sandboxing (security_opt: unconfined).`);
     }
+    // `volumes_from` copies ALL of another container's mounts into this one. If it
+    // names the core (`container:openmasjid-core`) the app inherits the mounted
+    // Docker socket + the whole /data dir — full host root + every secret. No
+    // legitimate OpenMasjid app needs it, so flag any occurrence.
+    if (toArr(svc.volumes_from).length > 0) {
+      dangers.push(`"${name}" uses "volumes_from", which copies another container's mounts — it can inherit the platform's Docker socket and data folder.`);
+    }
+    // `env_file` is read by `docker compose` itself, relative to the compose
+    // file's directory (the app folder). An absolute path or one containing ".."
+    // escapes that folder and can read another app's .env (its Fabric secret) or
+    // the platform's config secrets (e.g. the Cloudflare token) straight into
+    // this container's environment. In-folder relative files are fine.
+    for (const ef of toArr(svc.env_file)) {
+      const p =
+        typeof ef === 'string'
+          ? ef
+          : ef && typeof ef === 'object'
+            ? String((ef as { path?: unknown }).path ?? '')
+            : '';
+      if (!p) continue;
+      if (hasInterpolation(p)) {
+        dangers.push(`"${name}" uses a variable in "env_file", so we can't check it's safe.`);
+        continue;
+      }
+      const norm = p.trim();
+      if (norm.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(norm)) {
+        dangers.push(`"${name}" reads an env file outside its own folder (${norm}) — that could expose another app's or the platform's secrets.`);
+      }
+    }
     for (const v of toArr(svc.volumes)) checkVolume(name, v, dangers);
   }
 
   // Top-level named volumes can be host binds via the local driver (see above).
   checkNamedVolumes(parsed.volumes, dangers);
+  // Top-level file-based secrets/configs bind a host file into the container.
+  checkFileSources('Secret', parsed.secrets, dangers);
+  checkFileSources('Config', parsed.configs, dangers);
 
   return { parsed, dangers, services: names };
 }

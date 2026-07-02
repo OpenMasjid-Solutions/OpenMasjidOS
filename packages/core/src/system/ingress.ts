@@ -26,6 +26,43 @@ const TARGET_HOST = process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.inte
 // Path segments that must never be treated as an app route (platform endpoints).
 const RESERVED = new Set(['api', 'trpc', 'assets']);
 
+// Client-supplied forwarding + hop-by-hop headers we must NOT relay verbatim: the
+// tunnel is a hostile boundary and apps trust X-Forwarded-* behind the OS proxy,
+// so a spoofed value would poison absolute-URL building (open redirect) or
+// per-IP rate limits. We strip these and set our own trusted values below.
+const STRIP_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-proto',
+  'x-forwarded-host',
+  'x-forwarded-port',
+  'forwarded',
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'upgrade',
+  'proxy-authorization',
+];
+
+/** Was this request forwarded by the real Cloudflare edge (TLS terminated there)? */
+function viaTunnel(req: IncomingMessage): boolean {
+  return Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
+}
+
+/** Build the header set to send upstream: the client's headers minus any
+ *  forwarding/hop-by-hop headers, plus trusted forwarding headers we set. */
+function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
+  const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
+  for (const h of STRIP_HEADERS) delete headers[h];
+  const tunnel = viaTunnel(req);
+  // Real client IP: Cloudflare's CF-Connecting-IP over the tunnel, else the peer.
+  const cfIp = req.headers['cf-connecting-ip'];
+  headers['x-forwarded-for'] =
+    (typeof cfIp === 'string' && cfIp) || req.socket?.remoteAddress || '';
+  headers['x-forwarded-proto'] = tunnel ? 'https' : 'http';
+  if (req.headers.host) headers['x-forwarded-host'] = String(req.headers.host);
+  return headers;
+}
+
 let routes = new Map<string, number>(); // path segment → app HTTP port
 
 async function rebuild(): Promise<void> {
@@ -54,7 +91,7 @@ function firstSegment(url: string): string {
 
 function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {
   const up = http.request(
-    { host: TARGET_HOST, port, method: req.method, path: req.url, headers: req.headers },
+    { host: TARGET_HOST, port, method: req.method, path: req.url, headers: trustedHeaders(req) },
     (upRes) => {
       res.writeHead(upRes.statusCode ?? 502, upRes.headers);
       upRes.pipe(res);
@@ -91,9 +128,19 @@ export function attachIngress(front: FastifyInstance): void {
     if (port == null) return; // not an app path — leave it (front door has no other WS)
     const up = net.connect(port, TARGET_HOST, () => {
       up.write(`${req.method} ${req.url} HTTP/1.1\r\n`);
+      // Relay the handshake headers (incl. Connection/Upgrade, which WS needs) but
+      // drop client-supplied forwarding headers, then inject trusted ones — same
+      // hostile-boundary reasoning as the HTTP path.
+      const drop = new Set(['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'forwarded']);
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (drop.has(req.rawHeaders[i].toLowerCase())) continue;
         up.write(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`);
       }
+      const cfIp = req.headers['cf-connecting-ip'];
+      const fwdFor = (typeof cfIp === 'string' && cfIp) || req.socket?.remoteAddress || '';
+      up.write(`X-Forwarded-For: ${fwdFor}\r\n`);
+      up.write(`X-Forwarded-Proto: ${viaTunnel(req) ? 'https' : 'http'}\r\n`);
+      if (req.headers.host) up.write(`X-Forwarded-Host: ${req.headers.host}\r\n`);
       up.write('\r\n');
       if (head && head.length) up.write(head);
       up.pipe(socket);

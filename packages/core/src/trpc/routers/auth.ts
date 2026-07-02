@@ -13,7 +13,7 @@ import {
   isConfigured,
   getUsername,
   getPasswordHash,
-  setCredentials,
+  setCredentialsIfUnset,
   updatePasswordHash,
 } from '../../auth/store';
 import {
@@ -81,7 +81,11 @@ export const authRouter = router({
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
     const hash = await hashPassword(input.password);
-    setCredentials(input.username, hash);
+    // Compare-and-set: if a concurrent first-run request won the race while we were
+    // hashing (argon2 awaits above), don't clobber the admin it created.
+    if (!setCredentialsIfUnset(input.username, hash)) {
+      throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
+    }
     const { token, csrf } = createSession(input.username);
     ctx.setSessionCookie?.(token);
     return { authenticated: true, username: input.username, csrf };
