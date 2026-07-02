@@ -511,6 +511,13 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - Default to least privilege for app containers.
 - Network changes (static IP) are always confirmed and reversible-with-guidance; never silently rewrite a user's network config.
 
+**Security invariants — DO NOT REGRESS** (established by the v0.39.0 sweep; the core runs as **root with the Docker socket**, so an app-isolation gap = host root):
+- **`apps/compose-validate.ts` is the SOLE install-time risk gate** for catalog, community, AND custom (paste-a-compose) apps. It must keep flagging: `volumes_from` (a `container:openmasjid-core` entry inherits the mounted docker.sock + `/data`), `env_file` with an absolute or `..` path (reads other apps'/platform secrets), top-level `secrets:`/`configs:` with a `file:` source (host-file read), and **truthy** boolean flags via `isTruthyFlag` (`privileged: yes|on|1|"true"`, not just `=== true`), plus the existing namespace/mount/cap checks. Any new check here **must be mirrored in `OpenMasjidAPPS/scripts/validate-compose.mjs`** so "passes the catalog build == safe to install".
+- **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; `/api/public/appearance` stays public. The tunnel is not started in the no-TLS fallback.
+- **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. Don't relay request headers verbatim to app containers.
+- **Secrets at rest:** persist config secrets 0o600 (`writeJson` does this; `CONFIG_DIR` is 0o700). First-run `auth.setup` uses `setCredentialsIfUnset` (compare-and-set) — don't reintroduce an unconditional write.
+- **CI:** the CLA workflow runs on `pull_request_target` — keep third-party actions pinned to a commit SHA (never a tag), never `actions/checkout` the PR head there, and don't grant `actions: write`.
+
 ---
 
 ## 16. Build & run commands (keep these working)
