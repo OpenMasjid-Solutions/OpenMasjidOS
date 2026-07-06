@@ -125,14 +125,14 @@ export async function ensureCloudflared(): Promise<void> {
   }
 }
 
-/** The public host the tunnel serves, e.g. "omos.example.org". The admin enters
- *  their root domain; we use the `omos` subdomain (the guided Cloudflare setup
- *  tells them to create exactly that public hostname). Empty if no domain. */
+/** The public host the tunnel serves — EXACTLY the hostname the admin entered
+ *  (and created as a Cloudflare public hostname), e.g. "app.rifusa.org" or
+ *  "omos.example.org". Used verbatim: forcing an `omos.` subdomain broke setups
+ *  where the admin chose a different hostname (the tunnel then pointed at a
+ *  host that doesn't exist, so every app path 404'd). Empty if no domain. */
 export function publicHost(): string {
   const cf = getSettings().cloudflare;
-  const d = (cf.domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '').trim();
-  if (!d) return '';
-  return d.startsWith('omos.') ? d : `omos.${d}`;
+  return (cf.domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '').trim();
 }
 
 /** Each app is served under a path (admin-configurable, default = its id). This is

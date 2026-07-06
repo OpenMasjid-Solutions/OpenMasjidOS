@@ -1342,8 +1342,7 @@ function CloudflarePanel() {
           <li>
             {t('settings.cfStep3')}
             <ul style={{ margin: '0.35rem 0 0', paddingInlineStart: '1.1rem', color: 'var(--color-ink-muted)' }}>
-              <li>{t('settings.cfStep3Sub')} <code>omos</code></li>
-              <li>{t('settings.cfStep3Domain')}</li>
+              <li>{t('settings.cfStep3Host')} <code>{routes.data?.host || domain || 'your-hostname'}</code></li>
               <li>{t('settings.cfStep3Service', { port: routes.data?.ingressPort ?? 80 })}</li>
             </ul>
           </li>
@@ -1374,7 +1373,7 @@ function CloudflarePanel() {
                     <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
                       <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>{r.name}</td>
                       <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
-                        https://{routes.data?.host || 'omos.your-domain'}/
+                        https://{routes.data?.host || 'your-domain'}/
                         <input
                           className="input glass-inset"
                           style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
