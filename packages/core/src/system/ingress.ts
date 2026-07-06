@@ -81,6 +81,16 @@ async function rebuild(): Promise<void> {
   }
 }
 
+/** Is the OS actually routing this app's public path to it right now? The Fabric
+ *  `site` endpoint uses this so it only advertises a public URL the platform will
+ *  really serve — the app can then trust it instead of doing a fragile hairpin
+ *  self-probe through Cloudflare (which fails from inside a container even when the
+ *  path routes fine for real external visitors). */
+export function isRouted(appId: string): boolean {
+  const seg = getAppPath(appId);
+  return Boolean(seg) && routes.has(seg);
+}
+
 function firstSegment(url: string): string {
   const path = url.split('?')[0].split('#')[0];
   for (const part of path.split('/')) {

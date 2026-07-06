@@ -23,6 +23,7 @@ import { composeUp, composeDown } from '../docker/compose';
 import { docker } from '../docker/client';
 import { getSettings } from '../settings/store';
 import { getAppPath } from '../apps/manager';
+import { isRouted } from './ingress';
 import { log } from '../logger';
 
 const CF_DIR = path.join(CONFIG_DIR, 'cloudflare');
@@ -143,10 +144,13 @@ export function appBasePath(appId: string): string {
 }
 
 /** The public base URL an app is reachable at (Fabric `site`), or '' if remote
- *  access is off — e.g. "https://omos.example.org/donations". */
+ *  access is off OR the OS isn't actually routing this app's path yet — e.g.
+ *  "https://omos.example.org/donations". Gating on `isRouted` makes this value
+ *  authoritative: if it's non-empty, the platform really serves that path to this
+ *  app, so the app can advertise it without a fragile hairpin self-probe. */
 export function appPublicUrl(appId: string): string {
   const host = publicHost();
   const cf = getSettings().cloudflare;
-  if (!cf.enabled || !host) return '';
+  if (!cf.enabled || !host || !isRouted(appId)) return '';
   return `https://${host}${appBasePath(appId)}`;
 }

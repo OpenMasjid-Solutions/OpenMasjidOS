@@ -442,7 +442,7 @@
     "cfStopped": "Tunnel is set up but turned off.",
     "cfNoToken": "Add a tunnel token to turn this on.",
     "cfDomain": "Your domain",
-    "cfDomainHint": "The full public hostname your tunnel serves — the EXACT one you create in Cloudflare (e.g. omos.example.org or app.rifusa.org). Used as-is, no https://.",
+    "cfDomainHint": "The full public hostname your tunnel serves — the EXACT one you create in Cloudflare (e.g. omos.example.org). Used as-is, no https://.",
     "cfToken": "Cloudflare tunnel token",
     "cfTokenSet": "A token is saved — paste a new one to replace it",
     "cfTokenHint": "From the Cloudflare Zero Trust dashboard → Networks → Tunnels → your tunnel → install token (the long string after 'run --token'). Kept private; never shown again.",
