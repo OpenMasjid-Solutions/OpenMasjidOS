@@ -48,6 +48,8 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `sso` | – | `true` to opt into single sign-on (below). The platform then issues the app a per-app secret at install and will honour its `/api/auth/session` calls. Omit/false = no SSO. |
 | `notifications` | – | `true` to opt into Fabric notifications (below) — the app may POST `/api/fabric/notify` to relay messages to the masjid's configured webhook. Issues the same per-app secret. Omit/false = no notifications. |
 | `https` | – | **Set ONLY by apps that use Stripe.** Stripe's in-person M2 reader (Stripe Terminal SDK) and in-page card fields (Elements) require a browser secure context (HTTPS). When `true`, the platform serves the app over HTTPS on a dedicated host port (from a pre-mapped range; TLS terminated with the dashboard's cert) and the app's "Open" URL becomes `https://`. The app stays a plain HTTP container — it handles no TLS. **Non-Stripe apps must omit this** and stay on plain HTTP; HTTPS is **not** enforced for them or for 3rd-party/custom apps. |
+| `fabric` | – | Opt into the **app-to-app broker** (below): `{ provides: [{ capability }], consumes: ["<app-id>/<capability>"] }`. Any `fabric` block issues the app the per-app secret (like `sso`). Grants are static from the manifest. Catalog apps only. |
+| `tunnel` | – | `true` = the app **requests** to be reachable from the internet through the OS's Cloudflare tunnel (below). It's only a request — the admin confirms exposure in Settings → Remote access. Off ⇒ the app stays on the LAN. |
 
 ### `settings` fields (`SettingField`)
 
@@ -184,3 +186,74 @@ can't point it anywhere — no SSRF from apps).
   send). Rate-limited per app (≈20/min) and platform-wide, so one app can't flood Slack/Discord.
 - Fails soft: if the admin hasn't enabled notifications, the call returns `{delivered:false}` rather
   than an error — so the app keeps working. This is server→server and not CORS-enabled.
+
+## Fabric app-to-app broker (`fabric:` — one app calling another)
+
+The broker lets one installed catalog app call another through the platform, so apps
+never learn each other's addresses or secrets. Opt in with a `fabric` block:
+
+```yaml
+fabric:
+  provides:                 # capabilities THIS app serves at /fabric/<capability>/<method>
+    - capability: billing   # kebab-case: ^[a-z0-9][a-z0-9-]{0,39}$
+  consumes:                 # capabilities THIS app may call, "<target-app-id>/<capability>"
+    - students/billing
+```
+
+- Any `fabric` block issues the app the **same per-app secret** as `sso`/`notifications`
+  (`OPENMASJID_APP_ID` / `OPENMASJID_BASE_URL` / `OPENMASJID_APP_SECRET`; same `${VAR}`-in-
+  `environment:` footgun — you must reference them in the compose or they never reach the container).
+- **Grants are static from the manifest** (no admin approval UI in v1). Both sides must agree: the
+  caller lists `consumes: ["<target>/<cap>"]` **and** the target lists `provides: [{capability}]`.
+- Calls are **catalog-app ↔ catalog-app only** (custom/community apps get no secret, so they can't broker).
+
+**Calling** (the consumer's backend):
+
+```
+POST ${OPENMASJID_BASE_URL}/api/fabric/app/<targetAppId>/<capability>/<method>
+  X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>   (the CALLER's secret)
+  Content-Type: application/json
+  { …json… }
+```
+
+The platform authenticates the caller, checks the grants, resolves the target, and forwards the JSON
+to `http://<target>/fabric/<capability>/<method>` — injecting the **target's own** secret as
+`X-OpenMasjid-App-Secret` and the trusted caller id as `X-OpenMasjid-Caller-App`. Limits: JSON only,
+≤256 KB each way, 10 s timeout, no redirects, per-caller rate limit. LAN-only (never over the tunnel).
+
+**Providing** (the target's backend) — mount your served capabilities under `/fabric/<capability>/…`
+and trust the platform-set headers only:
+
+- Verify `X-OpenMasjid-App-Secret` equals **your own** `OPENMASJID_APP_SECRET` (that's how you know
+  the call came from the platform, not directly from another container).
+- Read `X-OpenMasjid-Caller-App` for the caller's id (set by the platform; a caller can't spoof it).
+- Your `/fabric/*` routes are refused over the public tunnel by the platform — but enforce it yourself
+  too (reject `/fabric/*` unless the request came from the platform).
+
+**Broker error envelope.** When the platform (not the target) fails, it replies
+`{ "fabric_error": { "code", "message" } }` with codes: `unauthorized` (401), `not_granted` (403),
+`bad_request` (400), `target_not_installed` / `target_unreachable` (503), `timeout` (504),
+`payload_too_large` (413), `response_too_large` (502), `rate_limited` (429). A success passes the
+target's own status + JSON straight through.
+
+**Fail-soft doctrine (required of consumers).** Treat every `fabric_error` as "feature unavailable,
+app still fine" — never a hard crash. E.g. hide a School-payments tab on `target_not_installed`; queue
+and retry on `target_unreachable`. (Same spirit as the notify fail-soft above.)
+
+## Tunnel uplink (`tunnel: true` — being reachable from the internet)
+
+By default an app is served only on the LAN. Set `tunnel: true` to **request** internet exposure
+through the OS's Cloudflare tunnel. It is only a request: exposure is **off until the admin turns it
+on** per-app in Settings → Remote access (the manifest request is the default the toggle starts from).
+
+When the admin exposes the app, the platform serves it at `https://<domain>/<path>/…` and injects:
+
+- **`OPENMASJID_PUBLIC_URL`** — the app's public base URL (e.g. `https://omos.example.org/donations`),
+  or **empty string** when the app isn't exposed / the tunnel is off. Reference it in your compose
+  (`environment: { OPENMASJID_PUBLIC_URL: ${OPENMASJID_PUBLIC_URL:-} }`) and use it to build absolute
+  links (Stripe success/cancel URLs, webhooks, QR codes). The **live** source of truth stays
+  `GET /api/fabric/site` (requires the `domain` capability); the env var is a convenience mirror.
+
+Your `/fabric/*` space is **never** served over the tunnel — those routes are LAN-only (platform-
+enforced, and you should enforce it too). Build your app to be base-path aware (it is served under
+`/<path>`); `GET /api/fabric/site` returns the `basePath` to mount under.

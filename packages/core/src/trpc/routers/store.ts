@@ -23,6 +23,9 @@ export const storeRouter = router({
       z.object({
         id: z.string().regex(APP_ID_RE, 'Invalid app id'),
         settings: z.record(z.string(), z.string()).default({}),
+        // Admin's consent to expose this app over the tunnel at install time
+        // (defaults to not-exposed; the admin can also toggle it later in Settings).
+        expose: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -56,7 +59,7 @@ export const storeRouter = router({
         });
       }
       try {
-        return await installCatalogApp(app, input.settings, ctx.host);
+        return await installCatalogApp(app, input.settings, ctx.host, input.expose);
       } catch (err) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
       }

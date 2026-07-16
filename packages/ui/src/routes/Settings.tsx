@@ -1271,6 +1271,13 @@ function CloudflarePanel() {
     onSuccess: (r) => { utils.cloudflare.routes.invalidate(); toast(t('settings.cfPathSaved', { path: r.path }), 'success'); },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+  const setExposed = trpc.cloudflare.setExposed.useMutation({
+    onSuccess: (r) => {
+      utils.cloudflare.routes.invalidate();
+      toast(r.exposed ? t('settings.cfExposedOn') : t('settings.cfExposedOff'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
 
   if (!cf) return null;
 
@@ -1365,6 +1372,7 @@ function CloudflarePanel() {
                 <thead>
                   <tr style={{ textAlign: 'start', color: 'var(--color-ink-muted)' }}>
                     <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColApp')}</th>
+                    <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColShared')}</th>
                     <th style={{ textAlign: 'start', padding: '0.25rem 0' }}>{t('settings.cfColUrl')}</th>
                   </tr>
                 </thead>
@@ -1372,18 +1380,31 @@ function CloudflarePanel() {
                   {routes.data?.apps.map((r) => (
                     <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
                       <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>{r.name}</td>
-                      <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
-                        https://{routes.data?.host || 'your-domain'}/
-                        <input
-                          className="input glass-inset"
-                          style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
-                          defaultValue={r.path.replace(/^\//, '')}
-                          aria-label={t('settings.cfColPath')}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
-                          }}
+                      <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>
+                        <Toggle
+                          checked={r.exposed}
+                          onChange={(v) => setExposed.mutate({ id: r.id, exposed: v })}
+                          label={t('settings.cfColShared')}
                         />
+                      </td>
+                      <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
+                        {r.exposed ? (
+                          <>
+                            https://{routes.data?.host || 'your-domain'}/
+                            <input
+                              className="input glass-inset"
+                              style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
+                              defaultValue={r.path.replace(/^\//, '')}
+                              aria-label={t('settings.cfColPath')}
+                              onBlur={(e) => {
+                                const v = e.target.value.trim();
+                                if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
+                              }}
+                            />
+                          </>
+                        ) : (
+                          <span style={{ color: 'var(--color-ink-muted)', fontFamily: 'inherit' }}>{t('settings.cfNotShared')}</span>
+                        )}
                       </td>
                     </tr>
                   ))}

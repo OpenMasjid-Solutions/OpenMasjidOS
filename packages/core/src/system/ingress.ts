@@ -18,6 +18,7 @@ import net from 'node:net';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { listInstalled, getAppPath } from '../apps/manager';
+import { isViaTunnelHeaders } from './via-tunnel';
 import { log } from '../logger';
 
 // How the core reaches an app's published host port (host-gateway mapping added by
@@ -43,17 +44,12 @@ const STRIP_HEADERS = [
   'proxy-authorization',
 ];
 
-/** Was this request forwarded by the real Cloudflare edge (TLS terminated there)? */
-function viaTunnel(req: IncomingMessage): boolean {
-  return Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
-}
-
 /** Build the header set to send upstream: the client's headers minus any
  *  forwarding/hop-by-hop headers, plus trusted forwarding headers we set. */
 function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
   const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
   for (const h of STRIP_HEADERS) delete headers[h];
-  const tunnel = viaTunnel(req);
+  const tunnel = isViaTunnelHeaders(req.headers);
   // Real client IP: Cloudflare's CF-Connecting-IP over the tunnel, else the peer.
   const cfIp = req.headers['cf-connecting-ip'];
   headers['x-forwarded-for'] =
@@ -70,6 +66,10 @@ async function rebuild(): Promise<void> {
     const apps = await listInstalled();
     const next = new Map<string, number>();
     for (const a of apps) {
+      // Per-app exposure opt-in: only route apps the admin has exposed over the
+      // tunnel. `exposed` is grandfathered-true for apps installed before this flag
+      // (see InstalledApp.exposed), so upgrades never silently drop a working app.
+      if (!a.exposed) continue;
       const port = a.ports[0]; // raw HTTP container port (Cloudflare provides TLS)
       if (port == null) continue;
       const seg = getAppPath(a.id);
@@ -97,6 +97,17 @@ function firstSegment(url: string): string {
     if (part) return part;
   }
   return '';
+}
+
+/** True if, after the app's path segment, the request targets the app's own
+ *  `/fabric/*` space (e.g. /donate/fabric/billing/lookup). Those are LAN-only
+ *  app↔platform / app↔app broker routes — they must NEVER be reachable over the
+ *  public tunnel. The platform is the first wall; apps enforce it themselves too.
+ *  Exported for tests. */
+export function isFabricSubpath(url: string, seg: string): boolean {
+  const path = url.split('?')[0].split('#')[0];
+  const rest = path.slice(1 + seg.length); // strip leading "/<seg>"
+  return rest === '/fabric' || rest.startsWith('/fabric/');
 }
 
 function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {
@@ -127,6 +138,10 @@ export function attachIngress(front: FastifyInstance): void {
     const seg = firstSegment(req.url);
     const port = seg ? routes.get(seg) : undefined;
     if (port == null) return done(); // not an app path → normal front-door handling
+    // Refuse an app's /fabric/* over the tunnel — LAN-only (app↔platform + broker).
+    if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url, seg)) {
+      return reply.code(404).send({ error: 'Not found.' });
+    }
     reply.hijack(); // we own the raw response from here
     proxyHttp(req.raw, reply.raw, port);
   });
@@ -136,6 +151,11 @@ export function attachIngress(front: FastifyInstance): void {
     const seg = firstSegment(req.url ?? '');
     const port = seg ? routes.get(seg) : undefined;
     if (port == null) return; // not an app path — leave it (front door has no other WS)
+    // Same /fabric/* refusal on the WebSocket path (a WS upgrade must not tunnel in).
+    if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url ?? '', seg)) {
+      socket.destroy();
+      return;
+    }
     const up = net.connect(port, TARGET_HOST, () => {
       up.write(`${req.method} ${req.url} HTTP/1.1\r\n`);
       // Relay the handshake headers (incl. Connection/Upgrade, which WS needs) but
@@ -149,7 +169,7 @@ export function attachIngress(front: FastifyInstance): void {
       const cfIp = req.headers['cf-connecting-ip'];
       const fwdFor = (typeof cfIp === 'string' && cfIp) || req.socket?.remoteAddress || '';
       up.write(`X-Forwarded-For: ${fwdFor}\r\n`);
-      up.write(`X-Forwarded-Proto: ${viaTunnel(req) ? 'https' : 'http'}\r\n`);
+      up.write(`X-Forwarded-Proto: ${isViaTunnelHeaders(req.headers) ? 'https' : 'http'}\r\n`);
       if (req.headers.host) up.write(`X-Forwarded-Host: ${req.headers.host}\r\n`);
       up.write('\r\n');
       if (head && head.length) up.write(head);

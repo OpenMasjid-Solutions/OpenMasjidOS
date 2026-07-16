@@ -367,6 +367,12 @@ settings:                         # collected from the user before install (no p
 ports:                            # informational metadata only (the compose does the real publish)
   - container: 80
     label: Web interface
+fabric:                           # OPTIONAL — app-to-app broker (v0.40.0); catalog apps only
+  provides:                       #   capabilities this app SERVES at /fabric/<capability>/<method>
+    - capability: billing
+  consumes:                       #   capabilities it may CALL, "<target-app-id>/<capability>"
+    - students/billing
+tunnel: true                      # OPTIONAL — REQUEST internet exposure (admin confirms in Settings)
 ```
 
 How the core installs/manages a catalog app (the real behaviour):
@@ -382,7 +388,10 @@ How the core installs/manages a catalog app (the real behaviour):
   `compose pull` + `up -d` — settings and data preserved (app ⋮ → "Check for update").
 - **Remove** = `compose down` (with `--rmi all -v` when the user also deletes the app's data).
 - Validate every entry before running it (kebab `id`, required fields); never `up` an untrusted
-  compose without risk-checking it first (§11, §15).
+  compose without risk-checking it first (§11, §15). A `fabric:` block is shape-validated
+  (`parseFabric`) and issues the app the per-app secret; `tunnel: true` is a request that the admin
+  confirms per-app in Settings (default off). Full contract + broker/tunnel mechanics:
+  `docs/APP_MANIFEST_SPEC.md` and `docs/FABRIC_APP_LINK_AND_TUNNEL.md`.
 
 ---
 
@@ -515,6 +524,8 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - **`apps/compose-validate.ts` is the SOLE install-time risk gate** for catalog, community, AND custom (paste-a-compose) apps. It must keep flagging: `volumes_from` (a `container:openmasjid-core` entry inherits the mounted docker.sock + `/data`), `env_file` with an absolute or `..` path (reads other apps'/platform secrets), top-level `secrets:`/`configs:` with a `file:` source (host-file read), and **truthy** boolean flags via `isTruthyFlag` (`privileged: yes|on|1|"true"`, not just `=== true`), plus the existing namespace/mount/cap checks. Any new check here **must be mirrored in `OpenMasjidAPPS/scripts/validate-compose.mjs`** so "passes the catalog build == safe to install".
 - **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; `/api/public/appearance` stays public. The tunnel is not started in the no-TLS fallback.
 - **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. Don't relay request headers verbatim to app containers.
+- **The Fabric app-to-app broker (`fabric/appLink.ts`, `POST /api/fabric/app/:target/:capability/:method`) is LAN-only and least-privilege** (v0.40.0). It inherits the `/api/fabric` viaTunnel guard (`registerFabricTunnelGuard`, `system/via-tunnel.ts` — the single shared implementation), authorizes by **static manifest grants** (caller `consumes` ∧ target `provides`), builds the target URL ONLY from the registry (`127.0.0.1:<published port>` — no request-controlled host/path, no SSRF), injects the **target's own** secret + a trusted `X-OpenMasjid-Caller-App` while stripping caller-supplied identity/forwarding/hop-by-hop headers, caps JSON at 256 KB each way with a 10 s timeout + per-caller rate limit, returns `{ fabric_error }` on platform failures, and **never logs bodies**. Don't weaken any of these.
+- **Tunnel exposure is per-app opt-in** (v0.40.0). `ingress.rebuild()` routes an app only when `meta.exposed !== false` (grandfathered `undefined` = exposed, so pre-0.40 installs don't go dark); the admin toggles it in Settings (default from the manifest `tunnel:true` request). An app's own **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths (`isFabricSubpath`) — those routes are LAN-only. `OPENMASJID_PUBLIC_URL` is injected empty unless exposed; `/api/fabric/site` stays the live source of truth.
 - **Secrets at rest:** persist config secrets 0o600 (`writeJson` does this; `CONFIG_DIR` is 0o700). First-run `auth.setup` uses `setCredentialsIfUnset` (compare-and-set) — don't reintroduce an unconditional write.
 - **CI:** the CLA workflow runs on `pull_request_target` — keep third-party actions pinned to a commit SHA (never a tag), never `actions/checkout` the PR head there, and don't grant `actions: write`.
 

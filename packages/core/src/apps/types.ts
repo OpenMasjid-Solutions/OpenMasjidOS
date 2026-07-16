@@ -76,6 +76,23 @@ export interface CatalogApp {
    */
   https?: boolean;
   /**
+   * Opt in to the OpenMasjidOS Fabric app-to-app broker. `provides` lists the
+   * capabilities this app SERVES (the platform brokers calls to them at
+   * `/fabric/<capability>/<method>` on the app's web port); `consumes` lists the
+   * capabilities this app may CALL, each as "<target-app-id>/<capability>". Any
+   * app with a fabric block is issued the per-app secret (like sso/notifications).
+   * Grants are STATIC from the manifest (no admin approval UI in v1); calls are
+   * catalog-app↔catalog-app only. See docs/APP_MANIFEST_SPEC.md.
+   */
+  fabric?: FabricGrants;
+  /**
+   * Request to be reachable from the internet through the OS's Cloudflare tunnel.
+   * This is only a REQUEST — the admin still confirms exposure at install (and can
+   * toggle it later in Settings). When exposed, the app's public URL is delivered
+   * as OPENMASJID_PUBLIC_URL (empty when not). Off ⇒ the app stays LAN-only.
+   */
+  tunnel?: boolean;
+  /**
    * A teaser entry for an app that isn't released yet. Coming-soon apps have no
    * repo/compose; the App Store shows them with a "Coming soon" badge and no
    * install action, and the platform refuses to install them.
@@ -83,6 +100,19 @@ export interface CatalogApp {
   comingSoon?: boolean;
   /** Raw docker-compose.yml text for this app (with ${SETTING} placeholders). */
   compose: string;
+}
+
+/** A single capability an app serves over the Fabric broker. */
+export interface FabricProvide {
+  capability: string;
+}
+
+/** App-to-app broker grants declared in a catalog app's manifest (CatalogApp.fabric). */
+export interface FabricGrants {
+  /** Capabilities this app serves at /fabric/<capability>/<method> on its web port. */
+  provides?: FabricProvide[];
+  /** Capabilities this app may call, each "<target-app-id>/<capability>". */
+  consumes?: string[];
 }
 
 /** Persisted per-app metadata (APPS_DIR/<id>/meta.json). */
@@ -102,6 +132,15 @@ export interface AppMeta {
   stripe?: boolean;
   /** True if this app opted into Fabric remote-access info (CatalogApp.domain). */
   domain?: boolean;
+  /** Fabric broker capabilities this app SERVES (CatalogApp.fabric.provides). */
+  fabricProvides?: string[];
+  /** Fabric broker grants this app may CALL, "<target-app-id>/<capability>". */
+  fabricConsumes?: string[];
+  /** Whether this app is exposed over the Cloudflare tunnel. Admin-controlled
+   *  (default from the manifest `tunnel:true` at install; toggleable in Settings).
+   *  `undefined` means "installed before per-app exposure existed" — grandfathered
+   *  as exposed so upgrades don't silently take a working app offline. */
+  exposed?: boolean;
   /** Admin-chosen public path segment for remote access (Cloudflare path + the
    *  Fabric basePath), e.g. "donate". Defaults to the app id when unset. */
   path?: string;
@@ -133,6 +172,9 @@ export interface InstalledApp {
   /** The port to open the app on — the HTTPS proxy port if https, else the first
    *  published HTTP port. Null when the app publishes no web port. */
   openPort: number | null;
+  /** Whether this app is exposed over the Cloudflare tunnel (admin-controlled).
+   *  Grandfathered true for apps installed before per-app exposure existed. */
+  exposed: boolean;
   /**
    * True only when this app opted into the OpenMasjidOS Fabric (sso and/or
    * notifications) — i.e. an official catalog app that understands the platform.

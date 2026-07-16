@@ -22,6 +22,7 @@
 import type { FastifyInstance } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { findFabricApp } from '../apps/manager';
+import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { getSettings } from '../settings/store';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
@@ -196,4 +197,8 @@ export function registerFabric(server: FastifyInstance): void {
       .code(204)
       .send();
   });
+
+  // App-to-app broker (POST /api/fabric/app/:target/:capability/:method). Under
+  // /api/fabric, so it inherits the LAN-only viaTunnel guard automatically.
+  registerAppLink(server);
 }

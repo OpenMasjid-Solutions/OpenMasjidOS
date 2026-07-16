@@ -27,6 +27,9 @@ import { discoverApps } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
+// Runtime-only import (called inside functions, never at module load) — no cycle
+// hazard with cloudflared.ts, which imports getAppPath from here.
+import { intendedPublicUrl } from '../system/cloudflared';
 import { networkInfo } from '../system/system';
 import { isNewerVersion } from '../util/version';
 import type { AppMeta, InstalledApp, CatalogApp } from './types';
@@ -76,6 +79,11 @@ function saveMeta(meta: AppMeta): void {
 // A valid env-var name. We refuse anything else as a KEY so a newline/`=` in a
 // setting key can't inject extra lines into the .env (security audit).
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// Fabric broker capability + grant shapes (mirror OpenMasjidAPPS validate-compose /
+// build-catalog). A capability is a kebab slug; a grant is "<app-id>/<capability>".
+const CAPABILITY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const GRANT_RE = /^[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,39}$/;
 
 function writeEnvFile(id: string, env: Record<string, string>): void {
   const lines: string[] = [];
@@ -151,6 +159,10 @@ export interface FabricApp {
   notify: boolean;
   stripe: boolean;
   domain: boolean;
+  /** Broker capabilities this app SERVES (for target-side authorization). */
+  provides: string[];
+  /** Broker grants this app may CALL, "<target-app-id>/<capability>". */
+  consumes: string[];
 }
 
 interface FabricEntry extends FabricApp {
@@ -182,6 +194,8 @@ function fabricEntries(): FabricEntry[] {
         notify: meta.notify === true,
         stripe: meta.stripe === true,
         domain: meta.domain === true,
+        provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
+        consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
       });
     }
@@ -201,11 +215,94 @@ function fabricEntries(): FabricEntry[] {
 export function findFabricApp(secret: string | undefined | null): FabricApp | null {
   if (!secret || secret.length < 16) return null;
   for (const e of fabricEntries()) {
-    if (safeEqual(e.ssoSecret, secret)) {
-      return { id: e.id, name: e.name, sso: e.sso, notify: e.notify, stripe: e.stripe, domain: e.domain };
-    }
+    if (safeEqual(e.ssoSecret, secret)) return stripSecret(e);
   }
   return null;
+}
+
+/** Drop the raw secret from a FabricEntry before returning it to callers. */
+function stripSecret(e: FabricEntry): FabricApp {
+  return {
+    id: e.id,
+    name: e.name,
+    sso: e.sso,
+    notify: e.notify,
+    stripe: e.stripe,
+    domain: e.domain,
+    provides: e.provides,
+    consumes: e.consumes,
+  };
+}
+
+/** Look up a Fabric app by id (capabilities + broker grants), or null. Used by the
+ *  app-to-app broker to authorize the TARGET side (does it `provide` the capability?). */
+export function getFabricApp(id: string): FabricApp | null {
+  const e = fabricEntries().find((x) => x.id === id);
+  return e ? stripSecret(e) : null;
+}
+
+/** The per-app Fabric secret for an app id — SERVER-SIDE ONLY. The broker presents
+ *  the TARGET's own secret so the target knows the call truly came from the
+ *  platform (only the platform holds it). NEVER expose this over any API. */
+export function getFabricSecret(id: string): string | null {
+  return fabricEntries().find((x) => x.id === id)?.ssoSecret ?? null;
+}
+
+/** True if an app opted into ANY Fabric capability that needs a per-app secret —
+ *  sso / notifications / stripe / domain, OR the app-to-app broker (provides or
+ *  consumes). Used by both install and update so a fabric-only app is issued a
+ *  secret exactly like an sso app. */
+export function needsFabricSecret(caps: {
+  sso?: boolean;
+  notify?: boolean;
+  stripe?: boolean;
+  domain?: boolean;
+  provides?: string[];
+  consumes?: string[];
+}): boolean {
+  return Boolean(
+    caps.sso ||
+      caps.notify ||
+      caps.stripe ||
+      caps.domain ||
+      (caps.provides && caps.provides.length) ||
+      (caps.consumes && caps.consumes.length),
+  );
+}
+
+/**
+ * Validate + normalise a catalog app's `fabric` block. Throws a friendly error on a
+ * malformed shape (so an install/update surfaces it), returns the flattened grants.
+ * Kept manual (no schema dep) to mirror the OpenMasjidAPPS catalog-build validator.
+ */
+export function parseFabric(fabric: unknown, appId: string): { provides: string[]; consumes: string[] } {
+  if (fabric == null) return { provides: [], consumes: [] };
+  if (typeof fabric !== 'object' || Array.isArray(fabric)) {
+    throw new Error(`"${appId}": the fabric section must be an object with "provides" and/or "consumes".`);
+  }
+  const f = fabric as { provides?: unknown; consumes?: unknown };
+  const provides: string[] = [];
+  if (f.provides != null) {
+    if (!Array.isArray(f.provides)) throw new Error(`"${appId}": fabric.provides must be a list.`);
+    for (const p of f.provides) {
+      const cap = p && typeof p === 'object' ? (p as { capability?: unknown }).capability : undefined;
+      if (typeof cap !== 'string' || !CAPABILITY_RE.test(cap)) {
+        throw new Error(`"${appId}": each fabric.provides entry needs a kebab-case "capability" (a–z, 0–9, -).`);
+      }
+      provides.push(cap);
+    }
+  }
+  const consumes: string[] = [];
+  if (f.consumes != null) {
+    if (!Array.isArray(f.consumes)) throw new Error(`"${appId}": fabric.consumes must be a list.`);
+    for (const c of f.consumes) {
+      if (typeof c !== 'string' || !GRANT_RE.test(c)) {
+        throw new Error(`"${appId}": each fabric.consumes entry must be "<app-id>/<capability>" (kebab-case).`);
+      }
+      consumes.push(c.trim());
+    }
+  }
+  return { provides, consumes };
 }
 
 /**
@@ -303,6 +400,9 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       createdAt: meta.createdAt,
       // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
       fabric: meta.sso === true || meta.notify === true,
+      // Exposed over the tunnel unless explicitly turned off. `undefined` (installed
+      // before per-app exposure) is grandfathered exposed so upgrades don't drop it.
+      exposed: meta.exposed !== false,
       ...openTarget(meta, disc?.ports ?? []),
     });
   }
@@ -332,6 +432,7 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       running: disc.running,
       ports: disc.ports,
       fabric: false, // recovered/un-vetted apps never get the Fabric hand-off
+      exposed: true, // grandfathered — a recovered app keeps its current reachability
       ...openTarget(recovered, disc.ports),
     });
   }
@@ -349,23 +450,37 @@ export async function installCatalogApp(
   app: CatalogApp,
   settings: Record<string, string>,
   baseUrl?: string | null,
+  expose?: boolean,
 ): Promise<InstalledApp> {
+  // Validate the Fabric block FIRST — a malformed grant must fail before we write
+  // any files (throws a friendly error surfaced by the install mutation).
+  const fabric = parseFabric(app.fabric, app.id);
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
-  // Fabric capabilities are opt-in per app. An app that uses SSO and/or
-  // notifications gets a fresh per-app secret so it can prove its identity.
+  // Fabric capabilities are opt-in per app. An app that uses SSO, notifications,
+  // Stripe, domain, or the app-to-app broker gets a per-app secret to prove itself.
   const sso = app.sso === true;
   const notify = app.notifications === true;
   const stripe = app.stripe === true;
   const domain = app.domain === true;
-  const ssoSecret = sso || notify || stripe || domain ? crypto.randomBytes(32).toString('base64url') : undefined;
+  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, ...fabric })
+    ? crypto.randomBytes(32).toString('base64url')
+    : undefined;
+  // Per-app tunnel exposure: default NOT exposed (admin consents in Settings, which
+  // defaults from the manifest's `tunnel:true` request). Nothing is public until
+  // the admin says so. `expose` lets the caller pre-set that consent.
+  const exposed = expose === true;
   // Stripe apps (https:true) are served over HTTPS on a dedicated proxy port.
   const wantsHttps = app.https === true;
   const httpsPort = wantsHttps ? pickHttpsPort() : undefined;
   if (wantsHttps && httpsPort == null) {
     log.warn(`No free HTTPS port for "${app.id}" — installing on HTTP. Free a slot or widen OPENMASJID_APP_TLS_MAX.`);
   }
-  writeEnvFile(app.id, { ...settings, ...platformEnv(app.id, baseUrl, ssoSecret) });
+  writeEnvFile(app.id, {
+    ...settings,
+    ...platformEnv(app.id, baseUrl, ssoSecret),
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(app.id, exposed),
+  });
   saveMeta({
     id: app.id,
     name: app.name,
@@ -378,6 +493,9 @@ export async function installCatalogApp(
     notify,
     stripe,
     domain,
+    fabricProvides: fabric.provides.length ? fabric.provides : undefined,
+    fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
+    exposed,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
     httpsPort: httpsPort ?? undefined,
@@ -553,6 +671,44 @@ export function setAppPath(id: string, path: string): string {
   return clean || id;
 }
 
+/** Whether an app is exposed over the tunnel (grandfathered true when unset). */
+export function isAppExposed(id: string): boolean {
+  return loadMeta(id)?.exposed !== false;
+}
+
+/** Turn an app's internet exposure on/off (the admin's per-app consent). Rewrites
+ *  the OPENMASJID_PUBLIC_URL env to match; the CALLER must reup the app so the
+ *  container picks up the new value and the ingress route map rebuilds. */
+export function setExposed(id: string, exposed: boolean): void {
+  const meta = loadMeta(id);
+  if (!meta) throw new Error('That app is not installed.');
+  saveMeta({ ...meta, exposed });
+  const env = readEnvFile(id);
+  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, exposed);
+  writeEnvFile(id, env);
+}
+
+/** Recompute OPENMASJID_PUBLIC_URL for every installed app from the current
+ *  Cloudflare settings + each app's exposure, rewriting the .env where it changed.
+ *  Returns the ids whose value changed (the caller reups them). Used when the tunnel
+ *  is enabled/disabled or the domain/path changes, so exposed apps learn their URL. */
+export function reconcilePublicUrls(): string[] {
+  const changed: string[] = [];
+  for (const id of listMetaIds()) {
+    if (RESERVED_APP_IDS.has(id)) continue;
+    const meta = loadMeta(id);
+    if (!meta) continue;
+    const want = intendedPublicUrl(id, meta.exposed !== false);
+    const env = readEnvFile(id);
+    if ((env.OPENMASJID_PUBLIC_URL ?? '') !== want) {
+      env.OPENMASJID_PUBLIC_URL = want;
+      writeEnvFile(id, env);
+      changed.push(id);
+    }
+  }
+  return changed;
+}
+
 export async function startApp(id: string): Promise<void> {
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
@@ -626,8 +782,10 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   const notify = app.notifications === true;
   const stripe = app.stripe === true;
   const domain = app.domain === true;
+  // Reconcile Fabric broker grants from the refreshed entry (author can add/revoke).
+  const fabric = parseFabric(app.fabric, id);
   let ssoSecret = meta.ssoSecret;
-  if (sso || notify || stripe || domain) {
+  if (needsFabricSecret({ sso, notify, stripe, domain, ...fabric })) {
     if (!ssoSecret) ssoSecret = crypto.randomBytes(32).toString('base64url');
   } else {
     ssoSecret = undefined;
@@ -636,6 +794,8 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   env.OPENMASJID_APP_ID = id;
   if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
   else delete env.OPENMASJID_APP_SECRET;
+  // Keep the app's public URL in sync with its exposure (preserved from meta).
+  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, meta.exposed !== false);
   writeEnvFile(id, env);
 
   // Reconcile per-app HTTPS the same way — an app can gain (or lose) the Stripe
@@ -675,6 +835,8 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     notify,
     stripe,
     domain,
+    fabricProvides: fabric.provides.length ? fabric.provides : undefined,
+    fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
     httpsPort: httpsPort ?? undefined,

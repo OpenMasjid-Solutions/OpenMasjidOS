@@ -28,6 +28,7 @@ import { backupStream, backupFilename } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
+import { registerFabricTunnelGuard } from './system/via-tunnel';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -204,23 +205,13 @@ async function main() {
     // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
     // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
     attachIngress(front);
-    // LAN-only guard for the SECRET-GATED Fabric routes. App backends always call
-    // these server-to-server over the LAN base URL, never through the public
-    // tunnel. The not-found handler below already 404s tunnel traffic to unknown
-    // paths, but REGISTERED routes (registerFabric) skip it — so a request that
-    // arrived via the tunnel could otherwise reach /api/fabric/stripe and be
-    // handed the live Stripe secret with only a (possibly leaked) app secret.
-    // Block tunnel-origin requests to the secret routes here, before they match.
-    // /api/public/appearance stays public (an app's remote browser may poll it).
-    front.addHook('onRequest', (req, reply, done) => {
-      const url = req.url.split('?')[0];
-      const secretRoute = url === '/api/auth/session' || url.startsWith('/api/fabric');
-      if (!secretRoute) return done();
-      const viaTunnel =
-        Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
-      if (viaTunnel) return reply.code(404).send({ error: 'Not found.' });
-      done();
-    });
+    // LAN-only guard for the SECRET-GATED Fabric routes (incl. the app-to-app
+    // broker at /api/fabric/app/*). App backends always call these server-to-server
+    // over the LAN base URL, never through the public tunnel. The not-found handler
+    // below 404s tunnel traffic to unknown paths, but REGISTERED routes skip it —
+    // so this guard blocks tunnel-origin requests before they match. One shared
+    // implementation (system/via-tunnel.ts) so the broker + ingress agree.
+    registerFabricTunnelGuard(front);
     front.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
     front.get('/api/ready', async () => ({ ready: await dockerReachable() }));
     registerFabric(front);

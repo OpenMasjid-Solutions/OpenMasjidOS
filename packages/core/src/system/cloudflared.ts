@@ -154,3 +154,16 @@ export function appPublicUrl(appId: string): string {
   if (!cf.enabled || !host || !isRouted(appId)) return '';
   return `https://${host}${appBasePath(appId)}`;
 }
+
+/** The public URL an app WILL be served at once exposed — for the convenience
+ *  OPENMASJID_PUBLIC_URL env var written to the app's .env. Unlike appPublicUrl it
+ *  is gated on the admin's `exposed` choice (not the live routing tick), so a
+ *  freshly-exposed app gets a stable value immediately. '' when the tunnel is off,
+ *  no domain, or the app isn't exposed. The LIVE source of truth stays
+ *  GET /api/fabric/site (appPublicUrl). */
+export function intendedPublicUrl(appId: string, exposed: boolean): string {
+  const host = publicHost();
+  const cf = getSettings().cloudflare;
+  if (!cf.enabled || !host || !exposed) return '';
+  return `https://${host}${appBasePath(appId)}`;
+}

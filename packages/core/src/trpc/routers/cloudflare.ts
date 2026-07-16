@@ -16,9 +16,26 @@ import {
   ensureCloudflared,
   cloudflaredRunning,
   publicHost,
+  appPublicUrl,
 } from '../../system/cloudflared';
-import { listInstalled, getAppPath, setAppPath } from '../../apps/manager';
+import {
+  listInstalled,
+  getAppPath,
+  setAppPath,
+  setExposed,
+  reconcilePublicUrls,
+  startApp,
+} from '../../apps/manager';
 import { PORT } from '../../config';
+
+/** After a tunnel/domain/path/exposure change, refresh each app's
+ *  OPENMASJID_PUBLIC_URL and reup the ones that changed so the container + ingress
+ *  route map pick it up. Reup failures are non-fatal (a stopped app still gets the
+ *  updated .env for its next start). */
+async function reconcileAndReup(): Promise<void> {
+  const changed = reconcilePublicUrls();
+  await Promise.all(changed.map((id) => startApp(id).catch(() => {})));
+}
 
 async function status() {
   const cf = getSettings().cloudflare;
@@ -38,19 +55,43 @@ export const cloudflareRouter = router({
       ingressPort: PORT, // the OS HTTP front door the single tunnel route points at
       apps: apps
         .filter((a) => a.openPort != null)
-        .map((a) => ({ id: a.id, name: a.name, path: `/${getAppPath(a.id)}` })),
+        .map((a) => ({
+          id: a.id,
+          name: a.name,
+          path: `/${getAppPath(a.id)}`,
+          // Per-app exposure (admin toggle) + the live public URL ('' until routed).
+          exposed: a.exposed,
+          publicUrl: appPublicUrl(a.id),
+        })),
     };
   }),
 
   /** Set the public path an app is served under (e.g. "donate"). Blank → app id. */
   setPath: protectedProcedure
     .input(z.object({ id: z.string().min(1), path: z.string().max(40) }))
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       try {
-        return { id: input.id, path: `/${setAppPath(input.id, input.path)}` };
+        const path = `/${setAppPath(input.id, input.path)}`;
+        await reconcileAndReup(); // the path changed → the app's public URL changed
+        return { id: input.id, path };
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
+    }),
+
+  /** Turn an app's internet exposure on/off (the admin's per-app consent). */
+  setExposed: protectedProcedure
+    .input(z.object({ id: z.string().min(1), exposed: z.boolean() }))
+    .mutation(async ({ input }) => {
+      try {
+        setExposed(input.id, input.exposed);
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+      // Reup so the container gets OPENMASJID_PUBLIC_URL and the ingress route map
+      // rebuilds to add/remove the app's public path.
+      await startApp(input.id).catch(() => {});
+      return { id: input.id, exposed: input.exposed };
     }),
 
   save: protectedProcedure
@@ -72,6 +113,7 @@ export const cloudflareRouter = router({
         }
       }
       await ensureCloudflared(); // restart with the new token if remote access is on
+      await reconcileAndReup(); // a new domain changes every exposed app's public URL
       return status();
     }),
 
@@ -83,12 +125,14 @@ export const cloudflareRouter = router({
       }
       updateCloudflare({ enabled: input.enabled });
       await ensureCloudflared();
+      await reconcileAndReup(); // enabling/disabling flips every exposed app's public URL
       return status();
     }),
 
   clear: protectedProcedure.mutation(async () => {
     await clearTunnel();
     updateCloudflare({ enabled: false });
+    await reconcileAndReup(); // remote access off → clear every app's public URL
     return status();
   }),
 });
