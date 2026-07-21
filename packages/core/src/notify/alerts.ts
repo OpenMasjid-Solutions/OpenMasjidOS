@@ -36,6 +36,11 @@ const OS_ALERTS: { id: string; label: string; description: string }[] = [
     label: 'OpenMasjidOS update available',
     description: 'A new version of the platform can be installed.',
   },
+  {
+    id: 'app-update',
+    label: 'An app update is available',
+    description: 'An installed app can be updated to a newer version.',
+  },
 ];
 
 export interface AlertChannels {

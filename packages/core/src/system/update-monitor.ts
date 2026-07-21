@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * Update-available monitor. Periodically checks for a new OpenMasjidOS core version
+ * AND a newer version of any installed catalog app, and raises the OS `core-update`
+ * / `app-update` alerts THE MOMENT one is first detected. Without this the alert
+ * types exist in the Settings → Alerts matrix but nothing ever fires them — the
+ * on-demand checks only run when the dashboard asks.
+ *
+ * deliverAlert() gates on the admin's per-alert × per-channel matrix, so each alert
+ * goes to whichever of {email, webhook} the admin left on (both by default).
+ *
+ * We alert ONCE per newly-available version (tracked in memory) so a pending update
+ * doesn't re-notify every cycle; if an even newer version later appears, that's a
+ * new version and alerts again. When an update is applied (or disappears) the
+ * tracking resets, so the next one re-alerts cleanly.
+ */
+import { checkForUpdate } from './system';
+import { listInstalled, checkCatalogUpdate } from '../apps/manager';
+import { fetchCatalog } from '../store/catalog';
+import { deliverAlert } from '../notify/alerts';
+import { log } from '../logger';
+
+const CHECK_MS = 30 * 60_000; // every 30 minutes
+const FIRST_CHECK_MS = 30_000; // shortly after boot (let the network/catalog settle)
+
+let alertedCore: string | null = null; // latest core version already alerted about
+const alertedApp = new Map<string, string>(); // appId -> latest version already alerted
+
+async function checkCore(): Promise<void> {
+  try {
+    const u = await checkForUpdate();
+    if (u.updateAvailable && u.latest) {
+      if (alertedCore === u.latest) return; // already told the admin about this version
+      alertedCore = u.latest;
+      await deliverAlert({
+        source: 'os',
+        alertId: 'core-update',
+        title: 'OpenMasjidOS update available',
+        text: `A new version of OpenMasjidOS (${u.latest}) is available — you're on ${u.current}. Open Settings → Advanced to update.`,
+        level: 'info',
+      });
+    } else {
+      alertedCore = null; // no update pending → let a future one re-alert
+    }
+  } catch (err) {
+    log.warn(`core update check failed: ${(err as Error).message}`);
+  }
+}
+
+async function checkApps(): Promise<void> {
+  try {
+    // Freshen the catalog first so we see versions published since the last check.
+    await fetchCatalog(true).catch(() => undefined);
+    const apps = await listInstalled();
+    const seen = new Set<string>();
+    for (const a of apps) {
+      if (a.kind !== 'catalog') continue; // community/custom apps have no store source
+      seen.add(a.id);
+      const u = await checkCatalogUpdate(a.id);
+      if (u.updateAvailable && u.latest) {
+        if (alertedApp.get(a.id) === u.latest) continue;
+        alertedApp.set(a.id, u.latest);
+        await deliverAlert({
+          source: 'os',
+          alertId: 'app-update',
+          title: 'An app update is available',
+          text: `"${a.name}" can be updated to ${u.latest} (you have ${u.current || 'an older version'}). Open OpenMasjidOS, then the app's ⋯ menu → "Check for update".`,
+          level: 'info',
+        });
+      } else {
+        alertedApp.delete(a.id);
+      }
+    }
+    // Forget apps that are no longer installed.
+    for (const id of [...alertedApp.keys()]) if (!seen.has(id)) alertedApp.delete(id);
+  } catch (err) {
+    log.warn(`app update check failed: ${(err as Error).message}`);
+  }
+}
+
+async function tick(): Promise<void> {
+  await checkCore();
+  await checkApps();
+}
+
+export function startUpdateMonitor(): void {
+  const first = setTimeout(() => void tick(), FIRST_CHECK_MS);
+  first.unref?.();
+  const timer = setInterval(() => void tick(), CHECK_MS);
+  timer.unref?.();
+  log.info('Update-available alert monitor started.');
+}

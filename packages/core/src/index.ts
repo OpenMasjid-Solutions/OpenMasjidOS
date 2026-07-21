@@ -30,6 +30,7 @@ import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
 import { registerFabricTunnelGuard } from './system/via-tunnel';
 import { startAlertMonitor } from './system/alert-monitor';
+import { startUpdateMonitor } from './system/update-monitor';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -253,6 +254,10 @@ async function main() {
   // Watch installed apps and email/webhook the admin when one goes offline
   // (gated by the granular alert toggles). No-op until email/webhook is set up.
   startAlertMonitor();
+
+  // Watch for a new core version + newer versions of installed apps, and raise the
+  // core-update / app-update alerts the moment one is detected (gated by the matrix).
+  startUpdateMonitor();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

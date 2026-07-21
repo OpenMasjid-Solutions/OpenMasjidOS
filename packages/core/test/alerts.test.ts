@@ -20,4 +20,5 @@ test('OS built-in alert types are always listed with both channels on by default
   assert.ok(offline, 'app-offline is registered');
   assert.deepEqual(offline!.channels, { email: true, webhook: true });
   assert.ok(types.some((x) => x.source === 'os' && x.id === 'core-update'));
+  assert.ok(types.some((x) => x.source === 'os' && x.id === 'app-update'));
 });
