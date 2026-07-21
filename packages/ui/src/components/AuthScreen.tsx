@@ -123,32 +123,52 @@ export function AuthScreen({
               <input
                 id="name"
                 className="input glass-inset"
-                autoComplete="name"
+                autoComplete="username"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                required
+              />
+              <span className="hint">{t('auth.nameHint')}</span>
+            </div>
+          )}
+
+          {/* Login uses the USERNAME (the name chosen at setup — older installs kept
+              their original username). type="text" so a non-email username isn't
+              rejected. First-run collects the email separately below (alerts only). */}
+          {!setupRequired && (
+            <div className="field">
+              <label className="label" htmlFor="username">
+                {t('auth.username')}
+              </label>
+              <input
+                id="username"
+                type="text"
+                className="input glass-inset"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
               />
             </div>
           )}
 
-          <div className="field">
-            <label className="label" htmlFor="email">
-              {setupRequired ? t('auth.email') : t('auth.emailOrUsername')}
-            </label>
-            <input
-              id="email"
-              // On first-run we require a real email; on LOGIN the identifier may be
-              // an older install's plain username, so don't force email validation
-              // (type="email" would reject it) — accept any text.
-              type={setupRequired ? 'email' : 'text'}
-              className="input glass-inset"
-              autoComplete={setupRequired ? 'email' : 'username'}
-              value={setupRequired ? email : username}
-              onChange={(e) => (setupRequired ? setEmail(e.target.value) : setUsername(e.target.value))}
-              required
-            />
-            {setupRequired && <span className="hint">{t('auth.emailHint')}</span>}
-          </div>
+          {setupRequired && (
+            <div className="field">
+              <label className="label" htmlFor="email">
+                {t('auth.email')}
+              </label>
+              <input
+                id="email"
+                type="email"
+                className="input glass-inset"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <span className="hint">{t('auth.emailHint')}</span>
+            </div>
+          )}
 
           <div className="field">
             <label className="label" htmlFor="password">

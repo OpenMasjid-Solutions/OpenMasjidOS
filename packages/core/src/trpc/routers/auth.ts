@@ -100,14 +100,15 @@ export const authRouter = router({
     }
     const hash = await hashPassword(input.password);
     // Compare-and-set: if a concurrent first-run request won the race while we were
-    // hashing (argon2 awaits above), don't clobber the admin it created. The email is
-    // the username (login identifier).
-    if (!createAdminIfUnset({ username: input.email, email: input.email, name: input.name, passwordHash: hash })) {
+    // hashing (argon2 awaits above), don't clobber the admin it created. The NAME is
+    // the login username; the email is stored ONLY for sending OS alerts (not the
+    // login identifier) — matching pre-email installs, which log in by username.
+    if (!createAdminIfUnset({ username: input.name, email: input.email, name: input.name, passwordHash: hash })) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
-    const { token, csrf } = createSession(input.email);
+    const { token, csrf } = createSession(input.name);
     ctx.setSessionCookie?.(token);
-    return { authenticated: true, username: input.email, csrf };
+    return { authenticated: true, username: input.name, csrf };
   }),
 
   /** Sign in with the admin credentials. */
