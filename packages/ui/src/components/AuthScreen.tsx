@@ -133,11 +133,14 @@ export function AuthScreen({
 
           <div className="field">
             <label className="label" htmlFor="email">
-              {t('auth.email')}
+              {setupRequired ? t('auth.email') : t('auth.emailOrUsername')}
             </label>
             <input
               id="email"
-              type="email"
+              // On first-run we require a real email; on LOGIN the identifier may be
+              // an older install's plain username, so don't force email validation
+              // (type="email" would reject it) — accept any text.
+              type={setupRequired ? 'email' : 'text'}
               className="input glass-inset"
               autoComplete={setupRequired ? 'email' : 'username'}
               value={setupRequired ? email : username}

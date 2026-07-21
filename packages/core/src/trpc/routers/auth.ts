@@ -55,9 +55,16 @@ async function verifyCredentials(username: string, password: string): Promise<bo
   verifyGate = new Promise<void>((r) => (release = r));
   await prev;
   try {
-    const okUser = username === getUsername();
-    // Always run argon2 verify (even for a wrong username) so response timing
-    // doesn't reveal whether the username is correct.
+    // The login identifier matches EITHER the stored username (older installs used a
+    // plain username; new installs set it = the email) OR the admin email (so once an
+    // older install sets an email in Settings → Account, they can use that too).
+    const id = username.trim();
+    const adminEmail = getAdminEmail();
+    const okUser =
+      id === getUsername() ||
+      (adminEmail != null && adminEmail !== '' && id.toLowerCase() === adminEmail.toLowerCase());
+    // Always run argon2 verify (even for a wrong identifier) so response timing
+    // doesn't reveal whether it was correct.
     const okPass = await verifyPassword(getPasswordHash() ?? '', password);
     return okUser && okPass;
   } finally {

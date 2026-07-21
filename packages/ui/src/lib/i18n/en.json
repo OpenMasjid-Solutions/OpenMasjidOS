@@ -63,6 +63,7 @@
     "username": "Username",
     "name": "Your name",
     "email": "Email",
+    "emailOrUsername": "Email or username",
     "emailHint": "You'll sign in with this, and OpenMasjidOS sends alerts here (like an app going offline).",
     "password": "Password",
     "confirmPassword": "Confirm password",
