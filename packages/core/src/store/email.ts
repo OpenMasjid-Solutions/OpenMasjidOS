@@ -108,9 +108,10 @@ export interface EmailUpsert {
   resend?: Partial<EmailConfig['resend']>;
 }
 
-/** Save the email config. A blank secret (smtp.pass / resend.apiKey) means "keep
- *  the existing one" so the admin never re-pastes a secret just to change a setting. */
-export function saveEmailConfig(input: EmailUpsert): EmailConfigPublic {
+/** Merge an upsert over the current config WITHOUT persisting. A blank secret
+ *  (smtp.pass / resend.apiKey) means "keep the existing one" so the admin never
+ *  re-pastes a secret just to change a setting. */
+function computeNext(input: EmailUpsert): EmailConfig {
   const next: EmailConfig = withDefaults(cache);
   if (input.provider) next.provider = input.provider;
   if (input.fromEmail !== undefined) next.fromEmail = input.fromEmail.trim();
@@ -127,7 +128,18 @@ export function saveEmailConfig(input: EmailUpsert): EmailConfigPublic {
       next.resend.apiKey = input.resend.apiKey.trim();
     }
   }
-  cache = next;
+  return next;
+}
+
+/** The exact config that saveEmailConfig(input) WOULD persist — for verify-before-save
+ *  (so the router can test the provider on the merged config before committing it). */
+export function previewConfig(input: EmailUpsert): EmailConfig {
+  return computeNext(input);
+}
+
+/** Persist the email config (after the caller has validated + verified it). */
+export function saveEmailConfig(input: EmailUpsert): EmailConfigPublic {
+  cache = computeNext(input);
   persist();
   return getEmailConfigPublic();
 }

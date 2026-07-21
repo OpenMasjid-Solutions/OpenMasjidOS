@@ -9,8 +9,8 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
-import { getEmailConfigPublic, saveEmailConfig, isEmailConfigured } from '../../store/email';
-import { sendEmail } from '../../notify/email';
+import { getEmailConfigPublic, saveEmailConfig, previewConfig, isEmailConfigured } from '../../store/email';
+import { sendEmail, verifyEmailConfig, isValidEmail } from '../../notify/email';
 import { getAdminEmail } from '../../auth/store';
 
 export const emailRouter = router({
@@ -42,7 +42,29 @@ export const emailRouter = router({
         resend: z.object({ apiKey: z.string().max(2048).optional() }).optional(),
       }),
     )
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
+      // Compute what WOULD be saved (merging the kept-secret), then validate +
+      // verify it BEFORE persisting — so a bad From address or a broken API key /
+      // SMTP login is refused instead of silently stored.
+      const next = previewConfig(input);
+      if (next.provider !== 'none') {
+        if (!isValidEmail(next.fromEmail)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Enter a valid From address, e.g. no-reply@yourmasjid.org.',
+          });
+        }
+        const v = await verifyEmailConfig(next);
+        if (!v.ok) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              next.provider === 'resend'
+                ? `Couldn't verify Resend: ${v.error ?? 'check the API key.'}`
+                : `Couldn't connect to the SMTP server: ${v.error ?? 'check the host, port, and login.'}`,
+          });
+        }
+      }
       try {
         return saveEmailConfig(input);
       } catch (err) {

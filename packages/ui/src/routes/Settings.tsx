@@ -1239,6 +1239,13 @@ function EmailPanel() {
     onError: (e) => toast(e.message || t('settings.emailTestFailed'), 'error'),
   });
 
+  // Basic From-address validation so an invalid address is caught before Save
+  // (the server also validates + verifies the provider before persisting).
+  const EMAIL_OK = /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/;
+  const fromTrimmed = fromEmail.trim();
+  const fromInvalid = provider !== 'none' && fromTrimmed !== '' && !EMAIL_OK.test(fromTrimmed);
+  const canSave = provider === 'none' || EMAIL_OK.test(fromTrimmed);
+
   function onSave() {
     save.mutate({
       provider,
@@ -1271,7 +1278,16 @@ function EmailPanel() {
         <>
           <div className="field" style={{ maxWidth: '22rem' }}>
             <label className="label">{t('settings.emailFrom')}</label>
-            <input className="input glass-inset" type="email" placeholder="alerts@masjid.org" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} />
+            <input
+              className="input glass-inset"
+              type="email"
+              placeholder="no-reply@yourmasjid.org"
+              value={fromEmail}
+              aria-invalid={fromInvalid}
+              style={fromInvalid ? { borderColor: '#ef4444' } : undefined}
+              onChange={(e) => setFromEmail(e.target.value)}
+            />
+            {fromInvalid && <span className="hint" style={{ color: '#ef4444' }}>{t('settings.emailFromInvalid')}</span>}
           </div>
           <div className="field" style={{ maxWidth: '22rem' }}>
             <label className="label">{t('settings.emailFromName')}</label>
@@ -1315,8 +1331,8 @@ function EmailPanel() {
       )}
 
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
-        <button className="btn btn--primary" disabled={save.isPending} onClick={onSave}>
-          <Check size={15} /> {t('settings.emailSave')}
+        <button className="btn btn--primary" disabled={save.isPending || !canSave} onClick={onSave}>
+          <Check size={15} /> {save.isPending ? t('settings.emailVerifying') : t('settings.emailSave')}
         </button>
         {status.data?.configured && (
           <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>

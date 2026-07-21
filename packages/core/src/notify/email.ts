@@ -7,7 +7,7 @@
  * From address. Fails soft (never throws); the caller decides how to surface it.
  */
 import nodemailer from 'nodemailer';
-import { getEmailConfig, isEmailConfigured } from '../store/email';
+import { getEmailConfig, isEmailConfigured, type EmailConfig } from '../store/email';
 import { log } from '../logger';
 
 export interface EmailInput {
@@ -26,6 +26,52 @@ const TIMEOUT_MS = 15_000;
 // Basic, deliberately-strict single-address check (no display names / lists here —
 // the platform sends one recipient per call).
 const EMAIL_RE = /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/;
+
+/** Is this a syntactically valid single email address? (Used for the From address
+ *  and recipients.) */
+export function isValidEmail(addr: string): boolean {
+  return EMAIL_RE.test(String(addr ?? '').trim());
+}
+
+/**
+ * Verify a provider config WITHOUT sending an email — so "Save" can reject a broken
+ * config instead of silently storing it. SMTP: nodemailer verify() (connect + auth).
+ * Resend: an authenticated GET; a 401 means the API key is wrong (a restricted-scope
+ * key that authenticates but lacks that scope still passes — it's a valid key). Takes
+ * the config explicitly so the router can check the would-be-saved (unsaved) values.
+ */
+export async function verifyEmailConfig(cfg: EmailConfig): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (cfg.provider === 'resend') {
+      if (!cfg.resend.apiKey) return { ok: false, error: 'No Resend API key.' };
+      const res = await fetch('https://api.resend.com/domains', {
+        headers: { authorization: `Bearer ${cfg.resend.apiKey}` },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (res.status === 401) return { ok: false, error: 'Resend rejected the API key.' };
+      if (res.status >= 500) return { ok: false, error: `Resend is unavailable (HTTP ${res.status}) — try again.` };
+      // 200 (valid) or 403 (valid but scope-restricted) → the key authenticated.
+      return { ok: true };
+    }
+    if (cfg.provider === 'smtp') {
+      if (!cfg.smtp.host) return { ok: false, error: 'No SMTP host.' };
+      const transport = nodemailer.createTransport({
+        host: cfg.smtp.host,
+        port: cfg.smtp.port,
+        secure: cfg.smtp.secure,
+        auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
+        connectionTimeout: TIMEOUT_MS,
+        greetingTimeout: TIMEOUT_MS,
+        socketTimeout: TIMEOUT_MS,
+      });
+      await transport.verify(); // connects + authenticates, sends nothing
+      return { ok: true };
+    }
+    return { ok: true }; // 'none' — nothing to verify
+  } catch (err) {
+    return { ok: false, error: (err as Error).message.slice(0, 200) };
+  }
+}
 
 // Fixed-window rate limiting: per-app and platform-wide, so one app can't turn the
 // masjid's mailbox into a spam cannon.
