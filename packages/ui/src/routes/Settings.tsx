@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, Image as ImageIcon } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -50,6 +50,120 @@ function StatusDot({ online }: { online: boolean | undefined }) {
         boxShadow: online ? '0 0 6px rgba(34,197,94,0.6)' : undefined,
       }}
     />
+  );
+}
+
+/** Masjid logo upload — reused across the masjid's outbound emails (alerts +
+ *  receipts an app sends) and notification-webhook avatars. Presentation, not
+ *  masjid/prayer config (that lives in apps). */
+function BrandingPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [present, setPresent] = useState(false);
+  const [ver, setVer] = useState(0); // cache-buster so a replace/remove reloads the preview
+
+  async function upload(file: File) {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/branding/logo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'x-omos-csrf': getCsrf() },
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || t('errors.generic'));
+      }
+      setVer((v) => v + 1);
+      setPresent(true);
+      toast(t('settings.logoSaved'), 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function remove() {
+    try {
+      const res = await fetch('/api/branding/logo', {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: { 'x-omos-csrf': getCsrf() },
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || t('errors.generic'));
+      }
+      setVer((v) => v + 1);
+      setPresent(false);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  }
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title">{t('settings.logo')}</h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.6rem' }}>{t('settings.logoHint')}</p>
+      <div className="setting-row">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem' }}>
+          <div
+            style={{
+              width: 72,
+              height: 72,
+              borderRadius: 12,
+              display: 'grid',
+              placeItems: 'center',
+              background: 'rgba(255,255,255,0.9)',
+              border: '1px solid var(--color-border, rgba(255,255,255,0.1))',
+              overflow: 'hidden',
+              flexShrink: 0,
+            }}
+          >
+            {/* onError hides the img + Remove button when no logo is set (404). */}
+            <img
+              src={`/api/public/logo?v=${ver}`}
+              alt=""
+              style={{ maxWidth: '100%', maxHeight: '100%', display: present ? 'block' : 'none', padding: 6 }}
+              onLoad={() => setPresent(true)}
+              onError={() => setPresent(false)}
+            />
+            {!present && <ImageIcon size={22} style={{ opacity: 0.4 }} />}
+          </div>
+          <div className="setting-row__text">
+            <div className="setting-row__title">{present ? t('settings.logoSet') : t('settings.logoNone')}</div>
+            <div className="setting-row__hint">{t('settings.logoFormats')}</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void upload(f);
+              e.target.value = '';
+            }}
+          />
+          <button className="btn btn--sm" disabled={uploading} onClick={() => inputRef.current?.click()}>
+            {uploading ? t('settings.logoUploading') : present ? t('settings.logoReplace') : t('settings.logoUpload')}
+          </button>
+          {present && (
+            <button className="btn btn--sm" onClick={() => void remove()} disabled={uploading}>
+              {t('settings.logoRemove')}
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -281,6 +395,9 @@ export function Settings() {
           </>
         )}
       </section>
+
+      {/* Masjid logo (branding for emails + webhooks) */}
+      <BrandingPanel />
 
       {/* Account */}
       <ChangePassword />

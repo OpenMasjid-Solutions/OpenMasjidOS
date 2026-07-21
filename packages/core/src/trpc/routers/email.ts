@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { getEmailConfigPublic, saveEmailConfig, previewConfig, isEmailConfigured } from '../../store/email';
-import { sendEmail, verifyEmailConfig, isValidEmail } from '../../notify/email';
+import { sendBrandedEmail, verifyEmailConfig, isValidEmail } from '../../notify/email';
 import { getAdminEmail } from '../../auth/store';
 
 export const emailRouter = router({
@@ -80,11 +80,12 @@ export const emailRouter = router({
       if (!to) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No recipient — set your admin email first (Settings → Account).' });
       }
-      const r = await sendEmail(
+      const r = await sendBrandedEmail(
         {
           to,
           subject: 'OpenMasjidOS test email',
-          text: 'This is a test email from OpenMasjidOS. If you received it, email is set up correctly.',
+          heading: 'Email is working',
+          text: 'This is a test email from OpenMasjidOS. If you received it, email is set up correctly — and your masjid logo (if you uploaded one) is shown above.',
         },
         'os',
       );

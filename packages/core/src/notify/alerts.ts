@@ -21,7 +21,7 @@ import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
 import { getAdminEmail } from '../auth/store';
 import { listAppAlerts } from '../apps/manager';
-import { sendEmail } from './email';
+import { sendBrandedEmail } from './email';
 import { sendNotification, type NotifyInput } from './notify';
 
 // OS built-in alert types (source = 'os').
@@ -154,8 +154,8 @@ export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
     const to = getAdminEmail();
     if (to) {
       const subject = `[${label}] ${input.title || input.text}`.slice(0, 200);
-      const body = `${input.title ? input.title + '\n\n' : ''}${input.text}\n\n— ${label} · OpenMasjidOS alert`;
-      const r = await sendEmail({ to, subject, text: body }, 'os');
+      const body = `${input.text}\n\n— ${label} · OpenMasjidOS alert`;
+      const r = await sendBrandedEmail({ to, subject, heading: input.title || label, text: body }, 'os');
       email = r.sent;
     }
   }

@@ -13,6 +13,7 @@
  * an app's message can't mass-ping the masjid's workspace.
  */
 import { getSettings } from '../settings/store';
+import { hasLogo } from '../store/branding';
 import { log } from '../logger';
 
 export interface NotifyInput {
@@ -59,23 +60,43 @@ function neutralizeSlack(s: string): string {
   return s.replace(/<([!@#])/g, '&lt;$1');
 }
 
+/**
+ * The masjid logo as an internet-reachable URL, for the webhook avatar. Slack /
+ * Discord fetch the icon from THEIR servers, so a LAN address is useless — we only
+ * offer it when remote access (the Cloudflare tunnel + domain) is configured, where
+ * /api/public/logo is publicly reachable. Undefined otherwise (webhook still sends,
+ * just without a custom avatar).
+ */
+function publicLogoUrl(): string | undefined {
+  if (!hasLogo()) return undefined;
+  const cf = getSettings().cloudflare;
+  if (!cf?.enabled || !cf.domain) return undefined;
+  const domain = String(cf.domain).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  return domain ? `https://${domain}/api/public/logo` : undefined;
+}
+
 /** Shape the message for the configured service. App text is untrusted display
  *  text — never let it resolve as a mention/broadcast. `appName` is the
- *  server-resolved sending app (an app can't forge being another). */
-function buildBody(type: NotificationType, n: NotifyInput, label: string, appName: string): unknown {
+ *  server-resolved sending app (an app can't forge being another). `logoUrl`, when
+ *  set, brands the message with the masjid logo as the sender avatar. */
+function buildBody(type: NotificationType, n: NotifyInput, label: string, appName: string, logoUrl: string | undefined): unknown {
   const title = clamp(n.title, TITLE_MAX).trim();
   const text = clamp(n.text, TEXT_MAX);
   // Attribution the app cannot overwrite: [workspace label · AppName].
   const tag = [label, appName].map((s) => s.trim()).filter(Boolean).join(' · ');
   const prefix = tag ? `[${tag}] ` : '';
   if (type === 'slack') {
-    return { text: neutralizeSlack(prefix + (title ? `*${title}*\n${text}` : text)) };
+    return {
+      text: neutralizeSlack(prefix + (title ? `*${title}*\n${text}` : text)),
+      ...(logoUrl ? { icon_url: logoUrl } : {}),
+    };
   }
   if (type === 'discord') {
     // allowed_mentions parse:[] → @everyone/@here/role/user mentions never resolve.
     return {
       content: (prefix + (title ? `**${title}**\n${text}` : text)).slice(0, 2000),
       allowed_mentions: { parse: [] },
+      ...(logoUrl ? { avatar_url: logoUrl } : {}),
     };
   }
   // generic: a small, predictable JSON envelope
@@ -85,6 +106,7 @@ function buildBody(type: NotificationType, n: NotifyInput, label: string, appNam
     title: title || undefined,
     text,
     level: n.level ?? 'info',
+    ...(logoUrl ? { logo: logoUrl } : {}),
   };
 }
 
@@ -109,7 +131,7 @@ export async function sendNotification(n: NotifyInput, appId: string, appName = 
     const res = await fetch(cfg.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(buildBody(cfg.type, n, cfg.label?.trim() || '', appName)),
+      body: JSON.stringify(buildBody(cfg.type, n, cfg.label?.trim() || '', appName, publicLogoUrl())),
       signal: AbortSignal.timeout(TIMEOUT_MS),
       redirect: 'error', // never follow a redirect to a different host
     });

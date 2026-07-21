@@ -114,9 +114,12 @@ moves masjid data into the platform** — it's presentation + auth convenience o
   `#omos=<base64url(JSON)>` where the JSON is
   `{ v:1, theme, wallpaper, wallpaperImage?, accent, lang }`. The fragment is never sent to a server
   or logged. The app reads `location.hash` on load, applies + persists it, and clears the hash.
-- **Live sync** (optional): `GET /api/public/appearance` returns the same payload
-  (`{ v:1, theme, wallpaper, wallpaperImage, accent, lang }`). It's public and **CORS-enabled**
-  (`Access-Control-Allow-Origin: *`), so an app's browser can poll it to follow theme changes.
+- **Live sync** (optional): `GET /api/public/appearance` returns the same payload plus the masjid
+  logo path (`{ v:1, theme, wallpaper, wallpaperImage, accent, lang, logo }`). It's public and
+  **CORS-enabled** (`Access-Control-Allow-Origin: *`), so an app's browser can poll it to follow theme
+  changes. `logo` is `"/api/public/logo"` when the admin has uploaded a masjid logo (else `""`);
+  resolve it against the SAME origin you fetched appearance from, and use it to brand your own pages or
+  receipts (it's a raster PNG/JPG/WebP).
 
 **Single sign-on (so the app can share the dashboard login)** — opt in with `sso: true` in the
 manifest. SSO is **identity-bound**: the platform issues each SSO app a per-app secret at install and

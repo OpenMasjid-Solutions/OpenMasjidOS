@@ -8,6 +8,7 @@
  */
 import nodemailer from 'nodemailer';
 import { getEmailConfig, isEmailConfigured, type EmailConfig } from '../store/email';
+import { getLogo } from '../store/branding';
 import { log } from '../logger';
 
 export interface EmailInput {
@@ -15,6 +16,15 @@ export interface EmailInput {
   subject: string;
   text: string;
   html?: string;
+}
+
+/** An inline/attached file. `cid` makes it an inline image referenced as
+ *  `cid:<cid>` in the HTML (how the masjid logo is embedded). */
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+  cid?: string;
 }
 
 export type EmailResult = { sent: true } | { sent: false; reason: string };
@@ -97,7 +107,13 @@ function fromHeader(): string {
   return cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail;
 }
 
-async function sendViaResend(to: string, subject: string, text: string, html: string | undefined): Promise<void> {
+async function sendViaResend(
+  to: string,
+  subject: string,
+  text: string,
+  html: string | undefined,
+  attachments: EmailAttachment[],
+): Promise<void> {
   const cfg = getEmailConfig();
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -108,6 +124,17 @@ async function sendViaResend(to: string, subject: string, text: string, html: st
       subject,
       text,
       ...(html ? { html } : {}),
+      ...(attachments.length
+        ? {
+            attachments: attachments.map((a) => ({
+              filename: a.filename,
+              content: a.content.toString('base64'),
+              ...(a.contentType ? { content_type: a.contentType } : {}),
+              // content_id makes it inline, referenced as cid:<content_id> in html.
+              ...(a.cid ? { content_id: a.cid } : {}),
+            })),
+          }
+        : {}),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -117,7 +144,13 @@ async function sendViaResend(to: string, subject: string, text: string, html: st
   }
 }
 
-async function sendViaSmtp(to: string, subject: string, text: string, html: string | undefined): Promise<void> {
+async function sendViaSmtp(
+  to: string,
+  subject: string,
+  text: string,
+  html: string | undefined,
+  attachments: EmailAttachment[],
+): Promise<void> {
   const cfg = getEmailConfig();
   const transport = nodemailer.createTransport({
     host: cfg.smtp.host,
@@ -128,14 +161,22 @@ async function sendViaSmtp(to: string, subject: string, text: string, html: stri
     greetingTimeout: TIMEOUT_MS,
     socketTimeout: TIMEOUT_MS,
   });
-  await transport.sendMail({ from: fromHeader(), to, subject, text, html });
+  await transport.sendMail({
+    from: fromHeader(),
+    to,
+    subject,
+    text,
+    html,
+    attachments: attachments.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType, cid: a.cid })),
+  });
 }
 
 /**
  * Send one email via the configured provider. `appId` keys the rate limit (use
- * 'os' for platform mail). Never throws.
+ * 'os' for platform mail); `attachments` carry inline images (the masjid logo).
+ * Never throws.
  */
-export async function sendEmail(input: EmailInput, appId = 'os'): Promise<EmailResult> {
+export async function sendEmail(input: EmailInput, appId = 'os', attachments: EmailAttachment[] = []): Promise<EmailResult> {
   if (!isEmailConfigured()) return { sent: false, reason: 'not_configured' };
   const to = String(input.to ?? '').trim();
   if (!EMAIL_RE.test(to)) return { sent: false, reason: 'bad_recipient' };
@@ -149,12 +190,58 @@ export async function sendEmail(input: EmailInput, appId = 'os'): Promise<EmailR
 
   const cfg = getEmailConfig();
   try {
-    if (cfg.provider === 'resend') await sendViaResend(to, subject, text, html);
-    else await sendViaSmtp(to, subject, text, html);
+    if (cfg.provider === 'resend') await sendViaResend(to, subject, text, html, attachments);
+    else await sendViaSmtp(to, subject, text, html, attachments);
     return { sent: true };
   } catch (err) {
     // Never log the body; the provider error message is safe (no secrets).
     log.warn(`Email send failed (${cfg.provider}): ${(err as Error).message}`);
     return { sent: false, reason: 'error' };
   }
+}
+
+const LOGO_CID = 'omos-logo';
+
+function escapeHtml(s: string): string {
+  const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return s.replace(/[&<>"']/g, (c) => map[c]);
+}
+
+/**
+ * Wrap a plain-text message in a tidy, email-client-safe HTML layout branded with
+ * the masjid logo. The logo rides along as a CID inline attachment (renders more
+ * reliably than a remote <img>, and works with no public URL). Returns the html +
+ * the attachment to pass to sendEmail. When no logo is set, it's just clean text.
+ */
+export function brandedEmail(opts: { heading?: string; text: string }): { html: string; attachments: EmailAttachment[] } {
+  const logo = getLogo();
+  const attachments: EmailAttachment[] = [];
+  let logoBlock = '';
+  if (logo) {
+    attachments.push({ filename: `logo.${logo.ext}`, content: logo.buf, contentType: logo.mime, cid: LOGO_CID });
+    logoBlock = `<img src="cid:${LOGO_CID}" alt="" style="max-height:56px;max-width:220px;margin:0 auto 16px;display:block">`;
+  }
+  const heading = opts.heading
+    ? `<h1 style="font-size:18px;margin:0 0 12px;color:#0e1814;font-weight:600">${escapeHtml(opts.heading)}</h1>`
+    : '';
+  const body = escapeHtml(opts.text).replace(/\n/g, '<br>');
+  const html =
+    `<!doctype html><html><body style="margin:0;background:#f4f6f5;padding:24px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">` +
+    `<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;padding:32px;text-align:center">` +
+    `<tr><td>${logoBlock}${heading}<div style="font-size:15px;line-height:1.6;color:#33403c;text-align:left">${body}</div>` +
+    `<hr style="border:none;border-top:1px solid #e5e9e7;margin:24px 0 12px">` +
+    `<div style="font-size:12px;color:#98a2a0">Sent by OpenMasjidOS</div></td></tr></table>` +
+    `</td></tr></table></body></html>`;
+  return { html, attachments };
+}
+
+/**
+ * Send a branded OS email (logo header + tidy layout) — used for admin alerts and
+ * the "send test email" button. App mail (POST /api/fabric/email) keeps its OWN
+ * design; the platform never rewrites an app's HTML.
+ */
+export async function sendBrandedEmail(input: EmailInput & { heading?: string }, appId = 'os'): Promise<EmailResult> {
+  const { html, attachments } = brandedEmail({ heading: input.heading ?? input.subject, text: input.text });
+  return sendEmail({ to: input.to, subject: input.subject, text: input.text, html: input.html ?? html }, appId, attachments);
 }

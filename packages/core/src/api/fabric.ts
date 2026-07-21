@@ -27,6 +27,7 @@ import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
 import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
+import { getLogo, hasLogo } from '../store/branding';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
 import { appPublicUrl, appBasePath } from '../system/cloudflared';
 import { log } from '../logger';
@@ -180,10 +181,20 @@ export function registerFabric(server: FastifyInstance): void {
     };
   });
 
-  // A2 — public presentation prefs, readable cross-origin by apps.
+  // A2 — public presentation prefs, readable cross-origin by apps. `logo` is the
+  // path to the masjid logo (empty when none set); an app resolves it against the
+  // same origin it fetched appearance from, so it can brand its own pages/receipts.
   const appearance = () => {
     const a = getSettings().appearance;
-    return { v: 1, theme: a.theme, wallpaper: a.wallpaper, wallpaperImage: a.wallpaperImage, accent: a.accent, lang: a.lang };
+    return {
+      v: 1,
+      theme: a.theme,
+      wallpaper: a.wallpaper,
+      wallpaperImage: a.wallpaperImage,
+      accent: a.accent,
+      lang: a.lang,
+      logo: hasLogo() ? '/api/public/logo' : '',
+    };
   };
   server.get('/api/public/appearance', async (_req, reply) => {
     reply.header('access-control-allow-origin', '*');
@@ -198,6 +209,20 @@ export function registerFabric(server: FastifyInstance): void {
       .header('access-control-allow-headers', '*')
       .code(204)
       .send();
+  });
+
+  // The masjid logo itself — a low-sensitivity public asset (same class as
+  // appearance), so it is CORS-open and, like appearance, intentionally reachable
+  // over the tunnel: Slack/Discord fetch it from the internet as the webhook avatar,
+  // and an app's public donor page embeds it. Raster only (see store/branding), so
+  // there is no script-in-SVG vector. Short cache so a logo change propagates.
+  server.get('/api/public/logo', async (_req, reply) => {
+    reply.header('access-control-allow-origin', '*');
+    const logo = getLogo();
+    if (!logo) return reply.code(404).header('cache-control', 'no-store').send({ error: 'No logo set.' });
+    reply.header('cache-control', 'public, max-age=300');
+    reply.type(logo.mime);
+    return reply.send(logo.buf);
   });
 
   // Fabric email — an app sends an email (donation receipt, parent notice, …) via

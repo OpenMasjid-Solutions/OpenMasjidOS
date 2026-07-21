@@ -34,6 +34,7 @@ import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
 import { registerRestore } from './api/restore';
+import { registerBranding } from './api/branding';
 import { registerAppUpdate } from './api/app-update';
 import { registerFabric } from './api/fabric';
 import { COOKIE_NAME, getSessionUser } from './auth/sessions';
@@ -152,6 +153,9 @@ async function main() {
 
   // Backup restore: upload (HTTP) + streamed restore (WebSocket).
   registerRestore(server);
+
+  // Masjid logo upload/clear (admin, LAN-only; the public read is in the Fabric).
+  registerBranding(server);
 
   // Catalog app updates streamed over a WebSocket (pull + recreate).
   registerAppUpdate(server);
