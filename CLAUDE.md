@@ -444,8 +444,8 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 ### 13.2b Email (SMTP / Resend)
 - Configure ONE email provider — **SMTP** (host/port/TLS/user/pass) or **Resend** (API key) — plus a From address/name. The secret (SMTP password / Resend key) is stored in `config/email.json` (chmod 600) and never returned to the UI (only "is set" flags). A **"Send test email"** button verifies it, and a green/red status dot shows configured/not. Apps send mail through this over the Fabric (`POST /api/fabric/email`, `email` capability) — no app ever handles the credentials or the From address.
 
-### 13.2c Alerts (granular, UniFi-style)
-- A list of every alert type — OS built-ins (an app going offline, a core update) **plus each installed app's declared `alerts:`** — each with an on/off. **All on by default**; the platform only persists the disabled set. When an alert fires it's gated here, then delivered to the admin email **and** the webhook. Apps raise their declared alerts via `POST /api/fabric/alert`; the webhook (`/api/fabric/notify`) stays available on its own.
+### 13.2c Alerts (granular per-alert × per-channel matrix, UniFi-style)
+- A list of every alert type — OS built-ins (an app going offline, a core update) **plus each installed app's declared `alerts:`** — each with a **per-channel matrix**: route it to the admin **Email**, the **Webhook**, both, or neither. **Both channels on by default**; the platform persists only non-default choices (`config/alerts.json` → `channels`, with a legacy `disabled`-set migrated on load). When an alert fires, `deliverAlert` sends it to exactly the channels the admin chose (each fail-soft). Apps raise their declared alerts via `POST /api/fabric/alert`; the webhook (`/api/fabric/notify`) stays available on its own. **These alerts go to the ADMIN only** — an app emailing an end user (donor/parent/teacher) does that itself via `POST /api/fabric/email`, outside this matrix.
 
 ### 13.3 Advanced
 - **Allow custom apps** (off by default) → enables the "3rd Party App" button in the App Store (see §11), with a clear risk note.

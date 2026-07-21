@@ -1344,20 +1344,20 @@ function EmailPanel() {
   );
 }
 
-/** Granular alert controls (UniFi-style): OS built-ins + each app's declared alerts,
- *  each with an on/off (all on by default). Off = never emailed / webhooked. */
+/** Granular alert matrix (UniFi-style): OS built-ins + each app's declared alerts,
+ *  each routable to Email and/or Webhook (both on by default; both off = muted). */
 function AlertsPanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const list = trpc.alerts.list.useQuery();
-  const setEnabled = trpc.alerts.setEnabled.useMutation({
+  const setChannel = trpc.alerts.setChannel.useMutation({
     onSuccess: () => utils.alerts.list.invalidate(),
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
 
   const rows = list.data ?? [];
-  // Group by source for a tidy UniFi-style list.
+  // Group by source for a tidy list.
   const groups = new Map<string, { label: string; items: typeof rows }>();
   for (const r of rows) {
     const g = groups.get(r.source) ?? { label: r.sourceLabel, items: [] as typeof rows };
@@ -1365,25 +1365,40 @@ function AlertsPanel() {
     groups.set(r.source, g);
   }
 
+  const colHead = { width: '4.5rem', textAlign: 'center' as const, color: 'var(--color-ink-muted)', fontSize: '0.8rem', paddingInlineStart: '0.4rem' };
+
   return (
     <section className="glass-raised panel">
       <h2 className="panel-title">{t('settings.alerts')}</h2>
       <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.alertsHint')}</p>
       {rows.length === 0 && <p className="setting-row__hint">{t('settings.alertsNone')}</p>}
       {[...groups.entries()].map(([source, g]) => (
-        <div key={source} style={{ marginBlockStart: '0.6rem' }}>
-          <div className="setting-row__title" style={{ marginBlockEnd: '0.2rem', color: 'var(--color-ink-muted)' }}>{g.label}</div>
+        <div key={source} style={{ marginBlockStart: '0.7rem' }}>
+          <div style={{ display: 'flex', alignItems: 'end', marginBlockEnd: '0.15rem' }}>
+            <div className="setting-row__title" style={{ flex: 1, color: 'var(--color-ink-muted)' }}>{g.label}</div>
+            <div style={colHead}>{t('settings.alertsEmail')}</div>
+            <div style={colHead}>{t('settings.alertsWebhook')}</div>
+          </div>
           {g.items.map((r) => (
             <div className="setting-row" key={`${r.source}:${r.id}`}>
-              <div className="setting-row__text">
+              <div className="setting-row__text" style={{ flex: 1 }}>
                 <div className="setting-row__title">{r.label}</div>
                 {r.description && <div className="setting-row__hint">{r.description}</div>}
               </div>
-              <Toggle
-                checked={r.enabled}
-                onChange={(v) => setEnabled.mutate({ source: r.source, id: r.id, enabled: v })}
-                label={r.label}
-              />
+              <div style={{ width: '4.5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' }}>
+                <Toggle
+                  checked={r.channels.email}
+                  onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'email', enabled: v })}
+                  label={`${r.label} — ${t('settings.alertsEmail')}`}
+                />
+              </div>
+              <div style={{ width: '4.5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' }}>
+                <Toggle
+                  checked={r.channels.webhook}
+                  onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'webhook', enabled: v })}
+                  label={`${r.label} — ${t('settings.alertsWebhook')}`}
+                />
+              </div>
             </div>
           ))}
         </div>

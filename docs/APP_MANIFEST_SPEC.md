@@ -280,10 +280,14 @@ receipt on screen). Rate-limited per app. Server→server, not CORS-enabled.
 
 ## Fabric alerts (`alerts:` — telling the admin something's wrong)
 
-Declare the alert types your app can raise; the admin gets a granular on/off for each (Settings →
-Alerts, all on by default — like UniFi's notification controls). Fire one from your backend when the
-event happens (a camera/reader offline, a failed payment). The platform gates on the admin's toggle,
-then delivers to the admin's **email** + the **webhook**.
+Declare the alert types your app can raise; the admin gets a per-channel matrix for each (Settings →
+Alerts — route it to **Email**, **Webhook**, both, or off; all on by default, like UniFi's notification
+controls). Fire one from your backend when the event happens (a camera/reader offline, a failed
+payment). The platform delivers it to exactly the channels the admin chose for that alert.
+
+These alerts always go to the **admin**. To email an **end user** (a donor's receipt, a parent/teacher
+notice), that's your app's job — send it yourself via `POST /api/fabric/email` (below); it is not part
+of this alert matrix.
 
 ```yaml
 alerts:

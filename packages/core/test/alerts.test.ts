@@ -7,17 +7,17 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isAlertEnabled, listAlertTypes } from '../src/notify/alerts';
+import { getAlertChannels, listAlertTypes } from '../src/notify/alerts';
 
-test('unknown/OS alerts default to enabled', () => {
-  assert.equal(isAlertEnabled('os', 'app-offline'), true);
-  assert.equal(isAlertEnabled('some-app', 'anything'), true);
+test('alerts default to BOTH channels on', () => {
+  assert.deepEqual(getAlertChannels('os', 'app-offline'), { email: true, webhook: true });
+  assert.deepEqual(getAlertChannels('some-app', 'anything'), { email: true, webhook: true });
 });
 
-test('OS built-in alert types are always listed and enabled by default', () => {
+test('OS built-in alert types are always listed with both channels on by default', () => {
   const types = listAlertTypes();
   const offline = types.find((x) => x.source === 'os' && x.id === 'app-offline');
   assert.ok(offline, 'app-offline is registered');
-  assert.equal(offline!.enabled, true);
+  assert.deepEqual(offline!.channels, { email: true, webhook: true });
   assert.ok(types.some((x) => x.source === 'os' && x.id === 'core-update'));
 });
