@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Email provider config (Settings → Email). Admin-only. The SMTP password /
- * SendGrid API key are secrets (config/email.json, chmod 600) and never returned
+ * Resend API key are secrets (config/email.json, chmod 600) and never returned
  * here — `get` is a sanitized view (provider + from + host/port/user + "is set"
  * flags). `test` sends a one-off email to prove the settings work.
  */
@@ -25,7 +25,7 @@ export const emailRouter = router({
   save: protectedProcedure
     .input(
       z.object({
-        provider: z.enum(['none', 'smtp', 'sendgrid']).optional(),
+        provider: z.enum(['none', 'smtp', 'resend']).optional(),
         fromEmail: z.string().trim().max(254).optional(),
         fromName: z.string().trim().max(80).optional(),
         smtp: z
@@ -39,7 +39,7 @@ export const emailRouter = router({
           })
           .optional(),
         // Blank apiKey = keep the existing one.
-        sendgrid: z.object({ apiKey: z.string().max(2048).optional() }).optional(),
+        resend: z.object({ apiKey: z.string().max(2048).optional() }).optional(),
       }),
     )
     .mutation(({ input }) => {

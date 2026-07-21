@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Email sender. Dispatches to the admin-configured provider (SMTP via nodemailer,
- * or SendGrid via its HTTPS API). Used by OS admin alerts and, over the Fabric, by
+ * or Resend via its HTTPS API). Used by OS admin alerts and, over the Fabric, by
  * apps (POST /api/fabric/email) — so an app never handles mail credentials or the
  * From address. Fails soft (never throws); the caller decides how to surface it.
  */
@@ -51,24 +51,23 @@ function fromHeader(): string {
   return cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail;
 }
 
-async function sendViaSendgrid(to: string, subject: string, text: string, html: string | undefined): Promise<void> {
+async function sendViaResend(to: string, subject: string, text: string, html: string | undefined): Promise<void> {
   const cfg = getEmailConfig();
-  const content = [{ type: 'text/plain', value: text }];
-  if (html) content.push({ type: 'text/html', value: html });
-  const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+  const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { authorization: `Bearer ${cfg.sendgrid.apiKey}`, 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${cfg.resend.apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({
-      personalizations: [{ to: [{ email: to }] }],
-      from: { email: cfg.fromEmail, name: cfg.fromName || undefined },
+      from: fromHeader(), // "Name <from@domain>" or bare address
+      to: [to],
       subject,
-      content,
+      text,
+      ...(html ? { html } : {}),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`SendGrid HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    throw new Error(`Resend HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
   }
 }
 
@@ -104,7 +103,7 @@ export async function sendEmail(input: EmailInput, appId = 'os'): Promise<EmailR
 
   const cfg = getEmailConfig();
   try {
-    if (cfg.provider === 'sendgrid') await sendViaSendgrid(to, subject, text, html);
+    if (cfg.provider === 'resend') await sendViaResend(to, subject, text, html);
     else await sendViaSmtp(to, subject, text, html);
     return { sent: true };
   } catch (err) {

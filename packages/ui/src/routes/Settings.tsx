@@ -288,7 +288,7 @@ export function Settings() {
       {/* Notifications */}
       <NotificationsPanel />
 
-      {/* Email provider (SMTP / SendGrid, shared with apps via the Fabric) */}
+      {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
       <EmailPanel />
 
       {/* Alerts — granular on/off per alert type (OS + apps) */}
@@ -1191,7 +1191,7 @@ interface StripeAccountPublic {
   hasWebhook: boolean;
 }
 
-/** Email provider (SMTP / SendGrid). Configured once; the OS sends admin alerts and
+/** Email provider (SMTP / Resend). Configured once; the OS sends admin alerts and
  *  apps send mail (receipts, parent notices) through it via the Fabric — no app ever
  *  handles mail credentials. */
 function EmailPanel() {
@@ -1201,7 +1201,7 @@ function EmailPanel() {
   const cfg = trpc.email.get.useQuery();
   const status = trpc.email.status.useQuery(undefined, { refetchInterval: 60_000 });
 
-  const [provider, setProvider] = useState<'none' | 'smtp' | 'sendgrid'>('none');
+  const [provider, setProvider] = useState<'none' | 'smtp' | 'resend'>('none');
   const [fromEmail, setFromEmail] = useState('');
   const [fromName, setFromName] = useState('');
   const [host, setHost] = useState('');
@@ -1245,7 +1245,7 @@ function EmailPanel() {
       fromEmail: fromEmail.trim(),
       fromName: fromName.trim(),
       smtp: { host: host.trim(), port, secure, user: user.trim(), pass: pass || undefined },
-      sendgrid: { apiKey: apiKey || undefined },
+      resend: { apiKey: apiKey || undefined },
     });
   }
 
@@ -1260,10 +1260,10 @@ function EmailPanel() {
 
       <div className="field" style={{ maxWidth: '22rem' }}>
         <label className="label">{t('settings.emailProvider')}</label>
-        <select className="input glass-inset" value={provider} onChange={(e) => setProvider(e.target.value as 'none' | 'smtp' | 'sendgrid')}>
+        <select className="input glass-inset" value={provider} onChange={(e) => setProvider(e.target.value as 'none' | 'smtp' | 'resend')}>
           <option value="none">{t('settings.emailNone')}</option>
           <option value="smtp">SMTP</option>
-          <option value="sendgrid">SendGrid</option>
+          <option value="resend">Resend</option>
         </select>
       </div>
 
@@ -1307,10 +1307,10 @@ function EmailPanel() {
         </>
       )}
 
-      {provider === 'sendgrid' && (
+      {provider === 'resend' && (
         <div className="field" style={{ maxWidth: '22rem' }}>
-          <label className="label">{t('settings.emailSendgridKey')}</label>
-          <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasSendgridKey ? t('settings.emailSecretKept') : 'SG.…'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+          <label className="label">{t('settings.emailResendKey')}</label>
+          <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasResendKey ? t('settings.emailSecretKept') : 're_…'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
         </div>
       )}
 

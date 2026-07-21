@@ -88,7 +88,7 @@ export interface CatalogApp {
   /**
    * Opt into Fabric email. When true, the platform issues the app the per-app secret
    * and the app may POST /api/fabric/email to send email (donation receipts, parent
-   * notices, …) via the admin-configured provider (SMTP/SendGrid) — the app never
+   * notices, …) via the admin-configured provider (SMTP/Resend) — the app never
    * sees the mail credentials or the From address.
    */
   email?: boolean;

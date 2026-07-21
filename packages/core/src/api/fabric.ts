@@ -201,7 +201,7 @@ export function registerFabric(server: FastifyInstance): void {
   });
 
   // Fabric email — an app sends an email (donation receipt, parent notice, …) via
-  // the admin-configured provider (SMTP/SendGrid). Server→server: the app proves
+  // the admin-configured provider (SMTP/Resend). Server→server: the app proves
   // itself with its per-app secret and must hold the `email` capability. The app
   // never sees the mail credentials or the From address. Not CORS-enabled.
   server.post('/api/fabric/email', async (req, reply) => {

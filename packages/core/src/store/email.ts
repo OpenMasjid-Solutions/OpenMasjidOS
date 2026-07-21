@@ -2,11 +2,11 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Email provider vault. The admin configures ONE email sender here — either SMTP
- * (any mailbox) or SendGrid (API key) — and the platform sends on behalf of the OS
+ * (any mailbox) or Resend (API key) — and the platform sends on behalf of the OS
  * (admin alerts) and, over the Fabric, on behalf of apps (donation receipts, parent
  * notices, …) so no app ever handles mail credentials.
  *
- * Secrets (the SMTP password / SendGrid API key) live ONLY in this file under the
+ * Secrets (the SMTP password / Resend API key) live ONLY in this file under the
  * data dir (chmod 600) — never in settings.json and never in the admin-facing API
  * (which returns a sanitized view: provider + from + host/port/user + "is set"
  * flags). The full config leaves this module only to the sender (notify/email.ts).
@@ -16,7 +16,7 @@ import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
 
-export type EmailProvider = 'none' | 'smtp' | 'sendgrid';
+export type EmailProvider = 'none' | 'smtp' | 'resend';
 
 export interface EmailConfig {
   provider: EmailProvider;
@@ -25,7 +25,7 @@ export interface EmailConfig {
   /** Optional display name for the From header (e.g. "An-Noor Institute"). */
   fromName: string;
   smtp: { host: string; port: number; secure: boolean; user: string; pass: string };
-  sendgrid: { apiKey: string };
+  resend: { apiKey: string };
 }
 
 interface EmailFile {
@@ -39,7 +39,7 @@ const DEFAULT_CONFIG: EmailConfig = {
   fromEmail: '',
   fromName: 'OpenMasjidOS',
   smtp: { host: '', port: 587, secure: false, user: '', pass: '' },
-  sendgrid: { apiKey: '' },
+  resend: { apiKey: '' },
 };
 
 function withDefaults(e: Partial<EmailConfig> | undefined): EmailConfig {
@@ -47,7 +47,7 @@ function withDefaults(e: Partial<EmailConfig> | undefined): EmailConfig {
     ...DEFAULT_CONFIG,
     ...(e ?? {}),
     smtp: { ...DEFAULT_CONFIG.smtp, ...(e?.smtp ?? {}) },
-    sendgrid: { ...DEFAULT_CONFIG.sendgrid, ...(e?.sendgrid ?? {}) },
+    resend: { ...DEFAULT_CONFIG.resend, ...(e?.resend ?? {}) },
   };
 }
 
@@ -71,11 +71,11 @@ export function getEmailConfig(): EmailConfig {
 export function isEmailConfigured(): boolean {
   if (!cache.fromEmail) return false;
   if (cache.provider === 'smtp') return Boolean(cache.smtp.host && cache.smtp.port);
-  if (cache.provider === 'sendgrid') return Boolean(cache.sendgrid.apiKey);
+  if (cache.provider === 'resend') return Boolean(cache.resend.apiKey);
   return false;
 }
 
-/** Non-secret view for the admin UI — the SMTP password / SendGrid key are shown
+/** Non-secret view for the admin UI — the SMTP password / Resend key are shown
  *  only as "is set" flags, never their values. */
 export interface EmailConfigPublic {
   provider: EmailProvider;
@@ -83,7 +83,7 @@ export interface EmailConfigPublic {
   fromName: string;
   smtp: { host: string; port: number; secure: boolean; user: string };
   hasSmtpPass: boolean;
-  hasSendgridKey: boolean;
+  hasResendKey: boolean;
   configured: boolean;
 }
 
@@ -94,7 +94,7 @@ export function getEmailConfigPublic(): EmailConfigPublic {
     fromName: cache.fromName,
     smtp: { host: cache.smtp.host, port: cache.smtp.port, secure: cache.smtp.secure, user: cache.smtp.user },
     hasSmtpPass: Boolean(cache.smtp.pass),
-    hasSendgridKey: Boolean(cache.sendgrid.apiKey),
+    hasResendKey: Boolean(cache.resend.apiKey),
     configured: isEmailConfigured(),
   };
 }
@@ -104,11 +104,11 @@ export interface EmailUpsert {
   fromEmail?: string;
   fromName?: string;
   smtp?: Partial<EmailConfig['smtp']>;
-  /** Blank/omitted = keep the existing SMTP password (so the admin needn't re-type). */
-  sendgrid?: Partial<EmailConfig['sendgrid']>;
+  /** Blank/omitted apiKey = keep the existing Resend key (so the admin needn't re-type). */
+  resend?: Partial<EmailConfig['resend']>;
 }
 
-/** Save the email config. A blank secret (smtp.pass / sendgrid.apiKey) means "keep
+/** Save the email config. A blank secret (smtp.pass / resend.apiKey) means "keep
  *  the existing one" so the admin never re-pastes a secret just to change a setting. */
 export function saveEmailConfig(input: EmailUpsert): EmailConfigPublic {
   const next: EmailConfig = withDefaults(cache);
@@ -122,9 +122,9 @@ export function saveEmailConfig(input: EmailUpsert): EmailConfigPublic {
     if (input.smtp.user !== undefined) next.smtp.user = input.smtp.user.trim();
     if (input.smtp.pass !== undefined && input.smtp.pass.trim()) next.smtp.pass = input.smtp.pass;
   }
-  if (input.sendgrid) {
-    if (input.sendgrid.apiKey !== undefined && input.sendgrid.apiKey.trim()) {
-      next.sendgrid.apiKey = input.sendgrid.apiKey.trim();
+  if (input.resend) {
+    if (input.resend.apiKey !== undefined && input.resend.apiKey.trim()) {
+      next.resend.apiKey = input.resend.apiKey.trim();
     }
   }
   cache = next;

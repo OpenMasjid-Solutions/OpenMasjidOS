@@ -50,7 +50,7 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `https` | – | **Set ONLY by apps that use Stripe.** Stripe's in-person M2 reader (Stripe Terminal SDK) and in-page card fields (Elements) require a browser secure context (HTTPS). When `true`, the platform serves the app over HTTPS on a dedicated host port (from a pre-mapped range; TLS terminated with the dashboard's cert) and the app's "Open" URL becomes `https://`. The app stays a plain HTTP container — it handles no TLS. **Non-Stripe apps must omit this** and stay on plain HTTP; HTTPS is **not** enforced for them or for 3rd-party/custom apps. |
 | `fabric` | – | Opt into the **app-to-app broker** (below): `{ provides: [{ capability }], consumes: ["<app-id>/<capability>"] }`. Any `fabric` block issues the app the per-app secret (like `sso`). Grants are static from the manifest. Catalog apps only. |
 | `tunnel` | – | `true` = the app **requests** to be reachable from the internet through the OS's Cloudflare tunnel (below). It's only a request — the admin confirms exposure in Settings → Remote access. Off ⇒ the app stays on the LAN. |
-| `email` | – | `true` to opt into Fabric email (below) — the app may `POST /api/fabric/email` to send mail (receipts, parent notices) via the admin's SMTP/SendGrid provider. Issues the per-app secret; the app never sees the credentials or the From address. |
+| `email` | – | `true` to opt into Fabric email (below) — the app may `POST /api/fabric/email` to send mail (receipts, parent notices) via the admin's SMTP/Resend provider. Issues the per-app secret; the app never sees the credentials or the From address. |
 | `alerts` | – | A list of alert types this app can raise, `{ id, label, description? }[]` (below). Each gets a granular on/off in Settings → Alerts (all on by default). The app fires one with `POST /api/fabric/alert`. Declaring alerts issues the per-app secret. |
 
 ### `settings` fields (`SettingField`)
@@ -262,7 +262,7 @@ enforced, and you should enforce it too). Build your app to be base-path aware (
 
 ## Fabric email (`email: true` — sending mail)
 
-The admin configures ONE email provider (SMTP or SendGrid) in Settings → Email. Set `email: true`
+The admin configures ONE email provider (SMTP or Resend) in Settings → Email. Set `email: true`
 to opt in; the platform issues your per-app secret, and your **backend** can then send mail through
 the OS — you never handle the credentials or the From address:
 
