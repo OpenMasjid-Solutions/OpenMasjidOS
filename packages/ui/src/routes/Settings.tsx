@@ -288,6 +288,12 @@ export function Settings() {
       {/* Notifications */}
       <NotificationsPanel />
 
+      {/* Email provider (SMTP / SendGrid, shared with apps via the Fabric) */}
+      <EmailPanel />
+
+      {/* Alerts — granular on/off per alert type (OS + apps) */}
+      <AlertsPanel />
+
       {/* Payments (Stripe vault, shared with apps via the Fabric) */}
       <StripePanel />
 
@@ -618,9 +624,31 @@ function SslSection() {
 function ChangePassword() {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const utils = trpc.useUtils();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [error, setError] = useState('');
+
+  // Admin profile (name + email). Email is where OS alerts are sent; a pre-email
+  // install sets it here for the first time.
+  const me = trpc.auth.me.useQuery();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (me.data && !seeded.current) {
+      setName(me.data.name ?? '');
+      setEmail(me.data.email ?? '');
+      seeded.current = true;
+    }
+  }, [me.data]);
+  const saveProfile = trpc.auth.updateProfile.useMutation({
+    onSuccess: () => {
+      utils.auth.me.invalidate();
+      toast(t('settings.profileSaved'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
 
   const change = trpc.auth.changePassword.useMutation({
     onSuccess: (res) => {
@@ -637,6 +665,23 @@ function ChangePassword() {
   return (
     <section className="glass-raised panel">
       <h2 className="panel-title">{t('settings.account')}</h2>
+      <div className="field" style={{ maxWidth: '20rem' }}>
+        <label className="label">{t('settings.accountName')}</label>
+        <input className="input glass-inset" value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+      <div className="field" style={{ maxWidth: '20rem' }}>
+        <label className="label">{t('settings.accountEmail')}</label>
+        <input className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <span className="hint">{t('settings.accountEmailHint')}</span>
+      </div>
+      <button
+        className="btn"
+        style={{ marginBlockEnd: '1rem' }}
+        disabled={saveProfile.isPending || (!name.trim() && !email.trim())}
+        onClick={() => saveProfile.mutate({ name: name.trim() || undefined, email: email.trim() || undefined })}
+      >
+        <Check size={15} /> {t('settings.saveProfile')}
+      </button>
       <div className="field" style={{ maxWidth: '20rem' }}>
         <label className="label">{t('settings.currentPassword')}</label>
         <input className="input glass-inset" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
@@ -1144,6 +1189,191 @@ interface StripeAccountPublic {
   publishableKey: string;
   hasSecret: boolean;
   hasWebhook: boolean;
+}
+
+/** Email provider (SMTP / SendGrid). Configured once; the OS sends admin alerts and
+ *  apps send mail (receipts, parent notices) through it via the Fabric — no app ever
+ *  handles mail credentials. */
+function EmailPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const cfg = trpc.email.get.useQuery();
+  const status = trpc.email.status.useQuery(undefined, { refetchInterval: 60_000 });
+
+  const [provider, setProvider] = useState<'none' | 'smtp' | 'sendgrid'>('none');
+  const [fromEmail, setFromEmail] = useState('');
+  const [fromName, setFromName] = useState('');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState(587);
+  const [secure, setSecure] = useState(false);
+  const [user, setUser] = useState('');
+  const [pass, setPass] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (cfg.data && !seeded.current) {
+      setProvider(cfg.data.provider);
+      setFromEmail(cfg.data.fromEmail);
+      setFromName(cfg.data.fromName);
+      setHost(cfg.data.smtp.host);
+      setPort(cfg.data.smtp.port);
+      setSecure(cfg.data.smtp.secure);
+      setUser(cfg.data.smtp.user);
+      seeded.current = true;
+    }
+  }, [cfg.data]);
+
+  const save = trpc.email.save.useMutation({
+    onSuccess: () => {
+      setPass('');
+      setApiKey('');
+      utils.email.get.invalidate();
+      utils.email.status.invalidate();
+      toast(t('settings.emailSaved'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const test = trpc.email.test.useMutation({
+    onSuccess: (r) => toast(t('settings.emailTestSent', { to: r.to }), 'success'),
+    onError: (e) => toast(e.message || t('settings.emailTestFailed'), 'error'),
+  });
+
+  function onSave() {
+    save.mutate({
+      provider,
+      fromEmail: fromEmail.trim(),
+      fromName: fromName.trim(),
+      smtp: { host: host.trim(), port, secure, user: user.trim(), pass: pass || undefined },
+      sendgrid: { apiKey: apiKey || undefined },
+    });
+  }
+
+  if (!cfg.data) return null;
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+        <StatusDot online={status.isLoading ? undefined : status.data?.configured} /> {t('settings.email')}
+      </h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.emailHint')}</p>
+
+      <div className="field" style={{ maxWidth: '22rem' }}>
+        <label className="label">{t('settings.emailProvider')}</label>
+        <select className="input glass-inset" value={provider} onChange={(e) => setProvider(e.target.value as 'none' | 'smtp' | 'sendgrid')}>
+          <option value="none">{t('settings.emailNone')}</option>
+          <option value="smtp">SMTP</option>
+          <option value="sendgrid">SendGrid</option>
+        </select>
+      </div>
+
+      {provider !== 'none' && (
+        <>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.emailFrom')}</label>
+            <input className="input glass-inset" type="email" placeholder="alerts@masjid.org" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} />
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.emailFromName')}</label>
+            <input className="input glass-inset" value={fromName} onChange={(e) => setFromName(e.target.value)} />
+          </div>
+        </>
+      )}
+
+      {provider === 'smtp' && (
+        <>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.emailSmtpHost')}</label>
+            <input className="input glass-inset" placeholder="smtp.example.org" value={host} onChange={(e) => setHost(e.target.value)} />
+          </div>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <div className="field" style={{ maxWidth: '8rem' }}>
+              <label className="label">{t('settings.emailSmtpPort')}</label>
+              <input className="input glass-inset" type="number" value={port} onChange={(e) => setPort(Number(e.target.value) || 587)} />
+            </div>
+            <div className="setting-row" style={{ alignItems: 'end' }}>
+              <div className="setting-row__text"><div className="setting-row__title">{t('settings.emailSmtpSecure')}</div></div>
+              <Toggle checked={secure} onChange={setSecure} label={t('settings.emailSmtpSecure')} />
+            </div>
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.emailSmtpUser')}</label>
+            <input className="input glass-inset" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} />
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.emailSmtpPass')}</label>
+            <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasSmtpPass ? t('settings.emailSecretKept') : ''} value={pass} onChange={(e) => setPass(e.target.value)} />
+          </div>
+        </>
+      )}
+
+      {provider === 'sendgrid' && (
+        <div className="field" style={{ maxWidth: '22rem' }}>
+          <label className="label">{t('settings.emailSendgridKey')}</label>
+          <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasSendgridKey ? t('settings.emailSecretKept') : 'SG.…'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
+        <button className="btn btn--primary" disabled={save.isPending} onClick={onSave}>
+          <Check size={15} /> {t('settings.emailSave')}
+        </button>
+        {status.data?.configured && (
+          <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>
+            {test.isPending ? t('settings.emailTesting') : t('settings.emailTest')}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Granular alert controls (UniFi-style): OS built-ins + each app's declared alerts,
+ *  each with an on/off (all on by default). Off = never emailed / webhooked. */
+function AlertsPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const list = trpc.alerts.list.useQuery();
+  const setEnabled = trpc.alerts.setEnabled.useMutation({
+    onSuccess: () => utils.alerts.list.invalidate(),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+
+  const rows = list.data ?? [];
+  // Group by source for a tidy UniFi-style list.
+  const groups = new Map<string, { label: string; items: typeof rows }>();
+  for (const r of rows) {
+    const g = groups.get(r.source) ?? { label: r.sourceLabel, items: [] as typeof rows };
+    g.items.push(r);
+    groups.set(r.source, g);
+  }
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title">{t('settings.alerts')}</h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.alertsHint')}</p>
+      {rows.length === 0 && <p className="setting-row__hint">{t('settings.alertsNone')}</p>}
+      {[...groups.entries()].map(([source, g]) => (
+        <div key={source} style={{ marginBlockStart: '0.6rem' }}>
+          <div className="setting-row__title" style={{ marginBlockEnd: '0.2rem', color: 'var(--color-ink-muted)' }}>{g.label}</div>
+          {g.items.map((r) => (
+            <div className="setting-row" key={`${r.source}:${r.id}`}>
+              <div className="setting-row__text">
+                <div className="setting-row__title">{r.label}</div>
+                {r.description && <div className="setting-row__hint">{r.description}</div>}
+              </div>
+              <Toggle
+                checked={r.enabled}
+                onChange={(v) => setEnabled.mutate({ source: r.source, id: r.id, enabled: v })}
+                label={r.label}
+              />
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
 }
 
 /** Stripe account vault. The admin stores named accounts here once; apps with the

@@ -86,6 +86,18 @@ export interface CatalogApp {
    */
   fabric?: FabricGrants;
   /**
+   * Opt into Fabric email. When true, the platform issues the app the per-app secret
+   * and the app may POST /api/fabric/email to send email (donation receipts, parent
+   * notices, …) via the admin-configured provider (SMTP/SendGrid) — the app never
+   * sees the mail credentials or the From address.
+   */
+  email?: boolean;
+  /**
+   * Alert types this app can raise (admin gets a granular on/off per alert; all on
+   * by default). The app fires one with POST /api/fabric/alert { alert: "<id>", … }.
+   */
+  alerts?: DeclaredAlert[];
+  /**
    * Request to be reachable from the internet through the OS's Cloudflare tunnel.
    * This is only a REQUEST — the admin still confirms exposure at install (and can
    * toggle it later in Settings). When exposed, the app's public URL is delivered
@@ -105,6 +117,17 @@ export interface CatalogApp {
 /** A single capability an app serves over the Fabric broker. */
 export interface FabricProvide {
   capability: string;
+}
+
+/** An alert type an app can raise (manifest `alerts:`). The admin gets a granular
+ *  on/off per alert in Settings → Alerts (all on by default). */
+export interface DeclaredAlert {
+  /** Stable kebab-case id the app passes to POST /api/fabric/alert. */
+  id: string;
+  /** Short human label for the Settings toggle. */
+  label: string;
+  /** Optional one-line description of when it fires. */
+  description?: string;
 }
 
 /** App-to-app broker grants declared in a catalog app's manifest (CatalogApp.fabric). */
@@ -136,6 +159,10 @@ export interface AppMeta {
   fabricProvides?: string[];
   /** Fabric broker grants this app may CALL, "<target-app-id>/<capability>". */
   fabricConsumes?: string[];
+  /** True if this app opted into Fabric email (CatalogApp.email). */
+  email?: boolean;
+  /** Alert types this app can raise (CatalogApp.alerts) — for the granular toggles. */
+  appAlerts?: DeclaredAlert[];
   /** Whether this app is exposed over the Cloudflare tunnel. Admin-controlled
    *  (default from the manifest `tunnel:true` at install; toggleable in Settings).
    *  `undefined` means "installed before per-app exposure existed" — grandfathered

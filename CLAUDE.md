@@ -303,7 +303,7 @@ Support non-interactive overrides: `--yes` (accept defaults), `--hostname <name>
 
 The dashboard is **always** behind a login. There is no pre-baked password and no anonymous access to any feature.
 
-- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** (username + password; enforce a sane minimum strength). Optionally let them pick a theme (dark is pre-selected) and UI language. Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
+- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** — **name + email + password** (enforce a sane minimum strength). The **email is the login identifier** AND where OS alerts are sent (an app going offline, etc.); the display name shows in the header. (Pre-email installs keep their old username login and set an email in Settings → Account.) Optionally let them pick a theme (dark is pre-selected) and UI language. Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
 - **Subsequent visits:** standard login screen → dashboard. Wrong credentials get a friendly, rate-limited error.
 - **Sessions:** server-side session, secure + HTTP-only + SameSite cookie. Logout clears it. Passwords hashed with **argon2id** (the `argon2` package), never stored or logged in plaintext.
 - **Account management** (in Settings): change password. (Multiple users/roles are v1.1.)
@@ -373,6 +373,11 @@ fabric:                           # OPTIONAL — app-to-app broker (v0.40.0); ca
   consumes:                       #   capabilities it may CALL, "<target-app-id>/<capability>"
     - students/billing
 tunnel: true                      # OPTIONAL — REQUEST internet exposure (admin confirms in Settings)
+email: true                       # OPTIONAL (v0.41.0) — may POST /api/fabric/email to send mail
+alerts:                           # OPTIONAL (v0.41.0) — admin gets a granular on/off per alert
+  - id: reader-offline            #   kebab id passed to POST /api/fabric/alert
+    label: Card reader offline
+    description: A payment reader stopped responding.
 ```
 
 How the core installs/manages a catalog app (the real behaviour):
@@ -434,7 +439,13 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Animations:** on / reduced (also auto-respects the OS reduced-motion setting).
 
 ### 13.2 Account
-- Change admin password.
+- Change admin **name + email** (email = login id + where OS alerts go) and password.
+
+### 13.2b Email (SMTP / SendGrid)
+- Configure ONE email provider — **SMTP** (host/port/TLS/user/pass) or **SendGrid** (API key) — plus a From address/name. The secret (SMTP password / SendGrid key) is stored in `config/email.json` (chmod 600) and never returned to the UI (only "is set" flags). A **"Send test email"** button verifies it, and a green/red status dot shows configured/not. Apps send mail through this over the Fabric (`POST /api/fabric/email`, `email` capability) — no app ever handles the credentials or the From address.
+
+### 13.2c Alerts (granular, UniFi-style)
+- A list of every alert type — OS built-ins (an app going offline, a core update) **plus each installed app's declared `alerts:`** — each with an on/off. **All on by default**; the platform only persists the disabled set. When an alert fires it's gated here, then delivered to the admin email **and** the webhook. Apps raise their declared alerts via `POST /api/fabric/alert`; the webhook (`/api/fabric/notify`) stays available on its own.
 
 ### 13.3 Advanced
 - **Allow custom apps** (off by default) → enables the "3rd Party App" button in the App Store (see §11), with a clear risk note.
@@ -526,7 +537,8 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. Don't relay request headers verbatim to app containers.
 - **The Fabric app-to-app broker (`fabric/appLink.ts`, `POST /api/fabric/app/:target/:capability/:method`) is LAN-only and least-privilege** (v0.40.0). It inherits the `/api/fabric` viaTunnel guard (`registerFabricTunnelGuard`, `system/via-tunnel.ts` — the single shared implementation), authorizes by **static manifest grants** (caller `consumes` ∧ target `provides`), builds the target URL ONLY from the registry (`127.0.0.1:<published port>` — no request-controlled host/path, no SSRF), injects the **target's own** secret + a trusted `X-OpenMasjid-Caller-App` while stripping caller-supplied identity/forwarding/hop-by-hop headers, caps JSON at 256 KB each way with a 10 s timeout + per-caller rate limit, returns `{ fabric_error }` on platform failures, and **never logs bodies**. Don't weaken any of these.
 - **Tunnel exposure is per-app opt-in** (v0.40.0). `ingress.rebuild()` routes an app only when `meta.exposed !== false` (grandfathered `undefined` = exposed, so pre-0.40 installs don't go dark); the admin toggles it in Settings (default from the manifest `tunnel:true` request). An app's own **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths (`isFabricSubpath`) — those routes are LAN-only. `OPENMASJID_PUBLIC_URL` is injected empty unless exposed; `/api/fabric/site` stays the live source of truth.
-- **Secrets at rest:** persist config secrets 0o600 (`writeJson` does this; `CONFIG_DIR` is 0o700). First-run `auth.setup` uses `setCredentialsIfUnset` (compare-and-set) — don't reintroduce an unconditional write.
+- **Email + alerts over the Fabric are LAN-only + least-privilege** (v0.41.0). The SMTP password / SendGrid API key live in `config/email.json` (chmod 600) and never leave `store/email.ts` except to the sender (`notify/email.ts`); the admin API returns only "is set" flags. `POST /api/fabric/email` (capability `email`) and `POST /api/fabric/alert` (gated on the app having declared the alert in its manifest) are under `/api/fabric`, so they inherit the viaTunnel LAN-only guard; both are rate-limited and never log bodies. Alerts are gated by the admin's granular per-type toggle (`notify/alerts.ts`, disabled-set in `config/alerts.json`) before any email/webhook is sent. The admin email (`auth/store.ts` `getAdminEmail`) is the only alert recipient.
+- **Secrets at rest:** persist config secrets 0o600 (`writeJson` does this; `CONFIG_DIR` is 0o700; `config/email.json` too). First-run `auth.setup` uses `createAdminIfUnset` (compare-and-set, capturing email/name) — don't reintroduce an unconditional write.
 - **CI:** the CLA workflow runs on `pull_request_target` — keep third-party actions pinned to a commit SHA (never a tag), never `actions/checkout` the PR head there, and don't grant `actions: write`.
 
 ---

@@ -11,7 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "esbuild src/index.ts src/reset-password.ts src/reset-auth.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outdir=dist --log-level=warning",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/broker.test.ts test/fabric-secret.test.ts test/tunnel.test.ts"
+    "test": "node --import tsx --test test/broker.test.ts test/fabric-secret.test.ts test/tunnel.test.ts test/alerts.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.1",
@@ -23,6 +23,7 @@
     "dockerode": "^4.0.2",
     "fastify": "^5.1.0",
     "fflate": "^0.8.2",
+    "nodemailer": "^6.9.16",
     "systeminformation": "^5.23.5",
     "ws": "^8.18.0",
     "yaml": "^2.6.1",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@types/dockerode": "^3.3.31",
     "@types/node": "^20.16.5",
+    "@types/nodemailer": "^6.4.17",
     "@types/ws": "^8.5.13",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.2",

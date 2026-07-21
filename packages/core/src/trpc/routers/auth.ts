@@ -13,7 +13,10 @@ import {
   isConfigured,
   getUsername,
   getPasswordHash,
-  setCredentialsIfUnset,
+  getAdminEmail,
+  getAdminName,
+  createAdminIfUnset,
+  setProfile,
   updatePasswordHash,
 } from '../../auth/store';
 import {
@@ -62,8 +65,11 @@ async function verifyCredentials(username: string, password: string): Promise<bo
   }
 }
 
-const credentials = z.object({
-  username: z.string().trim().min(1, 'Please enter a username.').max(64),
+const emailField = z.string().trim().max(254).email('Please enter a valid email address.');
+
+const setupInput = z.object({
+  name: z.string().trim().min(1, 'Please enter your name.').max(80),
+  email: emailField,
   password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`),
 });
 
@@ -73,22 +79,28 @@ export const authRouter = router({
     setupRequired: !isConfigured(),
     authenticated: Boolean(ctx.username),
     username: ctx.username,
+    // Only surface the admin's profile to an authenticated session (never leak the
+    // admin email to an unauthenticated visitor).
+    name: ctx.username ? getAdminName() : null,
+    email: ctx.username ? getAdminEmail() : null,
   })),
 
-  /** First-run only: create the admin account and start a session. */
-  setup: publicProcedure.input(credentials).mutation(async ({ input, ctx }) => {
+  /** First-run only: create the admin account (name + email + password) and start a
+   *  session. The email is the login identifier AND where OS alerts are sent. */
+  setup: publicProcedure.input(setupInput).mutation(async ({ input, ctx }) => {
     if (isConfigured()) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
     const hash = await hashPassword(input.password);
     // Compare-and-set: if a concurrent first-run request won the race while we were
-    // hashing (argon2 awaits above), don't clobber the admin it created.
-    if (!setCredentialsIfUnset(input.username, hash)) {
+    // hashing (argon2 awaits above), don't clobber the admin it created. The email is
+    // the username (login identifier).
+    if (!createAdminIfUnset({ username: input.email, email: input.email, name: input.name, passwordHash: hash })) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
-    const { token, csrf } = createSession(input.username);
+    const { token, csrf } = createSession(input.email);
     ctx.setSessionCookie?.(token);
-    return { authenticated: true, username: input.username, csrf };
+    return { authenticated: true, username: input.email, csrf };
   }),
 
   /** Sign in with the admin credentials. */
@@ -130,6 +142,21 @@ export const authRouter = router({
     ctx.clearSessionCookie?.();
     return { authenticated: false };
   }),
+
+  /** Update the admin's display name and/or email (Settings → Account). The email is
+   *  where OS alerts are sent; a pre-email install sets it here. Does NOT change the
+   *  login username (existing sessions keep working). */
+  updateProfile: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1).max(80).optional(),
+        email: emailField.optional(),
+      }),
+    )
+    .mutation(({ input }) => {
+      setProfile(input);
+      return { name: getAdminName(), email: getAdminEmail() };
+    }),
 
   /** Change the admin password; every existing session is invalidated. */
   changePassword: protectedProcedure

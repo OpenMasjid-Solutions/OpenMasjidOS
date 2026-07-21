@@ -38,7 +38,9 @@ export function AuthScreen({
   onAuthed: () => void;
 }) {
   const { t } = useTranslation();
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(''); // login identifier (the email)
+  const [name, setName] = useState(''); // first-run: display name
+  const [email, setEmail] = useState(''); // first-run: admin email (login id + alerts)
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
@@ -86,7 +88,7 @@ export function AuthScreen({
       if (setupRequired) {
         if (password.length < MIN_PW) return setError(t('auth.passwordTooShort'));
         if (password !== confirm) return setError(t('auth.passwordsMismatch'));
-        res = await setup.mutateAsync({ username, password });
+        res = await setup.mutateAsync({ name, email, password });
       } else {
         res = await login.mutateAsync({ username, password });
       }
@@ -113,18 +115,36 @@ export function AuthScreen({
         </p>
 
         <form onSubmit={submit}>
+          {setupRequired && (
+            <div className="field">
+              <label className="label" htmlFor="name">
+                {t('auth.name')}
+              </label>
+              <input
+                id="name"
+                className="input glass-inset"
+                autoComplete="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+          )}
+
           <div className="field">
-            <label className="label" htmlFor="username">
-              {t('auth.username')}
+            <label className="label" htmlFor="email">
+              {t('auth.email')}
             </label>
             <input
-              id="username"
+              id="email"
+              type="email"
               className="input glass-inset"
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              autoComplete={setupRequired ? 'email' : 'username'}
+              value={setupRequired ? email : username}
+              onChange={(e) => (setupRequired ? setEmail(e.target.value) : setUsername(e.target.value))}
               required
             />
+            {setupRequired && <span className="hint">{t('auth.emailHint')}</span>}
           </div>
 
           <div className="field">

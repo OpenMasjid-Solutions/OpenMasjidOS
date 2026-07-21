@@ -30,9 +30,10 @@ import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../
 // Runtime-only import (called inside functions, never at module load) — no cycle
 // hazard with cloudflared.ts, which imports getAppPath from here.
 import { intendedPublicUrl } from '../system/cloudflared';
+import { suppressOfflineAlert } from '../system/offline-suppress';
 import { networkInfo } from '../system/system';
 import { isNewerVersion } from '../util/version';
-import type { AppMeta, InstalledApp, CatalogApp } from './types';
+import type { AppMeta, InstalledApp, CatalogApp, DeclaredAlert } from './types';
 
 const projectOf = (id: string) => `omos-${id}`;
 // App ids reserved for OpenMasjidOS's OWN infrastructure (run as omos-* compose
@@ -159,6 +160,8 @@ export interface FabricApp {
   notify: boolean;
   stripe: boolean;
   domain: boolean;
+  /** True if the app may send email via POST /api/fabric/email. */
+  email: boolean;
   /** Broker capabilities this app SERVES (for target-side authorization). */
   provides: string[];
   /** Broker grants this app may CALL, "<target-app-id>/<capability>". */
@@ -194,6 +197,7 @@ function fabricEntries(): FabricEntry[] {
         notify: meta.notify === true,
         stripe: meta.stripe === true,
         domain: meta.domain === true,
+        email: meta.email === true,
         provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
         consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
@@ -229,6 +233,7 @@ function stripSecret(e: FabricEntry): FabricApp {
     notify: e.notify,
     stripe: e.stripe,
     domain: e.domain,
+    email: e.email,
     provides: e.provides,
     consumes: e.consumes,
   };
@@ -257,17 +262,69 @@ export function needsFabricSecret(caps: {
   notify?: boolean;
   stripe?: boolean;
   domain?: boolean;
+  email?: boolean;
   provides?: string[];
   consumes?: string[];
+  alerts?: unknown[];
 }): boolean {
   return Boolean(
     caps.sso ||
       caps.notify ||
       caps.stripe ||
       caps.domain ||
+      caps.email ||
       (caps.provides && caps.provides.length) ||
-      (caps.consumes && caps.consumes.length),
+      (caps.consumes && caps.consumes.length) ||
+      (caps.alerts && caps.alerts.length),
   );
+}
+
+/** Validate + normalise a catalog app's `alerts:` list (manifest). Throws a
+ *  friendly error on a malformed shape; returns the cleaned list. Mirrors the
+ *  OpenMasjidAPPS catalog-build validator. */
+export function parseAlerts(alerts: unknown, appId: string): DeclaredAlert[] {
+  if (alerts == null) return [];
+  if (!Array.isArray(alerts)) throw new Error(`"${appId}": "alerts" must be a list.`);
+  const out: DeclaredAlert[] = [];
+  const seen = new Set<string>();
+  for (const a of alerts) {
+    const id = a && typeof a === 'object' ? (a as { id?: unknown }).id : undefined;
+    const label = a && typeof a === 'object' ? (a as { label?: unknown }).label : undefined;
+    const description = a && typeof a === 'object' ? (a as { description?: unknown }).description : undefined;
+    if (typeof id !== 'string' || !CAPABILITY_RE.test(id)) {
+      throw new Error(`"${appId}": each alert needs a kebab-case "id" (a–z, 0–9, -).`);
+    }
+    if (typeof label !== 'string' || !label.trim()) {
+      throw new Error(`"${appId}": alert "${id}" needs a "label".`);
+    }
+    if (seen.has(id)) throw new Error(`"${appId}": duplicate alert id "${id}".`);
+    seen.add(id);
+    out.push({
+      id,
+      label: label.trim().slice(0, 80),
+      description: typeof description === 'string' ? description.trim().slice(0, 200) : undefined,
+    });
+  }
+  return out;
+}
+
+/** Every installed app's declared alert types — for the granular Settings list. */
+export function listAppAlerts(): { appId: string; appName: string; alerts: DeclaredAlert[] }[] {
+  const out: { appId: string; appName: string; alerts: DeclaredAlert[] }[] = [];
+  for (const id of listMetaIds()) {
+    if (RESERVED_APP_IDS.has(id)) continue;
+    const meta = loadMeta(id);
+    if (meta && Array.isArray(meta.appAlerts) && meta.appAlerts.length) {
+      out.push({ appId: id, appName: meta.name ?? id, alerts: meta.appAlerts });
+    }
+  }
+  return out;
+}
+
+/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.) */
+export function appDeclaresAlert(appId: string, alertId: string): boolean {
+  const meta = loadMeta(appId);
+  return Boolean(meta?.appAlerts?.some((a) => a.id === alertId));
 }
 
 /**
@@ -463,7 +520,9 @@ export async function installCatalogApp(
   const notify = app.notifications === true;
   const stripe = app.stripe === true;
   const domain = app.domain === true;
-  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, ...fabric })
+  const email = app.email === true;
+  const appAlerts = parseAlerts(app.alerts, app.id);
+  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, email, alerts: appAlerts, ...fabric })
     ? crypto.randomBytes(32).toString('base64url')
     : undefined;
   // Per-app tunnel exposure: default NOT exposed (admin consents in Settings, which
@@ -495,6 +554,8 @@ export async function installCatalogApp(
     domain,
     fabricProvides: fabric.provides.length ? fabric.provides : undefined,
     fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
+    email,
+    appAlerts: appAlerts.length ? appAlerts : undefined,
     exposed,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
@@ -720,10 +781,12 @@ export async function startApp(id: string): Promise<void> {
 }
 
 export async function stopApp(id: string): Promise<void> {
+  suppressOfflineAlert(id); // admin-initiated stop — don't fire the offline alert
   await composeStop(projectOf(id));
 }
 
 export async function restartApp(id: string): Promise<void> {
+  suppressOfflineAlert(id); // brief intended downtime
   await composeRestart(projectOf(id));
 }
 
@@ -782,10 +845,12 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   const notify = app.notifications === true;
   const stripe = app.stripe === true;
   const domain = app.domain === true;
-  // Reconcile Fabric broker grants from the refreshed entry (author can add/revoke).
+  // Reconcile Fabric broker grants + email/alerts from the refreshed entry.
   const fabric = parseFabric(app.fabric, id);
+  const email = app.email === true;
+  const appAlerts = parseAlerts(app.alerts, id);
   let ssoSecret = meta.ssoSecret;
-  if (needsFabricSecret({ sso, notify, stripe, domain, ...fabric })) {
+  if (needsFabricSecret({ sso, notify, stripe, domain, email, alerts: appAlerts, ...fabric })) {
     if (!ssoSecret) ssoSecret = crypto.randomBytes(32).toString('base64url');
   } else {
     ssoSecret = undefined;
@@ -819,6 +884,7 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
 
   onLine('');
   onLine('Applying the update…');
+  suppressOfflineAlert(id); // recreate briefly stops the container — not an outage
   if ((await composeUpStream(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('The update could not start. The previous version may still be running.');
@@ -837,6 +903,8 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     domain,
     fabricProvides: fabric.provides.length ? fabric.provides : undefined,
     fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
+    email,
+    appAlerts: appAlerts.length ? appAlerts : undefined,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
     httpsPort: httpsPort ?? undefined,

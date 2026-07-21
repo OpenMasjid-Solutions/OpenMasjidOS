@@ -29,6 +29,7 @@ import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
 import { registerFabricTunnelGuard } from './system/via-tunnel';
+import { startAlertMonitor } from './system/alert-monitor';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -244,6 +245,10 @@ async function main() {
   // Scheduled off-site backups (Google Drive / NAS) — a lightweight tick that
   // runs a backup when one is due. No-op until the admin configures a destination.
   startBackupScheduler();
+
+  // Watch installed apps and email/webhook the admin when one goes offline
+  // (gated by the granular alert toggles). No-op until email/webhook is set up.
+  startAlertMonitor();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

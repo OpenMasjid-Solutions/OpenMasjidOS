@@ -21,9 +21,11 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
-import { findFabricApp } from '../apps/manager';
+import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
+import { sendEmail } from '../notify/email';
+import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
 import { appPublicUrl, appBasePath } from '../system/cloudflared';
@@ -196,6 +198,66 @@ export function registerFabric(server: FastifyInstance): void {
       .header('access-control-allow-headers', '*')
       .code(204)
       .send();
+  });
+
+  // Fabric email — an app sends an email (donation receipt, parent notice, …) via
+  // the admin-configured provider (SMTP/SendGrid). Server→server: the app proves
+  // itself with its per-app secret and must hold the `email` capability. The app
+  // never sees the mail credentials or the From address. Not CORS-enabled.
+  server.post('/api/fabric/email', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ sent: false, error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.email) {
+      return reply.code(403).send({ sent: false, error: 'This app is not allowed to send email.' });
+    }
+    const body = (req.body ?? {}) as { to?: unknown; subject?: unknown; text?: unknown; html?: unknown };
+    const to = typeof body.to === 'string' ? body.to : '';
+    const subject = typeof body.subject === 'string' ? body.subject : '';
+    const text = typeof body.text === 'string' ? body.text : '';
+    const html = typeof body.html === 'string' ? body.html : undefined;
+    if (!to || !subject || (!text && !html)) {
+      return reply.code(400).send({ sent: false, error: 'A "to", "subject", and "text" (or "html") are required.' });
+    }
+    const result = await sendEmail({ to, subject, text, html }, app.id);
+    return reply.send(result);
+  });
+
+  // Fabric alert — an app raises an admin alert (a camera/reader offline, a failed
+  // payment, …). Requires the `notify` capability AND the alert id must be one the
+  // app declared in its manifest. The platform gates on the admin's granular on/off
+  // for that alert, then delivers to the admin email + the webhook. Not CORS-enabled.
+  server.post('/api/fabric/alert', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    // Declaring the alert in the manifest IS the opt-in (it issues the secret), so
+    // authorize on the declaration below rather than a separate capability.
+    if (!app) {
+      return reply.code(403).send({ delivered: false, error: 'This app is not allowed to send alerts.' });
+    }
+    const body = (req.body ?? {}) as { alert?: unknown; title?: unknown; text?: unknown; level?: unknown };
+    const alertId = typeof body.alert === 'string' ? body.alert : '';
+    const text = typeof body.text === 'string' ? body.text : '';
+    if (!alertId || !text.trim()) {
+      return reply.code(400).send({ delivered: false, error: 'An "alert" (id) and "text" are required.' });
+    }
+    if (!appDeclaresAlert(app.id, alertId)) {
+      return reply.code(400).send({ delivered: false, error: `Unknown alert "${alertId}" — declare it in your manifest's "alerts" list.` });
+    }
+    const levels = ['info', 'success', 'warning', 'error'] as const;
+    const level = (levels as readonly string[]).includes(String(body.level))
+      ? (body.level as (typeof levels)[number])
+      : 'warning';
+    const result = await deliverAlert({
+      source: app.id,
+      sourceName: app.name,
+      alertId,
+      title: typeof body.title === 'string' ? body.title : undefined,
+      text,
+      level,
+    });
+    return reply.send(result);
   });
 
   // App-to-app broker (POST /api/fabric/app/:target/:capability/:method). Under

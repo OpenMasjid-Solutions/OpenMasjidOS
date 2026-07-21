@@ -50,6 +50,8 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `https` | – | **Set ONLY by apps that use Stripe.** Stripe's in-person M2 reader (Stripe Terminal SDK) and in-page card fields (Elements) require a browser secure context (HTTPS). When `true`, the platform serves the app over HTTPS on a dedicated host port (from a pre-mapped range; TLS terminated with the dashboard's cert) and the app's "Open" URL becomes `https://`. The app stays a plain HTTP container — it handles no TLS. **Non-Stripe apps must omit this** and stay on plain HTTP; HTTPS is **not** enforced for them or for 3rd-party/custom apps. |
 | `fabric` | – | Opt into the **app-to-app broker** (below): `{ provides: [{ capability }], consumes: ["<app-id>/<capability>"] }`. Any `fabric` block issues the app the per-app secret (like `sso`). Grants are static from the manifest. Catalog apps only. |
 | `tunnel` | – | `true` = the app **requests** to be reachable from the internet through the OS's Cloudflare tunnel (below). It's only a request — the admin confirms exposure in Settings → Remote access. Off ⇒ the app stays on the LAN. |
+| `email` | – | `true` to opt into Fabric email (below) — the app may `POST /api/fabric/email` to send mail (receipts, parent notices) via the admin's SMTP/SendGrid provider. Issues the per-app secret; the app never sees the credentials or the From address. |
+| `alerts` | – | A list of alert types this app can raise, `{ id, label, description? }[]` (below). Each gets a granular on/off in Settings → Alerts (all on by default). The app fires one with `POST /api/fabric/alert`. Declaring alerts issues the per-app secret. |
 
 ### `settings` fields (`SettingField`)
 
@@ -257,3 +259,49 @@ When the admin exposes the app, the platform serves it at `https://<domain>/<pat
 Your `/fabric/*` space is **never** served over the tunnel — those routes are LAN-only (platform-
 enforced, and you should enforce it too). Build your app to be base-path aware (it is served under
 `/<path>`); `GET /api/fabric/site` returns the `basePath` to mount under.
+
+## Fabric email (`email: true` — sending mail)
+
+The admin configures ONE email provider (SMTP or SendGrid) in Settings → Email. Set `email: true`
+to opt in; the platform issues your per-app secret, and your **backend** can then send mail through
+the OS — you never handle the credentials or the From address:
+
+```
+POST ${OPENMASJID_BASE_URL}/api/fabric/email
+  X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
+  Content-Type: application/json
+  { "to": "donor@example.org", "subject": "Your receipt", "text": "JazakAllah…", "html": "<p>…</p>" }
+→ 200 { "sent": true }   |   { "sent": false, "reason": "not_configured" | "rate_limited" | "bad_recipient" | … }
+```
+
+`text` (or `html`) + `to` + `subject` are required. **Fail soft**: if email isn't configured you get
+`{ sent:false, reason:"not_configured" }` — keep working (e.g. still record the donation; show the
+receipt on screen). Rate-limited per app. Server→server, not CORS-enabled.
+
+## Fabric alerts (`alerts:` — telling the admin something's wrong)
+
+Declare the alert types your app can raise; the admin gets a granular on/off for each (Settings →
+Alerts, all on by default — like UniFi's notification controls). Fire one from your backend when the
+event happens (a camera/reader offline, a failed payment). The platform gates on the admin's toggle,
+then delivers to the admin's **email** + the **webhook**.
+
+```yaml
+alerts:
+  - id: reader-offline           # kebab-case, stable — this is what you POST
+    label: Card reader offline    # shown in the Settings toggle
+    description: A payment reader stopped responding.
+```
+
+```
+POST ${OPENMASJID_BASE_URL}/api/fabric/alert
+  X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
+  Content-Type: application/json
+  { "alert": "reader-offline", "title": "Reader offline", "text": "Lobby reader hasn't checked in for 5 min.", "level": "error" }
+→ 200 { "delivered": true, "email": true, "webhook": false }   |   { "delivered": false, "reason": "disabled_by_admin" }
+```
+
+- The `alert` id MUST be one you declared in `alerts:` (else 400). `level` is `info|success|warning|error`.
+- **Fail soft**: `{ delivered:false, reason:"disabled_by_admin" }` just means the admin turned that
+  alert off — not an error. Declaring `alerts:` alone issues your secret (no other capability needed).
+- Alerts go to the ADMIN (email + webhook). To email an arbitrary recipient (a donor/parent), use
+  `POST /api/fabric/email` above instead.
