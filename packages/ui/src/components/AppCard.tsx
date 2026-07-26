@@ -5,7 +5,7 @@
  * its detail page when stopped). The ⋮ menu holds the controls. Cards are
  * draggable onto the dock to pin them.
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -157,7 +157,15 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         // containment, which would otherwise clip the menu where it overflows the
         // card's box. Closed cards keep content-visibility:auto (offscreen skip).
         style={menuOpen ? { zIndex: 200, contentVisibility: 'visible' } : undefined}
-        onDragStart={(e) => e.dataTransfer.setData('application/omos-app', app.id)}
+        // Motion TYPES onDragStart as its own pan-gesture handler, but at runtime
+        // filterProps forwards every `onDrag*` straight to the DOM whenever
+        // `draggable` is set — so this really does receive a React drag event and
+        // dock pinning works. Cast rather than restructure: dropping `draggable`
+        // or the motion wrapper would break the drag-to-pin, and motion's types
+        // simply don't model that escape hatch.
+        onDragStart={(e) =>
+          (e as unknown as DragEvent<HTMLDivElement>).dataTransfer.setData('application/omos-app', app.id)
+        }
         onClick={launch}
         onMouseEnter={prefetch}
         onFocus={prefetch}

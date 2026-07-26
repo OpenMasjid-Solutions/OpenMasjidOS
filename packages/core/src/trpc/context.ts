@@ -6,6 +6,13 @@
  * Cookie header so it works in either case). Cookie mutation helpers are only
  * present for HTTP, where a Fastify reply exists.
  */
+// Type-only side-effect import: @fastify/cookie augments Fastify's request/reply
+// with cookies/setCookie/clearCookie, and this file USES them. Relying on some
+// other file in the program to have imported the plugin makes the types depend
+// on which tsconfig compiles us — the UI typechecks this file too (it infers
+// AppRouter from here), and there the augmentation wasn't loaded. Declaring the
+// dependency where it's used fixes that without emitting a runtime import.
+import type {} from '@fastify/cookie';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, CSRF_HEADER, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';

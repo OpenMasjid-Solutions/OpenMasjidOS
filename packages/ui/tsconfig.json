@@ -8,7 +8,20 @@
     "jsx": "react-jsx",
     "types": ["vite/client"],
     "noEmit": true,
-    "useDefineForClassFields": true
+    "useDefineForClassFields": true,
+    "baseUrl": ".",
+    "paths": {
+      // Resolve the core's AppRouter TYPE straight from source rather than via
+      // the workspace symlink in node_modules. npm workspaces link packages with
+      // symlinks, and those don't survive every checkout (an SMB/network share,
+      // a zip export, some CI caches) — when the link is missing, `AppRouter`
+      // silently resolves to `any` and the tRPC client collapses into tRPC's
+      // "collides with a built-in method" error-string union, showering ~170
+      // bogus errors across every file that touches `trpc.*`. Pointing at the
+      // file directly makes the typecheck reproducible everywhere.
+      // Still TYPES ONLY (CLAUDE.md §7) — Vite bundles nothing from here.
+      "@openmasjid/core": ["../core/src/trpc/router.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"],
   "exclude": ["dist", "node_modules"]

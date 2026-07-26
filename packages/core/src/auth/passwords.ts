@@ -5,10 +5,19 @@
  * binaries) rather than the native `argon2` package so the multi-arch Alpine
  * image builds with no compilation — see docs/ARCHITECTURE.md. Same algorithm.
  */
-import { hash, verify, Algorithm } from '@node-rs/argon2';
+import { hash, verify, type Algorithm } from '@node-rs/argon2';
+
+// `Algorithm` is an ambient `const enum`, so `isolatedModules` forbids reading
+// `Algorithm.Argon2id` at a value position (TS2748) — the transpiler has no way
+// to inline it. We write the literal instead but keep the TYPE via `satisfies`,
+// so the compiler still proves it is a real Algorithm member and this fails the
+// build if upstream ever renumbers. Argon2id === 2 (@node-rs/argon2 index.d.ts).
+// Stated explicitly rather than left to the library default: which algorithm
+// hashes our admin password is not something to inherit silently.
+const ARGON2ID = 2 satisfies Algorithm;
 
 const OPTIONS = {
-  algorithm: Algorithm.Argon2id,
+  algorithm: ARGON2ID,
   // OWASP-ish defaults: 19 MiB memory, 2 iterations, single lane.
   memoryCost: 19456,
   timeCost: 2,
