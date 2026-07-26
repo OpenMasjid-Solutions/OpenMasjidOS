@@ -140,6 +140,84 @@ sandboxed paths, both confined to the data dir like the rest of the manager:
   `X-Content-Type-Options: nosniff` and a strict `Content-Security-Policy:
   sandbox` so user-supplied HTML/SVG can never execute scripts same-origin.
 
+### A declared capability must be *asked about*, never silently dropped (v0.45.0)
+A manifest field that the platform parses, publishes and then ignores is worse
+than one it doesn't support: the app author believes the contract holds, the
+admin is never told, and the failure shows up far away (an emailed link that only
+works on the LAN). `tunnel: true` was exactly that — carried into `catalog.json`,
+typed on `CatalogApp`, and read by nothing. The rule we settled on:
+
+- The **default stays private**. `installCatalogApp` requires `expose === true`;
+  a manifest request never auto-exposes. That invariant is unchanged.
+- But the request must **reach the admin as a question**. An app with
+  `tunnel: true` always opens the install dialog — including when it declares no
+  `settings:`, which is precisely the one-click path that used to swallow it —
+  with one pre-ticked, plainly-worded checkbox. Pre-ticked = "the app says it
+  needs this"; the tick only takes effect because the admin pressed Install.
+- The **recovery path must be findable**. Per-app sharing toggles moved out of the
+  collapsed setup guide in Settings → Remote access, and the same switch (with the
+  live public URL) now sits on the app's own detail page.
+
+Generalise this when adding manifest fields: parse → surface → act. If a field
+can't be surfaced yet, don't ship it in the spec.
+
+### Compose gate: refusals vs. acknowledgeable dangers (v0.45.0)
+`checkCompose` used to return one list, so every finding was negotiable — the
+custom/community paths install anything once the admin ticks "I understand the
+risk". That is right for "this app wants a host device" and wrong for "this app
+attaches to another app's database", which has no legitimate use and whose whole
+point is to breach an app boundary. `ComposeCheck` therefore has two lists:
+
+- `dangers` — powerful but plausibly intentional; catalog installs block, custom
+  and community installs proceed on an explicit acknowledgement (unchanged).
+- `refusals` — never acknowledgeable, refused on every path including update and
+  post-restore reup. Currently: a top-level volume using `external:` or `name:` to
+  attach to an `omos-*` volume (another app's data, or platform infra). Neither
+  form names a host path, so the bind-mount checks never saw them.
+
+The gate also now re-runs on **update** (`updateCatalogApp`), which previously
+wrote and started a refreshed catalog compose without re-checking it — the one
+lifecycle path that skipped the gate that install and restore both apply.
+
+### Backups fail loudly rather than succeed partially (v0.45.0)
+A backup is only useful if "it worked" is true. Three defects made it possible for
+a masjid to lose everything while the dashboard reported success every night: a
+volume that failed to archive left its truncated `.tar.gz` in staging and was
+ORed away; the outer `tar`'s exit code was unreachable (`backupStream` returned
+`child.stdout` and dropped the process); and the off-site retention prune ran on
+that unverified result, so N torn runs evicted every good archive. Now:
+
+- `backupStream()` returns `{ stream, done }`. `done` carries the tar exit code,
+  and a failure **destroys the stream** so no consumer accepts a truncated file.
+- A volume that can't be archived fails the whole backup (its partial file is
+  deleted). Being unable to *ask* Docker for the volume list is also a failure,
+  not "there are none".
+- `runBackup` requires `upload.ok && archive.ok` before recording success or
+  pruning, and deletes the remote file if the upload outlived a bad archive.
+- One backup at a time (`BackupBusyError` → HTTP 409): the manual download and the
+  scheduler share a single fixed staging path and would corrupt each other.
+- Restore stops apps before refilling their volumes, and reports per-volume
+  failures instead of calling a restore successful because `config/` moved.
+
+**Still open, and importantly NOT covered by the above.** Volumes are tarred live,
+so a SQLite-in-WAL app can be captured mid-checkpoint. The trap is that **tar
+exits 0 on a torn capture** — it read every byte it was asked for and nothing
+failed — so `archive.ok` is structurally blind to it. Everything above hardens
+*detectable* failure; a successful backup is still not proof the databases inside
+will open. Say this plainly rather than letting the new exit-code plumbing imply
+a guarantee it doesn't give.
+
+The fix belongs to the apps, not the platform: each app snapshots its own SQLite
+with `VACUUM INTO` so the volume always holds a byte-consistent copy whenever tar
+runs (in progress for Students; Donations and Kiosk have identical exposure). The
+core cannot do this on an app's behalf — it doesn't know which files in a volume
+are databases, and has no safe way to open them. Resist adding a platform-side
+check that *looks* like it covers this.
+
+Also open: the archive is unencrypted while containing personal data, payment
+keys, the tunnel token and the backup destination's own credentials. The UI now
+says so at destination-choice time; `rclone crypt` is the real fix.
+
 ## Version
 `VERSION` at the repo root is the single source of truth. The Docker build copies
 it to `/app/VERSION`; the daemon reads it (`OPENMASJID_VERSION_FILE`). Shown in

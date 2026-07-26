@@ -5,10 +5,11 @@
  */
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ExternalLink, Play, Square, RotateCw, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Play, Square, RotateCw, RefreshCw, Globe } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { openApp, appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
+import { Toggle } from '../components/Toggle';
 import { useToast } from '../components/ToastProvider';
 
 export function AppDetail() {
@@ -37,6 +38,22 @@ export function AppDetail() {
   const start = trpc.apps.start.useMutation({ onSuccess: onChange });
   const stop = trpc.apps.stop.useMutation({ onSuccess: onChange });
   const restart = trpc.apps.restart.useMutation({ onSuccess: onChange });
+
+  // Whether this app is reachable from the internet lives in Settings → Remote
+  // access, which an admin who skipped the question at install has no reason to
+  // go looking in. Surface the same switch on the app itself so the recovery
+  // path is where they already are. Settings stays the full picture (paths, the
+  // Cloudflare setup guide); this is the one decision that belongs to the app.
+  const routes = trpc.cloudflare.routes.useQuery();
+  const route = routes.data?.apps.find((r) => r.id === id);
+  const setExposed = trpc.cloudflare.setExposed.useMutation({
+    onSuccess: (r) => {
+      utils.cloudflare.routes.invalidate();
+      onChange();
+      toast(r.exposed ? t('settings.cfExposedOn') : t('settings.cfExposedOff'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
 
   if (appQuery.isLoading) {
     return (
@@ -100,6 +117,35 @@ export function AppDetail() {
           )}
         </div>
       </div>
+
+      {route && (
+        <div className="glass panel">
+          <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <Globe size={18} /> {t('appDetail.internet')}
+          </h2>
+          <div className="setting-row">
+            <div className="setting-row__text">
+              <div className="setting-row__title">{t('appDetail.internetShare')}</div>
+              <div className="setting-row__hint">
+                {route.exposed
+                  ? route.publicUrl
+                    ? t('appDetail.internetAt', { url: route.publicUrl })
+                    : t('appDetail.internetPending')
+                  : t('appDetail.internetOff')}
+              </div>
+            </div>
+            <Toggle
+              checked={route.exposed}
+              disabled={setExposed.isPending}
+              onChange={(v) => setExposed.mutate({ id, exposed: v })}
+              label={t('appDetail.internetShare')}
+            />
+          </div>
+          <p className="setting-row__hint">
+            <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('appDetail.internetSettingsLink')}</Link>
+          </p>
+        </div>
+      )}
 
       <div className="glass panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

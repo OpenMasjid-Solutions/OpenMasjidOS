@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, Image as ImageIcon } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -528,6 +528,9 @@ export function Settings() {
           <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.backup')}</div>
             <div className="setting-row__hint">{t('settings.backupHint')}</div>
+            {/* The downloaded file is unencrypted and carries everything — say so
+                here too, not only on the off-site panel. */}
+            <div className="setting-row__hint">{t('settings.backupContentsBody')}</div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <a className="btn" href={withKey('/api/backup')}>
@@ -1024,6 +1027,20 @@ function ScheduledBackupPanel() {
         <Cloud size={18} /> {t('settings.offsiteBackups')}
       </h2>
       <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.offsiteBackupsHint')}</p>
+
+      {/* Say what is actually in the file BEFORE the admin picks somewhere to send
+          it. A backup carries people's personal details and every saved key, and
+          it is not encrypted — that has to be known at the moment of choosing. */}
+      <div
+        className="glass-inset panel"
+        style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', marginBlockEnd: '0.9rem', borderInlineStart: '3px solid var(--color-warning)' }}
+      >
+        <AlertTriangle size={18} style={{ color: 'var(--color-warning)', flexShrink: 0, marginBlockStart: 2 }} />
+        <div>
+          <div className="setting-row__title">{t('settings.backupContentsTitle')}</div>
+          <div className="setting-row__hint">{t('settings.backupContentsBody')}</div>
+        </div>
+      </div>
 
       <div className="setting-row">
         <div className="setting-row__text">
@@ -1712,6 +1729,61 @@ function CloudflarePanel() {
         )}
       </div>
 
+      {/* Which apps are shared, and where. This is the per-app consent switch — it
+          lives OUTSIDE the collapsed setup guide on purpose: an admin who declined
+          (or never saw) the question at install has to be able to find it here, and
+          a control hidden behind "How to set this up" is a control nobody finds. */}
+      {(routes.data?.apps.length ?? 0) > 0 && (
+        <div style={{ marginBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)', paddingBlockStart: '0.8rem' }}>
+          <div className="setting-row__title" style={{ marginBlockEnd: '0.3rem' }}>{t('settings.cfRoutesTitle')}</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="cf-routes" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ textAlign: 'start', color: 'var(--color-ink-muted)' }}>
+                  <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColApp')}</th>
+                  <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColShared')}</th>
+                  <th style={{ textAlign: 'start', padding: '0.25rem 0' }}>{t('settings.cfColUrl')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {routes.data?.apps.map((r) => (
+                  <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
+                    <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>{r.name}</td>
+                    <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>
+                      <Toggle
+                        checked={r.exposed}
+                        onChange={(v) => setExposed.mutate({ id: r.id, exposed: v })}
+                        label={t('settings.cfColShared')}
+                      />
+                    </td>
+                    <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
+                      {r.exposed ? (
+                        <>
+                          https://{routes.data?.host || 'your-domain'}/
+                          <input
+                            className="input glass-inset"
+                            style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
+                            defaultValue={r.path.replace(/^\//, '')}
+                            aria-label={t('settings.cfColPath')}
+                            onBlur={(e) => {
+                              const v = e.target.value.trim();
+                              if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
+                            }}
+                          />
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--color-ink-muted)', fontFamily: 'inherit' }}>{t('settings.cfNotShared')}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>{t('settings.cfRoutesHint')}</div>
+        </div>
+      )}
+
       {/* Guided, step-by-step setup with the exact Cloudflare fields. */}
       <details className="cf-guide" style={{ marginBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)', paddingBlockStart: '0.8rem' }}>
         <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{t('settings.cfGuideTitle')}</summary>
@@ -1741,57 +1813,6 @@ function CloudflarePanel() {
           {t('settings.cfHttpWarn', { port: routes.data?.ingressPort ?? 80 })}
         </p>
 
-        {/* Where each app ends up — the OS routes these paths for you (NOT added in Cloudflare). */}
-        {(routes.data?.apps.length ?? 0) > 0 && (
-          <div style={{ marginBlockStart: '0.8rem' }}>
-            <div className="setting-row__title" style={{ marginBlockEnd: '0.3rem' }}>{t('settings.cfRoutesTitle')}</div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="cf-routes" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                <thead>
-                  <tr style={{ textAlign: 'start', color: 'var(--color-ink-muted)' }}>
-                    <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColApp')}</th>
-                    <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColShared')}</th>
-                    <th style={{ textAlign: 'start', padding: '0.25rem 0' }}>{t('settings.cfColUrl')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.data?.apps.map((r) => (
-                    <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
-                      <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>{r.name}</td>
-                      <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>
-                        <Toggle
-                          checked={r.exposed}
-                          onChange={(v) => setExposed.mutate({ id: r.id, exposed: v })}
-                          label={t('settings.cfColShared')}
-                        />
-                      </td>
-                      <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
-                        {r.exposed ? (
-                          <>
-                            https://{routes.data?.host || 'your-domain'}/
-                            <input
-                              className="input glass-inset"
-                              style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
-                              defaultValue={r.path.replace(/^\//, '')}
-                              aria-label={t('settings.cfColPath')}
-                              onBlur={(e) => {
-                                const v = e.target.value.trim();
-                                if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
-                              }}
-                            />
-                          </>
-                        ) : (
-                          <span style={{ color: 'var(--color-ink-muted)', fontFamily: 'inherit' }}>{t('settings.cfNotShared')}</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>{t('settings.cfRoutesHint')}</div>
-          </div>
-        )}
       </details>
     </section>
   );

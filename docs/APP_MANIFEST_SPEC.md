@@ -248,8 +248,13 @@ and retry on `target_unreachable`. (Same spirit as the notify fail-soft above.)
 ## Tunnel uplink (`tunnel: true` — being reachable from the internet)
 
 By default an app is served only on the LAN. Set `tunnel: true` to **request** internet exposure
-through the OS's Cloudflare tunnel. It is only a request: exposure is **off until the admin turns it
-on** per-app in Settings → Remote access (the manifest request is the default the toggle starts from).
+through the OS's Cloudflare tunnel. It is only a request: exposure is **off until the admin says yes**.
+
+Where the admin answers (v0.45.0+): declaring `tunnel: true` makes the App Store show your app an
+install dialog — **even if you declare no `settings:`**, so a one-click install can still ask — with a
+single pre-ticked checkbox, "Share this app over the internet". Whatever they choose is applied at
+install, and they can change it later per-app in Settings → Remote access or on the app's own page.
+So: state the request in your manifest, and be prepared for the answer to be no.
 
 When the admin exposes the app, the platform serves it at `https://<domain>/<path>/…` and injects:
 

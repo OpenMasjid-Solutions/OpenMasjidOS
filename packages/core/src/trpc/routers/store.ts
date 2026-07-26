@@ -47,10 +47,17 @@ export const storeRouter = router({
       // the catalog is still external data — never auto-run a store entry that
       // requests powerful permissions (a compromised/spoofed catalog).
       let dangers: string[];
+      let refusals: string[];
       try {
-        dangers = checkCompose(app.compose).dangers;
+        ({ dangers, refusals } = checkCompose(app.compose));
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+      if (refusals.length > 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This app tries to open another app’s data, so it was blocked.',
+        });
       }
       if (dangers.length > 0) {
         throw new TRPCError({

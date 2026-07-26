@@ -14,6 +14,12 @@ export interface ComposeCheck {
   parsed: Record<string, unknown> | null;
   /** Friendly descriptions of risky settings found. Empty = clean. */
   dangers: string[];
+  /**
+   * Dangers that can NEVER be acknowledged away — the stack is refused outright,
+   * with no "I understand the risk" path. Reserved for settings that have no
+   * legitimate app use and whose only effect is to breach ANOTHER app's data.
+   */
+  refusals: string[];
   /** Service names found, for display. */
   services: string[];
 }
@@ -174,6 +180,59 @@ function checkNamedVolumes(volumes: unknown, dangers: string[]): void {
   }
 }
 
+/** Every OpenMasjid app's data lives in a Docker volume named `omos-<app>_<vol>`
+ *  (the compose project prefix), and the platform's own infra uses the same
+ *  namespace. Nothing outside an app may attach to it. */
+const OMOS_VOLUME_RE = /^omos[-_]/i;
+
+/**
+ * A compose file can point a "named" volume at an ALREADY-EXISTING Docker volume
+ * in two ways, neither of which looks like a host bind:
+ *   - `external: true`  → the volume name is used verbatim (the key, or `name:`),
+ *   - `name: <literal>` → compose v2 skips the project prefix and uses that name.
+ * So a stack could declare
+ *     services: { x: { volumes: ["omos-students_data:/steal"] } }
+ *     volumes:  { omos-students_data: { external: true } }
+ * and read another app's database, because bindSource()/checkHostPath() only ever
+ * look at HOST paths and a named volume returns early. Cross-app data access has
+ * no legitimate use, so a target inside the reserved `omos-` namespace is a HARD
+ * REFUSAL; any other pre-existing/renamed volume is merely unverifiable, so it
+ * stays an acknowledgeable danger for the advanced custom/community paths.
+ */
+function checkExternalVolumes(volumes: unknown, dangers: string[], refusals: string[]): void {
+  if (!volumes || typeof volumes !== 'object') return;
+  for (const [key, def] of Object.entries(volumes as Record<string, unknown>)) {
+    // `data:` / `data: {}` — an ordinary project-scoped volume. Nothing to check.
+    if (!def || typeof def !== 'object') continue;
+    const d = def as Record<string, unknown>;
+    const ext = d.external;
+    // `external: true|yes|1` (short form) or `external: { name: … }` (long form).
+    const isExternal = isTruthyFlag(ext) || (!!ext && typeof ext === 'object');
+    const named =
+      typeof d.name === 'string'
+        ? d.name
+        : ext && typeof ext === 'object' && typeof (ext as { name?: unknown }).name === 'string'
+          ? (ext as { name: string }).name
+          : null;
+    if (!isExternal && named == null) continue;
+    // With `external: true` and no explicit name, the KEY is the real volume name.
+    const target = String(named ?? key).trim();
+    if (hasInterpolation(target)) {
+      dangers.push(`Volume "${key}" uses a variable for its Docker volume name, so we can't check whose data it would open.`);
+      continue;
+    }
+    if (OMOS_VOLUME_RE.test(target)) {
+      refusals.push(`Volume "${key}" attaches to another OpenMasjid app's data (${target}).`);
+      continue;
+    }
+    dangers.push(
+      isExternal
+        ? `Volume "${key}" attaches to an existing Docker volume on this machine (${target}) — we can't check what's inside it.`
+        : `Volume "${key}" renames itself to "${target}" instead of using its own storage, so it can open data that isn't its own.`,
+    );
+  }
+}
+
 export function checkCompose(text: string): ComposeCheck {
   let doc: unknown;
   try {
@@ -199,6 +258,7 @@ export function checkCompose(text: string): ComposeCheck {
   }
 
   const dangers: string[] = [];
+  const refusals: string[] = [];
   // `include:`/`extends:` pull in configuration from other files that we never
   // see here but `docker compose up` merges in — so they could smuggle dangerous
   // settings past this check. Refuse to vouch for them.
@@ -314,9 +374,11 @@ export function checkCompose(text: string): ComposeCheck {
 
   // Top-level named volumes can be host binds via the local driver (see above).
   checkNamedVolumes(parsed.volumes, dangers);
+  // …or point straight at ANOTHER APP's Docker volume via external:/name:.
+  checkExternalVolumes(parsed.volumes, dangers, refusals);
   // Top-level file-based secrets/configs bind a host file into the container.
   checkFileSources('Secret', parsed.secrets, dangers);
   checkFileSources('Config', parsed.configs, dangers);
 
-  return { parsed, dangers, services: names };
+  return { parsed, dangers, refusals, services: names };
 }

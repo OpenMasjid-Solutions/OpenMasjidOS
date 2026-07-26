@@ -56,6 +56,22 @@ condition via `needsFabricSecret`, in both install and the update reconcile). Gr
   defaults from the manifest `tunnel:true` request. New installs default **not exposed** (`store.install`
   accepts an `expose` flag; the manifest request is surfaced in the UI). *(Decision 1c + grandfather —
   chosen over a bespoke install-dialog toggle; nothing is public without the admin's explicit toggle.)*
+- **Correction (v0.45.0): the manifest request was never actually surfaced.** Decision 1c was only
+  half-built — `store.install` accepted `expose`, but no UI ever sent it and nothing read `app.tunnel`,
+  so `installCatalogApp` always saw `undefined` and a `tunnel:true` app installed silently un-exposed
+  with an empty `OPENMASJID_PUBLIC_URL`. An app whose whole purpose needs absolute public links (e.g.
+  emailed parent-portal invites) therefore broke with no signal to the admin. Fixed by making the
+  Store **ask**: an app with `tunnel:true` always opens the install dialog — even with no `settings:`,
+  which is exactly the one-click path that used to drop the request — and shows a single pre-ticked
+  checkbox ("Share this app over the internet"), warning when Remote access isn't configured yet.
+  The default stays *the app's stated need, shown and confirmable*, not a silent auto-expose:
+  `installCatalogApp` still requires `expose === true`, so the invariant "nothing is public without
+  the admin's explicit toggle" is unchanged — the admin is now simply *asked*.
+- **Discoverability of the recovery path (v0.45.0).** The per-app "Shared online" toggles used to sit
+  inside the collapsed "How to set this up" `<details>` in Settings → Remote access — i.e. the fix for
+  a declined/missed install-time question was hidden behind a setup guide. They are now always visible
+  in that panel, and the same switch (plus the app's live public URL) appears on the app's own detail
+  page, which is where an admin wondering "why can't parents reach this?" actually looks.
 - **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths
   (`isFabricSubpath`, matched on the app-relative path after the segment) — LAN-only.
 - **`OPENMASJID_PUBLIC_URL`** is injected into the app's `.env` (empty when not exposed / tunnel off),

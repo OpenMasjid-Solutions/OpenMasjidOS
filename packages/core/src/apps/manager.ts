@@ -525,9 +525,13 @@ export async function installCatalogApp(
   const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, email, alerts: appAlerts, ...fabric })
     ? crypto.randomBytes(32).toString('base64url')
     : undefined;
-  // Per-app tunnel exposure: default NOT exposed (admin consents in Settings, which
-  // defaults from the manifest's `tunnel:true` request). Nothing is public until
-  // the admin says so. `expose` lets the caller pre-set that consent.
+  // Per-app tunnel exposure. Nothing is public until the admin says so, so we
+  // never infer this from the manifest: `app.tunnel` is only a REQUEST, and the
+  // Store turns that request into an explicit install-time question (a checkbox,
+  // pre-ticked from `tunnel:true`) whose answer arrives here as `expose`. Absent
+  // an answer we stay private; the admin can still flip it in Settings → Remote
+  // access. (Before v0.45.0 the Store never sent `expose`, so a `tunnel:true`
+  // request was silently dropped and the app never got a public URL.)
   const exposed = expose === true;
   // Stripe apps (https:true) are served over HTTPS on a dedicated proxy port.
   const wantsHttps = app.https === true;
@@ -623,6 +627,29 @@ export function installCommunityApp(opts: {
 }
 
 /**
+ * Stop every installed app's containers. Used at the START of a restore: an app
+ * that is still running while we replace the contents of its Docker volume keeps
+ * writing to (and caching pages from) the data we are overwriting, which is a
+ * reliable way to corrupt a SQLite database. Stop first, refill, then reup.
+ * Best-effort per app — one stubborn stack must not abort the restore.
+ */
+export async function stopAllApps(onLine: (s: string) => void): Promise<void> {
+  const ids = listMetaIds();
+  if (ids.length === 0) return;
+  onLine('Pausing your apps while the data is put back…');
+  for (const id of ids) {
+    const name = loadMeta(id)?.name ?? id;
+    try {
+      await composeStop(projectOf(id));
+      onLine(`• ${name}`);
+    } catch (err) {
+      log.warn(`Restore: could not stop ${id} before restoring its data.`, err);
+      onLine(`• ${name} (couldn't pause it — its data may not restore cleanly)`);
+    }
+  }
+}
+
+/**
  * Bring every installed app back up from its on-disk compose file. Used after a
  * restore so apps run with the restored data (and so a fresh-box restore
  * actually recreates them). Streams a friendly line per app via onLine.
@@ -641,9 +668,10 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
     // a dangerous compose (privileged, host namespaces, socket/sensitive binds…)
     // that a crafted backup could smuggle in without the usual consent (audit).
     try {
-      const { dangers } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
-      if (dangers.length > 0) {
-        onLine(`  (not started — needs review: ${dangers[0]})`);
+      const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
+      const blocking = [...refusals, ...dangers];
+      if (blocking.length > 0) {
+        onLine(`  (not started — needs review: ${blocking[0]})`);
         continue;
       }
     } catch (err) {
@@ -830,6 +858,27 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   }
   if (!isNewerVersion(meta.version ?? '', app.version)) {
     onLine(`${meta.name} is already up to date (v${app.version}).`);
+    return;
+  }
+
+  // Re-apply the INSTALL-TIME risk gate. The refreshed catalog entry is fresh
+  // external data — a compromised or spoofed catalog could ship an update whose
+  // compose asks for powers the installed version never had, and an update that
+  // skipped this check would slip straight past the gate the install honoured.
+  // (reupAllApps re-checks on restore for exactly the same reason.)
+  let dangers: string[];
+  let refusals: string[];
+  try {
+    ({ dangers, refusals } = checkCompose(app.compose));
+  } catch (err) {
+    onLine(`The update couldn't be checked safely, so nothing was changed. (${(err as Error).message})`);
+    return;
+  }
+  const blocking = [...refusals, ...dangers];
+  if (blocking.length > 0) {
+    onLine('This update asks for powerful permissions, so it was blocked for safety.');
+    onLine(`Reason: ${blocking[0]}`);
+    onLine(`Nothing was changed — ${meta.name} is still running its current version.`);
     return;
   }
 

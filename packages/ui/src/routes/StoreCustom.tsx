@@ -90,6 +90,8 @@ function CommunityTab() {
 
   const check = trpc.community.check.useMutation();
   const conflicts = check.data?.conflicts ?? [];
+  // Never acknowledgeable — the server blocks these outright (cross-app data access).
+  const refusals = check.data?.refusals ?? [];
 
   useEffect(() => {
     if (check.data) setPortRemap(initialRemap(check.data.conflicts));
@@ -233,6 +235,15 @@ function CommunityTab() {
           <AlertTriangle size={20} style={{ color: 'var(--color-warning)', flexShrink: 0 }} />
           <span>{t('community.thirdPartyNotice')}</span>
         </div>
+        {refusals.length > 0 && (
+          <div className="glass-inset panel" style={{ marginBottom: '1rem', borderInlineStart: '3px solid var(--color-danger, #d9534f)' }}>
+            <strong style={{ color: 'var(--color-danger, #d9534f)' }}>{t('custom.refusalsTitle')}</strong>
+            <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
+              {refusals.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+            <p className="hint" style={{ marginBlock: '0.5rem 0' }}>{t('custom.refusalsBody')}</p>
+          </div>
+        )}
         {needsAck && (
           <div className="glass-inset panel" style={{ marginBottom: '1rem' }}>
             <strong style={{ color: 'var(--color-warning)' }}>{t('custom.dangersTitle')}</strong>
@@ -249,7 +260,7 @@ function CommunityTab() {
             {installError && <p className="form-error">{installError}</p>}
             <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
               <button className="btn" onClick={() => setConfirmApp(null)}>{t('common.cancel')}</button>
-              <button className="btn btn--primary" onClick={confirmInstall}>
+              <button className="btn btn--primary" onClick={confirmInstall} disabled={refusals.length > 0}>
                 {needsAck ? t('custom.riskAck') : t('actions.install')}
               </button>
             </div>
@@ -281,6 +292,9 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
     onError: (e) => setError(e.message || t('custom.error')),
   });
   const dangers = check.data?.dangers ?? [];
+  // Refusals are NOT acknowledgeable — a stack that reaches into another app's
+  // data is blocked server-side however the box is ticked, so don't offer the ack.
+  const refusals = check.data?.refusals ?? [];
   const conflicts = check.data?.conflicts ?? [];
 
   // Pre-fill the remap with suggested free ports whenever a check finds conflicts.
@@ -309,10 +323,20 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
           <textarea className="textarea glass-inset" style={{ minHeight: '5rem' }} placeholder={t('custom.envPlaceholder')} value={env} onChange={(e) => setEnv(e.target.value)} />
         </div>
 
-        {check.data && dangers.length === 0 && (
+        {check.data && dangers.length === 0 && refusals.length === 0 && (
           <p style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <ShieldCheck size={16} /> {t('custom.servicesFound', { count: check.data.services.length, names: check.data.services.join(', ') })}
           </p>
+        )}
+
+        {refusals.length > 0 && (
+          <div className="glass-inset panel" style={{ marginBottom: '1rem', borderInlineStart: '3px solid var(--color-danger, #d9534f)' }}>
+            <strong style={{ color: 'var(--color-danger, #d9534f)' }}>{t('custom.refusalsTitle')}</strong>
+            <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
+              {refusals.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+            <p className="hint" style={{ marginBlock: '0.5rem 0' }}>{t('custom.refusalsBody')}</p>
+          </div>
         )}
 
         {dangers.length > 0 && (
@@ -338,7 +362,7 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
           </button>
           <button
             className="btn btn--primary"
-            disabled={install.isPending || (dangers.length > 0 && !ack)}
+            disabled={install.isPending || refusals.length > 0 || (dangers.length > 0 && !ack)}
             onClick={() => {
               setError('');
               if (!name.trim()) return setError(t('custom.nameRequired'));

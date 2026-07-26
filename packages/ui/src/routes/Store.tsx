@@ -43,11 +43,15 @@ export function Store() {
     onSettled: () => setInstallingId(null),
   });
   function startInstall(app: CatalogApp) {
-    if ((app.settings?.length ?? 0) > 0) {
+    // An app that asks to be reachable from the internet (`tunnel: true`) has to
+    // open the dialog even with no settings — that request is the admin's to
+    // answer, and a one-click install that silently drops it leaves the app with
+    // no public address and no way for the admin to know it was ever asked for.
+    if ((app.settings?.length ?? 0) > 0 || app.tunnel === true) {
       setActive(app);
     } else {
       setInstallingId(app.id);
-      directInstall.mutate({ id: app.id, settings: {} });
+      directInstall.mutate({ id: app.id, settings: {}, expose: false });
     }
   }
 
@@ -175,6 +179,15 @@ function InstallModal({
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(fields.map((f) => [f.key, f.default ?? ''])),
   );
+  // The manifest's `tunnel: true` is a REQUEST, not a decision — we pre-tick the
+  // box so the app's need is honoured by default, but the admin sees it and can
+  // say no. Nothing becomes public without them clicking Install with it ticked.
+  const wantsTunnel = app.tunnel === true;
+  const [expose, setExpose] = useState(wantsTunnel);
+  // Ticking the box only means anything once Remote access is set up, so tell the
+  // admin when it isn't rather than letting them think the app is now reachable.
+  const cloudflare = trpc.cloudflare.status.useQuery(undefined, { enabled: wantsTunnel });
+  const remoteReady = cloudflare.data?.enabled === true && Boolean(cloudflare.data?.domain);
   // A `stripe-account` field is a picker of the Stripe accounts configured in the
   // OS — the admin chooses one instead of re-typing keys (see Settings → Payments).
   const hasStripeField = fields.some((f) => f.type === 'stripe-account');
@@ -241,6 +254,33 @@ function InstallModal({
           )}
         </div>
       ))}
+      {wantsTunnel && (
+        <div className="glass-inset panel" style={{ marginBlockEnd: '1rem' }}>
+          <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
+            <input
+              type="checkbox"
+              checked={expose}
+              onChange={(e) => setExpose(e.target.checked)}
+              style={{ marginBlockStart: '0.25rem' }}
+            />
+            <span>
+              <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
+              <span className="setting-row__hint" style={{ display: 'block' }}>
+                {t('store.shareOnlineHint', { name: app.name })}
+              </span>
+            </span>
+          </label>
+          {expose && !remoteReady && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #d4af37)' }}>
+              {t('store.shareOnlineNoRemote')}{' '}
+              <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('store.shareOnlineSettingsLink')}</Link>
+            </p>
+          )}
+          <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+            {t('store.shareOnlineChangeLater')}
+          </p>
+        </div>
+      )}
       {install.isPending ? (
         <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
           <span className="spinner" /> {t('store.installingHint')}
@@ -248,7 +288,7 @@ function InstallModal({
       ) : (
         <button
           className="btn btn--primary btn--block"
-          onClick={() => install.mutate({ id: app.id, settings: values })}
+          onClick={() => install.mutate({ id: app.id, settings: values, expose })}
         >
           {t('store.installCta')}
         </button>

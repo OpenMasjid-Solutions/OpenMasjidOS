@@ -30,6 +30,16 @@ function ensureEnabled() {
   }
 }
 
+/** Some findings are never acknowledgeable — a stack that reaches into another
+ *  app's data is refused outright, however emphatically the admin agrees. */
+function refuseIfBlocked(refusals: string[]): void {
+  if (refusals.length === 0) return;
+  throw new TRPCError({
+    code: 'FORBIDDEN',
+    message: `This app tries to open another app’s data, so it can’t be installed. ${refusals[0]}`,
+  });
+}
+
 export const communityRouter = router({
   repos: protectedProcedure.query(() => {
     ensureEnabled();
@@ -67,13 +77,14 @@ export const communityRouter = router({
     .mutation(async ({ input }) => {
       ensureEnabled();
       let dangers: string[];
+      let refusals: string[];
       try {
-        dangers = checkCompose(input.compose).dangers;
+        ({ dangers, refusals } = checkCompose(input.compose));
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
       const { conflicts } = await findPortConflicts(input.compose);
-      return { dangers, conflicts, ok: dangers.length === 0 };
+      return { dangers, refusals, conflicts, ok: dangers.length === 0 && refusals.length === 0 };
     }),
 
   install: protectedProcedure
@@ -90,11 +101,13 @@ export const communityRouter = router({
       ensureEnabled();
       const compose = input.portRemap ? remapPorts(input.compose, input.portRemap) : input.compose;
       let dangers: string[];
+      let refusals: string[];
       try {
-        dangers = checkCompose(compose).dangers;
+        ({ dangers, refusals } = checkCompose(compose));
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
+      refuseIfBlocked(refusals);
       if (dangers.length > 0 && !input.acknowledgeRisk) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',

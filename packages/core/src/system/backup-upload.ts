@@ -163,6 +163,11 @@ function backupName(now = new Date()): string {
   return `openmasjidos-backup-${now.toISOString().replace(/:/g, '-').slice(0, 19)}.tar.gz`;
 }
 
+/** Remove one file from the remote (used to clear a partial upload). */
+async function deleteRemote(remotePath: string, name: string): Promise<void> {
+  await capture(['--config', RCLONE_CONF, 'deletefile', `${REMOTE}:${remotePath}/${name}`], 30_000);
+}
+
 /** Delete remote backups beyond the retention count (newest kept). */
 async function pruneOld(remotePath: string, retention: number): Promise<void> {
   const r = await capture(['--config', RCLONE_CONF, 'lsf', '--files-only', `${REMOTE}:${remotePath}`], 30_000);
@@ -187,14 +192,33 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
   const name = backupName();
   const dest = `${REMOTE}:${cfg.remotePath}/${name}`;
 
-  const tar = await backupStream();
-  const result = await new Promise<{ ok: boolean; message: string }>((resolve) => {
+  const record = (ok: boolean, message: string) => {
+    updateBackups({
+      lastRunAt: new Date().toISOString(),
+      lastResult: ok ? 'ok' : 'error',
+      lastMessage: message,
+      ...(ok ? { lastBackupName: name } : {}),
+    });
+    if (!ok) log.warn(`Scheduled backup failed: ${message}`);
+    return { ok, name, message };
+  };
+
+  // A backup that couldn't capture everything throws instead of streaming a
+  // partial archive (and a second concurrent run throws BackupBusyError).
+  let backup;
+  try {
+    backup = await backupStream();
+  } catch (err) {
+    return record(false, (err as Error).message);
+  }
+
+  const upload = await new Promise<{ ok: boolean; message: string }>((resolve) => {
     const rc = spawn('rclone', ['--config', RCLONE_CONF, 'rcat', dest], { stdio: ['pipe', 'ignore', 'pipe'] });
     let err = '';
     rc.stderr.on('data', (d) => (err += d.toString()));
     rc.on('error', (e) => resolve({ ok: false, message: `rclone unavailable: ${e.message}` }));
     rc.on('close', (code) => resolve(code === 0 ? { ok: true, message: '' } : { ok: false, message: lastLine(err) || `rclone exited ${code}` }));
-    tar.on('error', (e) => {
+    backup.stream.on('error', (e) => {
       try {
         rc.kill();
       } catch {
@@ -202,20 +226,26 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
       }
       resolve({ ok: false, message: `Could not read the backup: ${(e as Error).message}` });
     });
-    tar.pipe(rc.stdin);
+    backup.stream.pipe(rc.stdin);
   });
 
-  if (result.ok) {
+  // rclone exiting 0 only means it wrote whatever it was fed. The archive itself
+  // is only known-good once `done` says so — a torn app volume or a non-zero tar
+  // exit lands here, and MUST NOT count as a successful backup.
+  const archive = await backup.done;
+  const ok = upload.ok && archive.ok;
+  const message = upload.ok ? archive.message : upload.message;
+
+  if (ok) {
+    // Prune ONLY after a verified-complete upload. Pruning on an unverified run
+    // is how N silently-torn backups evict every good archive on the remote.
     await pruneOld(cfg.remotePath, cfg.retention).catch(() => undefined);
+  } else if (upload.ok) {
+    // We uploaded a file, but the archive behind it is incomplete — remove it so
+    // it can't be restored, and so it doesn't occupy a retention slot.
+    await deleteRemote(cfg.remotePath, name).catch(() => undefined);
   }
-  updateBackups({
-    lastRunAt: new Date().toISOString(),
-    lastResult: result.ok ? 'ok' : 'error',
-    lastMessage: result.message,
-    ...(result.ok ? { lastBackupName: name } : {}),
-  });
-  if (!result.ok) log.warn(`Scheduled backup failed: ${result.message}`);
-  return { ok: result.ok, name, message: result.message };
+  return record(ok, message);
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────

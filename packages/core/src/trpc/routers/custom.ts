@@ -33,15 +33,25 @@ function safeCheck(text: string) {
   }
 }
 
+/** Some findings are never acknowledgeable — a stack that reaches into another
+ *  app's data is refused outright, however emphatically the admin agrees. */
+function refuseIfBlocked(refusals: string[]): void {
+  if (refusals.length === 0) return;
+  throw new TRPCError({
+    code: 'FORBIDDEN',
+    message: `This app tries to open another app’s data, so it can’t be installed. ${refusals[0]}`,
+  });
+}
+
 export const customRouter = router({
   /** Pre-flight: parse + risk-check a pasted compose, and flag port conflicts. */
   check: protectedProcedure
     .input(z.object({ compose: z.string().min(1) }))
     .mutation(async ({ input }) => {
       ensureEnabled();
-      const { services, dangers } = safeCheck(input.compose);
+      const { services, dangers, refusals } = safeCheck(input.compose);
       const { conflicts } = await findPortConflicts(input.compose);
-      return { services, dangers, conflicts, ok: dangers.length === 0 };
+      return { services, dangers, refusals, conflicts, ok: dangers.length === 0 && refusals.length === 0 };
     }),
 
   install: protectedProcedure
@@ -58,7 +68,8 @@ export const customRouter = router({
     .mutation(async ({ input, ctx }) => {
       ensureEnabled();
       const compose = input.portRemap ? remapPorts(input.compose, input.portRemap) : input.compose;
-      const { dangers } = safeCheck(compose);
+      const { dangers, refusals } = safeCheck(compose);
+      refuseIfBlocked(refusals);
       if (dangers.length > 0 && !input.acknowledgeRisk) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',

@@ -24,7 +24,7 @@ import { ensureDir } from './util/json-store';
 import { appRouter, type AppRouter } from './trpc/router';
 import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
-import { backupStream, backupFilename } from './system/backup';
+import { backupStream, backupFilename, BackupBusyError } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
@@ -137,10 +137,20 @@ async function main() {
     // The download URL is a plain <a href> (no header), so the dashboard key
     // rides in ?k= — an app that captured the cookie can't forge it.
     if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
+    // A backup that can't capture everything is refused rather than served as a
+    // silently-incomplete file (system/backup.ts). Say so plainly instead of
+    // handing the admin an archive they'd trust and later find gaps in.
+    let backup;
+    try {
+      backup = await backupStream();
+    } catch (err) {
+      const busy = err instanceof BackupBusyError;
+      return reply.code(busy ? 409 : 500).send({ error: (err as Error).message });
+    }
     reply
       .header('content-type', 'application/gzip')
       .header('content-disposition', `attachment; filename="${backupFilename()}"`);
-    return reply.send(await backupStream());
+    return reply.send(backup.stream);
   });
 
   // WebSocket terminals (root shell + per-app shell), gated by settings + auth.
@@ -160,6 +170,14 @@ async function main() {
 
   // Catalog app updates streamed over a WebSocket (pull + recreate).
   registerAppUpdate(server);
+
+  // LAN-only guard for the secret-gated Fabric routes, on the TLS listener too.
+  // Nothing routes the tunnel at :443 today, so this is defence in depth — but a
+  // single Cloudflare route pointed at https://localhost:443 would otherwise
+  // publish /api/fabric/app/* (the app-to-app broker) and /api/auth/session to
+  // the internet. The invariant is "these are LAN-only", not "LAN-only on the
+  // listener we happen to expose", so both listeners carry the same guard.
+  registerFabricTunnelGuard(server);
 
   // OpenMasjidOS Fabric: SSO cookie introspection + public appearance (optional).
   registerFabric(server);

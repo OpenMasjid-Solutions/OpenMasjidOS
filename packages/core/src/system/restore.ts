@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../config';
 import { streamSpawn, recreateCore } from '../docker/update';
-import { reupAllApps } from '../apps/manager';
+import { reupAllApps, stopAllApps } from '../apps/manager';
 
 export const RESTORE_PATH = path.join(DATA_DIR, '.restore.tar.gz');
 const STAGING_DIR = path.join(DATA_DIR, '.restore-staging');
@@ -72,8 +72,8 @@ async function archiveTooLarge(): Promise<string | null> {
   return total > cap ? 'That backup is too large to restore safely (it would fill the disk).' : null;
 }
 
-/** Validate the REAL extracted tree: only config/ + apps/ at the top, and no
- *  symlinks or special files anywhere. Returns an error message, or null. */
+/** Validate the REAL extracted tree: only config/, apps/ or volumes/ at the top,
+ *  and no symlinks or special files anywhere. Returns an error message, or null. */
 function validateExtracted(root: string): string | null {
   let top: fs.Dirent[];
   try {
@@ -112,20 +112,25 @@ function validateExtracted(root: string): string | null {
 }
 
 /** Recreate each app's Docker volume from volumes/<name>.tar.gz and refill it via
- *  a throwaway container. Returns how many volumes were restored. Best-effort per
- *  volume so one bad entry can't abort the whole restore. */
-async function restoreVolumes(volDir: string, onLine: (s: string) => void): Promise<number> {
+ *  a throwaway container. Best-effort per volume so one bad entry can't abort the
+ *  whole restore — but every failure is REPORTED, both per-volume and in the
+ *  summary, so "restore finished" can never mean "your app data didn't come back". */
+async function restoreVolumes(
+  volDir: string,
+  onLine: (s: string) => void,
+): Promise<{ restored: number; failed: string[] }> {
   let files: string[];
   try {
     files = fs.readdirSync(volDir).filter((f) => f.endsWith('.tar.gz'));
   } catch {
-    return 0; // no volumes/ in this backup (older format) — nothing to do
+    return { restored: 0, failed: [] }; // no volumes/ in this backup (older format)
   }
-  if (files.length === 0) return 0;
+  if (files.length === 0) return { restored: 0, failed: [] };
 
   onLine('');
   onLine('Restoring app data…');
-  let n = 0;
+  let restored = 0;
+  const failed: string[] = [];
   for (const f of files) {
     const vol = f.replace(/\.tar\.gz$/, '');
     // Only well-formed app volume names; never touch OS-internal infra.
@@ -138,10 +143,14 @@ async function restoreVolumes(volDir: string, onLine: (s: string) => void): Prom
       child.on('close', (code) => resolve(code === 0));
       fs.createReadStream(path.join(volDir, f)).pipe(child.stdin);
     });
-    if (ok) n++;
-    else onLine(`  (couldn't restore ${vol})`);
+    if (ok) {
+      restored++;
+    } else {
+      failed.push(vol);
+      onLine(`  (couldn't restore ${vol})`);
+    }
   }
-  return n;
+  return { restored, failed };
 }
 
 /** Extract the backup, validate the result, move it into place, restart apps,
@@ -183,6 +192,14 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
       return;
     }
 
+    // Quiesce first. Refilling a Docker volume underneath a RUNNING container
+    // means the app keeps writing to (and serving from) data we are replacing —
+    // the reliable way to corrupt a SQLite database mid-restore. Stop them before
+    // anything is overwritten; reupAllApps starts them again at the end. This
+    // uses the CURRENT on-disk app list, so it must run before apps/ is replaced.
+    await stopAllApps(onLine);
+
+    onLine('');
     onLine('Restoring your settings and app data…');
     let moved = 0;
     // config/ + apps/ are filesystem trees moved into the data dir. volumes/ is
@@ -198,11 +215,27 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
 
     // Restore each app's Docker volume (its real data — SQLite db, uploads, …)
     // BEFORE starting apps, so `compose up` finds the populated volumes.
-    const restoredVols = await restoreVolumes(path.join(STAGING_DIR, 'volumes'), onLine);
+    const { restored: restoredVols, failed: failedVols } = await restoreVolumes(
+      path.join(STAGING_DIR, 'volumes'),
+      onLine,
+    );
 
-    if (moved === 0 && restoredVols === 0) {
+    if (moved === 0 && restoredVols === 0 && failedVols.length === 0) {
       onLine('That backup had nothing to restore.');
       return;
+    }
+
+    // Settings restoring while every app's data failed is NOT a successful
+    // restore, and must never be reported as one just because config/ moved.
+    if (failedVols.length > 0) {
+      onLine('');
+      onLine(
+        restoredVols === 0
+          ? "Your settings were restored, but NONE of your app data could be put back."
+          : `Your settings were restored, but some app data could not be put back (${failedVols.length} of ${restoredVols + failedVols.length}).`,
+      );
+      onLine(`Affected: ${failedVols.join(', ')}`);
+      onLine('Those apps will start with whatever data was already on this machine. Please check them before relying on this restore.');
     }
 
     onLine('');
