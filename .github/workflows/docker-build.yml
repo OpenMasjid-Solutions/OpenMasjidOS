@@ -9,14 +9,58 @@ on:
   pull_request:
     branches: [master]
 
+# One run per branch. Two pushes in quick succession both push the SAME tags
+# (including `:latest`), and the multi-arch arm64 build runs under QEMU, so an
+# older run can easily still be going when a newer one finishes — whichever lands
+# LAST wins, silently republishing `:latest` from the older commit. Cancel the
+# superseded run instead. (Tag pushes have their own ref, so a release build is
+# never cancelled by a branch push.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/openmasjid-core
 
 jobs:
-  # Supply-chain signal: resolve the dependency tree and fail on known high/
-  # critical advisories. (A committed lockfile + `npm ci` is the fuller fix —
-  # run `npm install` once on a Node machine and commit package-lock.json.)
+  # Typecheck + tests. This is the gate the repo was missing: `npm run build` is
+  # vite + esbuild and typechecks NOTHING, so before this job the only thing
+  # standing between a type error and a published image was someone remembering
+  # to run `npm run lint` locally. That is how the @fastify/static v10 bump — which
+  # changed the `setHeaders` callback's first argument, making every dashboard file
+  # 500 — got within one command of shipping. `build` depends on this job.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        # Node 20 to match the runtime image (node:20-alpine), so we test on the
+        # version we actually ship rather than whatever the runner defaults to.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck (lint)
+        run: npm run lint
+      - name: Tests
+        run: npm test
+
+  # Supply-chain signal: fail on known high/critical advisories.
+  #
+  # Audits the lockfile AS COMMITTED. The previous version ran
+  # `npm install --package-lock-only` first, which re-resolves every semver range
+  # against the registry — so it graded a tree that may not be the one the image
+  # builds from via `npm ci`. They happen to agree today, but the divergence can
+  # go either way: a clean audit while the shipped pin is vulnerable, or a red
+  # audit for a version we never install.
+  #
+  # Deliberately NOT a dependency of `build`: an advisory published overnight in a
+  # transitive dep is not a reason the project cannot ship a fix. It still turns
+  # the run red, which is the signal we want.
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -26,13 +70,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Resolve lockfile
-        run: npm install --package-lock-only
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
+      - name: Audit the committed lockfile
+        run: npm audit --audit-level=high --package-lock-only
 
   build:
     runs-on: ubuntu-latest
+    # No image is published unless the tree typechecks and the tests pass.
+    needs: [checks]
     permissions:
       contents: read
       packages: write
