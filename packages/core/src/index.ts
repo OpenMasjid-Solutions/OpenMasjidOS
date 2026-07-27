@@ -31,6 +31,7 @@ import { attachIngress } from './system/ingress';
 import { registerFabricTunnelGuard } from './system/via-tunnel';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
+import { startAddressMonitor } from './system/address-monitor';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -276,6 +277,11 @@ async function main() {
   // Watch for a new core version + newer versions of installed apps, and raise the
   // core-update / app-update alerts the moment one is detected (gated by the matrix).
   startUpdateMonitor();
+
+  // Keep installed apps pointed at this machine's CURRENT address. Moving the box
+  // to a new subnet used to leave every app calling the old IP forever, because
+  // OPENMASJID_BASE_URL was resolved once at install and never revisited.
+  startAddressMonitor();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

@@ -934,3 +934,55 @@ button {
 }
 .auth-card { width: min(26rem, 100%); padding: 2rem; }
 .auth-logo { display: flex; justify-content: center; color: var(--color-primary); margin-block-end: 1rem; }
+
+/* ── "What's new" (Settings → Advanced) ─────────────────────────────────────
+   All colours/spacing come from theme tokens so both themes work, and every
+   inline-start property is logical so the list reads correctly in RTL. */
+.changelog__release {
+  padding-block-end: 1.1rem;
+}
+.changelog__release + .changelog__release {
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: 1.1rem;
+}
+.changelog__version {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+  color: var(--color-ink);
+}
+.changelog__badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
+}
+.changelog__badge--current {
+  background: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  color: var(--color-ink-muted);
+}
+.changelog__list {
+  margin: 0;
+  padding-inline-start: 1.15rem;
+  display: grid;
+  gap: 0.4rem;
+  color: var(--color-ink-muted);
+  line-height: 1.5;
+}
+/* A stray paragraph in the source file — no bullet, but keep it in flow. */
+.changelog__para {
+  list-style: none;
+  margin-inline-start: -1.15rem;
+}
+.changelog__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+}

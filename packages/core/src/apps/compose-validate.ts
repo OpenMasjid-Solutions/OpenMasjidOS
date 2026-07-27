@@ -180,10 +180,12 @@ function checkNamedVolumes(volumes: unknown, dangers: string[]): void {
   }
 }
 
-/** Every OpenMasjid app's data lives in a Docker volume named `omos-<app>_<vol>`
- *  (the compose project prefix), and the platform's own infra uses the same
- *  namespace. Nothing outside an app may attach to it. */
-const OMOS_VOLUME_RE = /^omos[-_]/i;
+/** The reserved Docker naming namespace. Every app's volumes and networks are
+ *  `omos-<app>_<name>` (the compose project prefix), the platform's tunnel infra
+ *  is `omos-cloudflared*`, and the core's own stack is `openmasjid*`
+ *  (COMPOSE_PROJECT in install.sh). Nothing an app declares may attach to any of
+ *  it — that is another app's data, or the core itself. */
+const RESERVED_NAMESPACE_RE = /^(omos|openmasjid)[-_]/i;
 
 /**
  * A compose file can point a "named" volume at an ALREADY-EXISTING Docker volume
@@ -199,29 +201,40 @@ const OMOS_VOLUME_RE = /^omos[-_]/i;
  * REFUSAL; any other pre-existing/renamed volume is merely unverifiable, so it
  * stays an acknowledgeable danger for the advanced custom/community paths.
  */
+/**
+ * Resolve what an `external:`/`name:` entry actually attaches to, for both the
+ * `volumes:` and `networks:` top-level maps (they share this grammar exactly).
+ * Returns null for an ordinary project-scoped entry that needs no checking.
+ */
+function externalTarget(key: string, def: unknown): { isExternal: boolean; target: string } | null {
+  // `data:` / `data: {}` — an ordinary project-scoped entry. Nothing to check.
+  if (!def || typeof def !== 'object') return null;
+  const d = def as Record<string, unknown>;
+  const ext = d.external;
+  // `external: true|yes|1` (short form) or `external: { name: … }` (long form).
+  const isExternal = isTruthyFlag(ext) || (!!ext && typeof ext === 'object');
+  const named =
+    typeof d.name === 'string'
+      ? d.name
+      : ext && typeof ext === 'object' && typeof (ext as { name?: unknown }).name === 'string'
+        ? (ext as { name: string }).name
+        : null;
+  if (!isExternal && named == null) return null;
+  // With `external: true` and no explicit name, the KEY is the real name.
+  return { isExternal, target: String(named ?? key).trim() };
+}
+
 function checkExternalVolumes(volumes: unknown, dangers: string[], refusals: string[]): void {
   if (!volumes || typeof volumes !== 'object') return;
   for (const [key, def] of Object.entries(volumes as Record<string, unknown>)) {
-    // `data:` / `data: {}` — an ordinary project-scoped volume. Nothing to check.
-    if (!def || typeof def !== 'object') continue;
-    const d = def as Record<string, unknown>;
-    const ext = d.external;
-    // `external: true|yes|1` (short form) or `external: { name: … }` (long form).
-    const isExternal = isTruthyFlag(ext) || (!!ext && typeof ext === 'object');
-    const named =
-      typeof d.name === 'string'
-        ? d.name
-        : ext && typeof ext === 'object' && typeof (ext as { name?: unknown }).name === 'string'
-          ? (ext as { name: string }).name
-          : null;
-    if (!isExternal && named == null) continue;
-    // With `external: true` and no explicit name, the KEY is the real volume name.
-    const target = String(named ?? key).trim();
+    const found = externalTarget(key, def);
+    if (!found) continue;
+    const { isExternal, target } = found;
     if (hasInterpolation(target)) {
       dangers.push(`Volume "${key}" uses a variable for its Docker volume name, so we can't check whose data it would open.`);
       continue;
     }
-    if (OMOS_VOLUME_RE.test(target)) {
+    if (RESERVED_NAMESPACE_RE.test(target)) {
       refusals.push(`Volume "${key}" attaches to another OpenMasjid app's data (${target}).`);
       continue;
     }
@@ -230,6 +243,42 @@ function checkExternalVolumes(volumes: unknown, dangers: string[], refusals: str
         ? `Volume "${key}" attaches to an existing Docker volume on this machine (${target}) — we can't check what's inside it.`
         : `Volume "${key}" renames itself to "${target}" instead of using its own storage, so it can open data that isn't its own.`,
     );
+  }
+}
+
+/**
+ * The same attachment trick, one level over: a top-level `networks:` entry can
+ * join an ALREADY-EXISTING Docker network.
+ *
+ *     networks: { victim: { external: true, name: omos-students_default } }
+ *
+ * Every app's compose project gets a network called `omos-<id>_default`, and the
+ * platform's own stack is `openmasjid_default`. Joining one puts the container on
+ * the same L2 as that app's (or the core's) containers, so it can talk STRAIGHT
+ * to their UNPUBLISHED ports — no host port, no proxy, and completely around the
+ * Fabric broker's manifest-grant authorization. Same isolation class as the
+ * volume case above, so the same verdict: reserved namespace is a hard REFUSAL.
+ *
+ * Deliberately NOT flagged: a non-reserved external network. It has legitimate
+ * advanced uses (joining an existing homelab network), and — unlike a volume —
+ * making it a `danger` would make it hard-blocking on the catalog path
+ * (`store.ts` refuses ANY danger with no acknowledge route), which could brick
+ * install/update/restore for a shipped app. Revisit only with the live
+ * catalog.json audited.
+ */
+function checkExternalNetworks(networks: unknown, dangers: string[], refusals: string[]): void {
+  if (!networks || typeof networks !== 'object') return;
+  for (const [key, def] of Object.entries(networks as Record<string, unknown>)) {
+    const found = externalTarget(key, def);
+    if (!found) continue;
+    const { target } = found;
+    if (hasInterpolation(target)) {
+      dangers.push(`Network "${key}" uses a variable for its Docker network name, so we can't check what it would join.`);
+      continue;
+    }
+    if (RESERVED_NAMESPACE_RE.test(target)) {
+      refusals.push(`Network "${key}" joins another OpenMasjid app's private network (${target}).`);
+    }
   }
 }
 
@@ -376,6 +425,8 @@ export function checkCompose(text: string): ComposeCheck {
   checkNamedVolumes(parsed.volumes, dangers);
   // …or point straight at ANOTHER APP's Docker volume via external:/name:.
   checkExternalVolumes(parsed.volumes, dangers, refusals);
+  // The same attachment trick on networks — joins another app's private L2.
+  checkExternalNetworks(parsed.networks, dangers, refusals);
   // Top-level file-based secrets/configs bind a host file into the container.
   checkFileSources('Secret', parsed.secrets, dangers);
   checkFileSources('Config', parsed.configs, dangers);

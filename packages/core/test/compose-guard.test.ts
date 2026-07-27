@@ -130,3 +130,68 @@ test('a real catalog app compose still passes the whole gate', () => {
   assert.deepEqual(dangers, []);
   assert.deepEqual(services, ['app']);
 });
+
+// ── External NETWORKS: the same attachment trick, one level over ──────────────
+// Joining another app's project network reaches its UNPUBLISHED ports directly,
+// bypassing the Fabric broker's manifest-grant authorization entirely.
+
+/** A minimal valid stack declaring a top-level `networks:` map. */
+function netStack(topLevel: string): string {
+  return ['services:', '  app:', '    image: example/app:1.0.0', 'networks:', topLevel].join('\n');
+}
+
+test("refuses joining another app's private network via external: true", () => {
+  const { refusals, dangers } = checkCompose(
+    netStack('  victim:\n    external: true\n    name: omos-students_default'),
+  );
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /omos-students_default/);
+  assert.deepEqual(dangers, []);
+});
+
+test("refuses joining the platform's OWN network", () => {
+  // COMPOSE_PROJECT=openmasjid, so the core's network is `openmasjid_default` —
+  // joining it puts an app on the same L2 as the core (root + docker.sock).
+  const { refusals } = checkCompose(netStack('  x:\n    external: true\n    name: openmasjid_default'));
+  assert.equal(refusals.length, 1);
+});
+
+test('refuses a reserved network named by the KEY (external, no explicit name)', () => {
+  const { refusals } = checkCompose(netStack('  omos-donations_default:\n    external: true'));
+  assert.equal(refusals.length, 1);
+});
+
+test('refuses a reserved network renamed via bare name: (no external)', () => {
+  const { refusals } = checkCompose(netStack('  mine:\n    name: omos-kiosk_default'));
+  assert.equal(refusals.length, 1);
+});
+
+test('a variable network name fails closed as a danger', () => {
+  const { refusals, dangers } = checkCompose(netStack('  x:\n    external: true\n    name: ${TARGET}'));
+  assert.deepEqual(refusals, []);
+  assert.equal(dangers.length, 1);
+});
+
+test('ordinary and non-reserved networks stay clean (catalog apps must still install)', () => {
+  for (const topLevel of [
+    '  frontend:',
+    '  frontend: {}',
+    '  frontend:\n    driver: bridge',
+    '  frontend:\n    external: false',
+    // A non-reserved external network is deliberately NOT flagged: making it a
+    // danger would hard-block the catalog path, which has no acknowledge route.
+    '  homelab:\n    external: true',
+  ]) {
+    const { refusals, dangers } = checkCompose(netStack(topLevel));
+    assert.deepEqual(refusals, [], topLevel);
+    assert.deepEqual(dangers, [], topLevel);
+  }
+});
+
+test('a reserved VOLUME target is still refused after the namespace widened', () => {
+  // The regex grew from /^omos[-_]/ to /^(omos|openmasjid)[-_]/; both must refuse.
+  for (const name of ['omos-students_data', 'openmasjid_data', 'OMOS-Students_data']) {
+    const { refusals } = checkCompose(stack(name, `  ${name}:\n    external: true`));
+    assert.equal(refusals.length, 1, name);
+  }
+});

@@ -13,6 +13,8 @@ import { certInfo, regenerateSelfSignedLive, setCustomCertLive } from '../../sys
 import { reloadProxyCerts } from '../../system/app-proxy';
 import { isValidSshKey, addRootSshKey } from '../../system/ssh';
 import { pruneUnusedImages } from '../../docker/compose';
+import { fetchChangelog } from '../../store/changelog';
+import { reconcileNow } from '../../system/address-monitor';
 
 export const systemRouter = router({
   info: protectedProcedure.query(() => ({
@@ -22,6 +24,30 @@ export const systemRouter = router({
   })),
 
   checkUpdate: protectedProcedure.query(() => checkForUpdate()),
+
+  /** "What's new" — the project changelog, fetched server-side and cached. Fails
+   *  soft: `fresh: false` with empty text means we're offline and have nothing
+   *  cached yet, and the UI says so rather than showing an error. */
+  changelog: protectedProcedure
+    .input(z.object({ force: z.boolean().optional() }).optional())
+    .query(({ input }) => fetchChangelog(input?.force === true)),
+
+  /**
+   * Re-point installed apps at this dashboard's current address, now, without
+   * waiting for the background check. The button for "I moved the box and my
+   * apps can't reach OpenMasjidOS."
+   */
+  reconnectApps: protectedProcedure.mutation(async () => {
+    try {
+      return await reconcileNow();
+    } catch (err) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'We could not reconnect your apps just now. Please try again in a moment.',
+        cause: err,
+      });
+    }
+  }),
 
   /** Reboot the whole server (host machine). The dashboard goes down until it's
    *  back. Confirmed in the UI before calling. */

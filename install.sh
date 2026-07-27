@@ -453,6 +453,13 @@ services:
       # Point the stats collector at the mounted host /proc + cgroup.
       HOST_PROC: /host/proc
       HOST_CGROUP: /host/sys/fs/cgroup
+      # This machine's LAN address, so installed apps can be told where to reach
+      # the dashboard. The core CANNOT work this out for itself: it runs on a
+      # bridge network, so its own interfaces are the container's 172.x, not the
+      # host's. Rewritten on every install / update / repair, which is what makes
+      # a subnet move self-healing. Left empty if we couldn't determine one --
+      # the core then falls back to the address admins actually reach it on.
+      OPENMASJID_HOST_IP: "$(get_host_ip_for_apps)"
       NODE_ENV: production
 
     healthcheck:
@@ -567,6 +574,24 @@ get_server_ip() {
   fi
 
   echo "$ip"
+}
+
+# The same address, but ONLY when it is a real routable IPv4 — emitted into the
+# core's environment as OPENMASJID_HOST_IP so it can tell installed apps where to
+# reach the dashboard. The core cannot discover this itself (it runs on a bridge
+# network, so its own interfaces are the container's, not this machine's).
+#
+# Prints an EMPTY string rather than a placeholder: "localhost" and a link-local
+# 169.254.x address are both useless from inside an app container, and the core
+# treats empty as "fall back to the address admins actually reach me on".
+get_host_ip_for_apps() {
+  local ip
+  ip="$(get_server_ip)"
+  case "$ip" in
+    localhost|127.*|169.254.*|"") echo "" ;;
+    *.*.*.*) echo "$ip" ;;
+    *) echo "" ;;
+  esac
 }
 
 # =============================================================================

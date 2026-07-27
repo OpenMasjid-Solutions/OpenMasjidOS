@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Fastify from 'fastify';
 import { registerFabricTunnelGuard } from '../src/system/via-tunnel';
+import { isFabricSubpath } from '../src/system/ingress';
 
 async function guarded() {
   const app = Fastify();
@@ -61,6 +62,62 @@ test('a query string cannot smuggle a secret route past the guard', async () => 
   const res = await app.inject({ method: 'GET', url: '/api/fabric/site?x=1', headers: { 'cf-ray': 'abc' } });
   assert.equal(res.statusCode, 404);
   await app.close();
+});
+
+test('a percent-encoded path cannot smuggle a secret route past the guard', async () => {
+  // The router matches the DECODED path, so comparing the raw `req.url` let
+  // `/api/%66abric/...` walk straight through the guard and into the app-to-app
+  // broker. Every escaped spelling of a secret route must still be refused.
+  const app = await guarded();
+  for (const url of [
+    '/api/%66abric/site',
+    '/api/%66abric/app/students/billing/lookup',
+    '/api/%61uth/session',
+    '/api/fabric/%73ite',
+    '/api/%66%61bric/site',
+  ]) {
+    const res = await app.inject({ method: 'GET', url, headers: { 'cf-ray': 'abc' } });
+    assert.equal(res.statusCode, 404, `${url} must not be reachable over the tunnel`);
+  }
+  await app.close();
+});
+
+test('a malformed percent-escape does not throw away the rest of the path', async () => {
+  // `decodeURIComponent('/api/%zz/fabric')` throws; if that killed the whole
+  // comparison the guard would fall open. Decoding is per-escape for this reason.
+  const app = await guarded();
+  const res = await app.inject({ method: 'GET', url: '/api/fabric/site?bad=%zz', headers: { 'cf-ray': 'abc' } });
+  assert.equal(res.statusCode, 404);
+  await app.close();
+});
+
+test('every real spelling of x-forwarded-proto: https counts as tunnel traffic', async () => {
+  // Node joins duplicated headers with ", " and a chained proxy appends its own
+  // hop, so an exact === 'https' comparison was evadable.
+  const app = await guarded();
+  for (const proto of ['https', 'HTTPS', 'https,http', 'https, http', ' https ']) {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/fabric/site',
+      headers: { 'x-forwarded-proto': proto },
+    });
+    assert.equal(res.statusCode, 404, `x-forwarded-proto: ${JSON.stringify(proto)}`);
+  }
+  // ...but a plain LAN request over http is still allowed through.
+  const lan = await app.inject({ method: 'GET', url: '/api/fabric/site', headers: { 'x-forwarded-proto': 'http' } });
+  assert.equal(lan.statusCode, 200);
+  await app.close();
+});
+
+test("an app's own /fabric space is refused over the tunnel, encoded or not", async () => {
+  // Same decoding gap on the ingress path: we forward req.url verbatim, so the
+  // app would resolve %66 itself and serve a LAN-only route publicly.
+  for (const url of ['/donate/fabric', '/donate/fabric/billing', '/donate/%66abric/billing', '//donate/fabric/x']) {
+    assert.equal(isFabricSubpath(url, 'donate'), true, url);
+  }
+  for (const url of ['/donate', '/donate/checkout', '/donate/fabrications', '/donate/api/fabric']) {
+    assert.equal(isFabricSubpath(url, 'donate'), false, url);
+  }
 });
 
 test('index.ts applies the guard to BOTH listeners, not just the HTTP front door', () => {

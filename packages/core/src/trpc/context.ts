@@ -17,6 +17,7 @@ import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify'
 import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, CSRF_HEADER, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
+import { observeDashboardHost } from '../system/platform-address';
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -90,6 +91,15 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   const csrfHeader = req.headers?.[CSRF_HEADER];
 
   const canMutateCookies = res && typeof res.setCookie === 'function';
+
+  // Learn this machine's LAN address from requests that actually reach us. Only
+  // for a signed-in admin, and `observeDashboardHost` keeps just bare IP literals
+  // — a name that resolves in the admin's browser usually does not resolve inside
+  // an app container. This is what lets apps re-find the dashboard after a subnet
+  // move without anyone re-running the installer. /trpc is on the LAN listener
+  // only (never the tunnel front door), so the value can't come from the internet.
+  if (username) observeDashboardHost(req.headers?.host ?? null);
+
   return {
     username,
     sessionToken: token ?? null,

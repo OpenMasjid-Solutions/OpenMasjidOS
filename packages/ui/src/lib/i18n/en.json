@@ -234,6 +234,8 @@
     "refusalsTitle": "This app can't be installed:",
     "refusalsBody": "It tries to open another app's data, which is never allowed — not even if you agree to the risk. Ask whoever gave you this file to remove it.",
     "riskAck": "I understand the risk and want to install it anyway.",
+    "shareOnlineHint": "Let people outside your masjid open {{name}} over the internet. Leave this off and it stays on your network only — you can change it later in Settings.",
+    "thisApp": "this app",
     "install": "Install custom app",
     "installing": "Installing…",
     "nameRequired": "Please give the app a name.",
@@ -370,6 +372,12 @@
     "network": "Network",
     "hostname": "Hostname",
     "address": "Address",
+    "reconnect": "Reconnect apps",
+    "reconnecting": "Reconnecting…",
+    "reconnectHint": "If you've moved this machine to a different network, use this to point your apps back at the dashboard.",
+    "reconnectDone_zero": "Your apps were already pointed at the right address.",
+    "reconnectDone_one": "Reconnected 1 app to this dashboard.",
+    "reconnectDone_other": "Reconnected {{count}} apps to this dashboard.",
     "ssl": "Security & SSL",
     "sslHint": "The dashboard is served over HTTPS.",
     "sslSelfSignedNote": "Using a self-signed certificate (valid until {{date}}). Browsers show a one-time \"not secure\" warning per device — click Advanced → Proceed once. Upload your own certificate from a real domain to remove the warning.",
@@ -568,6 +576,15 @@
     "done": "Restore complete."
   },
   "status": { "running": "Running", "stopped": "Stopped" },
+  "changelog": {
+    "open": "What's new",
+    "title": "What's new in OpenMasjidOS",
+    "current": "You're on this version",
+    "newer": "Newer than yours",
+    "stale": "We couldn't check for the latest notes just now, so this may not be up to date.",
+    "offline": "We couldn't load the release notes. Check this machine's internet connection and try again.",
+    "empty": "There are no release notes to show yet."
+  },
   "errors": {
     "generic": "Something went wrong. Please try again.",
     "network": "Cannot reach the server. Check your connection and try again.",

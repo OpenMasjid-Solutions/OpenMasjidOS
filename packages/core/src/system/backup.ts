@@ -126,12 +126,18 @@ function tarVolume(vol: string, outFile: string): Promise<string | null> {
     // resolving on the child alone can leave the last chunk unwritten.
     let code: number | null = null;
     let closed = false;
+    // A write failure is tracked SEPARATELY from the exit code, because the two
+    // are independent: `docker run` can tar every byte and exit 0 while the last
+    // flush to our staging file fails (ENOSPC is the likely one — we are writing
+    // a copy of every app volume to the same disk). Folding it into `code` with
+    // `??=` silently lost exactly that case, since `code` was already 0.
+    let writeFailed = false;
 
     const finish = () => {
       if (settled || !closed || code === null) return;
       settled = true;
-      if (code === 0) return resolve(null);
-      const why = err.trim().split('\n').pop() || `exit ${code}`;
+      if (code === 0 && !writeFailed) return resolve(null);
+      const why = err.trim().split('\n').pop() || (writeFailed ? 'could not be written' : `exit ${code}`);
       log.warn(`Backup: could not archive volume ${vol}: ${why}`);
       try {
         fs.rmSync(outFile, { force: true });
@@ -150,6 +156,7 @@ function tarVolume(vol: string, outFile: string): Promise<string | null> {
     out.on('error', (e) => {
       err += String(e.message);
       closed = true;
+      writeFailed = true;
       code ??= -1;
       finish();
     });

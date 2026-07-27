@@ -60,8 +60,17 @@ export const customRouter = router({
         name: z.string().trim().min(1).max(60),
         compose: z.string().min(1),
         env: z.record(z.string(), z.string()).default({}),
-        icon: z.string().url().optional(),
+        // http(s) only: a `javascript:`/`data:` URL passes zod's `.url()` and would
+        // be persisted into meta.json and rendered straight into an <img src>.
+        icon: z
+          .string()
+          .url()
+          .refine((u) => /^https?:\/\//i.test(u), 'An icon link must start with http:// or https://')
+          .optional(),
         acknowledgeRisk: z.boolean().optional(),
+        // The admin's explicit "share this over the internet" consent. Absent =
+        // private, matching the catalog path (§15: nothing is public by default).
+        expose: z.boolean().optional(),
         portRemap: portRemapInput,
       }),
     )
@@ -101,6 +110,7 @@ export const customRouter = router({
           env: input.env,
           icon: input.icon,
           baseUrl: ctx.host,
+          expose: input.expose,
         });
       } catch (err) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });

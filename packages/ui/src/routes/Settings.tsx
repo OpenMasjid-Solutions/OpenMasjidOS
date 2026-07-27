@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -16,6 +16,7 @@ import { LazyTerminal } from '../components/LazyTerminal';
 import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
+import { Changelog } from '../components/Changelog';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
@@ -178,6 +179,7 @@ export function Settings() {
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
   const windows = useWindows();
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreUploading, setRestoreUploading] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -479,9 +481,12 @@ export function Settings() {
                 : ''}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button className="btn" onClick={checkUpdates}>
               <RefreshCw size={15} /> {updateInfo.isFetching ? t('settings.checking') : t('settings.checkUpdates')}
+            </button>
+            <button className="btn" onClick={() => setChangelogOpen(true)}>
+              <Sparkles size={15} /> {t('changelog.open')}
             </button>
             {updateInfo.data?.updateAvailable && (
               <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
@@ -491,14 +496,8 @@ export function Settings() {
           </div>
         </div>
 
-        <div className="setting-row">
-          <div className="setting-row__text">
-            <div className="setting-row__title">{t('settings.network')}</div>
-            <div className="setting-row__hint">
-              {`${t('settings.address')}: ${window.location.host}`}
-            </div>
-          </div>
-        </div>
+        <NetworkRow />
+        <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
 
         <SslSection />
 
@@ -647,6 +646,60 @@ function SshAccess() {
       </button>
       <div className="setting-row__hint" style={{ marginBlock: '0.4rem 0.3rem' }}>{t('settings.sshPasswordNote')}</div>
       <pre className="logs glass-inset" style={{ maxHeight: 'none' }}>{t('settings.sshPasswordCmd')}</pre>
+    </div>
+  );
+}
+
+/** "What's new" — the project changelog, fetched server-side (we're LAN-only, so
+ *  the browser never reaches GitHub itself). Only fetched once opened. */
+function ChangelogModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation();
+  const info = trpc.system.info.useQuery();
+  const log = trpc.system.changelog.useQuery(undefined, { enabled: open });
+  return (
+    <Modal open={open} onClose={onClose} title={t('changelog.title')} wide>
+      {log.isPending ? (
+        <div className="skeleton" style={{ height: '10rem' }} />
+      ) : log.data?.text ? (
+        <>
+          {!log.data.fresh && <p className="setting-row__hint">{t('changelog.stale')}</p>}
+          <Changelog md={log.data.text} currentVersion={info.data?.version} />
+        </>
+      ) : (
+        <p className="modal-body">{t('changelog.offline')}</p>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Network row. Shows the address the CORE believes this machine has, not
+ * `window.location.host` — the browser's URL bar is what the admin typed and told
+ * us nothing about what the platform hands to apps, which is exactly how a stale
+ * address went unnoticed after a subnet move.
+ */
+function NetworkRow() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const info = trpc.system.info.useQuery();
+  const reconnect = trpc.system.reconnectApps.useMutation({
+    onSuccess: (r) => toast(t('settings.reconnectDone', { count: r.updated.length }), 'success'),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const net = info.data?.network;
+  return (
+    <div className="setting-row">
+      <div className="setting-row__text">
+        <div className="setting-row__title">{t('settings.network')}</div>
+        <div className="setting-row__hint">
+          {`${t('settings.address')}: ${net?.addresses?.[0] ?? window.location.host}`}
+          {net?.localDomain ? ` · ${net.localDomain}` : ''}
+        </div>
+        <div className="setting-row__hint">{t('settings.reconnectHint')}</div>
+      </div>
+      <button className="btn" onClick={() => reconnect.mutate()} disabled={reconnect.isPending}>
+        <Wifi size={15} /> {reconnect.isPending ? t('settings.reconnecting') : t('settings.reconnect')}
+      </button>
     </div>
   );
 }

@@ -18,7 +18,7 @@ import net from 'node:net';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { listInstalled, getAppPath } from '../apps/manager';
-import { isViaTunnelHeaders } from './via-tunnel';
+import { isViaTunnelHeaders, decodedPath } from './via-tunnel';
 import { log } from '../logger';
 
 // How the core reaches an app's published host port (host-gateway mapping added by
@@ -103,11 +103,23 @@ function firstSegment(url: string): string {
  *  `/fabric/*` space (e.g. /donate/fabric/billing/lookup). Those are LAN-only
  *  app↔platform / app↔app broker routes — they must NEVER be reachable over the
  *  public tunnel. The platform is the first wall; apps enforce it themselves too.
+ *
+ *  Compared on the DECODED path as well as the raw one: we forward `req.url`
+ *  verbatim, so an app framework that resolves `%66` would route
+ *  `/donate/%66abric/x` to its own /fabric handler while a raw-text check saw
+ *  nothing. Segment-splitting (rather than slicing by `seg.length`) also keeps a
+ *  doubled slash like `//donate/fabric` from shifting the comparison.
  *  Exported for tests. */
 export function isFabricSubpath(url: string, seg: string): boolean {
-  const path = url.split('?')[0].split('#')[0];
-  const rest = path.slice(1 + seg.length); // strip leading "/<seg>"
-  return rest === '/fabric' || rest.startsWith('/fabric/');
+  const targetsFabric = (path: string): boolean => {
+    const parts = path.split('/').filter(Boolean);
+    // Normally parts[0] is the app's own segment and parts[1] is what it asked
+    // for; if the segment doesn't line up, fall back to the first segment so an
+    // unexpected shape fails CLOSED rather than open.
+    return parts[parts[0] === seg ? 1 : 0] === 'fabric';
+  };
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  return targetsFabric(raw) || targetsFabric(decodedPath(url));
 }
 
 function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {

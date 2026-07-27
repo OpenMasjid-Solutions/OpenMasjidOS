@@ -92,8 +92,14 @@ export const communityRouter = router({
       z.object({
         name: z.string().trim().min(1).max(80),
         compose: z.string().min(1),
-        icon: z.string().url().optional(),
+        icon: z
+          .string()
+          .url()
+          .refine((u) => /^https?:\/\//i.test(u), 'An icon link must start with http:// or https://')
+          .optional(),
         acknowledgeRisk: z.boolean().optional(),
+        /** The admin's explicit internet-sharing consent; absent = private. */
+        expose: z.boolean().optional(),
         portRemap: portRemapInput,
       }),
     )
@@ -137,6 +143,7 @@ export const communityRouter = router({
           env: {},
           icon: input.icon,
           baseUrl: ctx.host,
+          expose: input.expose,
         });
       } catch (err) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });

@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { APPS_DIR } from '../config';
+import { APPS_DIR, PORT } from '../config';
 import { log } from '../logger';
 import { readJson, writeJson, ensureDir } from '../util/json-store';
 import {
@@ -31,7 +31,7 @@ import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../
 // hazard with cloudflared.ts, which imports getAppPath from here.
 import { intendedPublicUrl } from '../system/cloudflared';
 import { suppressOfflineAlert } from '../system/offline-suppress';
-import { networkInfo } from '../system/system';
+import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
 import type { AppMeta, InstalledApp, CatalogApp, DeclaredAlert } from './types';
 
@@ -51,6 +51,9 @@ const appDir = (id: string) => {
   return dir;
 };
 const composePath = (id: string) => path.join(appDir(id), 'compose.yml');
+/** An app's on-disk compose path, for callers that need to re-vet it before
+ *  starting it (system/address-monitor.ts). */
+export const composePathOf = composePath;
 const envPath = (id: string) => path.join(appDir(id), '.env');
 const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
 
@@ -117,30 +120,65 @@ function readEnvFile(id: string): Record<string, string> {
 }
 
 /**
- * Resolve the platform base URL we hand to apps for SSO. Order:
- *   1. an explicit OPENMASJID_BASE_URL on the core (the recommended source for
- *      reverse-proxy / multi-host setups — see docs/NETWORKING.md),
- *   2. the host the admin reached us on (passed from the install request) — but
- *      only if it's a clean host[:port] with no credentials/path/whitespace, so a
- *      poisoned Host header can't become a credential-forwarding target,
- *   3. a best-effort LAN interface address.
+ * The platform base URL handed to apps (for SSO introspection and every other
+ * Fabric call). The resolution order lives in system/platform-address.ts — see
+ * that file for why the request's Host header is no longer trusted first and why
+ * this must never resolve to an empty string.
  */
-function cleanHost(host?: string | null): string | null {
-  if (!host) return null;
-  const h = host.trim();
-  if (/^[A-Za-z0-9.-]{1,253}(:\d{1,5})?$/.test(h)) return h; // hostname[:port] or IPv4[:port]
-  if (/^\[[0-9a-fA-F:]+\](:\d{1,5})?$/.test(h)) return h; // [IPv6][:port]
-  return null;
+function resolveBaseUrl(reqHost?: string | null): string {
+  // system/platform-address.ts owns this decision now (explicit env → installer
+  // address → observed authenticated LAN host → interfaces → last-known-good).
+  // The request Host is only a last resort, and only as a bare IP: the old order
+  // trusted it FIRST, which is how `openmasjidos.local` / `localhost` / the
+  // tunnel domain — none of them resolvable from inside an app container — ended
+  // up baked into app .env files.
+  const desired = desiredBaseUrl();
+  if (desired) return desired;
+  const fromRequest = usableAppHost(reqHost);
+  if (fromRequest) return `http://${fromRequest}${PORT === 80 ? '' : `:${PORT}`}`;
+  return '';
 }
 
-function resolveBaseUrl(reqHost?: string | null): string {
-  const explicit = process.env.OPENMASJID_BASE_URL;
-  if (explicit) return /^https?:\/\//i.test(explicit) ? explicit : `http://${explicit}`;
-  const host = cleanHost(reqHost);
-  if (host) return `http://${host}`;
-  const net = networkInfo();
-  if (net.addresses[0]) return `http://${net.addresses[0]}:${net.port}`;
-  return '';
+/**
+ * Rewrite `OPENMASJID_BASE_URL` in every installed app's .env to the current
+ * platform address, and report which apps need restarting to pick it up.
+ *
+ * Mirrors `reconcilePublicUrls`: read-modify-write through readEnvFile/writeEnvFile
+ * so `ENV_KEY_RE` filtering still applies and the app's own settings +
+ * `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty value — that
+ * would de-authorise every Fabric app at once.
+ */
+export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] } {
+  const changed: string[] = [];
+  const needRestart: string[] = [];
+  const want = desiredBaseUrl();
+  if (!want) return { changed, needRestart };
+  for (const id of listMetaIds()) {
+    if (RESERVED_APP_IDS.has(id)) continue;
+    const env = readEnvFile(id);
+    // Write when the app already has the key, or when it plainly wants one (its
+    // compose interpolates it, or it holds a Fabric secret) — an app installed
+    // while the address was unresolvable would otherwise stay broken forever.
+    let compose = '';
+    try {
+      compose = fs.readFileSync(composePath(id), 'utf8');
+    } catch {
+      /* no compose on disk (orphan) — the env check below still applies */
+    }
+    const wantsIt =
+      env.OPENMASJID_BASE_URL !== undefined ||
+      compose.includes('OPENMASJID_BASE_URL') ||
+      loadMeta(id)?.ssoSecret !== undefined;
+    if (!wantsIt) continue;
+    if (env.OPENMASJID_BASE_URL === want) continue;
+    env.OPENMASJID_BASE_URL = want;
+    writeEnvFile(id, env);
+    changed.push(id);
+    // A restart is only useful if the container actually reads the var through
+    // compose interpolation; otherwise the new .env is picked up next time anyway.
+    if (compose.includes('OPENMASJID_BASE_URL')) needRestart.push(id);
+  }
+  return { changed, needRestart };
 }
 
 /** Constant-time string compare (avoids leaking the secret via timing). */
@@ -457,9 +495,7 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       createdAt: meta.createdAt,
       // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
       fabric: meta.sso === true || meta.notify === true,
-      // Exposed over the tunnel unless explicitly turned off. `undefined` (installed
-      // before per-app exposure) is grandfathered exposed so upgrades don't drop it.
-      exposed: meta.exposed !== false,
+      exposed: isExposedMeta(meta),
       ...openTarget(meta, disc?.ports ?? []),
     });
   }
@@ -489,7 +525,12 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       running: disc.running,
       ports: disc.ports,
       fabric: false, // recovered/un-vetted apps never get the Fabric hand-off
-      exposed: true, // grandfathered — a recovered app keeps its current reachability
+      // Must agree with what `saveMeta(recovered)` just persisted (no `exposed`
+      // key), or this row would claim "shared online" while the very next read
+      // said otherwise. So it follows the same kind-dependent default as every
+      // other app: a recovered catalog app stays reachable, a recovered
+      // custom/community one — which we cannot vet at all — starts private.
+      exposed: isExposedMeta(recovered),
       ...openTarget(recovered, disc.ports),
     });
   }
@@ -590,12 +631,19 @@ async function installStack(opts: {
   env: Record<string, string>;
   icon?: string;
   baseUrl?: string | null;
+  expose?: boolean;
 }): Promise<InstalledApp> {
-  const { id, name, kind, composeText, env, icon, baseUrl } = opts;
+  const { id, name, kind, composeText, env, icon, baseUrl, expose } = opts;
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
   writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
-  saveMeta({ id, name, kind, icon, createdAt: new Date().toISOString() });
+  // Record the exposure decision EXPLICITLY, exactly like the catalog path
+  // (`exposed = expose === true`). Omitting the key used to leave it `undefined`,
+  // which the old grandfather rule read as "public" — so every pasted or
+  // community stack was internet-facing without anyone being asked.
+  const exposed = expose === true;
+  saveMeta({ id, name, kind, icon, exposed, createdAt: new Date().toISOString() });
+  if (exposed) log.warn(`Third-party app ${id} was installed shared over the internet, at the admin's request.`);
 
   const res = await composeUp(projectOf(id), composePath(id), envPath(id));
   if (res.code !== 0) {
@@ -611,6 +659,7 @@ export function installCustomApp(opts: {
   env: Record<string, string>;
   icon?: string;
   baseUrl?: string | null;
+  expose?: boolean;
 }): Promise<InstalledApp> {
   return installStack({ ...opts, kind: 'custom' });
 }
@@ -622,6 +671,7 @@ export function installCommunityApp(opts: {
   env: Record<string, string>;
   icon?: string;
   baseUrl?: string | null;
+  expose?: boolean;
 }): Promise<InstalledApp> {
   return installStack({ ...opts, kind: 'community' });
 }
@@ -760,9 +810,34 @@ export function setAppPath(id: string, path: string): string {
   return clean || id;
 }
 
-/** Whether an app is exposed over the tunnel (grandfathered true when unset). */
+/**
+ * Is this app shared over the internet? The SINGLE source of truth for that
+ * question — every caller must go through here rather than testing
+ * `meta.exposed !== false` inline, because the answer is not the same for every
+ * kind of app.
+ *
+ * A missing `exposed` means two completely different things depending on how the
+ * app got installed:
+ *   - **catalog**: it predates per-app exposure (v0.40.0), when every routed app
+ *     was public. Grandfathered EXPOSED so an upgrade doesn't take a masjid's
+ *     working public app offline.
+ *   - **custom / community**: `installStack` never wrote the key at all, so
+ *     `undefined` was never a decision — and reading it as "exposed" published
+ *     the LEAST-vetted apps by default, on the lowest published port (often a
+ *     database in a CasaOS stack). These default to PRIVATE. §15's rule is that
+ *     nothing is public without the admin's explicit toggle, and a value nobody
+ *     ever set is not a toggle.
+ */
+export function isExposedMeta(meta: Pick<AppMeta, 'kind' | 'exposed'>): boolean {
+  if (typeof meta.exposed === 'boolean') return meta.exposed;
+  return meta.kind === 'catalog';
+}
+
+/** Whether an app is exposed over the tunnel. See `isExposedMeta` for the
+ *  kind-dependent default when the app never recorded a choice. */
 export function isAppExposed(id: string): boolean {
-  return loadMeta(id)?.exposed !== false;
+  const meta = loadMeta(id);
+  return meta ? isExposedMeta(meta) : false;
 }
 
 /** Turn an app's internet exposure on/off (the admin's per-app consent). Rewrites
@@ -787,7 +862,7 @@ export function reconcilePublicUrls(): string[] {
     if (RESERVED_APP_IDS.has(id)) continue;
     const meta = loadMeta(id);
     if (!meta) continue;
-    const want = intendedPublicUrl(id, meta.exposed !== false);
+    const want = intendedPublicUrl(id, isExposedMeta(meta));
     const env = readEnvFile(id);
     if ((env.OPENMASJID_PUBLIC_URL ?? '') !== want) {
       env.OPENMASJID_PUBLIC_URL = want;
