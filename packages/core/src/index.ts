@@ -11,7 +11,6 @@ import fs from 'node:fs';
 import Fastify from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyWebsocket from '@fastify/websocket';
-import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
 
@@ -29,6 +28,7 @@ import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
 import { registerFabricTunnelGuard } from './system/via-tunnel';
+import { registerStaticUI } from './api/static-ui';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
@@ -183,41 +183,13 @@ async function main() {
   // OpenMasjidOS Fabric: SSO cookie introspection + public appearance (optional).
   registerFabric(server);
 
-  // Static UI + SPA fallback. In local dev the UI is served by Vite, so dist may
-  // not exist — guard the registration so the daemon still boots.
-  const haveUI = fs.existsSync(UI_DIR);
-  if (haveUI) {
-    await server.register(fastifyStatic, {
-      root: UI_DIR,
-      prefix: '/',
-      wildcard: false,
-      cacheControl: false,
-      // Vite fingerprints everything under /assets/ — cache those forever so
-      // repeat visits are instant. index.html must always revalidate so a new
-      // build is picked up immediately.
-      setHeaders: (res, filePath) => {
-        if (/[\\/]assets[\\/]/.test(filePath)) {
-          res.setHeader('cache-control', 'public, max-age=31536000, immutable');
-        } else {
-          res.setHeader('cache-control', 'no-cache');
-        }
-      },
-    });
-  } else {
+  // Static UI + SPA fallback (api/static-ui.ts, so it can be tested directly).
+  // In local dev the UI is served by Vite, so dist may not exist — the daemon
+  // still has to boot.
+  const haveUI = await registerStaticUI(server, UI_DIR);
+  if (!haveUI) {
     log.warn(`UI build not found at ${UI_DIR} — serving API only (run the UI dev server).`);
   }
-
-  server.setNotFoundHandler((req, reply) => {
-    const url = req.url.split('?')[0];
-    // Never SPA-fallback API/tRPC routes — those 404 as JSON.
-    if (url.startsWith('/trpc') || url.startsWith('/api')) {
-      return reply.code(404).send({ error: 'Not found' });
-    }
-    if (haveUI && req.method === 'GET') {
-      return reply.type('text/html').sendFile('index.html');
-    }
-    return reply.code(404).send({ error: 'Not found' });
-  });
 
   // A plain-HTTP front door on PORT: answers the container health check, keeps the
   // Fabric API reachable over HTTP for app backends (which can't trust a

@@ -11,12 +11,12 @@
     "dev": "tsx watch src/index.ts",
     "build": "esbuild src/index.ts src/reset-password.ts src/reset-auth.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outdir=dist --log-level=warning",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/broker.test.ts test/fabric-secret.test.ts test/tunnel.test.ts test/alerts.test.ts test/compose-guard.test.ts test/fabric-lan-only.test.ts test/app-exposure.test.ts test/platform-address.test.ts"
+    "test": "node --import tsx --test test/broker.test.ts test/fabric-secret.test.ts test/tunnel.test.ts test/alerts.test.ts test/compose-guard.test.ts test/fabric-lan-only.test.ts test/app-exposure.test.ts test/platform-address.test.ts test/static-ui.test.ts test/public-logo.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.1",
     "@fastify/multipart": "^9.0.1",
-    "@fastify/static": "^8.0.3",
+    "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.0.1",
     "@node-rs/argon2": "^2.0.2",
     "@trpc/server": "^11.0.0",
