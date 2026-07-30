@@ -88,7 +88,32 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   const token =
     (req.cookies && req.cookies[COOKIE_NAME]) ?? parseCookie(req.headers?.cookie, COOKIE_NAME);
   const username = getSessionUser(token);
+  // The dashboard key. A WebSocket handshake cannot carry a custom header, so the
+  // key rides in `?k=` there — the same convention api/ws-auth.ts already uses for
+  // every other raw WS route, and for the plain-<a> backup download. Accepting
+  // both here is what lets protectedProcedure verify the key on BOTH transports
+  // instead of exempting WS (see trpc.ts).
+  // On the HTTP path `req` is a Fastify request with `query` already parsed. On the
+  // WebSocket path it is a raw Node IncomingMessage — `query` is undefined there,
+  // so the key has to come out of the URL by hand. Getting this wrong fails CLOSED
+  // (the dashboard's own live-stats subscription stops connecting), which is how I
+  // caught it: reading only `req.query` rejected the legitimate dashboard too.
   const csrfHeader = req.headers?.[CSRF_HEADER];
+  const fromQueryObject = (req.query as { k?: unknown } | undefined)?.k;
+  let fromUrl: string | null = null;
+  if (typeof fromQueryObject !== 'string' && typeof req.url === 'string') {
+    try {
+      fromUrl = new URL(req.url, 'http://placeholder.invalid').searchParams.get('k');
+    } catch {
+      fromUrl = null; // a malformed URL must not throw during auth
+    }
+  }
+  const csrf =
+    typeof csrfHeader === 'string'
+      ? csrfHeader
+      : typeof fromQueryObject === 'string'
+        ? fromQueryObject
+        : fromUrl;
 
   const canMutateCookies = res && typeof res.setCookie === 'function';
 
@@ -103,7 +128,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   return {
     username,
     sessionToken: token ?? null,
-    csrf: typeof csrfHeader === 'string' ? csrfHeader : null,
+    csrf,
     isWebSocket: isWebSocketUpgrade(req),
     ip: req.ip,
     host: req.headers?.host ?? null,
