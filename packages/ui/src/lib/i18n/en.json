@@ -1,5 +1,8 @@
 {
-  "app": { "name": "OpenMasjidOS", "tagline": "Your masjid, your software" },
+  "app": {
+    "name": "OpenMasjidOS",
+    "tagline": "Your masjid, your software"
+  },
   "common": {
     "loading": "Loading…",
     "save": "Save changes",
@@ -9,14 +12,17 @@
     "confirm": "Confirm",
     "close": "Close",
     "back": "Back",
-    "retry": "Try again"
+    "retry": "Try again",
+    "working": "Just a moment…"
   },
   "nav": {
     "dashboard": "Dashboard",
     "store": "App Store",
     "files": "Files",
     "settings": "Settings",
-    "aria": { "primary": "Main navigation" }
+    "aria": {
+      "primary": "Main navigation"
+    }
   },
   "files": {
     "title": "Files",
@@ -91,7 +97,11 @@
     "resetClose": "Got it"
   },
   "dashboard": {
-    "greeting": { "morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening" },
+    "greeting": {
+      "morning": "Good morning",
+      "afternoon": "Good afternoon",
+      "evening": "Good evening"
+    },
     "yourMasjid": "your masjid",
     "statsTitle": "System status",
     "statusOk": "Everything is running smoothly",
@@ -164,9 +174,14 @@
     "shell": "Open shell",
     "options": "App options",
     "install": "Install",
-    "installed": "Installed"
+    "installed": "Installed",
+    "remove": "Remove"
   },
-  "tags": { "official": "Official", "community": "Community", "custom": "Custom" },
+  "tags": {
+    "official": "Official",
+    "community": "Community",
+    "custom": "Custom"
+  },
   "appCard": {
     "removeTitle": "Remove {{name}}?",
     "removeBody": "This turns the app off and removes it from your dashboard.",
@@ -313,7 +328,11 @@
     "language": "Language",
     "languageLabel": "Interface language",
     "languageHint": "More translations are on the way — only English is complete for now.",
-    "languages": { "english": "English", "arabic": "العربية", "urdu": "اردو" },
+    "languages": {
+      "english": "English",
+      "arabic": "العربية",
+      "urdu": "اردو"
+    },
     "account": "Account",
     "accountName": "Your name",
     "accountEmail": "Your email",
@@ -575,7 +594,16 @@
     "restarting": "Restarting OpenMasjidOS — reconnecting…",
     "done": "Restore complete."
   },
-  "status": { "running": "Running", "stopped": "Stopped" },
+  "status": {
+    "running": "Running",
+    "stopped": "Stopped"
+  },
+  "confirm": {
+    "stripeRemoveTitle": "Remove the {{name}} payment details?",
+    "stripeRemoveBody": "Apps that take payments through this account will stop working straight away.",
+    "stripeRemoveCost": "OpenMasjidOS can't show you the secret key again, so you'd need to create a new one in Stripe and enter it here along with the webhook secret.",
+    "stripeRemoveConfirm": "Remove payment details"
+  },
   "changelog": {
     "open": "What's new",
     "title": "What's new in OpenMasjidOS",

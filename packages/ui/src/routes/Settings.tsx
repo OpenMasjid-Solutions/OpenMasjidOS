@@ -16,6 +16,7 @@ import { LazyTerminal } from '../components/LazyTerminal';
 import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Changelog } from '../components/Changelog';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
@@ -1606,6 +1607,8 @@ function StripePanel() {
   const onlineById = new Map((stripeStatus.data ?? []).map((s) => [s.id, s.online]));
   const refresh = () => utils.stripe.list.invalidate();
   const windows = useWindows();
+  /** The account pending removal, or null. Drives the confirmation dialog. */
+  const [confirmRemove, setConfirmRemove] = useState<StripeAccountPublic | null>(null);
 
   // Open the add/edit form as a managed traffic-light window (like the rest of the OS).
   function openForm(account: StripeAccountPublic | null) {
@@ -1667,7 +1670,11 @@ function StripePanel() {
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button className="btn btn--sm" onClick={() => openForm(a)}><Pencil size={14} /> {t('settings.stripeEdit')}</button>
-            <button className="btn btn--sm" disabled={remove.isPending} onClick={() => remove.mutate({ id: a.id })}>
+            {/* Confirmed, not immediate: this button used to sit 8px from Edit with
+                identical styling, and one misclick dropped a secret key the
+                dashboard can never show back — recovery means re-issuing it in
+                Stripe and re-entering the webhook secret. */}
+            <button className="btn btn--sm" disabled={remove.isPending} onClick={() => setConfirmRemove(a)}>
               <Trash2 size={14} /> {t('settings.backupRemove')}
             </button>
           </div>
@@ -1677,6 +1684,21 @@ function StripePanel() {
       <button className="btn btn--primary" style={{ marginBlockStart: '0.6rem' }} onClick={() => openForm(null)}>
         <CreditCard size={15} /> {t('settings.stripeAdd')}
       </button>
+
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        onClose={() => setConfirmRemove(null)}
+        pending={remove.isPending}
+        title={t('confirm.stripeRemoveTitle', { name: confirmRemove?.label ?? '' })}
+        body={t('confirm.stripeRemoveBody')}
+        cost={t('confirm.stripeRemoveCost')}
+        confirmLabel={t('confirm.stripeRemoveConfirm')}
+        onConfirm={() => {
+          if (confirmRemove) {
+            remove.mutate({ id: confirmRemove.id }, { onSuccess: () => setConfirmRemove(null) });
+          }
+        }}
+      />
     </section>
   );
 }

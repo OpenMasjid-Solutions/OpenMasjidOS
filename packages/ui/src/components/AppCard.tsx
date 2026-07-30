@@ -232,7 +232,18 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         </div>
       </motion.div>
 
-      <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title={t('appCard.removeTitle', { name: app.name })}>
+      {/* Closing must also clear `deleteData`. Without that the checkbox stayed
+          ticked from a previous removal in the same session, so reopening this
+          dialog put permanent destruction of the app's data one click away in a
+          dialog the admin reasonably believes they are seeing fresh. */}
+      <Modal
+        open={confirmOpen}
+        onClose={() => {
+          setConfirmOpen(false);
+          setDeleteData(false);
+        }}
+        title={t('appCard.removeTitle', { name: app.name })}
+      >
         <p>{t('appCard.removeBody')}</p>
         <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', margin: '1rem 0' }}>
           <input type="checkbox" checked={deleteData} onChange={(e) => setDeleteData(e.target.checked)} />
@@ -244,7 +255,7 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
           </p>
         ) : (
           <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
-            <button className="btn" onClick={() => setConfirmOpen(false)}>{t('common.cancel')}</button>
+            <button className="btn" onClick={() => { setConfirmOpen(false); setDeleteData(false); }}>{t('common.cancel')}</button>
             <button
               className="btn btn--danger"
               onClick={() => remove.mutate({ id: app.id, deleteData }, { onSuccess: () => setConfirmOpen(false) })}
