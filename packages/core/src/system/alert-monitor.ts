@@ -9,6 +9,7 @@
  */
 import { listInstalled } from '../apps/manager';
 import { deliverAlert } from '../notify/alerts';
+import { appOffline } from '../notify/alert-copy';
 import { isOfflineSuppressed } from './offline-suppress';
 import { log } from '../logger';
 
@@ -28,13 +29,11 @@ async function tick(): Promise<void> {
     seen.add(a.id);
     const prev = wasRunning.get(a.id);
     if (primed && prev === true && !a.running && !isOfflineSuppressed(a.id)) {
-      deliverAlert({
-        source: 'os',
-        alertId: 'app-offline',
-        title: 'An app went offline',
-        text: `"${a.name}" has stopped and is no longer running. Open OpenMasjidOS to check on it.`,
-        level: 'error',
-      }).catch((err) => log.warn(`app-offline alert failed: ${(err as Error).message}`));
+      // Wording lives in notify/alert-copy.ts; `text` is the webhook body.
+      const copy = appOffline(a.name, a.id);
+      deliverAlert({ source: 'os', text: copy.summary, ...copy }).catch((err) =>
+        log.warn(`app-offline alert failed: ${(err as Error).message}`),
+      );
     }
     wasRunning.set(a.id, a.running);
   }

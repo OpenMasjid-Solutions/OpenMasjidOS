@@ -19,6 +19,7 @@ import { checkForUpdate } from './system';
 import { listInstalled, checkCatalogUpdate } from '../apps/manager';
 import { fetchCatalog } from '../store/catalog';
 import { deliverAlert } from '../notify/alerts';
+import { coreUpdate, appUpdate } from '../notify/alert-copy';
 import { log } from '../logger';
 
 const CHECK_MS = 30 * 60_000; // every 30 minutes
@@ -33,13 +34,11 @@ async function checkCore(): Promise<void> {
     if (u.updateAvailable && u.latest) {
       if (alertedCore === u.latest) return; // already told the admin about this version
       alertedCore = u.latest;
-      await deliverAlert({
-        source: 'os',
-        alertId: 'core-update',
-        title: 'OpenMasjidOS update available',
-        text: `A new version of OpenMasjidOS (${u.latest}) is available — you're on ${u.current}. Open Settings → Advanced to update.`,
-        level: 'info',
-      });
+      // Wording lives in notify/alert-copy.ts — the monitors decide WHEN to alert,
+      // not what it says. `text` is the webhook channel's body, so it gets the
+      // summary rather than being left empty.
+      const copy = coreUpdate(u.current, u.latest);
+      await deliverAlert({ source: 'os', text: copy.summary, ...copy });
     } else {
       alertedCore = null; // no update pending → let a future one re-alert
     }
@@ -61,13 +60,8 @@ async function checkApps(): Promise<void> {
       if (u.updateAvailable && u.latest) {
         if (alertedApp.get(a.id) === u.latest) continue;
         alertedApp.set(a.id, u.latest);
-        await deliverAlert({
-          source: 'os',
-          alertId: 'app-update',
-          title: 'An app update is available',
-          text: `"${a.name}" can be updated to ${u.latest} (you have ${u.current || 'an older version'}). Open OpenMasjidOS, then the app's ⋯ menu → "Check for update".`,
-          level: 'info',
-        });
+        const copy = appUpdate(a.name, u.current, u.latest);
+        await deliverAlert({ source: 'os', text: copy.summary, ...copy });
       } else {
         alertedApp.delete(a.id);
       }

@@ -83,9 +83,15 @@ export const emailRouter = router({
       const r = await sendBrandedEmail(
         {
           to,
-          subject: 'OpenMasjidOS test email',
-          heading: 'Email is working',
-          text: 'This is a test email from OpenMasjidOS. If you received it, email is set up correctly — and your masjid logo (if you uploaded one) is shown above.',
+          subject: 'Your OpenMasjidOS email is working',
+          title: 'Email is working',
+          summary: 'Email is set up correctly — this message came from your masjid’s OpenMasjidOS.',
+          // No longer claims the logo is "shown above": it only appears in email
+          // when remote access is set up, because a mail client fetches images
+          // from its own network and cannot reach a LAN address.
+          detail:
+            'Alerts about your apps and updates will arrive here. You can choose which ones in Settings, under Alerts.',
+          action: { label: 'Open OpenMasjidOS', note: 'Then go to Settings to choose your alerts.', path: '/settings' },
         },
         'os',
       );
