@@ -8,7 +8,7 @@
  */
 import nodemailer from 'nodemailer';
 import { getEmailConfig, isEmailConfigured, type EmailConfig } from '../store/email';
-import { hasLogo } from '../store/branding';
+import { hasLogo, getLogoSize } from '../store/branding';
 import { getSettings } from '../settings/store';
 import { desiredBaseUrl } from '../system/platform-address';
 import { log } from '../logger';
@@ -222,6 +222,43 @@ function masjidName(): string {
   return (getEmailConfig().fromName || 'OpenMasjidOS').trim();
 }
 
+/** The box the logo is fitted inside, in the 560px-wide email card. */
+const LOGO_BOX = { w: 200, h: 48 };
+
+/**
+ * The logo `<img>`, sized so it is never distorted.
+ *
+ * The bug this replaces: a hard `width="140"` attribute plus `max-height:52px`
+ * with no `height:auto`. Those constrain the two axes INDEPENDENTLY, so anything
+ * that was not already 140:52 got squashed — a square logo rendered 140×52, i.e.
+ * stretched sideways, which is exactly what was reported.
+ *
+ * Sizing has to survive Outlook, which renders with Word's engine and ignores
+ * `max-width`/`max-height` entirely. So when we can read the logo's real pixel
+ * size we compute a CONTAIN fit ourselves and emit exact `width`/`height`
+ * attributes — proportional by construction, in every client. Only when the size
+ * is unreadable do we fall back to CSS-only constraints, and then we constrain one
+ * axis with `auto` on the other so the ratio still cannot break.
+ */
+function logoTag(url: string, name: string): string {
+  const common = `src="${escapeHtml(url)}" alt="${escapeHtml(name)}"`;
+  // A transparent PNG on a dark-mode client can render black-on-black; the white
+  // pill keeps the logo legible without affecting an opaque logo.
+  const style = 'display:block;margin:0 auto 10px;border:0;outline:none;text-decoration:none';
+  const size = getLogoSize();
+  if (size) {
+    // Contain, and NEVER upscale — a 60px logo blown up to 200px looks worse than
+    // a small one.
+    const scale = Math.min(LOGO_BOX.w / size.width, LOGO_BOX.h / size.height, 1);
+    const w = Math.max(1, Math.round(size.width * scale));
+    const h = Math.max(1, Math.round(size.height * scale));
+    return `<img ${common} width="${w}" height="${h}" style="width:${w}px;height:${h}px;${style}">`;
+  }
+  // Unknown intrinsic size: constrain the HEIGHT only and let the width follow.
+  // (Constraining both is what caused the distortion in the first place.)
+  return `<img ${common} height="${LOGO_BOX.h}" style="height:${LOGO_BOX.h}px;width:auto;max-width:${LOGO_BOX.w}px;${style}">`;
+}
+
 export interface BrandedEmailOpts {
   /** The H1. Keep it short — it is the subject too. */
   title: string;
@@ -269,9 +306,7 @@ export function brandedEmail(opts: BrandedEmailOpts): { html: string; text: stri
   // summary rather than letting them scrape the header markup.
   const preheader =
     `<div style="display:none;font-size:1px;color:#f4f6f5;max-height:0;overflow:hidden">${escapeHtml(opts.summary)}</div>`;
-  const logoImg = logoUrl
-    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(name)}" width="140" style="max-height:52px;max-width:140px;display:block;margin:0 auto 10px;border:0">`
-    : '';
+  const logoImg = logoUrl ? logoTag(logoUrl, name) : '';
   // The wordmark is ALWAYS rendered, never conditional on the image: a client that
   // blocks remote images (Outlook, and Gmail's ask-first mode) would otherwise
   // leave the email headerless.

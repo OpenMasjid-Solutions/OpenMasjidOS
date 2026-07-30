@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson, ensureDir } from '../util/json-store';
+import { imageSize } from '../util/image-size';
 
 const BRANDING_DIR = path.join(CONFIG_DIR, 'branding');
 const META_PATH = path.join(BRANDING_DIR, 'branding.json');
@@ -57,6 +58,17 @@ export function getLogo(): { buf: Buffer; mime: string; ext: string } | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The stored logo's pixel dimensions, or null if there is no logo or its header
+ * can't be read. Used to size the logo in emails with exact width/height
+ * attributes — Outlook ignores max-width/max-height, so an aspect-correct fit has
+ * to be computed rather than delegated to CSS (notify/email.ts `logoTag`).
+ */
+export function getLogoSize(): { width: number; height: number } | null {
+  const logo = getLogo();
+  return logo ? imageSize(logo.buf, logo.mime) : null;
 }
 
 /** Persist a new logo (replacing any previous one). Caller validates size + MIME. */

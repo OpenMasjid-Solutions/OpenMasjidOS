@@ -7,6 +7,10 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.47.1
+
+- Your logo is no longer squashed in emails. It now keeps its proper shape whether it's square, wide, or tall.
+
 ## 0.47.0
 
 - Emails from OpenMasjidOS look properly designed now, and no longer arrive with your logo as a file attached to them.

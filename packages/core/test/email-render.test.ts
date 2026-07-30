@@ -194,3 +194,66 @@ test("app mail never goes through the platform's branded template", () => {
   assert.equal(/brandedEmail/.test(src), false);
   assert.match(src, /sendEmail\(\{ to, subject, text, html \}, app\.id\)/, "the app's own html is passed through");
 });
+
+test('the logo is never distorted, whatever shape it is', () => {
+  // THE REPORTED BUG: the old markup set width="140" AND max-height:52px with no
+  // height:auto, constraining both axes independently. A 512x512 logo came out
+  // 140x52 — ratio 2.69 against a source ratio of 1.0, i.e. stretched sideways.
+  const branding = req('../src/store/branding') as typeof import('../src/store/branding');
+  const settings = req('../src/settings/store') as typeof import('../src/settings/store');
+  settings.updateCloudflare({ enabled: true, domain: 'masjid.example.org' });
+
+  const png = (w: number, h: number): Buffer => {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ihdr = Buffer.alloc(25);
+    ihdr.writeUInt32BE(13, 0);
+    ihdr.write('IHDR', 4, 'latin1');
+    ihdr.writeUInt32BE(w, 8);
+    ihdr.writeUInt32BE(h, 12);
+    return Buffer.concat([sig, ihdr]);
+  };
+
+  for (const [w, h] of [
+    [512, 512], // square — the real dashboard mark, and the reported case
+    [400, 100], // wide
+    [1200, 150], // banner
+    [150, 1200], // tall
+    [60, 60], // small: must NOT be upscaled
+  ] as [number, number][]) {
+    branding.saveLogo(png(w, h), 'image/png');
+    const { html } = email.brandedEmail(copy.coreUpdate('1', '2'));
+    const tag = html.match(/<img[^>]+>/)?.[0] ?? '';
+    const rw = Number(tag.match(/width="(\d+)"/)?.[1]);
+    const rh = Number(tag.match(/height="(\d+)"/)?.[1]);
+    assert.ok(rw > 0 && rh > 0, `${w}x${h}: no dimensions emitted`);
+    // Aspect ratio preserved (allowing a pixel of rounding).
+    const drift = Math.abs(rw / rh - w / h) / (w / h);
+    assert.ok(drift < 0.02, `${w}x${h} rendered ${rw}x${rh} — ratio drifted ${(drift * 100).toFixed(1)}%`);
+    // Fits the box, and never upscaled beyond its natural size.
+    assert.ok(rw <= 200 && rh <= 48, `${w}x${h} rendered ${rw}x${rh}, outside the box`);
+    assert.ok(rw <= w && rh <= h, `${w}x${h} was upscaled to ${rw}x${rh}`);
+    // Both attributes AND matching inline styles, because Outlook ignores max-*.
+    assert.match(tag, new RegExp(`width:${rw}px`), `${w}x${h}: style width missing`);
+    assert.match(tag, new RegExp(`height:${rh}px`), `${w}x${h}: style height missing`);
+  }
+  branding.removeLogo();
+  settings.updateCloudflare({ enabled: false, domain: '' });
+});
+
+test('an unreadable logo header still cannot produce a stretched image', () => {
+  // Fallback path: dimensions unknown, so constrain ONE axis and let the other
+  // follow. Constraining both is what caused the bug.
+  const branding = req('../src/store/branding') as typeof import('../src/store/branding');
+  const settings = req('../src/settings/store') as typeof import('../src/settings/store');
+  settings.updateCloudflare({ enabled: true, domain: 'masjid.example.org' });
+  // Valid MIME so it is stored, but a body whose header cannot be parsed.
+  branding.saveLogo(Buffer.from('not really a png at all'), 'image/png');
+  assert.equal(branding.getLogoSize(), null, 'precondition: size must be unreadable');
+
+  const tag = email.brandedEmail(copy.coreUpdate('1', '2')).html.match(/<img[^>]+>/)?.[0] ?? '';
+  assert.match(tag, /height="48"/);
+  assert.match(tag, /width:auto/, 'width must be free to follow the height');
+  assert.equal(/width="\d+"/.test(tag), false, 'must not pin a width it cannot know');
+  branding.removeLogo();
+  settings.updateCloudflare({ enabled: false, domain: '' });
+});
