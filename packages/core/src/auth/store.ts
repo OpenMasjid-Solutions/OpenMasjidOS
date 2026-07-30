@@ -5,9 +5,11 @@
  * The password is only ever held as an argon2id hash; the plaintext never
  * touches disk or the logs.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
-import { readJson, writeJson } from '../util/json-store';
+import { writeJson } from '../util/json-store';
+import { log } from '../logger';
 
 interface AuthFile {
   username: string | null;
@@ -23,10 +25,69 @@ interface AuthFile {
 const AUTH_PATH = path.join(CONFIG_DIR, 'auth.json');
 const DEFAULTS: AuthFile = { username: null, passwordHash: null, email: null, name: null };
 
-let cache: AuthFile = { ...DEFAULTS, ...readJson(AUTH_PATH, DEFAULTS) };
+/**
+ * True when auth.json is PRESENT but could not be read or parsed.
+ *
+ * This distinction is load-bearing and used to be absent. `readJson` catches every
+ * error and returns its fallback, so "no admin yet" (first run — the file does not
+ * exist) and "the admin record is damaged" (SD-card corruption, a truncated write,
+ * a partial restore, or someone deleting it through the File Explorer) looked
+ * IDENTICAL. The second case then reported `isConfigured() === false`, which
+ * re-opened `auth.setup` — a public procedure — on an already-established box, so
+ * the next visitor on the masjid's LAN could claim it and inherit an admin session
+ * that reaches host root.
+ *
+ * So a damaged file fails CLOSED: the box is treated as configured, setup stays
+ * refused, and recovery goes through the documented CLI (`reset-password`), which
+ * requires host access. Locking the admin out of their own dashboard is bad; letting
+ * a stranger claim their masjid's server is worse.
+ */
+let corrupt = false;
+
+function loadAuth(): AuthFile {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(AUTH_PATH, 'utf8');
+  } catch (err) {
+    // ENOENT is the legitimate first-run case. Anything else (EACCES, EIO) means a
+    // file we cannot vouch for, so fail closed.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      corrupt = true;
+      log.error(`Could not read ${AUTH_PATH}. Refusing first-run setup so the box cannot be claimed by someone else. Recover with the reset-password tool.`, err);
+    }
+    return { ...DEFAULTS };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    corrupt = true;
+    log.error(`${AUTH_PATH} exists but is not valid JSON. Refusing first-run setup so the box cannot be claimed by someone else. Recover with the reset-password tool.`, err);
+    return { ...DEFAULTS };
+  }
+  // Parsing is not enough — the VALUE has to be a plain object. `[]`, `"x"` and `0`
+  // are all valid JSON that spread into DEFAULTS without error, producing an
+  // all-null record that reads as "no admin yet" and re-opens first-run. A wrong
+  // shape is a damaged file, not an empty one.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    corrupt = true;
+    log.error(`${AUTH_PATH} does not contain an admin record. Refusing first-run setup so the box cannot be claimed by someone else. Recover with the reset-password tool.`);
+    return { ...DEFAULTS };
+  }
+  return { ...DEFAULTS, ...(parsed as Partial<AuthFile>) };
+}
+
+let cache: AuthFile = loadAuth();
+
+/** True when the stored admin record is unreadable — see `corrupt` above. */
+export function isAuthStoreDamaged(): boolean {
+  return corrupt;
+}
 
 /** Whether an admin account has been created yet (drives the first-run flow). */
 export function isConfigured(): boolean {
+  // `corrupt` counts as configured on purpose: it must never re-open first-run.
+  if (corrupt) return true;
   return Boolean(cache.username && cache.passwordHash);
 }
 

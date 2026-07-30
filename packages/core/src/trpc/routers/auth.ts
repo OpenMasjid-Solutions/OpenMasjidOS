@@ -11,6 +11,7 @@ import { router, publicProcedure, protectedProcedure } from '../trpc';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../../auth/passwords';
 import {
   isConfigured,
+  isAuthStoreDamaged,
   getUsername,
   getPasswordHash,
   getAdminEmail,
@@ -95,6 +96,16 @@ export const authRouter = router({
   /** First-run only: create the admin account (name + email + password) and start a
    *  session. The email is the login identifier AND where OS alerts are sent. */
   setup: publicProcedure.input(setupInput).mutation(async ({ input, ctx }) => {
+    if (isAuthStoreDamaged()) {
+      // Fail closed, but say something a volunteer can act on rather than the
+      // misleading "an account already exists". Recovery needs host access on
+      // purpose — that is what stops a passer-by claiming a damaged box.
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message:
+          "This server's admin account file can't be read, so a new account can't be created here — that would let anyone take over. Ask whoever set this up to run the OpenMasjidOS password reset on the machine itself.",
+      });
+    }
     if (isConfigured()) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
