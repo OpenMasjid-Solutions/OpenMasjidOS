@@ -68,7 +68,9 @@ Three more Criticals, all verified by me directly rather than accepted on report
   fallback, because `loadCert()` *succeeds* and returns garbage. `Fastify({ https })` then throws
   outside the try/catch. I reproduced it: nothing listens on either port, and because the cert lives
   in the mounted data dir, **both Update and Repair re-read it** — the volunteer's two self-service
-  recovery paths are useless. That means driving to the masjid.
+  recovery paths are useless. That means driving to the masjid. *(Fixed in `fix/tls-boot-recovery`,
+  after reproducing the crash-loop on the published image and confirming the fixed build self-heals
+  the same data dir — `REMEDIATION.md`.)*
 
 The recurring theme worth more than any individual finding: **several defences compare raw strings
 where the consumer compares something normalised.** The compose gate compared un-normalised paths.
@@ -152,7 +154,7 @@ the six repos). Status values: `fixed` · `deferred` · `deferred-separate-pr` (
 | OPENMASJIDOS-001 | tRPC WebSocket transport exempt from the dashboard-key check — session cookie alone is full admin, i.e. host root | confirmed | `packages/core/src/trpc/trpc.ts:40` | **fixed** `5957435` |
 | OPENMASJIDOS-002 | Compose gate compares un-normalised host paths — `//run` mounts the Docker socket's directory unflagged | confirmed | `packages/core/src/apps/compose-validate.ts:119` | **fixed** `16ba160` |
 | OPENMASJIDOS-002 | A leading `~` is never expanded, so `~/.ssh:/x` reaches root's home past the `/root` check | confirmed | `packages/core/src/apps/compose-validate.ts:124` | **fixed** `16ba160` |
-| OPENMASJIDOS-011 | A corrupt/truncated TLS cert or key puts the core in a permanent boot failure that neither Update nor Repair fixes | confirmed | `packages/core/src/index.ts:76` | **separate PR** (boot path) |
+| OPENMASJIDOS-011 | A corrupt/truncated TLS cert or key puts the core in a permanent boot failure that neither Update nor Repair fixes | confirmed | `packages/core/src/index.ts:76` | **fixed** in `fix/tls-boot-recovery` (bench-verified against the published image — see `REMEDIATION.md`) |
 
 ### High (selected — full list in `findings.json`)
 

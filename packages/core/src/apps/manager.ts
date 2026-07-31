@@ -459,7 +459,13 @@ export async function restoreAppProxies(): Promise<void> {
   for (const a of apps) {
     const meta = loadMeta(a.id);
     if (meta?.https && meta.httpsPort && a.ports[0] != null) {
-      ensureProxy(a.id, meta.httpsPort, a.ports[0]);
+      // Per-app, so one app that can't get a proxy doesn't cost every app after it
+      // in the list its HTTPS too. The caller only catches the first throw.
+      try {
+        ensureProxy(a.id, meta.httpsPort, a.ports[0]);
+      } catch (err) {
+        log.error(`Could not restore the HTTPS proxy for "${a.id}" — its other functions still work.`, err);
+      }
     }
   }
 }

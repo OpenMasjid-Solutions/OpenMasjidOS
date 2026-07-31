@@ -401,6 +401,8 @@
     "sslHint": "The dashboard is served over HTTPS.",
     "sslSelfSignedNote": "Using a self-signed certificate (valid until {{date}}). Browsers show a one-time \"not secure\" warning per device — click Advanced → Proceed once. Upload your own certificate from a real domain to remove the warning.",
     "sslCustomNote": "Using your own certificate (valid until {{date}}).",
+    "sslRecoveredCustom": "On {{date}} the certificate you uploaded could no longer be read, so OpenMasjidOS made a temporary one to keep this dashboard reachable. Please upload yours again below. (What went wrong: {{reason}}.)",
+    "sslRecoveredSelfSigned": "On {{date}} this server's certificate could no longer be read, so OpenMasjidOS made a new one. Your devices may ask you to accept it once more. (What went wrong: {{reason}}.)",
     "sslFingerprint": "SHA-256 fingerprint",
     "sslRegenerate": "Regenerate certificate",
     "sslRegenerating": "Regenerating…",

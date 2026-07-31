@@ -43,6 +43,16 @@ import { COOKIE_NAME, getSessionUser } from './auth/sessions';
 import { requestCsrfOk } from './api/ws-auth';
 import { isAllowedOrigin, isWebSocketUpgrade } from './util/origin';
 
+/** The dashboard server, with TLS when we have a usable cert and plain HTTP when we
+ *  don't. One place, so the fallback path can rebuild it identically minus TLS. */
+function buildServer(tls: { key: Buffer; cert: Buffer } | null) {
+  return Fastify({
+    maxParamLength: 5000,
+    bodyLimit: 25 * 1024 * 1024,
+    ...(tls ? { https: tls } : {}),
+  });
+}
+
 async function main() {
   ensureDir(CONFIG_DIR);
   ensureDir(APPS_DIR);
@@ -63,8 +73,11 @@ async function main() {
   process.on('unhandledRejection', (err) => log.error('Unhandled rejection (continuing).', err));
 
   // Forced HTTPS: serve the dashboard over TLS. Self-signed by default (a LAN box
-  // can't get a public cert), regenerable / replaceable from Settings. If no cert
-  // can be made (local dev without openssl) we fall back to plain HTTP.
+  // can't get a public cert), regenerable / replaceable from Settings. `ensureCert`
+  // repairs a damaged cert rather than handing us one that can't be loaded, and if
+  // no cert can be made at all (local dev without openssl, a read-only disk) we
+  // fall back to plain HTTP — the dashboard is still served, just without TLS, so
+  // an admin can always get in and fix it.
   let tls: { key: Buffer; cert: Buffer } | null = null;
   try {
     ensureCert();
@@ -73,11 +86,25 @@ async function main() {
     log.warn('TLS unavailable — serving plain HTTP (expected in local dev without openssl).', err);
   }
 
-  const server = Fastify({
-    maxParamLength: 5000,
-    bodyLimit: 25 * 1024 * 1024,
-    ...(tls ? { https: tls } : {}),
-  });
+  let server: ReturnType<typeof buildServer>;
+  try {
+    server = buildServer(tls);
+  } catch (err) {
+    // Last line of defence for the boot path [OPENMASJIDOS-011]. Node builds the
+    // TLS context inside this constructor, so a certificate that somehow got past
+    // the checks in system/tls.ts throws HERE — outside the try/catch above, which
+    // only covers reading it. That killed the process, and under
+    // `restart: unless-stopped` a dead process is a crash-loop with no dashboard
+    // left to repair it from. Degrading to plain HTTP keeps the box reachable, and
+    // clearing `tls` also keeps the tunnel refused (it must never carry the
+    // dashboard) and routes us down the HTTP branch below.
+    log.error(
+      'Could not start the HTTPS listener — falling back to plain HTTP so the dashboard stays reachable. Regenerate the certificate in Settings → Security.',
+      err,
+    );
+    tls = null;
+    server = buildServer(null);
+  }
 
   await server.register(fastifyCookie);
   await server.register(fastifyWebsocket);

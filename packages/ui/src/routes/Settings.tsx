@@ -734,6 +734,10 @@ function SslSection() {
 
   const info = tls.data;
   const validTo = info?.validTo ? new Date(info.validTo).toLocaleDateString() : '—';
+  // Set when the platform had to replace a damaged certificate at boot to keep the
+  // dashboard reachable. Without saying so, an admin whose own certificate was
+  // replaced would just meet an unexplained browser warning one morning.
+  const recovered = info?.recovered;
 
   return (
     <div style={{ paddingBlock: '0.9rem', borderBlockStart: '1px solid var(--color-border)' }}>
@@ -747,6 +751,20 @@ function SslSection() {
             : t('settings.sslSelfSignedNote', { date: validTo })
           : t('settings.sslHint')}
       </div>
+      {recovered && (
+        <div
+          className="glass-inset panel"
+          style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', marginBlockEnd: '0.6rem', borderInlineStart: '3px solid var(--color-warning)' }}
+        >
+          <AlertTriangle size={18} style={{ color: 'var(--color-warning)', flexShrink: 0, marginBlockStart: 2 }} />
+          <div className="setting-row__hint">
+            {t(recovered.replaced === 'custom' ? 'settings.sslRecoveredCustom' : 'settings.sslRecoveredSelfSigned', {
+              date: new Date(recovered.at).toLocaleDateString(),
+              reason: recovered.reason,
+            })}
+          </div>
+        </div>
+      )}
       {info && (
         <pre className="logs glass-inset" style={{ maxHeight: 'none', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
           {`${t('settings.sslFingerprint')}: ${info.fingerprint}`}

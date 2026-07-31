@@ -12,6 +12,16 @@
  *
  * Cert generation shells to `openssl` (present in the Alpine runtime image). In
  * local dev (no openssl) this throws and the daemon falls back to plain HTTP.
+ *
+ * **The cert files are boot-critical, so nothing here trusts them on sight**
+ * [OPENMASJIDOS-011]. Node builds the TLS context inside the Fastify constructor,
+ * so handing it a damaged cert throws *before* the daemon has a server to catch it
+ * with — the process exits, Docker restarts it under `restart: unless-stopped`, and
+ * the box crash-loops with no dashboard to repair it from. `ensureCert` therefore
+ * checks the *content* of what's on disk (not merely that the files exist),
+ * quarantines anything unusable, and generates a fresh self-signed pair so the
+ * dashboard comes back. A browser warning is a bad day; an unreachable masjid
+ * display on a wall is a much worse one.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,14 +39,31 @@ const KEY_PATH = path.join(TLS_DIR, 'key.pem');
 const META_PATH = path.join(TLS_DIR, 'cert.json');
 
 export type CertType = 'self-signed' | 'custom';
+
+/** Recorded when a damaged cert had to be replaced automatically at boot, so the
+ *  admin can be told why their certificate changed instead of just meeting a new
+ *  browser warning. Cleared as soon as they regenerate or upload one themselves. */
+export interface CertRecovery {
+  at: string;
+  /** What kind of cert was replaced — 'custom' means the admin needs to re-upload. */
+  replaced: CertType;
+  /** Plain-language reason, safe to show: never contains key material. */
+  reason: string;
+}
+
 interface CertMeta {
   type: CertType;
   generatedAt: string;
+  recovered?: CertRecovery;
 }
 
 function readMeta(): CertMeta {
   try {
-    return JSON.parse(fs.readFileSync(META_PATH, 'utf8')) as CertMeta;
+    const raw: unknown = JSON.parse(fs.readFileSync(META_PATH, 'utf8'));
+    // The meta file is as corruptible as the cert beside it, and it feeds the UI.
+    // Anything that isn't a plain object reads as "self-signed, unknown age".
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
+    return raw as CertMeta;
   } catch {
     return { type: 'self-signed', generatedAt: '' };
   }
@@ -57,8 +84,70 @@ function subjectAltNames(): string {
   ].join(',');
 }
 
+/**
+ * Why a cert+key pair can't be used, in plain language — or null if it's fine.
+ *
+ * This is deliberately the same three checks Node itself makes when it builds a
+ * secure context (parse the cert, parse the key, confirm they belong together), so
+ * "passes this" means "the Fastify constructor won't throw". Verified against every
+ * realistic corruption mode: an empty file, whitespace, zero bytes from a dying SD
+ * card, a write truncated mid-PEM, outright garbage, and — the partial-restore
+ * case — a valid cert paired with a valid key from a *different* box.
+ */
+export function certPairProblem(cert: Buffer | string, key: Buffer | string): string | null {
+  let x509: crypto.X509Certificate;
+  try {
+    x509 = new crypto.X509Certificate(cert);
+  } catch {
+    return "the certificate file isn't readable as a certificate";
+  }
+  let priv: crypto.KeyObject;
+  try {
+    priv = crypto.createPrivateKey(key);
+  } catch {
+    return "the private key file isn't readable as a private key";
+  }
+  try {
+    if (!x509.checkPrivateKey(priv)) return 'the certificate and private key are not a matching pair';
+  } catch {
+    // Throws rather than returning false when the two are different key types.
+    return 'the certificate and private key are not a matching pair';
+  }
+  return null;
+}
+
+/** Why the pair ON DISK can't be used, or null. Unreadable counts as a problem. */
+function storedCertProblem(): string | null {
+  let cert: Buffer;
+  let key: Buffer;
+  try {
+    cert = fs.readFileSync(CERT_PATH);
+    key = fs.readFileSync(KEY_PATH);
+  } catch (err) {
+    return `the certificate files could not be read (${(err as Error).message})`;
+  }
+  return certPairProblem(cert, key);
+}
+
+/**
+ * Move damaged cert files aside instead of deleting them. They may be an admin's
+ * own certificate, and what broke is worth being able to look at afterwards. Purely
+ * best-effort: openssl overwrites both paths anyway, so a failure here never blocks
+ * recovery.
+ */
+function quarantineBroken(): void {
+  for (const p of [CERT_PATH, KEY_PATH]) {
+    try {
+      fs.rmSync(`${p}.broken`, { force: true });
+      fs.renameSync(p, `${p}.broken`);
+    } catch {
+      /* best effort — recovery proceeds regardless */
+    }
+  }
+}
+
 /** (Re)generate a self-signed cert covering the box's LAN names + addresses. */
-export function generateSelfSigned(): void {
+export function generateSelfSigned(recovered?: CertRecovery): void {
   fs.mkdirSync(TLS_DIR, { recursive: true });
   const res = spawnSync(
     'openssl',
@@ -79,18 +168,54 @@ export function generateSelfSigned(): void {
   } catch {
     /* best effort (e.g. non-POSIX dev) */
   }
-  writeMeta({ type: 'self-signed', generatedAt: new Date().toISOString() });
+  // Don't trust exit code 0 on its own. A full disk can leave openssl "successful"
+  // having written a truncated or empty file, and recording that as a good cert is
+  // how we'd hand the boot path something it dies on. (Same lesson as the backup
+  // writer: the tool's exit status and the bytes actually on disk are two facts.)
+  const problem = storedCertProblem();
+  if (problem) {
+    throw new Error(`openssl reported success but the certificate it wrote is unusable: ${problem}`);
+  }
+  writeMeta({ type: 'self-signed', generatedAt: new Date().toISOString(), ...(recovered ? { recovered } : {}) });
   log.info('Generated a self-signed TLS certificate for the dashboard.');
 }
 
-/** Ensure a cert+key exist; generate a self-signed pair if not. */
+/**
+ * Ensure a cert+key exist AND are usable; otherwise generate a self-signed pair.
+ *
+ * Checking existence alone was the boot brick: `readFileSync` happily returns
+ * corrupt bytes, so a damaged file sailed through to the Fastify constructor and
+ * killed the process. A healthy cert is left byte-for-byte alone — this must not
+ * churn the cert (and re-trigger every device's browser warning) on every boot.
+ */
 export function ensureCert(): void {
-  if (fs.existsSync(CERT_PATH) && fs.existsSync(KEY_PATH)) return;
-  generateSelfSigned();
+  if (!fs.existsSync(CERT_PATH) || !fs.existsSync(KEY_PATH)) {
+    generateSelfSigned();
+    return;
+  }
+  const problem = storedCertProblem();
+  if (!problem) return;
+
+  const replaced = readMeta().type;
+  log.error(
+    `The stored TLS certificate is unusable: ${problem}. Replacing it with a fresh self-signed certificate so the dashboard stays reachable` +
+      (replaced === 'custom' ? ' — your uploaded certificate will need to be re-added in Settings → Security.' : '.'),
+  );
+  quarantineBroken();
+  generateSelfSigned({ at: new Date().toISOString(), replaced, reason: problem });
 }
 
+/**
+ * The cert+key for a TLS listener. Throws if what's on disk is unusable, rather
+ * than returning bytes that make `createServer` throw somewhere less recoverable —
+ * every caller already treats a throw here as "skip TLS", which is a safe outcome.
+ */
 export function loadCert(): { cert: Buffer; key: Buffer } {
-  return { cert: fs.readFileSync(CERT_PATH), key: fs.readFileSync(KEY_PATH) };
+  const cert = fs.readFileSync(CERT_PATH);
+  const key = fs.readFileSync(KEY_PATH);
+  const problem = certPairProblem(cert, key);
+  if (problem) throw new Error(`The stored TLS certificate is unusable: ${problem}`);
+  return { cert, key };
 }
 
 /** Validate + install an admin-supplied cert + key (bring-your-own). */
@@ -130,13 +255,17 @@ export interface CertInfo {
   /** SHA-256 fingerprint (colon-separated hex) — handy for verifying the cert. */
   fingerprint: string;
   selfSigned: boolean;
+  /** Set when the platform had to replace a damaged certificate to keep booting. */
+  recovered?: CertRecovery;
 }
 
 export function certInfo(): CertInfo | null {
   try {
     const x509 = new crypto.X509Certificate(fs.readFileSync(CERT_PATH));
+    const meta = readMeta();
     return {
-      type: readMeta().type,
+      type: meta.type,
+      ...(meta.recovered ? { recovered: meta.recovered } : {}),
       subject: x509.subject,
       issuer: x509.issuer,
       validFrom: x509.validFrom,

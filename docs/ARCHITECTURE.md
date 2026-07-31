@@ -218,6 +218,27 @@ Also open: the archive is unencrypted while containing personal data, payment
 keys, the tunnel token and the backup destination's own credentials. The UI now
 says so at destination-choice time; `rclone crypt` is the real fix.
 
+## Boot must degrade, never exit
+The daemon runs under `restart: unless-stopped` on hardware that may be mounted on a
+wall, so a boot failure is not a crash — it is a crash-*loop*, with no dashboard
+left to repair the box from and no self-service installer path that helps (Update
+and Repair both re-read the data dir that caused it). The TLS cert taught us this:
+a corrupt-but-present `cert.pem` exited the process, because Node builds the TLS
+context inside the Fastify constructor, outside the try/catch that wrapped reading
+the file.
+
+The rule we settled on: **anything boot-critical is validated before it is trusted,
+and a failure degrades instead of exiting.** For TLS that means three layers —
+`certPairProblem()` runs the same checks Node does, `ensureCert()` repairs damage
+(quarantining it as `*.broken`) rather than passing it along, and `index.ts` rebuilds
+the server without TLS if the constructor throws anyway. Plain HTTP is the last way
+in, so it is a recovery mechanism and must not be removed; clearing `tls` on that
+path also keeps the Cloudflare tunnel refused, since the tunnel must never carry the
+dashboard. Two constraints that are easy to break by accident: a *healthy* cert must
+be left byte-for-byte alone (regenerating it re-triggers the one-time browser warning
+on every device on the masjid's LAN), and openssl's exit code is not evidence the
+bytes reached the disk — a full disk gives you a clean exit and an empty file.
+
 ## Version
 `VERSION` at the repo root is the single source of truth. The Docker build copies
 it to `/app/VERSION`; the daemon reads it (`OPENMASJID_VERSION_FILE`). Shown in
