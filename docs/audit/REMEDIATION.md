@@ -145,13 +145,79 @@ typecheck, build, and reading both click paths.
 
 ---
 
+## Follow-up PR — `OPENMASJIDOS-011`, the corrupt-cert boot brick (**Critical**)
+
+**Branch:** `fix/tls-boot-recovery` · **Base:** `a01f16c` · **Merged:** **NO — awaiting review.**
+The boot path is excluded from autonomous shipping by the addendum regardless of tier, so this is a
+PR even though the finding is Critical.
+
+**The bug.** `ensureCert()` only checked that `cert.pem` and `key.pem` *existed*, and `loadCert()` was
+a bare `readFileSync` — so corrupt bytes reached `Fastify({ https })`. Node builds the TLS context
+inside that constructor, which sits **outside** the try/catch that wraps reading the cert, so it threw,
+reached `main().catch`, and called `process.exit(1)`. Under `restart: unless-stopped` that is a
+permanent crash-loop with no dashboard left to repair the cert from — and because the cert lives in
+the mounted data dir, the volunteer's two self-service paths (installer **Update** and **Repair**)
+both re-read the same bad file.
+
+**The fix.** Three layers, outermost last:
+1. `certPairProblem()` — the same three checks Node itself makes (parse cert, parse key, confirm they
+   belong together), so "passes this" means "the constructor won't throw".
+2. `ensureCert()` checks *content*, moves damaged files aside as `*.broken`, and generates a fresh
+   self-signed pair. A healthy cert is left byte-for-byte alone — a self-heal that fires when nothing
+   is wrong would re-trigger the browser warning on every device on the masjid's LAN.
+   `loadCert()` now throws rather than returning unusable bytes, so every caller's existing
+   "skip TLS" path is reached instead of a throw somewhere less recoverable.
+3. `index.ts` builds the server inside a try/catch that rebuilds it **without** TLS on any throw.
+   Clearing `tls` also keeps the Cloudflare tunnel refused, which must never carry the dashboard.
+
+`generateSelfSigned()` additionally verifies what openssl actually wrote instead of trusting exit
+code 0 — the same lesson as the backup writer: the tool's status and the bytes on disk are two facts,
+and a full disk gives you the first without the second.
+
+**Verified on a bench, on the real published image.** `ghcr.io/…/openmasjid-core:latest` at revision
+`a01f16c` (byte-identical to what masjid boxes run today) versus the fixed build, same staged data dir,
+same `--restart unless-stopped`:
+
+| staged cert | old image (`a01f16c`) | fixed build |
+|---|---|---|
+| truncated mid-write (300 of 1122 bytes), marked as an admin-uploaded cert | `Status=restarting` `RestartCount=8` `ExitCode=1` — `ERR_OSSL_PEM_BAD_END_LINE` from `getServerInstance` in `fastify/lib/server.js` | `Status=running` `RestartCount=0`, self-healed |
+| valid cert + valid key from a **different box** (partial restore) | `Status=restarting` `RestartCount=8` — `ERR_OSSL_X509_KEY_VALUES_MISMATCH` | `Status=running`, self-healed |
+| healthy cert, restarted | running | running, **fingerprint unchanged** |
+| corrupt cert **and openssl removed** (worst case) | — | running on plain HTTP, `GET /` → 200 with real dashboard HTML, tunnel refused |
+
+After recovery, on disk: `cert.pem` 1265 bytes and valid with the right SANs, `key.pem` a confirmed
+matching pair, the original truncated file preserved as `cert.pem.broken` (300 bytes), and
+`cert.json` recording `{"replaced":"custom","reason":"the certificate file isn't readable as a
+certificate"}`. Queried through the real API as a signed-in admin, `system.tlsInfo` returns that
+`recovered` block — so the UI banner has the data it reads.
+
+**Admin-facing.** Settings → Security shows a warning callout explaining that the certificate was
+replaced and why, with a distinct message when it was the admin's own uploaded cert (they need to
+re-upload). Regenerating or uploading clears the notice. Without this, an admin whose cert was
+replaced would just meet an unexplained browser warning one morning.
+
+**What to watch:** nothing in normal operation — a healthy cert is untouched, proven by the unchanged
+fingerprint across a restart. The one visible change on an *already-broken* box is that it now boots
+with a new self-signed cert, so devices are asked to accept it once.
+
+**Also in this PR:** `restoreAppProxies()` catches per app, so one app that can't get an HTTPS proxy
+no longer costs every app after it in the list its proxy too.
+
+**Regression tests:** `packages/core/test/tls-boot.test.ts` — 13 cases, including a
+`the real boot sequence survives …` test that drives `ensureCert()` → `loadCert()` →
+`https.createServer()` in the order `index.ts` runs them, across ten corruption modes. **10 of the 13
+fail against the pre-fix source** (verified by stashing the fix and re-running). One case needs a PATH
+shim and is skipped on Windows; it runs on CI.
+
+**To undo:** `git revert` the single commit. Doing so restores the crash-loop, so prefer fixing
+forward.
+
+---
+
 ## Deferred, and why
 
 **Excluded from autonomous shipping by the addendum** (boot path / init / update mechanism — 13
 findings). Implemented nowhere; they need a separate PR with a rollback plan and a bench box:
-- `OPENMASJIDOS-011` corrupt-cert boot failure (**Critical**). Fix is small — validate the PEM before
-  trusting it, and fall back to plain HTTP — but it is the boot path, and getting it wrong bricks
-  wall-mounted hardware. **Never remove the recovery mechanism.**
 - OTA signing/verification, update rollback and known-good image retention.
 - Unauthenticated restore while no admin exists; first-run claim window.
 
