@@ -7,6 +7,7 @@
  *   - dangerous keys → list of human-readable warnings; the caller requires an
  *                      explicit "I understand the risk" acknowledgement.
  */
+import path from 'node:path';
 import YAML from 'yaml';
 
 export interface ComposeCheck {
@@ -116,12 +117,29 @@ function checkFileSources(section: string, defs: unknown, dangers: string[]): vo
 /** Flag a host path (from a service bind mount or a local-driver bind volume) if
  *  it is sensitive, the whole filesystem, the Docker socket, or escapes via "..". */
 function checkHostPath(label: string, raw: string, dangers: string[]): void {
-  const norm = String(raw).trim().replace(/\/+$/, '') || '/';
+  let norm = String(raw).trim().replace(/\/+$/, '') || '/';
+  // The ".." test runs BEFORE normalisation on purpose: we want to REFUSE a path
+  // containing "..", not silently resolve it into something that looks clean.
   if (/(^|\/)\.\.(\/|$)/.test(norm)) {
     dangers.push(`${label} mounts a path that escapes the app folder (it contains "..").`);
     return;
   }
+  // `docker compose` expands a leading `~` to the invoking user's home BEFORE the
+  // daemon ever sees the path — verified with `docker compose config`, which
+  // rewrote `~/.ssh` to an absolute home path. The core runs as ROOT, so `~/.ssh`
+  // is `/root/.ssh`: exactly what the /root entry below exists to stop. Without
+  // this the string simply failed the `startsWith('/')` test and was waved
+  // through as a relative in-app path.
+  if (/^~/.test(norm)) {
+    dangers.push(`${label} mounts a path in the server's own home folder (${norm}).`);
+    return;
+  }
   if (!norm.startsWith('/')) return; // relative path inside the app folder / named volume
+  // Collapse duplicate separators and "." segments before ANY comparison below.
+  // `//run` is the same directory as `/run` to the kernel but not to `startsWith`,
+  // and that one extra slash was enough to mount the Docker socket's directory
+  // with zero warnings.
+  norm = path.posix.normalize(norm).replace(/\/+$/, '') || '/';
   if (norm.endsWith('docker.sock') || norm === '/var/run/docker.sock') {
     dangers.push(`${label} mounts the Docker socket — that grants control of every container on the machine.`);
     return;
@@ -133,6 +151,13 @@ function checkHostPath(label: string, raw: string, dangers: string[]): void {
   for (const root of SENSITIVE_ROOTS) {
     if (norm === root || norm.startsWith(root + '/')) {
       dangers.push(`${label} mounts a sensitive host path: ${norm}`);
+      return;
+    }
+    // …and a mount that CONTAINS a sensitive root is just as bad: the list holds
+    // the platform's own data dir, so mounting its parent (`/opt`) handed an app
+    // every platform secret and every app's .env while matching nothing above.
+    if (root.startsWith(norm + '/')) {
+      dangers.push(`${label} mounts a host folder that contains sensitive data: ${norm}`);
       return;
     }
   }

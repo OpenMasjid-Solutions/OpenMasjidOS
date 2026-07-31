@@ -12,11 +12,20 @@ import { getCsrf } from './session';
 function wsUrl(): string {
   const { protocol, host } = window.location;
   const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${wsProto}//${host}/trpc`;
+  // The dashboard key goes in the query string because a WebSocket handshake
+  // cannot carry a custom header — the same reason api/ws-auth.ts reads `?k=`.
+  // Without it the server now rejects the subscription, which is the point: the
+  // session cookie alone must not drive the API.
+  const key = getCsrf();
+  return `${wsProto}//${host}/trpc${key ? `?k=${encodeURIComponent(key)}` : ''}`;
 }
 
 export function makeTrpcClient() {
-  const wsClient = createWSClient({ url: wsUrl() });
+  // `url` MUST be a callback, not a string: the client is created once at app
+  // start (App.tsx), before the user has logged in and therefore before a key
+  // exists. A string would freeze the empty-key URL and every reconnect after
+  // login would fail auth. The callback is re-read on each (re)connect.
+  const wsClient = createWSClient({ url: () => wsUrl() });
   return trpc.createClient({
     links: [
       splitLink({

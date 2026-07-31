@@ -195,3 +195,66 @@ test('a reserved VOLUME target is still refused after the namespace widened', ()
     assert.equal(refusals.length, 1, name);
   }
 });
+
+// ── Host-path normalisation. Each case below was UNFLAGGED before this suite ──
+// existed, and each was verified by hand against the real checkCompose.
+
+/** A minimal valid stack whose single service bind-mounts `src`. */
+function bindStack(src: string): string {
+  return ['services:', '  app:', '    image: example/app:1.0.0', '    volumes:', `      - "${src}:/x"`].join('\n');
+}
+
+test('a duplicate slash cannot smuggle the Docker socket past the gate', () => {
+  // `//run` is the same directory as `/run` to the kernel, but `startsWith('/run')`
+  // is false for it — and /run holds docker.sock on every systemd distro, so this
+  // was a silent path to host root.
+  for (const src of ['//run', '//var/run', '//var//run/docker.sock', '//etc', '//root']) {
+    const { dangers } = checkCompose(bindStack(src));
+    assert.ok(dangers.length > 0, `${src} must be flagged`);
+  }
+});
+
+test('a "." segment cannot smuggle a sensitive path past the gate', () => {
+  for (const src of ['/var/./run/docker.sock', '/./etc', '/etc/./ssh']) {
+    const { dangers } = checkCompose(bindStack(src));
+    assert.ok(dangers.length > 0, `${src} must be flagged`);
+  }
+});
+
+test('a leading ~ is treated as the host path compose expands it to', () => {
+  // `docker compose config` rewrites `~/.ssh` to the invoking user's home before
+  // the daemon sees it, and the core runs as root — so this reaches /root/.ssh,
+  // which is what the /root entry exists to block. It previously failed the
+  // startsWith('/') test and was accepted as a relative in-app path.
+  for (const src of ['~/.ssh', '~root/.ssh', '~/.docker/config.json', '~']) {
+    const { dangers } = checkCompose(bindStack(src));
+    assert.ok(dangers.length > 0, `${src} must be flagged`);
+  }
+});
+
+test("mounting a PARENT of the platform's data dir is flagged", () => {
+  // SENSITIVE_ROOTS held the data dir itself, so descendants were caught but the
+  // parent was not — and mounting /opt hands over every platform secret
+  // (stripe.json, email.json, the tunnel token) plus every app's .env.
+  const { dangers } = checkCompose(bindStack('/opt'));
+  assert.ok(dangers.length > 0, '/opt must be flagged');
+  assert.match(dangers[0], /contains sensitive data/);
+});
+
+test('ordinary app mounts are still accepted after normalisation', () => {
+  // The gate must not become so strict that real apps stop installing: any danger
+  // is hard-blocking on the catalog path.
+  for (const src of ['./data', 'data', './config/app.yml', '/srv/media', '/mnt/usb']) {
+    const { dangers, refusals } = checkCompose(bindStack(src));
+    assert.deepEqual(dangers, [], `${src} must stay clean`);
+    assert.deepEqual(refusals, [], src);
+  }
+});
+
+test('".." is still refused rather than silently resolved', () => {
+  // Normalisation runs AFTER this check on purpose — resolving `..` first would
+  // turn an escape attempt into a clean-looking path.
+  const { dangers } = checkCompose(bindStack('/var/run/../run/docker.sock'));
+  assert.ok(dangers.length > 0);
+  assert.match(dangers[0], /escapes the app folder/);
+});
