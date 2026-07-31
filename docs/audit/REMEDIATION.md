@@ -4,7 +4,9 @@
 # Remediation — what shipped, how it was verified, how to undo it
 
 **Branch:** `audit/security-2026-07-30` · **Base:** `cf32b878` (`pre-audit-2026-07-30`)
-**Merged to `master`:** **NO** — autonomous push disabled, see `SECURITY_AUDIT.md §0`.
+**Merged to `master`:** yes, as PR #3 → `a01f16c`, by the maintainer. CI green on `master`; the
+published image's `revision` label was checked against `master` HEAD after the merge. Autonomous push
+was disabled for the run itself — see `SECURITY_AUDIT.md §0`.
 
 ## Baseline vs after
 
@@ -147,9 +149,11 @@ typecheck, build, and reading both click paths.
 
 ## Follow-up PR — `OPENMASJIDOS-011`, the corrupt-cert boot brick (**Critical**)
 
-**Branch:** `fix/tls-boot-recovery` · **Base:** `a01f16c` · **Merged:** **NO — awaiting review.**
-The boot path is excluded from autonomous shipping by the addendum regardless of tier, so this is a
-PR even though the finding is Critical.
+**Branch:** `fix/tls-boot-recovery` · **Base:** `a01f16c` · **Merged:** yes, as PR #4 → `ac44b07`, by
+the maintainer. The boot path is excluded from autonomous shipping by the addendum regardless of tier,
+so this went up as a PR even though the finding is Critical. Post-merge: CI green (the first `build`
+job wedged on an unrelated runner hang at ~25 min against a 3–4 min norm; cancelled and re-run, then
+3 min), and the published image was verified to self-heal a corrupt cert rather than crash-loop.
 
 **The bug.** `ensureCert()` only checked that `cert.pem` and `key.pem` *existed*, and `loadCert()` was
 a bare `readFileSync` — so corrupt bytes reached `Fastify({ https })`. Node builds the TLS context
@@ -214,6 +218,87 @@ forward.
 
 ---
 
+## Follow-up PR — `OPENMASJIDOS-004`, the File Explorer reached the platform's own state
+
+**Branch:** `fix/files-protect-platform-state` · **Base:** `ac44b07` · **Merged:** **NO — awaiting review.**
+
+**The bug.** The sandbox confined every operation to the data dir, which was treated as sufficient. But
+that directory is also where the platform keeps its control plane, so "inside `/data`" allowed two
+different things, either of which is on its own serious:
+
+1. **Every platform secret.** `config/` holds the admin password hash, the SMTP password / Resend key,
+   the Stripe keys, the Cloudflare tunnel token and the TLS private key. Every other surface
+   deliberately refuses to hand these to the client — the settings API returns only "is set" flags.
+2. **Host root.** Start/update run `docker compose -f apps/<id>/compose.yml up`, reading that file
+   *from disk*. Rewriting it and pressing Start launches a container with `privileged: true` or the
+   Docker socket mounted, **without ever passing `apps/compose-validate.ts`** — which `CLAUDE.md §15`
+   designates the SOLE install-time gate. `apps/<id>/meta.json` is the same class: it carries the
+   app's `ssoSecret` (documented in `apps/types.ts` as "never included in the DTO sent to the
+   dashboard") and its Fabric capability grants.
+
+**Demonstrated, not asserted.** The same authenticated session against the published image
+(`a01f16c`) and this build, same data dir:
+
+| request | published `a01f16c` | this build |
+|---|---|---|
+| `files.read /config/stripe.json` | returns `sk_live_…` | `403 FORBIDDEN` |
+| `files.read /config/tls/key.pem` | returns the `BEGIN PRIVATE KEY` PEM | `403` |
+| `files.read /config/auth.json` | returns the `$argon2id$…` hash | `403` |
+| `files.read /apps/<id>/meta.json` | returns `ssoSecret` | `403` |
+| `files.list /config` | lists `auth.json`, `stripe.json`, `tls` | `403` |
+| `files.write /apps/<id>/compose.yml` (host root) | writes it | `403` |
+| upload named `compose.yml` into `apps/<id>/` | writes it | `403` |
+| upload into `/config` | writes it | `403` |
+| `GET /api/files/download?path=/config/stripe.json` | 200 + secret | `403` |
+| upload a normal file into `apps/<id>/data/` | 200 | **200** — feature intact |
+| `files.read /apps/<id>/data/receipt.txt` | 200 | **200** — feature intact |
+
+**The fix.** One decider, `protectedReason()`, and every entry point asks it. `resolve()` is the choke
+point so no read/list/delete can forget; constructed *targets* (a rename destination, an upload
+destination, the `writeTextFile` leaf) each call `assertAllowed` because they never pass through
+`resolve()`. Protected: `config/**`, `.backup-staging/**`, and exactly `compose.yml` / `.env` /
+`meta.json` directly inside `apps/<id>/` — matched case-insensitively, and only at that depth, so an
+app's own data (including its own `.env` one level down) stays browsable.
+
+The guard checks the **realpath as well as the requested path.** A symlink at
+`apps/x/data/link → config/stripe.json` is legitimately *inside* the sandbox, so `resolve()` is happy
+with it and a single-spelling check would have handed over the file it points at — the same lesson as
+the raw-vs-decoded path guards from the first audit round.
+
+**Backup and restore were the stated risk, and were re-verified end to end.** They archive `config/`
+and `apps/` directly and import nothing from `files/manager.ts`, so the guard cannot reach them —
+`test/files-guard.test.ts` pins that structurally, because a guard that leaked into the backup path
+would silently produce archives missing every setting. Confirmed on a real container with the Docker
+socket and a properly-labelled `omos-*` volume:
+
+```
+GET /api/backup -> 200 · archive contains config/stripe.json, config/auth.json, config/tls/key.pem,
+                   apps/donations/{compose.yml,meta.json}, apps/donations/data/receipt.txt,
+                   volumes/omos-donations_data.tar.gz
+then: tampered stripe.json, deleted receipt.txt, overwrote the volume payload
+restore -> "Checking your backup… Pausing your apps… Restoring your settings and app data…
+            Restoring app data… • omos-donations_data … Finishing up"
+after:  platform secret RESTORED · app file RESTORED · volume data RESTORED · core back up, health ok
+```
+
+The restore also re-ran the compose risk check before starting apps, which is the v0.45.0 invariant
+still holding.
+
+**Admin-facing.** Protected entries are *shown* in the listing with a lock and a "Private" tag, not
+hidden — a volunteer should be able to see that the platform's data lives there — and the actions that
+would fail aren't offered. `PROTECTED` maps to `FORBIDDEN`/403 rather than 400, so a refusal reads as
+"you may not" instead of "that didn't work".
+
+**Tests:** `packages/core/test/files-guard.test.ts` — 11 cases, written per-verb on purpose (the bug
+class is "one entry point forgot to ask", so each of the nine is pinned by name). Includes an
+outcome-level test that asserts on the *secret values* rather than the code paths, so a future
+refactor that reintroduces a way in still fails. Verified on Linux: **148 tests, 148 pass, 0 skipped**
+(the symlink case can't run on Windows and now skips loudly rather than silently).
+
+**To undo:** `git revert` the single commit — that re-exposes the secrets and the compose bypass.
+
+---
+
 ## Deferred, and why
 
 **Excluded from autonomous shipping by the addendum** (boot path / init / update mechanism — 13
@@ -228,7 +313,7 @@ Stripe scoping (cross-repo contract), secret rotation.
 confirm the *code* for many of them but not that my fix wouldn't break a legitimate flow without
 runtime or hardware. Shipping those unreviewed is exactly the damage this run was supposed to avoid.
 Highest-value ones to pick up next, in order: the File Explorer `config/` exposure
-(`OPENMASJIDOS-004` — 6 auditors, and it defeats the deliberate "never return secrets to the client"
+(`OPENMASJIDOS-004` — now FIXED, see above; it defeated the deliberate "never return secrets to the client"
 design); `system.addSshKey` (permanent host root, no toggle, no revocation); the `/%74rpc` origin
 bypass (same normalisation class as the shipped Criticals, so cheap); pinning the Actions to SHAs;
 and RTL/`prefers-reduced-motion`, which `CLAUDE.md §14` promises and which do not work at all.

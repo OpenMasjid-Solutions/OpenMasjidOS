@@ -22,7 +22,10 @@ function wrap<T>(fn: () => T): T {
     return fn();
   } catch (err) {
     if (err instanceof FileError) {
-      const code = err.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'BAD_REQUEST';
+      // PROTECTED is a refusal, not a malformed request — say so, so the UI can
+      // tell "you may not" apart from "that didn't work".
+      const code =
+        err.code === 'NOT_FOUND' ? 'NOT_FOUND' : err.code === 'PROTECTED' ? 'FORBIDDEN' : 'BAD_REQUEST';
       throw new TRPCError({ code, message: err.message });
     }
     throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });

@@ -18,6 +18,7 @@ import {
   Home,
   Check,
   X,
+  Lock,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { filesDownloadUrl, uploadFile, joinPath, fileKind } from '../lib/files';
@@ -167,10 +168,15 @@ export function Files() {
                   className="file-main"
                   type="button"
                   onClick={() => openEntry(entry)}
-                  style={{ cursor: 'pointer' }}
+                  disabled={entry.protected}
+                  title={entry.protected ? t('files.protectedHint') : undefined}
+                  style={{ cursor: entry.protected ? 'not-allowed' : 'pointer', opacity: entry.protected ? 0.6 : 1 }}
                 >
                   <span className="file-icon">
-                    {entry.isDir ? <Folder size={18} /> : <FileIcon size={18} />}
+                    {/* OpenMasjidOS's own settings, keys and per-app compose files. Shown
+                        as locked rather than hidden — a volunteer should be able to see
+                        that the platform's data lives here — but not opened or changed. */}
+                    {entry.protected ? <Lock size={18} /> : entry.isDir ? <Folder size={18} /> : <FileIcon size={18} />}
                   </span>
                   {renaming === entry.name ? (
                     <span style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
@@ -193,17 +199,26 @@ export function Files() {
                 <span className="file-size">{entry.isDir ? '—' : formatBytes(entry.size)}</span>
 
                 <span className="file-actions">
-                  {!entry.isDir && (
-                    <a className="icon-btn" href={filesDownloadUrl(joinPath(path, entry.name))} aria-label={t('files.download')}>
-                      <Download size={16} />
-                    </a>
+                  {entry.protected ? (
+                    // No download / rename / delete on platform state. The server
+                    // refuses all three anyway; offering buttons that always fail
+                    // would just look broken.
+                    <span className="setting-row__hint" style={{ fontSize: '0.8em' }}>{t('files.protectedTag')}</span>
+                  ) : (
+                    <>
+                      {!entry.isDir && (
+                        <a className="icon-btn" href={filesDownloadUrl(joinPath(path, entry.name))} aria-label={t('files.download')}>
+                          <Download size={16} />
+                        </a>
+                      )}
+                      <button className="icon-btn" aria-label={t('files.rename')} onClick={() => { setRenaming(entry.name); setRenameValue(entry.name); }}>
+                        <Pencil size={16} />
+                      </button>
+                      <button className="icon-btn" aria-label={t('files.delete')} style={{ color: 'var(--color-danger)' }} onClick={() => setConfirmDelete(entry.name)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </>
                   )}
-                  <button className="icon-btn" aria-label={t('files.rename')} onClick={() => { setRenaming(entry.name); setRenameValue(entry.name); }}>
-                    <Pencil size={16} />
-                  </button>
-                  <button className="icon-btn" aria-label={t('files.delete')} style={{ color: 'var(--color-danger)' }} onClick={() => setConfirmDelete(entry.name)}>
-                    <Trash2 size={16} />
-                  </button>
                 </span>
               </li>
             ))}

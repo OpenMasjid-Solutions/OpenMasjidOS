@@ -17,6 +17,15 @@ function authed(req: FastifyRequest): boolean {
   return Boolean(getSessionUser(req.cookies?.[COOKIE_NAME]));
 }
 
+/** 404 when it's missing, 403 for platform-owned state the explorer may not touch
+ *  [OPENMASJIDOS-004], 400 for anything else malformed. */
+function statusFor(err: unknown): number {
+  if (!(err instanceof FileError)) return 400;
+  if (err.code === 'NOT_FOUND') return 404;
+  if (err.code === 'PROTECTED') return 403;
+  return 400;
+}
+
 // Open flags for a binary upload that NEVER follows a symlink at the final
 // component: O_NOFOLLOW makes open() fail with ELOOP if the destination is a
 // symlink, so a symlink planted by a malicious app/backup can't redirect the
@@ -43,8 +52,7 @@ export function registerFiles(server: FastifyInstance): void {
       reply.type('application/octet-stream');
       return reply.send(fs.createReadStream(full));
     } catch (err) {
-      const code = err instanceof FileError && err.code === 'NOT_FOUND' ? 404 : 400;
-      return reply.code(code).send({ error: (err as Error).message });
+      return reply.code(statusFor(err)).send({ error: (err as Error).message });
     }
   });
 
@@ -70,8 +78,7 @@ export function registerFiles(server: FastifyInstance): void {
       reply.type(mime ?? 'application/octet-stream');
       return reply.send(fs.createReadStream(full));
     } catch (err) {
-      const code = err instanceof FileError && err.code === 'NOT_FOUND' ? 404 : 400;
-      return reply.code(code).send({ error: (err as Error).message });
+      return reply.code(statusFor(err)).send({ error: (err as Error).message });
     }
   });
 
@@ -95,8 +102,7 @@ export function registerFiles(server: FastifyInstance): void {
       }
       return { ok: true };
     } catch (err) {
-      const code = err instanceof FileError && err.code === 'NOT_FOUND' ? 404 : 400;
-      return reply.code(code).send({ error: (err as Error).message });
+      return reply.code(statusFor(err)).send({ error: (err as Error).message });
     }
   });
 }

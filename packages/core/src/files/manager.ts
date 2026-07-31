@@ -4,16 +4,44 @@
  * Sandboxed file manager. Everything is confined to the data directory; path
  * traversal (../) and symlink-escape are both rejected, so the browser can
  * never reach outside /data (CLAUDE.md §15 — validate all external input).
+ *
+ * **Staying inside /data is not enough on its own** [OPENMASJIDOS-004]. The data
+ * dir is also where the platform keeps its own control plane, so a sandbox that
+ * allowed everything under it handed the dashboard two things it must never have:
+ *
+ *   1. **Every platform secret.** `config/` holds the admin password hash, the SMTP
+ *      password / Resend key, the Stripe keys, the Cloudflare tunnel token and the
+ *      TLS private key. The rest of the product deliberately never returns these to
+ *      the client (the settings API reports only "is set" flags), and this read them
+ *      out wholesale.
+ *   2. **Host root, via the compose gate.** Every start/update path runs
+ *      `docker compose -f apps/<id>/compose.yml up`, reading that file *from disk*.
+ *      Rewriting it and pressing Start launches an arbitrary container — with
+ *      `privileged: true` or the Docker socket mounted — without ever passing
+ *      `apps/compose-validate.ts`, which `CLAUDE.md §15` designates the SOLE
+ *      install-time gate. `meta.json` is the same class of problem: it carries each
+ *      app's `ssoSecret` and its Fabric capability grants.
+ *
+ * So the rule is narrower than "inside /data": the explorer is for the masjid's
+ * files, never for the platform's own state. `protectedReason()` is the single place
+ * that decides, and EVERY entry point below asks it.
+ *
+ * Backup and restore are deliberately unaffected — they archive `config/` and
+ * `apps/` directly (`system/backup.ts`, `system/restore.ts`) and import nothing from
+ * this module, so the guard cannot reach them.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR } from '../config';
+import { DATA_DIR, CONFIG_DIR, APPS_DIR } from '../config';
 
 export interface FileEntry {
   name: string;
   isDir: boolean;
   size: number;
   modified: string;
+  /** True for platform-owned state the explorer won't open or change. The UI shows
+   *  it as locked rather than offering actions that would fail. */
+  protected?: boolean;
 }
 
 export class FileError extends Error {
@@ -27,23 +55,97 @@ export class FileError extends Error {
       | 'EXISTS'
       | 'BAD_NAME'
       | 'TOO_LARGE'
-      | 'BINARY',
+      | 'BINARY'
+      | 'PROTECTED',
   ) {
     super(message);
   }
 }
 
 const ROOT = path.resolve(DATA_DIR);
+const CONFIG_ROOT = path.resolve(CONFIG_DIR);
+const APPS_ROOT = path.resolve(APPS_DIR);
+/** Where system/backup.ts stages volume archives while a backup runs. */
+const STAGING_ROOT = path.join(ROOT, '.backup-staging');
+
+/**
+ * Files the platform itself owns inside each `apps/<id>/`. Names are matched
+ * case-insensitively: only the exact lowercase spellings are load-bearing on Linux,
+ * but a case-insensitive filesystem (a dev Mac or Windows box) would resolve
+ * `Compose.yml` to the same file, and being stricter here costs nothing.
+ *
+ * Only these exact names — an app's own `.env.example` or `docker-compose.yml` stays
+ * browsable, because `composeUp` is invoked with an explicit `-f .../compose.yml`
+ * and `--env-file .../.env`, so no other spelling is ever read.
+ */
+const PLATFORM_APP_FILES = new Set(['compose.yml', '.env', 'meta.json']);
+
+function isInside(root: string, p: string): boolean {
+  return p === root || p.startsWith(root + path.sep);
+}
+
+/** Why the explorer must not touch this absolute path, or null if it's fair game. */
+function classifyProtected(full: string): string | null {
+  if (isInside(CONFIG_ROOT, full)) {
+    return "This folder holds OpenMasjidOS's own settings and keys, so it's kept private. You can change these in Settings.";
+  }
+  if (isInside(STAGING_ROOT, full)) {
+    return 'This folder is used while a backup is being prepared. It clears itself when the backup finishes.';
+  }
+  const rel = path.relative(APPS_ROOT, full);
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    const parts = rel.split(path.sep);
+    // Exactly apps/<id>/<name> — the platform's own file for that app. Anything
+    // deeper is the app's own data and stays browsable.
+    if (parts.length === 2 && PLATFORM_APP_FILES.has(parts[1]!.toLowerCase())) {
+      return "This file is how OpenMasjidOS runs this app, so it's kept private. Manage the app from its own page instead.";
+    }
+  }
+  return null;
+}
+
+/**
+ * Same question, but for every spelling that could reach the same bytes.
+ *
+ * The realpath check is the load-bearing half: a symlink at `apps/x/data/link` →
+ * `/data/config/stripe.json` stays *within* the sandbox, so `resolve()` is perfectly
+ * happy with it, and a guard that only looked at the requested path would hand over
+ * the file the symlink points at. Checking the target as well as the request is the
+ * same lesson as the raw-vs-decoded path guards in `system/via-tunnel.ts`: compare
+ * every spelling the consumer might follow, and fail closed.
+ */
+function protectedReason(full: string): string | null {
+  const direct = classifyProtected(full);
+  if (direct) return direct;
+  try {
+    const real = fs.realpathSync(full);
+    if (real !== full) return classifyProtected(real);
+  } catch {
+    /* doesn't exist yet — the lexical check above is the one that matters */
+  }
+  return null;
+}
+
+/** Refuse any operation on platform-owned state. Every entry point calls this. */
+function assertAllowed(full: string): void {
+  const why = protectedReason(full);
+  if (why) throw new FileError(why, 'PROTECTED');
+}
 
 /** Largest file we'll load into the in-browser text editor (2 MiB). */
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
 function within(p: string): boolean {
-  return p === ROOT || p.startsWith(ROOT + path.sep);
+  return isInside(ROOT, p);
 }
 
 /** Resolve a relative path inside the sandbox. Containment is always enforced;
- *  symlink targets are re-checked when the path exists. */
+ *  symlink targets are re-checked when the path exists.
+ *
+ *  This is also the choke point for the protected-path guard, so no operation can
+ *  reach platform state by forgetting to ask. Constructed *targets* (a new name, an
+ *  upload destination) don't pass through here, so those call `assertAllowed`
+ *  themselves — see each caller. */
 function resolve(rel: string): string {
   const cleaned = path.posix.normalize('/' + String(rel ?? '').replace(/\\/g, '/'));
   const full = path.join(ROOT, cleaned);
@@ -54,6 +156,7 @@ function resolve(rel: string): string {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
+  assertAllowed(full);
   return full;
 }
 
@@ -88,8 +191,20 @@ export function listDir(rel: string): { path: string; entries: FileEntry[] } {
       // lstat (not stat) so a symlink reports ITSELF, never the metadata of an
       // out-of-sandbox target. Navigating into it still goes through resolve(),
       // whose realpath check blocks any escape.
-      const s = fs.lstatSync(path.join(full, name));
-      entries.push({ name, isDir: s.isDirectory(), size: s.size, modified: s.mtime.toISOString() });
+      const child = path.join(full, name);
+      const s = fs.lstatSync(child);
+      // Lexical check only for the listing marker: it decides whether to draw a
+      // lock, and resolving every entry's symlink target would add a syscall per
+      // file in folders that can hold thousands. Enforcement on actual access uses
+      // the full realpath-aware check.
+      const locked = classifyProtected(child) !== null;
+      entries.push({
+        name,
+        isDir: s.isDirectory(),
+        size: s.size,
+        modified: s.mtime.toISOString(),
+        ...(locked ? { protected: true } : {}),
+      });
     } catch {
       /* skip entries we can't stat */
     }
@@ -105,6 +220,7 @@ export function makeDir(relDir: string, name: string): void {
   }
   const target = path.join(dir, safeName(name));
   if (!within(target)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
+  assertAllowed(target);
   if (fs.existsSync(target)) throw new FileError('Something with that name already exists.', 'EXISTS');
   fs.mkdirSync(target);
 }
@@ -112,9 +228,13 @@ export function makeDir(relDir: string, name: string): void {
 export function renameEntry(rel: string, newName: string): void {
   const full = resolve(rel);
   if (full === ROOT) throw new FileError('That item cannot be renamed.', 'BAD_NAME');
+  if (full === APPS_ROOT) throw new FileError('That folder cannot be renamed — your apps are stored in it.', 'PROTECTED');
   if (!fs.existsSync(full)) throw new FileError('That item does not exist.', 'NOT_FOUND');
   const target = path.join(path.dirname(full), safeName(newName));
   if (!within(target)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
+  // The TARGET matters as much as the source: renaming a harmless file in an app's
+  // folder to `compose.yml` would plant a compose the platform then runs.
+  assertAllowed(target);
   if (fs.existsSync(target)) throw new FileError('Something with that name already exists.', 'EXISTS');
   fs.renameSync(full, target);
 }
@@ -122,6 +242,7 @@ export function renameEntry(rel: string, newName: string): void {
 export function removeEntry(rel: string): void {
   const full = resolve(rel);
   if (full === ROOT) throw new FileError('The root folder cannot be deleted.', 'BAD_NAME');
+  if (full === APPS_ROOT) throw new FileError('That folder cannot be deleted — your apps are stored in it.', 'PROTECTED');
   if (!fs.existsSync(full)) throw new FileError('That item does not exist.', 'NOT_FOUND');
   fs.rmSync(full, { recursive: true, force: true });
 }
@@ -149,7 +270,11 @@ export function resolveUploadDir(relDir: string): string {
 }
 
 export function uploadPath(relDir: string, name: string): string {
-  return path.join(resolveUploadDir(relDir), safeName(name));
+  const dest = path.join(resolveUploadDir(relDir), safeName(name));
+  // An upload is the easiest way to plant a compose.yml (no 2 MiB text limit, any
+  // bytes), so the destination is checked as well as the folder.
+  assertAllowed(dest);
+  return dest;
 }
 
 /** Read a small text file for the in-browser editor. Rejects directories,
@@ -200,6 +325,9 @@ export function writeTextFile(rel: string, content: string): void {
 
   const full = path.join(dir, safeName(base));
   if (!within(full)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
+  // resolve() guarded the parent; this is the constructed leaf, so it needs its own
+  // check — the parent (apps/<id>/) is legitimately writable, the leaf may not be.
+  assertAllowed(full);
 
   if (fs.existsSync(full)) {
     const st = fs.lstatSync(full);
