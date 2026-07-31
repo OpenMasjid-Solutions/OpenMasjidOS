@@ -42,7 +42,9 @@
     "uploadError": "Upload failed. Please try again.",
     "genericError": "Something went wrong. Please try again.",
     "save": "Save",
-    "saved": "File saved."
+    "saved": "File saved.",
+    "protectedTag": "Private",
+    "protectedHint": "This is OpenMasjidOS's own data, so it's kept private. Your settings and keys are managed in Settings, and each app is managed from its own page."
   },
   "windows": {
     "open": "Open window",
