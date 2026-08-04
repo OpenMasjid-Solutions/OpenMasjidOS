@@ -32,7 +32,6 @@ import { registerStaticUI } from './api/static-ui';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
-import { startStripeMonitor } from './system/stripe-monitor';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -277,12 +276,6 @@ async function main() {
   // Watch for a new core version + newer versions of installed apps, and raise the
   // core-update / app-update alerts the moment one is detected (gated by the matrix).
   startUpdateMonitor();
-
-  // Watch each configured Stripe account for chargebacks and alert the admin (gated
-  // by the matrix). No-op until a Stripe account is configured. The platform polls
-  // rather than taking a webhook because a dispute belongs to the ACCOUNT that
-  // several apps share, and because a webhook would need a public platform route.
-  startStripeMonitor();
 
   // Keep installed apps pointed at this machine's CURRENT address. Moving the box
   // to a new subnet used to leave every app calling the old IP forever, because
