@@ -41,6 +41,12 @@ const OS_ALERTS: { id: string; label: string; description: string }[] = [
     label: 'An app update is available',
     description: 'An installed app can be updated to a newer version.',
   },
+  {
+    id: 'stripe-chargeback',
+    label: 'A card payment is disputed',
+    description:
+      'Someone asked their bank to reverse a payment (a chargeback). Usually needs a reply before a deadline.',
+  },
 ];
 
 export interface AlertChannels {
