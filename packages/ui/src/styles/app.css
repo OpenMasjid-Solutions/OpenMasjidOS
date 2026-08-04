@@ -938,82 +938,51 @@ button {
 /* ── "What's new" (Settings → Advanced) ─────────────────────────────────────
    All colours/spacing come from theme tokens so both themes work, and every
    inline-start property is logical so the list reads correctly in RTL. */
-/* Matches OpenMasjid Kiosk's "What's new" panel, so an admin who updates one app
-   and then the OS meets the same thing twice: a one-line subtitle, a version
-   heading with a green "you're on this" pill, and a bulleted list whose bold
-   lead-in is the loud part while the explanation stays quiet. Values are the
-   Kiosk's; the colours resolve through OUR tokens, so both themes and RTL keep
-   working here rather than importing another app's palette. */
-.wn-sub {
-  margin: 0 0 0.9rem;
-  color: var(--color-ink-muted);
-  font-size: 0.92rem;
-}
-/* Separator BELOW each release (not above the next one): the last release must not
-   end on a rule, and the first must not start with one. */
 .changelog__release {
-  padding-block: 0.7rem;
-  border-block-end: 1px solid var(--color-border);
+  padding-block-end: 1.1rem;
 }
-.changelog__release:last-child {
-  border-block-end: 0;
+.changelog__release + .changelog__release {
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: 1.1rem;
 }
 .changelog__version {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin: 0 0 0.4rem;
+  margin: 0 0 0.6rem;
   font-size: 1.05rem;
-  font-weight: 700;
   color: var(--color-ink);
 }
-/* The Kiosk's pill: inset glass with a hairline ring, colour carried by the text. */
 .changelog__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 600;
-  padding: 0.2rem 0.6rem;
+  padding: 0.15rem 0.5rem;
   border-radius: 999px;
-  color: var(--color-ink-muted);
-  background: var(--glass-bg-inset);
-  box-shadow: inset 0 0 0 1px var(--color-border);
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  color: var(--color-primary);
 }
 .changelog__badge--current {
-  color: var(--color-success);
-}
-/* Only OpenMasjidOS has this one — a release newer than the build you're running. */
-.changelog__badge--new {
-  color: var(--color-gold);
+  background: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  color: var(--color-ink-muted);
 }
 .changelog__list {
   margin: 0;
-  padding-inline-start: 1.1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-.changelog__list li {
-  font-size: 0.92rem;
-  line-height: 1.6;
+  padding-inline-start: 1.15rem;
+  display: grid;
+  gap: 0.4rem;
   color: var(--color-ink-muted);
-}
-.changelog__list strong {
-  color: var(--color-ink);
-  font-weight: 650;
+  line-height: 1.5;
 }
 /* A stray paragraph in the source file — no bullet, but keep it in flow. */
 .changelog__para {
   list-style: none;
-  margin-inline-start: -1.1rem;
+  margin-inline-start: -1.15rem;
 }
 .changelog__code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.86em;
+  font-size: 0.88em;
   padding: 0.05rem 0.3rem;
-  border-radius: 5px;
-  background: var(--glass-bg-inset);
-  color: var(--color-ink);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
 }

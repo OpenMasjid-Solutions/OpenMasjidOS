@@ -8,21 +8,6 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# Always diff source as text. A stray control byte in a source file (a regex written
-# with literal control characters rather than \x escapes) makes git classify the blob
-# as binary and show "Binary files differ" instead of a diff — which silently makes a
-# change to that file unreviewable. Source is source; diff it.
-*.ts text diff
-*.tsx text diff
-*.js text diff
-*.cjs text diff
-*.mjs text diff
-*.json text diff
-*.css text diff
-*.md text diff
-*.yml text diff
-*.yaml text diff
-
 # Binary files — no line ending conversion
 *.png binary
 *.svg binary

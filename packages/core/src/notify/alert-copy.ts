@@ -36,7 +36,7 @@ export interface AlertAction {
 }
 
 export interface AlertCopy {
-  alertId: 'app-offline' | 'core-update' | 'app-update' | 'stripe-chargeback';
+  alertId: 'app-offline' | 'core-update' | 'app-update';
   level: 'info' | 'warning' | 'error';
   /** The H1 and the subject. One short phrase. */
   title: string;
@@ -109,80 +109,5 @@ export function appUpdate(name: string, current: string, latest: string): AlertC
       note: 'Then press Update on the app.',
       path: '/',
     },
-  };
-}
-
-/**
- * Someone disputed a card payment (a chargeback).
- *
- * Deliberately avoids the word "chargeback" in the lead line — a volunteer treasurer
- * meets "disputed" in their bank's language far more often. The money and the
- * deadline come first because those are the two things that decide what they do next.
- *
- * There is NO action button on this one, unlike every other OS alert. The thing they
- * must do happens in Stripe, not in our dashboard, and the email's button builds a
- * URL relative to the OpenMasjidOS address — so a button here would send them
- * somewhere that cannot help. The instruction goes in words instead. (A deep link
- * into Stripe's own dashboard was considered and left out: every dashboard.stripe.com
- * path answers 303-to-login, including nonsense ones, so the URL shape could not be
- * verified — and a dead button in an alert about money is worse than a sentence.)
- */
-export function stripeChargeback(opts: {
-  accountLabel: string;
-  amount: string | null;
-  reason: string;
-  dueBy: string | null;
-  needsResponse: boolean;
-  reference: string;
-}): AlertCopy {
-  const { accountLabel, amount, reason, dueBy, needsResponse, reference } = opts;
-  const money = amount ? ` of ${amount}` : '';
-  return {
-    alertId: 'stripe-chargeback',
-    level: 'error',
-    // Version-free and short: this is both the H1 and the subject line.
-    title: amount ? `A payment of ${amount} has been disputed` : 'A payment has been disputed',
-    summary: needsResponse
-      ? `A card payment${money} has been disputed and the bank needs a reply${dueBy ? ` by ${dueBy}` : ' soon'}.`
-      : `A card payment${money} has been disputed by the cardholder.`,
-    detail: needsResponse
-      ? `${reason} The money has already been held back from your Stripe balance. To keep it you need to reply through Stripe with evidence before the deadline — if nobody replies, the dispute is lost automatically.`
-      : `${reason} The money has been held back from your Stripe balance while the bank decides. Stripe will show you whether anything is needed from you.`,
-    facts: [
-      { label: 'Stripe account', value: accountLabel },
-      ...(amount ? [{ label: 'Amount', value: amount }] : []),
-      ...(dueBy ? [{ label: 'Reply by', value: dueBy }] : []),
-      { label: 'Stripe reference', value: reference },
-    ],
-  };
-}
-
-/**
- * Several disputes appeared at once — one alert instead of a flooded inbox.
- *
- * Not hypothetical: a run of card-testing fraud can open many disputes in a single
- * batch, and sending one email each would bury the news it is trying to deliver.
- */
-export function stripeChargebacksMany(opts: {
-  count: number;
-  accountLabel: string;
-  total: string | null;
-  soonest: string | null;
-}): AlertCopy {
-  const { count, accountLabel, total, soonest } = opts;
-  const money = total ? ` totalling ${total}` : '';
-  return {
-    alertId: 'stripe-chargeback',
-    level: 'error',
-    title: `${count} card payments have been disputed`,
-    summary: `${count} card payments${money} have been disputed on your ${accountLabel} account.`,
-    detail:
-      'Several disputes arrived together, which can happen when a stolen card is used repeatedly. The money for each has been held back from your Stripe balance. Open Stripe to see them all and reply to any that need evidence.',
-    facts: [
-      { label: 'Stripe account', value: accountLabel },
-      { label: 'Disputes', value: String(count) },
-      ...(total ? [{ label: 'Total held back', value: total }] : []),
-      ...(soonest ? [{ label: 'Earliest reply date', value: soonest }] : []),
-    ],
   };
 }
