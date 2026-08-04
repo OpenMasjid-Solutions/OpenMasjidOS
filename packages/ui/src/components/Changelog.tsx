@@ -46,20 +46,26 @@ export function Changelog({ md, currentVersion }: { md: string; currentVersion?:
   const { t } = useTranslation();
   const sections = parseChangelog(md);
   if (sections.length === 0) {
-    return <p className="modal-body">{t('changelog.empty')}</p>;
+    // `setting-row__hint` is this repo's muted-text idiom. (The Kiosk's `.muted`
+    // utility does not exist here — worth knowing when porting anything else across.)
+    return <p className="setting-row__hint">{t('changelog.empty')}</p>;
   }
   return (
     <div className="changelog">
       {sections.map((s, i) => {
         // A release newer than what we're running is the update on offer — the
-        // reason most people open this at all, so it gets called out.
+        // reason most people open this at all, so it gets called out. (The Kiosk has
+        // no equivalent: it ships its CHANGELOG inside the image, so it can never see
+        // a release it isn't running. We fetch ours, so we can.)
         const isUpcoming =
           Boolean(s.version && currentVersion) && isNewerVersion(currentVersion!, s.version!);
         return (
           <section key={i} className="changelog__release">
             <h3 className="changelog__version">
               {s.version}
-              {isUpcoming && <span className="changelog__badge">{t('changelog.newer')}</span>}
+              {isUpcoming && (
+                <span className="changelog__badge changelog__badge--new">{t('changelog.newer')}</span>
+              )}
               {s.version === currentVersion && (
                 <span className="changelog__badge changelog__badge--current">
                   {t('changelog.current')}
