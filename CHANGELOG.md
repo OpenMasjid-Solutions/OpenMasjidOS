@@ -7,6 +7,39 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.48.1
+
+- You can now open "What's new" straight from the account menu in the top-right, instead of going into Settings to find it.
+- Added the release notes for everything since 0.47.1 — the last few updates shipped without an entry here.
+
+## 0.48.0
+
+- **OpenMasjidOS now tells you when someone disputes a card payment.** If a donor asks their bank to reverse a payment (a chargeback), you get an email and, if you use one, a message in Slack or Discord. It says how much, why, and the date the bank needs a reply by — because if nobody replies, the money is lost automatically.
+- You choose how you hear about it, like every other alert: email, your chat app, both, or not at all, under Settings → Alerts.
+- Nothing to set up. It works with whatever donation app you already have, and does nothing until you've added your Stripe details in Settings.
+- Amounts are shown correctly for every currency, including ones without pence, like the Japanese yen, and ones with three decimal places, like the Kuwaiti dinar.
+- If several disputes arrive at once — which can happen when a stolen card is used repeatedly — you get one message about all of them rather than a flooded inbox.
+
+## 0.47.5
+
+- The "What's new" panel has been redesigned to match the one in OpenMasjid Kiosk, so it looks and reads the same in both. It now opens in a window you can move and keep open beside the page.
+
+## 0.47.4
+
+- Updated two building blocks of the software to close published security problems. Nothing about how OpenMasjidOS looks or behaves changes.
+
+## 0.47.3
+
+- **The Files app no longer shows OpenMasjidOS's own private files.** The folder holding your password, your email and Stripe keys, and the certificate for this dashboard is now kept private, and the file that describes how each app runs can no longer be edited there. Your own files, and everything belonging to your apps, are untouched and work exactly as before.
+- This closed a way for anyone already signed in to read those keys, or to change how an app starts up.
+- Your backups still include all of it, and restoring still puts everything back — that was checked carefully, because a backup missing your settings would be far worse than the problem being fixed.
+
+## 0.47.2
+
+- **A damaged security certificate no longer stops OpenMasjidOS from starting.** If the file that secures this dashboard gets corrupted — after a power cut, or on a tired SD card — OpenMasjidOS now replaces it and carries on, instead of failing to start and leaving you with no dashboard to fix it from.
+- If the certificate you uploaded yourself was the one that broke, Settings → Security now tells you so and asks you to add it again, rather than leaving you wondering why your browser started complaining.
+- A healthy certificate is never touched, so your devices won't be asked to trust it again for no reason.
+
 ## 0.47.1
 
 - Your logo is no longer squashed in emails. It now keeps its proper shape whether it's square, wide, or tall.

@@ -17,7 +17,7 @@ import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
-import { Changelog } from '../components/Changelog';
+import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
@@ -192,16 +192,11 @@ export function Settings() {
   });
 
   // Release notes open as a managed window (traffic-light chrome, like the terminal
-  // and file windows). `dedupeKey` means pressing the button twice focuses the window
-  // that is already open instead of stacking a second copy of the same notes.
+  // and file windows). The options come from the shared component so this and the
+  // account menu use the same `dedupeKey` — opening from either focuses the one
+  // window rather than stacking a second copy of the same notes.
   function openChangelog() {
-    windows.open({
-      title: t('changelog.title'),
-      icon: <Sparkles size={15} />,
-      dedupeKey: 'changelog',
-      wide: true,
-      node: <ChangelogWindow />,
-    });
+    windows.open(changelogWindowOptions(t('changelog.title')));
   }
 
   async function uploadAndRestore(file: File) {
@@ -658,37 +653,6 @@ function SshAccess() {
       </button>
       <div className="setting-row__hint" style={{ marginBlock: '0.4rem 0.3rem' }}>{t('settings.sshPasswordNote')}</div>
       <pre className="logs glass-inset" style={{ maxHeight: 'none' }}>{t('settings.sshPasswordCmd')}</pre>
-    </div>
-  );
-}
-
-/** "What's new" — the project changelog, fetched server-side (we're LAN-only, so
- *  the browser never reaches GitHub itself).
- *
- *  Lives in a managed traffic-light window rather than a centered modal, matching
- *  OpenMasjid Kiosk's panel and the rest of this OS: release notes are something an
- *  admin reads down and refers back to, so it wants a frame they can move, resize
- *  and leave open beside the page — not a dialog that traps focus. */
-function ChangelogWindow() {
-  const { t } = useTranslation();
-  const info = trpc.system.info.useQuery();
-  const log = trpc.system.changelog.useQuery();
-  const version = info.data?.version;
-  return (
-    <div className="wn">
-      <p className="wn-sub">
-        {version ? t('changelog.subtitle', { version }) : t('changelog.subtitleNoVersion')}
-      </p>
-      {log.isPending ? (
-        <div className="skeleton" style={{ height: '10rem' }} />
-      ) : log.data?.text ? (
-        <>
-          {!log.data.fresh && <p className="setting-row__hint">{t('changelog.stale')}</p>}
-          <Changelog md={log.data.text} currentVersion={version} />
-        </>
-      ) : (
-        <p className="setting-row__hint">{t('changelog.offline')}</p>
-      )}
     </div>
   );
 }
