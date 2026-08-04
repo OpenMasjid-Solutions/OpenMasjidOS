@@ -218,6 +218,36 @@ Also open: the archive is unencrypted while containing personal data, payment
 keys, the tunnel token and the backup destination's own credentials. The UI now
 says so at destination-choice time; `rclone crypt` is the real fix.
 
+## Chargeback alerts: why the platform polls Stripe
+A chargeback belongs to a Stripe **account**, and the Stripe vault exists precisely
+so several apps can share one account. That settles two questions at once.
+
+*Why not the donations app?* Whichever app raised the alert would be guessing on
+behalf of the others — two apps on one account either double-notify or, if the one
+that "owns" it happens to be stopped, nobody is told. Disputes also land days or
+weeks after the payment, which is exactly when an app is most likely to be off. And
+doing it in an app would mean a cross-repo contract change for something the platform
+already has the credentials for.
+
+*Why not a webhook?* Stripe would need a publicly reachable route on the platform.
+The tunnel deliberately exposes only app paths plus two low-sensitivity public
+endpoints (`/api/public/appearance`, `/api/public/logo`); a third would weaken that
+invariant, and it would still leave every masjid without remote access getting no
+alerts at all. Polling is outbound-only, adds no attack surface, and works on a box
+that Stripe cannot reach. The trade is latency — up to one 30-minute interval —
+against a dispute response window measured in days. That is a good trade.
+
+This is monitoring, not payment processing, so it stays within the "payment-agnostic"
+scope rule: no charges are created and no money moves. It reads dispute status using
+credentials the platform already stores, the same way the Stripe status dot already
+calls `/v1/balance`.
+
+Two failure modes shaped the design. A failed poll records **nothing** — treating
+"couldn't reach Stripe" as "no disputes" would mark unseen chargebacks as seen and
+lose them for good. And state is **persisted**, unlike the update monitor's in-memory
+tracking: "an update is pending" stays true and is safe to recompute, whereas a
+chargeback is a one-shot event that would re-alert on every restart.
+
 ## Boot must degrade, never exit
 The daemon runs under `restart: unless-stopped` on hardware that may be mounted on a
 wall, so a boot failure is not a crash — it is a crash-*loop*, with no dashboard

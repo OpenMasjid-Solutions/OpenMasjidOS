@@ -610,8 +610,10 @@
   },
   "changelog": {
     "open": "What's new",
-    "title": "What's new in OpenMasjidOS",
-    "current": "You're on this version",
+    "title": "What's new",
+    "subtitle": "Release notes for OpenMasjidOS, up to the v{{version}} you're running.",
+    "subtitleNoVersion": "Release notes for OpenMasjidOS.",
+    "current": "You're on this",
     "newer": "Newer than yours",
     "stale": "We couldn't check for the latest notes just now, so this may not be up to date.",
     "offline": "We couldn't load the release notes. Check this machine's internet connection and try again.",

@@ -22,5 +22,11 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Local dev data dir. `npm run dev` has no OPENMASJID_DATA_DIR, so config.ts falls
+# back to ./.data — which then holds a real self-signed TLS key, the admin password
+# hash and any keys you entered while testing. Never commit it.
+.data/
+packages/core/.data/
+
 # Claude Code local settings (keep project settings, ignore local overrides)
 .claude/settings.local.json
