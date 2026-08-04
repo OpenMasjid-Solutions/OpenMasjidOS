@@ -180,7 +180,6 @@ export function Settings() {
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
   const windows = useWindows();
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [changelogOpen, setChangelogOpen] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreUploading, setRestoreUploading] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -191,6 +190,19 @@ export function Settings() {
   const reboot = trpc.system.reboot.useMutation({
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+
+  // Release notes open as a managed window (traffic-light chrome, like the terminal
+  // and file windows). `dedupeKey` means pressing the button twice focuses the window
+  // that is already open instead of stacking a second copy of the same notes.
+  function openChangelog() {
+    windows.open({
+      title: t('changelog.title'),
+      icon: <Sparkles size={15} />,
+      dedupeKey: 'changelog',
+      wide: true,
+      node: <ChangelogWindow />,
+    });
+  }
 
   async function uploadAndRestore(file: File) {
     setRestoreUploading(true);
@@ -486,7 +498,7 @@ export function Settings() {
             <button className="btn" onClick={checkUpdates}>
               <RefreshCw size={15} /> {updateInfo.isFetching ? t('settings.checking') : t('settings.checkUpdates')}
             </button>
-            <button className="btn" onClick={() => setChangelogOpen(true)}>
+            <button className="btn" onClick={openChangelog}>
               <Sparkles size={15} /> {t('changelog.open')}
             </button>
             {updateInfo.data?.updateAvailable && (
@@ -498,7 +510,6 @@ export function Settings() {
         </div>
 
         <NetworkRow />
-        <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
 
         <SslSection />
 
@@ -652,24 +663,33 @@ function SshAccess() {
 }
 
 /** "What's new" — the project changelog, fetched server-side (we're LAN-only, so
- *  the browser never reaches GitHub itself). Only fetched once opened. */
-function ChangelogModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+ *  the browser never reaches GitHub itself).
+ *
+ *  Lives in a managed traffic-light window rather than a centered modal, matching
+ *  OpenMasjid Kiosk's panel and the rest of this OS: release notes are something an
+ *  admin reads down and refers back to, so it wants a frame they can move, resize
+ *  and leave open beside the page — not a dialog that traps focus. */
+function ChangelogWindow() {
   const { t } = useTranslation();
   const info = trpc.system.info.useQuery();
-  const log = trpc.system.changelog.useQuery(undefined, { enabled: open });
+  const log = trpc.system.changelog.useQuery();
+  const version = info.data?.version;
   return (
-    <Modal open={open} onClose={onClose} title={t('changelog.title')} wide>
+    <div className="wn">
+      <p className="wn-sub">
+        {version ? t('changelog.subtitle', { version }) : t('changelog.subtitleNoVersion')}
+      </p>
       {log.isPending ? (
         <div className="skeleton" style={{ height: '10rem' }} />
       ) : log.data?.text ? (
         <>
           {!log.data.fresh && <p className="setting-row__hint">{t('changelog.stale')}</p>}
-          <Changelog md={log.data.text} currentVersion={info.data?.version} />
+          <Changelog md={log.data.text} currentVersion={version} />
         </>
       ) : (
-        <p className="modal-body">{t('changelog.offline')}</p>
+        <p className="setting-row__hint">{t('changelog.offline')}</p>
       )}
-    </Modal>
+    </div>
   );
 }
 
