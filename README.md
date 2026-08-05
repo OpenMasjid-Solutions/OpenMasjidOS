@@ -134,17 +134,68 @@ May Allah reward everyone who made it possible.
 
 ## What it does
 
-Everything lives behind a login on a single, polished dashboard:
+Everything lives behind a login on a single, polished dashboard.
 
-- **Live system status** — CPU, memory, storage, temperature, uptime, and apps running, updating in real time.
-- **An App Store** — browse the [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS) catalog and install with one click. Each app collects the details it needs (location, prayer-calculation method, etc.) at install time — the platform stays generic.
-- **Full app control** — open, restart, shut down, update, or remove any app; pin favourites to the dock; watch live logs.
-- **A built-in file manager** — browse, upload (drag & drop), download, edit text, and preview images/video.
-- **A premium, themeable interface** — dark or light, accent colours, wallpapers (or your own image), a glass clock, tasteful motion, and right-to-left support.
-- **Advanced tools** (opt-in, off by default) — CasaOS-compatible community stores, paste-a-Compose installs, per-app and root terminals, SSH-key access, one-click in-app updates, and backup/restore.
-- **The OpenMasjidOS Fabric** — apps can inherit the dashboard's theme and wallpaper, and (when they opt in) share its login, so opening one feels like part of the dashboard. Optional and secure: it never shares masjid data, and each app authenticates with its own per-app key.
+### Your apps
 
-Each app runs as its own isolated Docker container, so **updating OpenMasjidOS never touches your installed apps or their data.**
+- **An App Store** — browse the [OpenMasjidAPPS](https://github.com/OpenMasjid-Solutions/OpenMasjidAPPS) catalog and install with one click. Each app collects the details it needs (location, prayer-calculation method, etc.) at install time, so the platform itself stays generic and holds no masjid data.
+- **Full app control** — open, restart, shut down, update, or remove any app; pin favourites to the dock; watch live logs in a draggable window.
+- **Port conflicts handled for you** — if an app wants a port something else is using, you're offered a free one instead of a failed install.
+- **Every app is its own isolated Docker container**, so **updating OpenMasjidOS never touches your apps or their data.**
+
+### Keeping it up to date
+
+- **One-click updates** for the platform, from the dashboard — it pulls the new version, restarts itself, and reconnects the page automatically. No terminal.
+- **Update channels** — choose **Stable** (tested, the default) or **Development** (what we're still building). The choice covers OpenMasjidOS, the App Store and every app together, so you're never running a mix. Switching is confirmed in both directions, and coming back to Stable warns you first, because Development can move ahead in ways that don't reverse cleanly.
+- **What's new** — release notes in the dashboard, straight from the account menu, so you can see what changed without leaving for GitHub.
+- **Update alerts** — you're told when a new version of the platform or any app is available.
+
+### Staying informed
+
+- **Live system status** — CPU, memory, storage, temperature, uptime and apps running, streaming in real time.
+- **Email** — configure SMTP or Resend once, send yourself a test, and apps can send mail through it without ever handling your credentials.
+- **Notifications** — one webhook for Slack, Discord or anything generic.
+- **A granular alert matrix** — every alert type, from the platform and from each app, routed per-channel: email, webhook, both or off. Built-in alerts cover an app going offline, updates being available, and **card payments being disputed** (chargebacks — the platform polls Stripe and tells you the amount, the reason and the deadline, because an unanswered dispute is lost by default).
+
+### Money, safely
+
+- **A Stripe vault** — save your keys once and let several apps share one account. The secret keys never leave the server and are never returned to the browser.
+- **Chargeback monitoring** — see above. The platform creates no charges and moves no money; it stays payment-agnostic.
+
+### Reaching it
+
+- **Forced HTTPS** — the dashboard is served over TLS with a self-signed certificate generated on first boot, or bring your own. A damaged certificate can't stop the box starting: it's replaced automatically and the dashboard stays reachable.
+- **`openmasjidos.local`** — mDNS so you don't need to remember an IP, plus an optional static IP set up by the installer.
+- **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the admin dashboard itself is never exposed.
+- **Follows the box** — move the machine to a different network and your apps find the dashboard again by themselves.
+
+### Files and the machine
+
+- **A built-in file manager** — browse, upload (drag & drop), download, rename, edit text, and preview images and video. OpenMasjidOS's own settings and keys are kept private and can't be opened or changed from here.
+- **Backups** — download everything (settings and app data) as one archive, or schedule off-site backups to Google Drive, SFTP, SMB or WebDAV with automatic pruning. Restore from the login screen when moving to a new machine.
+- **Housekeeping** — reclaim disk space from unused images, and reboot the server, from the dashboard.
+
+### Making it yours
+
+- **Dark or light**, accent colours, wallpapers (or your own image), a glass clock and tasteful motion — with `prefers-reduced-motion` respected.
+- **Your masjid's logo** — appears on the emails OpenMasjidOS sends and on your notification messages, and apps can use it to brand their own pages.
+- **Right-to-left and translation-ready** — every string goes through i18next.
+
+### The OpenMasjidOS Fabric
+
+- Apps can inherit the dashboard's theme, wallpaper and logo, and — when they opt in — **share its login**, so opening one feels like part of the dashboard.
+- Apps can **securely ask each other** for information through a broker that only permits pairings both sides declared.
+- Apps can send email and raise alerts through the platform **without ever seeing a credential**.
+- All of it is LAN-only, least-privilege, and authenticated with a per-app key. It never shares masjid data.
+
+### Advanced (opt-in, off by default)
+
+- **Community app stores** — add CasaOS-compatible repositories by URL.
+- **Paste a Docker Compose file** to run any container, risk-checked before it starts.
+- **Terminals** — a shell into any app, or into the platform itself.
+- **SSH key access** to the host.
+
+> **On safety:** every app — from the store, from a community repo, or pasted in — passes the same install-time risk check, and it runs again on update and after a restore. Anything that would reach the platform's own state or another app's data is refused outright.
 
 ---
 
@@ -226,14 +277,15 @@ sudo docker ps   # look for "openmasjid-core", status "Up ..."
 
 ## Day-to-day
 
-- **First run** — create an admin account (username + password, 12+ chars). That's the whole setup; you go straight to the dashboard. Prayer times/location are collected by each app, not the platform.
+- **First run** — create an admin account: your name, an email, and a password (12+ chars). You sign in with the name; the email is only where OpenMasjidOS sends alerts. That is the whole setup — you go straight to the dashboard. Prayer times and location are collected by each app, never by the platform.
 - **Manage** — run the same install command again for a menu: **Update** (latest version, apps/data untouched), **Repair** (re-apply config and restart), **Reconfigure network**, or **Uninstall**. Update/Repair only ever touch the core, never your apps.
 - **Update from the dashboard** — Settings → Advanced → Check for updates → Update now, with live progress. No terminal needed.
+- **Choose your channel** — Settings → Advanced → Update channel. **Stable** is tested and is what you get by default; **Development** is what we are still building and can break your apps. It covers the platform and all your apps together.
 - **Reset the admin password** (from the machine's terminal — no data lost):
   ```bash
   docker exec -it openmasjid-core node packages/core/dist/reset-password.js
   ```
-- **Backups** — Settings → Advanced → Download a backup (or restore one). Everything lives under `/opt/openmasjid/` (`config/` = settings + hashed admin account, `apps/<id>/` = each app's compose/env/data).
+- **Backups** — Settings → Advanced → Download a backup (or restore one), or schedule off-site backups to Google Drive, SFTP, SMB or WebDAV. Everything lives under `/opt/openmasjid/` (`config/` = settings + hashed admin account, `apps/<id>/` = each app's compose/env/data).
 
 ---
 
@@ -255,7 +307,21 @@ npm run build   # build UI + bundle daemon
 npm run image   # build & tag the runtime Docker image
 ```
 
-In production the daemon serves on **port 80**; in dev it uses **8723** with the Vite dev server on **5173** (proxying `/trpc` and `/api`). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+In production the dashboard is served over **HTTPS on 443**, with a plain-HTTP front door on **80** that redirects browsers and keeps the app-facing API reachable. In dev the daemon uses **8723** with the Vite dev server on **5173** (proxying `/trpc` and `/api`). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+```bash
+npm run lint    # typecheck both workspaces
+npm run test    # the test suite
+```
+
+### Branches
+
+| Branch | Role |
+|--------|------|
+| **`master`** | Stable / release. What masjids run. Updated only at release time. |
+| **`dev`** | Active development. **Open pull requests against `dev`.** |
+
+`dev` is also the **Development** update channel: pushes there publish a `:dev` image that boxes on that channel pull. `master` publishes `:latest`. Full policy in [`CLAUDE.md`](CLAUDE.md#branching-policy).
 
 ---
 
