@@ -44,9 +44,11 @@ just the `catalog.json` shape + install mechanics in §10.
 | **`master`** | **Stable / release.** What beta masjids run. Protected. |
 | **`dev`** | **The default working branch.** All commits land here. |
 
-- **All development happens on `dev`.** Never commit to `master`.
-- **`master` receives changes ONLY when Hasan explicitly says "merge to main."** Never merge, fast-forward, rebase onto, or cherry-pick into `master` on your own initiative — not for hotfixes, not for docs, not for "trivial" one-liners. That merge *is* a release: bump `VERSION`, tag, and publish per §18.
+- **All development happens on `dev`, from this point on, permanently.** Never commit to `master`. This holds for every change — features, fixes, docs, one-line typos, dependency bumps. There is no size of change that justifies going straight to `master`.
+- **`master` receives changes ONLY when Hasan explicitly says "merge to main."** Never merge, fast-forward, rebase onto, or cherry-pick into `master` on your own initiative — not for hotfixes, not for docs, not for "trivial" one-liners. That merge *is* a release: bump `VERSION`, tag, publish, and add a `CHANGELOG.md` entry per §18.
+- **After every push to `dev`, end the reply by asking whether to push to main.** Once work is committed and pushed to `dev`, the last thing in the response asks: *do you want me to push this to main?* Then keep working on `dev` — and keep asking after each push — until Hasan says "push to main" (or "merge to main"). Do not treat silence, a new task, or approval of the *work* as approval to release; only those words are.
 - **Session-start check:** run `git branch --show-current`. If it is not `dev`, switch before touching anything.
+- **Branches:** only `master`, `dev`, and `cla-signatures` should exist. Delete feature branches once merged. **Never delete `cla-signatures`** — it holds `signatures/version1/cla.json`, the record of who signed the CLA, and the CLA Assistant bot commits there (§3). It looks like a stray branch and is not one.
 
 > **Why `master` and not `main`.** The org standardises on `main` = stable, and the *update channel* value is literally `'main'` because it indexes OpenMasjidAPPS, whose stable branch genuinely is `main`. This repo's stable branch is still `master`: renaming a default branch retargets the protection rule and the required `cla` check and breaks every existing clone, for no functional gain. So **the channel word is not always the branch name** — `system/channel.ts` `osBranch()` owns that mapping (`'main'` → `master`), and anything needing a git ref for this repo must go through it rather than interpolating the channel. A rename is a deliberate future decision, not something to do in passing.
 
