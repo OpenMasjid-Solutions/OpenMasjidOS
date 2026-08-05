@@ -15,6 +15,12 @@ import { isValidSshKey, addRootSshKey } from '../../system/ssh';
 import { pruneUnusedImages } from '../../docker/compose';
 import { fetchChangelog } from '../../store/changelog';
 import { reconcileNow } from '../../system/address-monitor';
+import { getSettings, updateSettings } from '../../settings/store';
+import { channelSchema, channelLabel, osBranch, coreImageTag, usesMovingTags } from '../../system/channel';
+import { requireCatalog, clearCatalogCache } from '../../store/catalog';
+import { clearChangelogCache } from '../../store/changelog';
+import { appsPendingChannel } from '../../apps/manager';
+import { log } from '../../logger';
 
 export const systemRouter = router({
   info: protectedProcedure.query(() => ({
@@ -55,6 +61,63 @@ export const systemRouter = router({
     rebootHost();
     return { ok: true };
   }),
+
+  /**
+   * Which update channel this masjid is on, and what still has to move.
+   * One global setting governs the OS, the catalog and every app (CLAUDE.md §13.4).
+   */
+  channel: protectedProcedure.query(() => {
+    const channel = getSettings().updateChannel;
+    return {
+      channel,
+      label: channelLabel(channel),
+      /** The branch of THIS repo the channel tracks — 'main' maps to master. */
+      branch: osBranch(channel),
+      /** The core image tag it pulls. */
+      imageTag: coreImageTag(channel),
+      version: VERSION,
+      /** True on Development, where versions don't move but images do. */
+      movingTag: usesMovingTags(channel),
+      /** Catalog apps still on the other channel, awaiting the switch. */
+      pending: appsPendingChannel(),
+    };
+  }),
+
+  /**
+   * Switch channel. Deliberately NOT a field on `settings.update`: the order of
+   * operations is the whole safety property.
+   *
+   * We read the TARGET channel's catalog FIRST and let a failure abort before
+   * anything is persisted, so an unreachable or malformed dev catalog leaves the
+   * masjid exactly where it was rather than half-switched — pointing at a channel
+   * whose apps we cannot resolve. Only once we have a real catalog do we persist,
+   * drop the cached catalog/changelog, and report which apps now need moving.
+   */
+  setUpdateChannel: protectedProcedure
+    .input(z.object({ channel: channelSchema }))
+    .mutation(async ({ input }) => {
+      const current = getSettings().updateChannel;
+      if (input.channel === current) {
+        return { channel: current, changed: false, pending: appsPendingChannel() };
+      }
+      try {
+        // Prove the channel is usable before committing to it.
+        await requireCatalog(input.channel);
+      } catch (err) {
+        throw new TRPCError({
+          code: 'SERVICE_UNAVAILABLE',
+          message:
+            `Could not read the ${channelLabel(input.channel)} app catalogue, so nothing was changed — ` +
+            `this masjid is still on ${channelLabel(current)}. (${(err as Error).message})`,
+        });
+      }
+      updateSettings({ updateChannel: input.channel });
+      // Cached copies belong to the OLD channel; a switch must not serve them.
+      clearCatalogCache();
+      clearChangelogCache();
+      log.warn(`Update channel switched from ${current} to ${input.channel}.`);
+      return { channel: input.channel, changed: true, pending: appsPendingChannel() };
+    }),
 
   /** Current TLS certificate details (type, subject, expiry, fingerprint). */
   tlsInfo: protectedProcedure.query(() => certInfo()),

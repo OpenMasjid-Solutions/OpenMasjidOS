@@ -182,6 +182,14 @@ export interface AppMeta {
    * — never included in the InstalledApp DTO sent to the dashboard.
    */
   ssoSecret?: string;
+  /**
+   * Which update channel this app was last installed or updated from
+   * (system/channel.ts). `undefined` means it predates channels and is
+   * grandfathered as `'main'` — the same way `exposed` grandfathers pre-0.40
+   * installs — so upgrading the platform never reports every existing app as
+   * needing a channel switch it does not actually need.
+   */
+  channel?: 'main' | 'dev';
 }
 
 /** What the dashboard sees for each installed app. */

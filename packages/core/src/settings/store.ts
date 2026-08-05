@@ -11,6 +11,7 @@
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
+import { coerceChannel, DEFAULT_CHANNEL, type Channel } from '../system/channel';
 
 /** Presentation only — theme/wallpaper/accent/language. No masjid data. */
 export interface Appearance {
@@ -83,8 +84,9 @@ export interface PlatformSettings {
   rootTerminal: boolean;
   /** CasaOS-compatible community app-store repo URLs. */
   communityRepos: string[];
-  /** Update channel for the core itself. */
-  updateChannel: 'stable' | 'beta';
+  /** Update channel for the OS, the catalog and every installed app together
+   *  (system/channel.ts). 'main' = Stable, 'dev' = Development. */
+  updateChannel: Channel;
   /** Mirror of the dashboard's presentation prefs, exposed to apps. */
   appearance: Appearance;
   /** Notification webhook for the Fabric (apps relay through it). */
@@ -101,7 +103,7 @@ const DEFAULTS: PlatformSettings = {
   webTerminal: false,
   rootTerminal: false,
   communityRepos: [],
-  updateChannel: 'stable',
+  updateChannel: DEFAULT_CHANNEL,
   appearance: { theme: 'dark', wallpaper: 'aurora', wallpaperImage: '', accent: 'cyan', lang: 'en' },
   notifications: { enabled: false, type: 'slack', url: '', label: '' },
   backups: {
@@ -126,6 +128,12 @@ function withDefaults(s: Partial<PlatformSettings>): PlatformSettings {
   return {
     ...DEFAULTS,
     ...s,
+    // MUST come after the spread. `updateChannel` shipped as 'stable' | 'beta' in
+    // ≤0.48.x — declared and defaulted but never read — so an upgraded box has the
+    // old word persisted, and spreading it over the default would win. Left alone it
+    // would be interpolated into a catalog URL that 404s. coerceChannel maps the
+    // legacy values and sends anything unrecognisable back to Stable.
+    updateChannel: coerceChannel(s.updateChannel),
     appearance: { ...DEFAULTS.appearance, ...(s.appearance ?? {}) },
     notifications: { ...DEFAULTS.notifications, ...(s.notifications ?? {}) },
     backups: { ...DEFAULTS.backups, ...(s.backups ?? {}) },

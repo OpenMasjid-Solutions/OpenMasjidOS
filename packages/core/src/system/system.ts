@@ -9,6 +9,8 @@ import { spawn } from 'node:child_process';
 import { PORT, MACHINE_HOSTNAME } from '../config';
 import { VERSION } from '../version';
 import { log } from '../logger';
+import { getSettings } from '../settings/store';
+import { versionCheckUrl, osBranch, usesMovingTags, type Channel } from './channel';
 
 // A tiny image with a shell to chroot into the host. Reuses the backup image so
 // it's likely already present; override for air-gapped installs.
@@ -38,9 +40,8 @@ export function rebootHost(): void {
 
 export const SOURCE_URL = 'https://github.com/OpenMasjid-Solutions/OpenMasjidOS';
 
-const VERSION_CHECK_URL =
-  process.env.OPENMASJID_VERSION_CHECK_URL ??
-  'https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/VERSION';
+// The VERSION to compare against comes from the CHANNEL's branch (system/channel.ts):
+// Stable compares with master, Development with dev.
 
 export interface NetworkInfo {
   hostname: string;
@@ -70,6 +71,14 @@ export interface UpdateInfo {
   latest: string | null;
   updateAvailable: boolean;
   sourceUrl: string;
+  /** Which channel this was checked against. */
+  channel: Channel;
+  /**
+   * True on the Development channel, where the branch and the `:dev` image tag both
+   * move without the version string changing — so semver can never report an update
+   * and the UI offers "pull latest" instead of "update available".
+   */
+  movingTag: boolean;
 }
 
 /** Compare dotted numeric versions; returns true if b is strictly newer than a. */
@@ -86,9 +95,11 @@ function isNewer(a: string, b: string): boolean {
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo> {
+  const channel = getSettings().updateChannel;
+  const movingTag = usesMovingTags(channel);
   let latest: string | null = null;
   try {
-    const res = await fetch(VERSION_CHECK_URL, {
+    const res = await fetch(versionCheckUrl(channel), {
       headers: { accept: 'text/plain' },
       signal: AbortSignal.timeout(10_000),
     });
@@ -97,12 +108,17 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
       if (/^\d+\.\d+\.\d+/.test(raw)) latest = raw;
     }
   } catch (err) {
-    log.warn('Update check failed (offline?).', err);
+    log.warn(`Update check failed against ${osBranch(channel)} (offline?).`, err);
   }
   return {
     current: VERSION,
     latest,
-    updateAvailable: latest != null && isNewer(VERSION, latest),
+    // On Development the version on the branch is whatever was last committed and
+    // can equal (or trail) what we run, so semver is not the signal — pulling is.
+    // Offer it unconditionally there rather than claiming "up to date" falsely.
+    updateAvailable: movingTag ? true : latest != null && isNewer(VERSION, latest),
     sourceUrl: SOURCE_URL,
+    channel,
+    movingTag,
   };
 }

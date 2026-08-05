@@ -18,7 +18,12 @@ export const settingsRouter = router({
         allowCustomApps: z.boolean().optional(),
         webTerminal: z.boolean().optional(),
         rootTerminal: z.boolean().optional(),
-        updateChannel: z.enum(['stable', 'beta']).optional(),
+        // The channel is NOT settable here. Switching it has side effects — the
+        // catalog must be re-read before we commit, and every installed app then
+        // needs moving — so it goes through system.setUpdateChannel, which does that
+        // in the right order and refuses rather than half-switching. Accepting it
+        // here as a plain field would let the UI persist a channel whose catalog we
+        // have never successfully read.
         // Presentation mirror, synced from the dashboard so apps can inherit it.
         appearance: z
           .object({
