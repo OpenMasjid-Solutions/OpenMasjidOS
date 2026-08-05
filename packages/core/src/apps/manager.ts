@@ -105,6 +105,54 @@ async function pulledImageDigests(id: string): Promise<string[]> {
   return out;
 }
 
+/**
+ * The REGISTRY digests of what each container is actually running, keyed by the
+ * image reference the compose asked for.
+ *
+ * Deliberately `RepoDigests` and not the image `Id`. Those are different things: `Id`
+ * is the local config digest, `RepoDigests` holds `repo@sha256:…` as the registry
+ * knows it. The catalogue publishes a registry manifest digest, so comparing it
+ * against `Id` would never match and would report "new build" forever.
+ */
+async function runningRepoDigests(id: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const c of await projectContainers(id)) {
+    if (!c.tag) continue;
+    try {
+      const info = (await docker.getImage(c.tag).inspect()) as { RepoDigests?: string[] };
+      const d = (info.RepoDigests ?? [])
+        .map((r) => r.split('@')[1])
+        .find((h): h is string => typeof h === 'string' && h.startsWith('sha256:'));
+      if (d) out.set(c.tag, d);
+    } catch {
+      /* not present locally — leave unknown, which the caller treats as "pull to tell" */
+    }
+  }
+  return out;
+}
+
+/**
+ * Is the catalogue advertising a different image than we're running?
+ *   true  — definitely different (a new build exists)
+ *   false — definitely the same
+ *   null  — cannot tell (no digests published, or nothing resolved locally)
+ * `null` must never be read as "nothing new"; callers fall back to pulling.
+ */
+async function catalogImageDiffers(id: string, app: CatalogApp): Promise<boolean | null> {
+  const published = app.imageDigests;
+  if (!published || Object.keys(published).length === 0) return null;
+  const running = await runningRepoDigests(id);
+  if (running.size === 0) return null;
+  let compared = 0;
+  for (const [ref, digest] of Object.entries(published)) {
+    const mine = running.get(ref);
+    if (!mine) continue; // this reference isn't one of ours / not resolved
+    compared++;
+    if (mine !== digest) return true;
+  }
+  return compared === 0 ? null : false;
+}
+
 /** Same set of images, order-independent. Empty on either side means "can't tell". */
 function sameDigests(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0 || a.length !== b.length) return false;
@@ -996,6 +1044,11 @@ export interface UpdateCheck {
    *   'dev-refresh' Development: the tag moves, so there may be new bytes
    */
   reason: 'version' | 'channel' | 'dev-refresh' | null;
+  /**
+   * False when we are OFFERING an update we cannot prove exists — Development with no
+   * published image digests. Safe to show a button for; never safe to email about.
+   */
+  certain: boolean;
   /** The channel this app is currently on, and the one selected. */
   appChannel: Channel;
   channel: Channel;
@@ -1008,7 +1061,7 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
   const meta = loadMeta(id);
   const current = meta?.version ?? '';
   const appChannel: Channel = meta?.channel ?? 'main';
-  const none = { updateAvailable: false, current, latest: null, reason: null, appChannel, channel } as const;
+  const none = { updateAvailable: false, current, latest: null, reason: null, certain: true, appChannel, channel } as const;
   if (!meta || meta.kind !== 'catalog') return none;
   const app = await findCatalogApp(id);
   if (!app) return none;
@@ -1020,16 +1073,35 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
   // never appeared — leaving remove-and-reinstall as the only way across.
   //
   // Three independent reasons to offer an update, checked most-specific first:
-  const reason: UpdateCheck['reason'] =
-    appChannel !== channel
-      ? 'channel' // must move, regardless of what the version says
-      : isNewerVersion(current, app.version)
-        ? 'version'
-        : usesMovingTags(channel)
-          ? 'dev-refresh' // the tag moves; only a pull can tell
-          : null;
+  let reason: UpdateCheck['reason'] = null;
+  let certain = true;
+  if (appChannel !== channel) {
+    reason = 'channel'; // must move, regardless of what the version says
+  } else if (isNewerVersion(current, app.version)) {
+    reason = 'version';
+  } else if (usesMovingTags(channel)) {
+    // Development: the version can't move, so ask the images. If the catalogue
+    // publishes digests we get a definite answer without pulling; otherwise we can
+    // only offer the pull and let it decide, which is a guess and must not be
+    // notified about.
+    const differs = await catalogImageDiffers(id, app);
+    if (differs === true) reason = 'dev-refresh';
+    else if (differs === false) reason = null; // provably already current
+    else {
+      reason = 'dev-refresh';
+      certain = false;
+    }
+  }
 
-  return { updateAvailable: reason !== null, current, latest: app.version, reason, appChannel, channel };
+  return {
+    updateAvailable: reason !== null,
+    current,
+    latest: app.version,
+    reason,
+    certain,
+    appChannel,
+    channel,
+  };
 }
 
 /**

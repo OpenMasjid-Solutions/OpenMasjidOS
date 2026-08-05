@@ -25,6 +25,20 @@ export interface PortSpec {
 
 /** A catalog entry as published by OpenMasjidAPPS in catalog.json. */
 export interface CatalogApp {
+  /**
+   * OPTIONAL, additive (OpenMasjidAPPS): the REGISTRY MANIFEST digest each image
+   * reference in the compose resolved to at catalog-build time, keyed by that exact
+   * reference. Only meaningful on the Development channel, where the tag moves.
+   *
+   * With it we can tell whether a new image exists WITHOUT pulling, which is what
+   * makes a "new Development build" notification honest rather than a guess. Absent
+   * or unparsed means "unknown" and we fall back to pulling to find out — never to
+   * claiming there is nothing new.
+   *
+   * Must NOT appear in the compose itself: the dev compose keeps the bare moving tag,
+   * or "pull latest" stops meaning anything.
+   */
+  imageDigests?: Record<string, string>;
   id: string;
   name: string;
   tagline?: string;

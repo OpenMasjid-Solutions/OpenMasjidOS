@@ -188,12 +188,29 @@ export function Dashboard() {
         <div className="warn-banner warn-banner--update glass" role="status">
           <Sparkles size={22} />
           <div style={{ flex: 1 }}>
-            <div className="warn-banner__title">{t('dashboard.appUpdateTitle', { count: appUpdates.length })}</div>
+            <div className="warn-banner__title">
+              {/* A pending channel move is not an "update available" — calling it one
+                  is how a row ended up reading "v0.66.1 → v0.66.0". Title by what the
+                  list actually is. */}
+              {appUpdates.every((u) => u.reason === 'channel')
+                ? t('dashboard.appPendingTitle', { count: appUpdates.length })
+                : t('dashboard.appUpdateTitle', { count: appUpdates.length })}
+            </div>
             <div className="warn-banner__body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.35rem' }}>
               {appUpdates.map((u) => (
                 <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    {t('dashboard.appUpdateRow', { name: u.name, current: u.current, latest: u.latest })}
+                    {/* Word each row by WHY it's listed. An arrow means "newer", so it
+                        must only appear for a genuine version upgrade — never for a
+                        channel move (whose target can legitimately be older) and never
+                        for a Development refresh (where the version cannot change). */}
+                    {u.reason === 'channel'
+                      ? u.channel === 'dev'
+                        ? t('dashboard.appRowChannelToDev', { name: u.name, latest: u.latest })
+                        : t('dashboard.appRowChannelToStable', { name: u.name, latest: u.latest })
+                      : u.reason === 'dev-refresh'
+                        ? t('dashboard.appRowDevRefresh', { name: u.name })
+                        : t('dashboard.appUpdateRow', { name: u.name, current: u.current, latest: u.latest })}
                   </span>
                   <button className="btn btn--sm btn--primary" onClick={() => openAppUpdate(u)}>
                     <Download size={14} /> {t('settings.updateNow')}

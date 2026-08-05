@@ -162,6 +162,11 @@
     "appUpdateTitle_one": "An app update is available",
     "appUpdateTitle_other": "{{count}} app updates are available",
     "appUpdateRow": "{{name}} — v{{current}} → v{{latest}}",
+    "appRowChannelToDev": "{{name}} — switch to the Development version (v{{latest}})",
+    "appRowChannelToStable": "{{name}} — return to the Stable version (v{{latest}})",
+    "appRowDevRefresh": "{{name}} — check for a newer Development build",
+    "appPendingTitle_one": "1 app is not on your selected channel yet",
+    "appPendingTitle_other": "{{count}} apps are not on your selected channel yet",
     "devChannelTitle": "You're on Development builds",
     "devChannelBody": "This masjid is running what we're still building, not a tested release. There are no version updates to install here — use Settings to pull the newest build, or switch back to Stable."
   },
