@@ -206,7 +206,7 @@ export function Dashboard() {
                         for a Development refresh (where the version cannot change). */}
                     {u.reason === 'channel'
                       ? u.channel === 'dev'
-                        ? t('dashboard.appRowChannelToDev', { name: u.name })
+                        ? t('dashboard.appRowChannelToDev', { name: u.name, latest: u.latest })
                         : t('dashboard.appRowChannelToStable', { name: u.name, latest: u.latest })
                       : u.reason === 'dev-refresh'
                         ? t('dashboard.appRowDevRefresh', { name: u.name })

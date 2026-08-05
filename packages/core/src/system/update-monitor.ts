@@ -57,15 +57,21 @@ async function checkApps(): Promise<void> {
       if (a.kind !== 'catalog') continue; // community/custom apps have no store source
       seen.add(a.id);
       const u = await checkCatalogUpdate(a.id);
-      // Only a genuine VERSION change is worth an email.
+      // What earns an email, and what does not:
       //
-      // 'dev-refresh' is always true on the Development channel (the tag moves, so we
-      // can never rule an update out), and 'channel' means a pending switch the admin
-      // started themselves and can see in the dashboard. Alerting on either produced
-      // nonsense — "OpenMasjid Students can be updated to version 0.45.1" sent to
-      // someone already running 0.45.1 — and on dev it would fire for every app the
-      // first time round. Both are surfaced in the UI; neither belongs in the inbox.
-      if (u.updateAvailable && u.latest && u.reason === 'version') {
+      //  'version'      yes — a genuinely newer release.
+      //  'dev-refresh'  only when PROVEN (`certain`), i.e. the catalogue published an
+      //                 image digest that differs from what this box is running. A new
+      //                 Development build is worth knowing about, but an unprovable
+      //                 "there might be one" is true on every cycle forever, so it
+      //                 would be pure nagging.
+      //  'channel'      never — the admin started that switch and can see it in the
+      //                 dashboard. Emailing it produced nonsense like "OpenMasjid
+      //                 Students can be updated to version 0.45.1" sent to someone
+      //                 already running 0.45.1.
+      const worthEmailing =
+        u.reason === 'version' || (u.reason === 'dev-refresh' && u.certain);
+      if (u.updateAvailable && u.latest && worthEmailing) {
         if (alertedApp.get(a.id) === u.latest) continue;
         alertedApp.set(a.id, u.latest);
         const copy = appUpdate(a.name, u.current, u.latest);
