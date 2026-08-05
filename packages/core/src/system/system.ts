@@ -113,10 +113,13 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
   return {
     current: VERSION,
     latest,
-    // On Development the version on the branch is whatever was last committed and
-    // can equal (or trail) what we run, so semver is not the signal — pulling is.
-    // Offer it unconditionally there rather than claiming "up to date" falsely.
-    updateAvailable: movingTag ? true : latest != null && isNewer(VERSION, latest),
+    // `updateAvailable` drives the dashboard's "a new version is available" banner,
+    // so on Development it must be FALSE. The dev branch moves constantly, and
+    // reporting an update every time would nag permanently and mean nothing — the
+    // version number there is not a release. The dashboard shows "you're on
+    // Development" instead, and `movingTag` below is what offers the explicit
+    // "pull the latest Development build" action for when the admin does want it.
+    updateAvailable: movingTag ? false : latest != null && isNewer(VERSION, latest),
     sourceUrl: SOURCE_URL,
     channel,
     movingTag,
