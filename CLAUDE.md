@@ -35,6 +35,21 @@ just the `catalog.json` shape + install mechanics in §10.
 
 ---
 
+## Branching policy
+
+**Read this before touching the repo. It applies to every session.**
+
+| Branch | Role |
+|--------|------|
+| **`master`** | **Stable / release.** What beta masjids run. Protected. |
+| **`dev`** | **The default working branch.** All commits land here. |
+
+- **All development happens on `dev`.** Never commit to `master`.
+- **`master` receives changes ONLY when Hasan explicitly says "merge to main."** Never merge, fast-forward, rebase onto, or cherry-pick into `master` on your own initiative — not for hotfixes, not for docs, not for "trivial" one-liners. That merge *is* a release: bump `VERSION`, tag, and publish per §18.
+- **Session-start check:** run `git branch --show-current`. If it is not `dev`, switch before touching anything.
+
+> **Why `master` and not `main`.** The org standardises on `main` = stable, and the *update channel* value is literally `'main'` because it indexes OpenMasjidAPPS, whose stable branch genuinely is `main`. This repo's stable branch is still `master`: renaming a default branch retargets the protection rule and the required `cla` check and breaks every existing clone, for no functional gain. So **the channel word is not always the branch name** — `system/channel.ts` `osBranch()` owns that mapping (`'main'` → `master`), and anything needing a git ref for this repo must go through it rather than interpolating the channel. A rename is a deliberate future decision, not something to do in passing.
+
 ## 3. Prior art & licensing — read this carefully
 
 OpenMasjidOS is **heavily inspired by umbrelOS** (`getumbrel/umbrel`). That is our UX target: a polished React dashboard, a one-command install, an app store of Docker apps, and live system stats. We deliberately mirror its **stack and design language** — a TypeScript monorepo, a Node daemon that manages Docker, and a React + Vite + Tailwind + tRPC frontend.
@@ -455,6 +470,25 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **This is monitoring, not payment processing** — it stays inside §4's "payment-agnostic" rule. The platform creates no charges and moves no money; it reads dispute status with credentials it already holds, exactly as the existing green/red Stripe status dot does.
 - Rules that must not regress: **state is PERSISTED** (`config/stripe-disputes.json`) because a chargeback is a one-shot event — in-memory tracking would re-alert every open dispute on each restart; a **failure to reach Stripe records NOTHING** (treating "couldn't ask" as "none" would mark unseen chargebacks as seen and lose them permanently) and never alerts; **first run** absorbs settled history silently but DOES alert anything still `needs_response`, because doing nothing loses that money by default; and **>5 new disputes in one poll become one grouped alert**, since card-testing fraud can otherwise flood the inbox. Amounts respect zero-/two-/three-decimal currencies (JPY, KWD) — dividing by 100 regardless would misreport a Gulf masjid's KWD by 10x.
 
+### 13.4 Update channel (Stable / Development)
+- **ONE global setting** (`updateChannel: 'main' | 'dev'`, default `'main'`) governs the OS, the App Store catalogue **and every installed app together**. Never a mix; no per-app override in v1. `system/channel.ts` is the single place that turns a channel into concrete targets:
+
+  | | Stable (`main`) | Development (`dev`) |
+  |---|---|---|
+  | Catalogue | `OpenMasjidAPPS/main/catalog.json` | `OpenMasjidAPPS/dev/catalog.json` |
+  | Core image | `:latest` | `:dev` |
+  | This repo's branch (VERSION, CHANGELOG) | `master` | `dev` |
+
+- **The channel word is NOT the branch name for this repo** — `osBranch()` maps `'main'` → `master` (see the Branching policy above). Never interpolate the channel into an OpenMasjidOS raw URL.
+- **The platform updates by image tag, not by git.** `docker/update.ts` inspects its own container and rewrites only the *tag*, so a masjid on a private mirror keeps their registry — and a **digest-pinned** reference is left alone, because the operator pinned it deliberately.
+- **Switching goes through `system.setUpdateChannel`, never `settings.update`.** The order is the safety property: read the TARGET catalogue first (`requireCatalog`, which throws), and only persist once it's proven readable. An unreachable or malformed dev catalogue therefore leaves the masjid exactly where it was rather than pointing at a channel whose apps it can't resolve. Both caches are keyed by channel *and* cleared on switch, so a switch can never serve the other channel's entries.
+- **Apps don't move on their own.** After a switch, `appsPendingChannel()` lists catalogue apps still on the old channel and the UI offers "Update all" plus per-app update, reusing the existing update stream. Recreating every container the instant a toggle flips would take a masjid's displays down unannounced. `AppMeta.channel` records where each app came from; `undefined` is grandfathered as `'main'` so upgrading doesn't mark every existing app pending.
+- **On Development, semver can never report an update** — the entry tracks a moving branch and a moving `:dev` tag, so the version string never changes. There the update path always re-pulls and **compares image digests**, recreating the container only when the bytes actually changed (an unnecessary recreate is a real outage for a wall-mounted display). `checkForUpdate` reports `movingTag: true` so the UI offers "pull latest" rather than falsely claiming "up to date".
+- **dev → main is a DOWNGRADE, not a symmetrical toggle.** Dev may be ahead in ways that don't reverse: images and schemas need not be backward compatible. Both directions are confirmed, and the downgrade dialog says plainly that data written by a Development version may misbehave and that a pre-switch backup is the remedy. **No automatic data migration is attempted** — pretending to migrate would be worse than saying we can't.
+- Only **catalogue** apps track a channel. Community and custom apps come from a URL or a pasted compose the admin owns, so the OS has no other version to offer and must not claim they're pending.
+- Legacy: `updateChannel` shipped in ≤0.48.x as `'stable' | 'beta'` — declared but never read. `coerceChannel` migrates `stable`→`main`, `beta`→`dev`, and anything unrecognised → `main`, because the safe answer to "I can't tell which channel you wanted" is the tested one. This **must** run after the spread in `withDefaults`, or the persisted legacy word wins and the catalogue URL 404s.
+- CI must build **both** branches (`branches: [master, dev]`): `:dev` only exists because `type=ref,event=branch` tags the dev build, and `:latest` stays default-branch-only so Development can never overwrite what stable boxes pull.
+
 ### 13.3 Advanced
 - **Allow custom apps** (off by default) → enables the "3rd Party App" button in the App Store (see §11), with a clear risk note.
 - **Enable app shells** (off by default) → adds an "Open shell" option to each app (a browser terminal into that app's container, via the Docker API with a TTY).
@@ -604,7 +638,8 @@ We are in **pre-release / active development**. All changes during this phase ar
 
 ## 19. Working agreement for Claude (the coding agent)
 
-- Read this file first, every session. Treat §3 (licensing), §4 (scope), §9 (auth), §13 (settings = platform-only), and §14 (design/voice) as hard constraints.
+- Read this file first, every session. Treat the **Branching policy** (work on `dev`; never touch `master` without an explicit "merge to main"), §3 (licensing), §4 (scope), §9 (auth), §13 (settings = platform-only), and §14 (design/voice) as hard constraints.
+- **First command of every session: `git branch --show-current`.** If it is not `dev`, switch.
 - Build **vertically**: ship one full working slice end-to-end — core router + tRPC type + UI + theme + i18n — before starting the next.
 - Suggested build order:
   1. Monorepo skeleton + installer (fresh-install path) + core that boots, serves the UI shell, and exposes a hello tRPC procedure.

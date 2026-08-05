@@ -12,19 +12,48 @@
  */
 import { spawn } from 'node:child_process';
 import { docker } from './client';
+import { getSettings } from '../settings/store';
+import { coreImageTag, type Channel } from '../system/channel';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
-const DEFAULT_IMAGE = 'ghcr.io/openmasjid-solutions/openmasjid-core:latest';
+const CORE_REPO = 'ghcr.io/openmasjid-solutions/openmasjid-core';
+
+/**
+ * Retarget an image reference at the current channel's tag.
+ *
+ * The platform updates by pulling its OWN image (not by pulling git), so the channel
+ * is expressed as a tag: `:latest` for Stable, `:dev` for Development. We rewrite
+ * only the tag and keep whatever repo/registry the container was actually started
+ * from, so a masjid running a private mirror or a pinned digest keeps their registry
+ * and just changes channel.
+ *
+ * A digest-pinned reference (`repo@sha256:…`) is left ALONE: the operator pinned it
+ * deliberately, and silently converting that to a moving tag would undo the pin.
+ */
+function retarget(image: string, channel: Channel): string {
+  if (image.includes('@')) return image;
+  const tag = coreImageTag(channel);
+  // Split off the tag without mangling a registry port (host:5000/repo:tag).
+  const slash = image.lastIndexOf('/');
+  const colon = image.lastIndexOf(':');
+  const repo = colon > slash ? image.slice(0, colon) : image;
+  return `${repo}:${tag}`;
+}
 
 async function inspectSelf(): Promise<{ image: string; hostDataDir: string | null }> {
+  const channel = getSettings().updateChannel;
+  const fallback = `${CORE_REPO}:${coreImageTag(channel)}`;
   try {
     const info = await docker.getContainer(CORE_CONTAINER).inspect();
-    const image = info.Config?.Image ?? DEFAULT_IMAGE;
+    const running = info.Config?.Image;
     const mount = (info.Mounts ?? []).find((m) => m.Destination === '/data');
-    return { image, hostDataDir: mount?.Source ?? null };
+    return {
+      image: running ? retarget(running, channel) : fallback,
+      hostDataDir: mount?.Source ?? null,
+    };
   } catch {
-    return { image: DEFAULT_IMAGE, hostDataDir: null };
+    return { image: fallback, hostDataDir: null };
   }
 }
 

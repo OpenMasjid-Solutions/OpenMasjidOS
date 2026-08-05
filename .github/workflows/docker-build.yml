@@ -4,10 +4,13 @@ name: Build & Push Docker Image
 
 on:
   push:
-    branches: [master]
+    # master = Stable (publishes :latest), dev = Development (publishes :dev via
+    # type=ref,event=branch). Without dev here the Development channel would have no
+    # image to pull and the channel toggle would be inert.
+    branches: [master, dev]
     tags: ["v*"]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
 
 # One run per branch. Two pushes in quick succession both push the SAME tags
 # (including `:latest`), and the multi-arch arm64 build runs under QEMU, so an

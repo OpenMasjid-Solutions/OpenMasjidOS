@@ -18,6 +18,7 @@ import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
+import { UpdateChannel } from '../components/UpdateChannel';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
@@ -503,6 +504,8 @@ export function Settings() {
             )}
           </div>
         </div>
+
+        <UpdateChannel />
 
         <NetworkRow />
 
