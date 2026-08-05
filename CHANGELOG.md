@@ -7,6 +7,15 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.49.0
+
+- **You can now choose between Stable and Development versions.** In Settings, under Advanced, pick which version of OpenMasjidOS and your apps this masjid runs. **Stable** is tested and is what we recommend — it is what you are on unless you change it.
+- **Development** is what we are still building. It changes every day, it is not tested, and it can stop your apps working. We ask you to confirm before switching, and we tell you plainly what can go wrong.
+- The choice covers everything together — OpenMasjidOS, the App Store and every app — so you are never running a mix.
+- After switching, your apps stay as they are until you press update. Nothing restarts behind your back, so a prayer times screen will not go blank while you are reading the page.
+- Coming back to Stable puts your apps back to their Stable versions and keeps their data. We warn you first: a Development version can change things in ways that do not go backwards cleanly, so restore a backup if something looks wrong afterwards.
+- If we cannot reach the Development app list, nothing changes and you stay where you are.
+
 ## 0.48.1
 
 - You can now open "What's new" straight from the account menu in the top-right, instead of going into Settings to find it.
