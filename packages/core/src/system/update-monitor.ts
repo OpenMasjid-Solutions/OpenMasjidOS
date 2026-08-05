@@ -57,7 +57,15 @@ async function checkApps(): Promise<void> {
       if (a.kind !== 'catalog') continue; // community/custom apps have no store source
       seen.add(a.id);
       const u = await checkCatalogUpdate(a.id);
-      if (u.updateAvailable && u.latest) {
+      // Only a genuine VERSION change is worth an email.
+      //
+      // 'dev-refresh' is always true on the Development channel (the tag moves, so we
+      // can never rule an update out), and 'channel' means a pending switch the admin
+      // started themselves and can see in the dashboard. Alerting on either produced
+      // nonsense — "OpenMasjid Students can be updated to version 0.45.1" sent to
+      // someone already running 0.45.1 — and on dev it would fire for every app the
+      // first time round. Both are surfaced in the UI; neither belongs in the inbox.
+      if (u.updateAvailable && u.latest && u.reason === 'version') {
         if (alertedApp.get(a.id) === u.latest) continue;
         alertedApp.set(a.id, u.latest);
         const copy = appUpdate(a.name, u.current, u.latest);

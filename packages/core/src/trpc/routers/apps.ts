@@ -48,12 +48,32 @@ export const appsRouter = router({
    *  dashboard "app updates available" banner, mirroring the core's update check. */
   updates: protectedProcedure.query(async () => {
     const apps = await listInstalled();
-    const out: { id: string; name: string; current: string; latest: string }[] = [];
+    // `reason` rides along so the UI can word each row honestly. Without it the
+    // dashboard rendered every row as "v{current} → v{latest}", which reads as an
+    // upgrade — and printed nonsense like "v0.66.1 → v0.66.0" for a channel move,
+    // or "v0.45.1 → v0.45.1" for a Development refresh.
+    const out: {
+      id: string;
+      name: string;
+      current: string;
+      latest: string;
+      reason: 'version' | 'channel' | 'dev-refresh';
+      appChannel: 'main' | 'dev';
+      channel: 'main' | 'dev';
+    }[] = [];
     for (const a of apps) {
       if (a.kind !== 'catalog') continue;
       const u = await checkCatalogUpdate(a.id);
-      if (u.updateAvailable && u.latest) {
-        out.push({ id: a.id, name: a.name, current: u.current, latest: u.latest });
+      if (u.updateAvailable && u.latest && u.reason) {
+        out.push({
+          id: a.id,
+          name: a.name,
+          current: u.current,
+          latest: u.latest,
+          reason: u.reason,
+          appChannel: u.appChannel,
+          channel: u.channel,
+        });
       }
     }
     return out;
