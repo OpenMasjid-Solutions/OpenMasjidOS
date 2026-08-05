@@ -161,7 +161,9 @@
     "updateBody": "Update OpenMasjidOS to get the latest features and fixes. Your apps and their data are left untouched.",
     "appUpdateTitle_one": "An app update is available",
     "appUpdateTitle_other": "{{count}} app updates are available",
-    "appUpdateRow": "{{name}} — v{{current}} → v{{latest}}"
+    "appUpdateRow": "{{name}} — v{{current}} → v{{latest}}",
+    "devChannelTitle": "You're on Development builds",
+    "devChannelBody": "This masjid is running what we're still building, not a tested release. There are no version updates to install here — use Settings to pull the newest build, or switch back to Stable."
   },
   "actions": {
     "open": "Open",
@@ -400,6 +402,11 @@
     "reconnectDone_one": "Reconnected 1 app to this dashboard.",
     "reconnectDone_other": "Reconnected {{count}} apps to this dashboard.",
     "channel": "Update channel",
+    "channelMigrateTitle": "Moving your apps to {{label}}",
+    "channelMigrateProgress": "Moving {{name}} to {{label}} — app {{current}} of {{total}}. Each app restarts for a few seconds; its settings and data are kept.",
+    "channelMigrateDone": "All your apps are now on {{label}}.",
+    "channelMigrateOs": "Your apps are on {{label}}. Now updating OpenMasjidOS itself — this page will reconnect when it comes back.",
+    "channelPullOs": "Pull the latest Development build",
     "channelHint": "Which version of OpenMasjidOS and your apps this masjid runs. Stable is tested and recommended.",
     "channelStable": "Stable",
     "channelDev": "Development",

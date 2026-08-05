@@ -42,6 +42,18 @@ export function UpdateChannel({ onUpdateAll }: { onUpdateAll?: () => void }) {
       // The store's catalogue is now a different channel's file.
       utils.store.catalog.invalidate();
       toast(t('settings.channelSwitched', { label: label(res.channel) }), 'success');
+
+      // Asymmetric on purpose, and this is the behaviour Hasan asked for:
+      //   → Development is OPT-IN per app. You switched to try something; you decide
+      //     which apps come with you, and an app you never update stays untouched.
+      //   → Stable is the HOME state. Coming back should restore everything without
+      //     a checklist, because "get me back to working software" is one decision,
+      //     not one per app.
+      // Data is preserved either way — an update rewrites the compose and recreates
+      // the container; named volumes and the app's .env are never touched.
+      if (res.channel === 'main' && res.pending.length > 0 && onUpdateAll) {
+        onUpdateAll();
+      }
     },
     // The mutation refuses rather than half-switching, so the message is the
     // useful thing to show — it already says the masjid stayed where it was.

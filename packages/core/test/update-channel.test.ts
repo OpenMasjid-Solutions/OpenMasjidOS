@@ -183,3 +183,53 @@ test('the build publishes a dev image, or the Development channel is inert', () 
   // :latest must stay Stable-only, or Development would overwrite what stable boxes pull.
   assert.match(wf, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/);
 });
+
+// ── the bug that made channel switching mean delete-and-reinstall ─────────────
+
+test('a pending channel switch is offered as an update, even at the same version', () => {
+  // THE REGRESSION. Both catalogues publish the same version numbers — the dev entry
+  // of an app at 0.66.0 is still called 0.66.0 — so the old semver-only check
+  // compared equal, the card said "up to date", the Update button never appeared,
+  // and removing + reinstalling the app was the only way across. Pinned at the
+  // decision level, since the executor was always able to do the move.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'manager.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('export async function checkCatalogUpdate'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+
+  // It must consider the app's channel, not just the version.
+  assert.match(body, /appChannel !== channel/, 'a channel mismatch must count as an update');
+  assert.match(body, /'channel'/, 'and must be reported as such, so the UI can word it');
+  // And Development must offer a refresh, because its version can never move.
+  assert.match(body, /usesMovingTags\(channel\)/);
+  assert.match(body, /'dev-refresh'/);
+  // The old shape — a bare semver return — must not come back.
+  assert.doesNotMatch(
+    body,
+    /return \{ updateAvailable: isNewerVersion\(current, app\.version\), current, latest: app\.version \};/,
+    'the semver-only return was the bug',
+  );
+});
+
+test('the Development channel does not nag about OS updates', () => {
+  // A permanent "a new version is available" banner on a branch that moves every day
+  // is noise, and it is what the dashboard banner reads. `movingTag` is the signal
+  // for offering an explicit pull instead.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'system.ts'), 'utf8');
+  assert.match(
+    src,
+    /updateAvailable: movingTag \? false :/,
+    'on Development updateAvailable must be false so the banner stays quiet',
+  );
+  assert.match(src, /movingTag,/, 'but movingTag must still be reported for the explicit action');
+});
+
+test('returning to Stable moves apps back automatically; going to Development does not', () => {
+  // The asymmetry Hasan asked for: Development is opt-in per app (you chose to
+  // experiment), Stable is the home state (one decision, not one per app).
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'ui', 'src', 'components', 'UpdateChannel.tsx'),
+    'utf8',
+  );
+  assert.match(src, /res\.channel === 'main' && res\.pending\.length > 0/, 'auto-revert only towards Stable');
+  assert.doesNotMatch(src, /res\.channel === 'dev'[^\n]*onUpdateAll/, 'never auto-migrate towards Development');
+});

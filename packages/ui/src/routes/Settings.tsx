@@ -19,6 +19,7 @@ import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { UpdateChannel } from '../components/UpdateChannel';
+import { ChannelMigrate } from '../components/ChannelMigrate';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
@@ -179,6 +180,8 @@ export function Settings() {
   const serverSettings = trpc.settings.get.useQuery();
   const sysInfo = trpc.system.info.useQuery();
   const updateInfo = trpc.system.checkUpdate.useQuery(undefined, { enabled: false });
+  // Needed by the channel-migration window (which apps are pending, and which way).
+  const channelQ = trpc.system.channel.useQuery();
   const windows = useWindows();
   const [updateOpen, setUpdateOpen] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -196,6 +199,21 @@ export function Settings() {
   // and file windows). The options come from the shared component so this and the
   // account menu use the same `dedupeKey` — opening from either focuses the one
   // window rather than stacking a second copy of the same notes.
+  // Move every pending app onto the selected channel, then the OS when returning to
+  // Stable. A window (not a modal) because it streams for minutes and the admin
+  // should be able to look at something else while it runs.
+  function openChannelMigrate() {
+    const ch = channelQ.data;
+    if (!ch || ch.pending.length === 0) return;
+    windows.open({
+      title: t('settings.channelMigrateTitle', { label: ch.label }),
+      icon: <GitBranch size={15} />,
+      dedupeKey: 'channel-migrate',
+      wide: true,
+      node: <ChannelMigrate apps={ch.pending} channelLabel={ch.label} revertOs={ch.channel === 'main'} />,
+    });
+  }
+
   function openChangelog() {
     windows.open(changelogWindowOptions(t('changelog.title')));
   }
@@ -505,7 +523,7 @@ export function Settings() {
           </div>
         </div>
 
-        <UpdateChannel />
+        <UpdateChannel onUpdateAll={openChannelMigrate} />
 
         <NetworkRow />
 

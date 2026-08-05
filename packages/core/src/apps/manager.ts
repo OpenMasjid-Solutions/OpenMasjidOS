@@ -988,17 +988,48 @@ export interface UpdateCheck {
   updateAvailable: boolean;
   current: string;
   latest: string | null;
+  /**
+   * WHY an update is on offer — the UI wants different words for each, and a
+   * boolean alone was the bug that made a channel switch look like "up to date".
+   *   'version'     a genuinely newer release on the same channel
+   *   'channel'     this app is on the other channel and needs moving
+   *   'dev-refresh' Development: the tag moves, so there may be new bytes
+   */
+  reason: 'version' | 'channel' | 'dev-refresh' | null;
+  /** The channel this app is currently on, and the one selected. */
+  appChannel: Channel;
+  channel: Channel;
 }
 
 /** Is a newer version of this (catalog) app available in the store? Community /
  *  custom apps have no store source, so they never report an update here. */
 export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
+  const channel = getSettings().updateChannel;
   const meta = loadMeta(id);
   const current = meta?.version ?? '';
-  if (!meta || meta.kind !== 'catalog') return { updateAvailable: false, current, latest: null };
+  const appChannel: Channel = meta?.channel ?? 'main';
+  const none = { updateAvailable: false, current, latest: null, reason: null, appChannel, channel } as const;
+  if (!meta || meta.kind !== 'catalog') return none;
   const app = await findCatalogApp(id);
-  if (!app) return { updateAvailable: false, current, latest: null };
-  return { updateAvailable: isNewerVersion(current, app.version), current, latest: app.version };
+  if (!app) return none;
+
+  // Semver alone was WRONG here, and it is the reason switching channels used to
+  // mean deleting and reinstalling an app. Both catalogues publish the same version
+  // numbers (the dev entry of an app at 0.66.0 is still called 0.66.0), so a pending
+  // channel switch compared equal, the card said "up to date", and the Update button
+  // never appeared — leaving remove-and-reinstall as the only way across.
+  //
+  // Three independent reasons to offer an update, checked most-specific first:
+  const reason: UpdateCheck['reason'] =
+    appChannel !== channel
+      ? 'channel' // must move, regardless of what the version says
+      : isNewerVersion(current, app.version)
+        ? 'version'
+        : usesMovingTags(channel)
+          ? 'dev-refresh' // the tag moves; only a pull can tell
+          : null;
+
+  return { updateAvailable: reason !== null, current, latest: app.version, reason, appChannel, channel };
 }
 
 /**

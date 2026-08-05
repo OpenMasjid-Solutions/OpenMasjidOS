@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
-import { Cpu, MemoryStick, HardDrive, Thermometer, Clock, Boxes, AlertTriangle, Sparkles, Download } from 'lucide-react';
+import { Cpu, MemoryStick, HardDrive, Thermometer, Clock, Boxes, AlertTriangle, Sparkles, Download, Beaker } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs } from '../lib/prefs';
 import { formatBytes, formatUptime, percent } from '../lib/format';
@@ -72,6 +72,10 @@ export function Dashboard() {
   // version surfaces right on the dashboard instead of going unnoticed.
   const updateQ = trpc.system.checkUpdate.useQuery(undefined, { refetchInterval: 21_600_000 });
   const updateReady = updateQ.data?.updateAvailable ?? false;
+  // On Development there is no release to announce — the branch moves constantly, so
+  // a version banner would nag forever and mean nothing. Say which channel you are on
+  // instead, and let Settings offer the explicit "pull the latest build" action.
+  const onDevChannel = updateQ.data?.movingTag === true;
   const [updateOpen, setUpdateOpen] = useState(false);
 
   // App updates — same idea as the core check: surface them right on the dashboard.
@@ -156,6 +160,16 @@ export function Dashboard() {
           value={stats?.appsRunning ?? apps.filter((a) => a.running).length}
         />
       </motion.section>
+
+      {onDevChannel && (
+        <div className="warn-banner glass" role="status" style={{ borderInlineStart: '3px solid var(--color-gold)' }}>
+          <Beaker size={22} style={{ color: 'var(--color-gold)' }} />
+          <div style={{ flex: 1 }}>
+            <div className="warn-banner__title">{t('dashboard.devChannelTitle')}</div>
+            <div className="warn-banner__body">{t('dashboard.devChannelBody')}</div>
+          </div>
+        </div>
+      )}
 
       {updateReady && (
         <div className="warn-banner warn-banner--update glass" role="status">
