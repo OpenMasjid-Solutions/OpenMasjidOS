@@ -56,3 +56,41 @@ export function containerImageRef(listImage: string | undefined, configImage: st
   if (listed && !looksLikeImageId(listed)) return listed;
   return config || listed;
 }
+
+/**
+ * Every `image:` reference in a compose file, sorted so two files can be compared.
+ *
+ * Used to answer "did this update RETARGET the app at different images?", which decides
+ * whether the Development digest short-circuit may run at all. That short-circuit resolves
+ * the reference the RUNNING containers were created with — fine while an app tracks a moving
+ * `:dev` tag (the same reference now points somewhere new), but wrong the moment a dev entry
+ * starts publishing immutable per-build tags like `:0.11.0-dev.1`. There the old reference
+ * keeps resolving to the old image forever, so before and after always match and the update
+ * would skip the recreate every single time — the same silent no-op, arrived at from the
+ * opposite direction.
+ *
+ * Deliberately a line scan and not a YAML parse: this runs on a compose we have already
+ * validated (apps/compose-validate.ts), it must never throw, and "I could not read it" has to
+ * degrade to "assume retargeted" — which an empty list does, since it can't equal the new one.
+ */
+export function composeImageRefs(compose: string): string[] {
+  const out: string[] = [];
+  for (const line of String(compose ?? '').split(/\r?\n/)) {
+    const m = /^\s*image:\s*(.+)$/.exec(line);
+    if (!m) continue;
+    const value = m[1]
+      .replace(/\s+#.*$/, '') // trailing comment
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim();
+    if (value && !value.startsWith('#')) out.push(value);
+  }
+  return out.sort();
+}
+
+/** Same set of image references, order-independent. Empty on either side means "different". */
+export function sameImageRefs(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}

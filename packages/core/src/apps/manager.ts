@@ -25,7 +25,7 @@ import {
 } from '../docker/compose';
 import { discoverApps } from '../docker/discovery';
 import { docker } from '../docker/client';
-import { containerImageRef } from '../docker/image-ref';
+import { containerImageRef, composeImageRefs, sameImageRefs } from '../docker/image-ref';
 import { checkCompose } from './compose-validate';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
@@ -1197,6 +1197,21 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   } else {
     onLine(`Updating ${meta.name} from v${meta.version ?? '?'} to v${app.version}…`);
   }
+  // Did this update point the app at DIFFERENT images? Must be read before the compose is
+  // overwritten. It gates the Development digest short-circuit below: that check resolves the
+  // reference the running containers were created with, which only tells the truth while the
+  // app tracks a MOVING tag. An entry that publishes immutable per-build tags (`:0.11.0-dev.1`)
+  // leaves the old reference pointing at the old image for ever, so before/after would always
+  // match and the recreate would be skipped every time.
+  const previousCompose = ((): string => {
+    try {
+      return fs.readFileSync(composePath(id), 'utf8');
+    } catch {
+      return ''; // unreadable → treated as retargeted, i.e. always apply
+    }
+  })();
+  const retargeted = !sameImageRefs(composeImageRefs(previousCompose), composeImageRefs(app.compose));
+
   // New compose; keep the user's saved settings (.env) untouched.
   fs.writeFileSync(composePath(id), app.compose, 'utf8');
 
@@ -1253,7 +1268,9 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   // actually changed. If the digests match, the container is already running these
   // exact bytes — recreating it would be a pointless outage for a display on a wall,
   // so say so and stop. A channel switch always proceeds: the compose itself changed.
-  if (!switching && usesMovingTags(channel)) {
+  // So does a RETARGET — a new image reference is a change by definition, and asking the
+  // OLD reference about it would answer "unchanged" for ever (see `retargeted` above).
+  if (!switching && !retargeted && usesMovingTags(channel)) {
     const digestAfter = await pulledImageDigests(id);
     if (digestBefore.length > 0 && sameDigests(digestBefore, digestAfter)) {
       onLine('');

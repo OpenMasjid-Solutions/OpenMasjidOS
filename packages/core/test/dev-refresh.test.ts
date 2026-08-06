@@ -27,7 +27,9 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const req = createRequire(__filename);
-const { containerImageRef, looksLikeImageId } = req('../src/docker/image-ref') as typeof import('../src/docker/image-ref');
+const { containerImageRef, looksLikeImageId, composeImageRefs, sameImageRefs } = req(
+  '../src/docker/image-ref',
+) as typeof import('../src/docker/image-ref');
 
 test('an image ID is told apart from a reference', () => {
   // Both forms the daemon substitutes.
@@ -94,6 +96,61 @@ test('nothing new pulled still reports unchanged, so we never recreate for nothi
   const resolve = (ref: string) => ({ [tag]: SAME })[ref];
   // Tag never moved, so the daemon still reports the name.
   assert.deepEqual([resolve(containerImageRef(tag, tag))], [SAME]);
+});
+
+// --- Retargeting: the other way the same silence can happen -------------------------------
+//
+// The digest short-circuit asks the reference the RUNNING containers were created with. That
+// is only meaningful while a dev entry tracks a MOVING tag. As soon as one publishes immutable
+// per-build tags (`:0.11.0-dev.1`, the versioning discipline the platform wants so it can
+// detect and NOTIFY about dev builds at all), the old reference resolves to the old image for
+// ever — before and after match every time and the recreate is skipped permanently. So a
+// changed set of image references must bypass the short-circuit outright.
+
+test('image references are read out of a compose file', () => {
+  const compose = `
+services:
+  app:
+    image: ghcr.io/openmasjid-solutions/openmasjidkiosk:0.11.0-dev.1   # the versioned dev tag
+    restart: unless-stopped
+  sidecar:
+    image: "alpine:3.20"
+volumes:
+  data:
+`;
+  assert.deepEqual(composeImageRefs(compose), [
+    'alpine:3.20',
+    'ghcr.io/openmasjid-solutions/openmasjidkiosk:0.11.0-dev.1',
+  ]);
+  // EVERY service counts, not just the primary one — a sidecar left on an old tag is a
+  // half-applied update.
+  assert.equal(composeImageRefs(compose).length, 2);
+});
+
+test('an unreadable or empty compose is treated as retargeted, never as unchanged', () => {
+  // "I could not tell" must fall through to applying the update, not skipping it.
+  assert.deepEqual(composeImageRefs(''), []);
+  assert.equal(sameImageRefs([], []), false);
+  assert.equal(sameImageRefs([], ['alpine']), false);
+});
+
+test('THE SECOND REGRESSION: an immutable per-build dev tag counts as a change', () => {
+  const before = 'services:\n  app:\n    image: ghcr.io/x/kiosk:0.11.0-dev.1\n';
+  const after = 'services:\n  app:\n    image: ghcr.io/x/kiosk:0.11.0-dev.2\n';
+  assert.equal(
+    sameImageRefs(composeImageRefs(before), composeImageRefs(after)),
+    false,
+    'a new versioned tag must bypass the digest short-circuit',
+  );
+  // A moving `:dev` tag is genuinely the same reference, so that case still relies on the
+  // digest comparison and still avoids a pointless recreate.
+  assert.equal(sameImageRefs(composeImageRefs(before), composeImageRefs(before)), true);
+});
+
+test('a sidecar left behind is still a retarget', () => {
+  const before = 'services:\n  app:\n    image: r/app:1\n  db:\n    image: r/db:1\n';
+  const after = 'services:\n  app:\n    image: r/app:2\n  db:\n    image: r/db:1\n';
+  assert.equal(sameImageRefs(composeImageRefs(before), composeImageRefs(after)), false);
 });
 
 test('a container with no usable Config.Image falls back rather than resolving nothing', () => {
