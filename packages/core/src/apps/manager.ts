@@ -25,6 +25,7 @@ import {
 } from '../docker/compose';
 import { discoverApps } from '../docker/discovery';
 import { docker } from '../docker/client';
+import { containerImageRef } from '../docker/image-ref';
 import { checkCompose } from './compose-validate';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
@@ -70,13 +71,32 @@ const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
  * is already running those exact bytes and recreating it would be an outage for
  * nothing — which matters when the "app" is a prayer-times display on a wall.
  */
-async function projectContainers(id: string): Promise<{ tag: string; imageId: string }[]> {
+async function projectContainers(id: string): Promise<{ ref: string; imageId: string }[]> {
   try {
     const list = await docker.listContainers({
       all: true,
       filters: { label: [`com.docker.compose.project=${projectOf(id)}`] },
     });
-    return list.map((c) => ({ tag: String(c.Image ?? ''), imageId: String(c.ImageID ?? '') }));
+    const out: { ref: string; imageId: string }[] = [];
+    for (const c of list) {
+      // `c.Image` is NOT dependably the image NAME. The daemon substitutes the image ID as
+      // soon as that name resolves elsewhere — which is exactly what pulling a moving `:dev`
+      // tag does, so it flips precisely when a new build has arrived. `Config.Image` keeps
+      // the reference the container was created with. See docker/image-ref.ts: this one
+      // field made every Development-channel update report "nothing was changed".
+      let configImage: string | undefined;
+      try {
+        const info = (await docker.getContainer(c.Id).inspect()) as { Config?: { Image?: string } };
+        configImage = info.Config?.Image;
+      } catch {
+        /* fall back to the list value */
+      }
+      out.push({
+        ref: containerImageRef(String(c.Image ?? ''), configImage),
+        imageId: String(c.ImageID ?? ''),
+      });
+    }
+    return out;
   } catch (err) {
     // Unknown is not "unchanged": callers treat an empty list as "can't tell", and
     // fall through to recreating rather than skipping.
@@ -90,16 +110,16 @@ async function runningImageDigests(id: string): Promise<string[]> {
   return (await projectContainers(id)).map((c) => c.imageId).filter(Boolean);
 }
 
-/** What those same tags resolve to locally after a pull. */
+/** What those same references resolve to locally after a pull. */
 async function pulledImageDigests(id: string): Promise<string[]> {
   const out: string[] = [];
   for (const c of await projectContainers(id)) {
-    if (!c.tag) continue;
+    if (!c.ref) continue;
     try {
-      const info = (await docker.getImage(c.tag).inspect()) as { Id?: string };
+      const info = (await docker.getImage(c.ref).inspect()) as { Id?: string };
       if (info.Id) out.push(String(info.Id));
     } catch {
-      /* tag not present locally — treat as changed, so we recreate */
+      /* reference not present locally — treat as changed, so we recreate */
     }
   }
   return out;
@@ -117,13 +137,13 @@ async function pulledImageDigests(id: string): Promise<string[]> {
 async function runningRepoDigests(id: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (const c of await projectContainers(id)) {
-    if (!c.tag) continue;
+    if (!c.ref) continue;
     try {
-      const info = (await docker.getImage(c.tag).inspect()) as { RepoDigests?: string[] };
+      const info = (await docker.getImage(c.ref).inspect()) as { RepoDigests?: string[] };
       const d = (info.RepoDigests ?? [])
         .map((r) => r.split('@')[1])
         .find((h): h is string => typeof h === 'string' && h.startsWith('sha256:'));
-      if (d) out.set(c.tag, d);
+      if (d) out.set(c.ref, d);
     } catch {
       /* not present locally — leave unknown, which the caller treats as "pull to tell" */
     }

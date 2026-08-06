@@ -10,8 +10,12 @@
  * Apps are separate compose projects and are never touched (CLAUDE.md golden
  * rule): we only act on the core's own project.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { docker } from './client';
+import { DATA_DIR } from '../config';
+import { log } from '../logger';
 import { getSettings } from '../settings/store';
 import { coreImageTag, type Channel } from '../system/channel';
 
@@ -39,6 +43,67 @@ function retarget(image: string, channel: Channel): string {
   const colon = image.lastIndexOf(':');
   const repo = colon > slash ? image.slice(0, colon) : image;
   return `${repo}:${tag}`;
+}
+
+/**
+ * Point the core's OWN compose file at the channel's image tag.
+ *
+ * This is the other half of the channel switch, and without it the platform could
+ * never actually run a Development build. `recreateCore` recreates the core with
+ * `docker compose -f /data/docker-compose.yml up -d --force-recreate`, and the
+ * installer writes that file with a hardcoded `image: …/openmasjid-core:latest`
+ * (`IMAGE=` in install.sh). So we pulled `:dev`, then started `:latest` again — the
+ * pull was wasted and the box stayed on Stable while the dashboard said Development.
+ * That is exactly the "I'm on the latest and have dev mode on" report.
+ *
+ * Rewrites ONLY the core service's image line, in place, leaving the rest of the
+ * file byte-identical: it carries the mounts, ports and env a masjid depends on, and
+ * regenerating it here would be a second source of truth alongside the installer.
+ *
+ * Leaves a digest-pinned reference alone, for the same reason `retarget` does — an
+ * operator who pinned it meant it.
+ *
+ * Returns true if the file now names the wanted tag (including "already did").
+ */
+export function alignComposeImage(channel: Channel): boolean {
+  const file = path.join(DATA_DIR, 'docker-compose.yml');
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    // No compose file: local dev, or an install that never wrote one. Nothing to do
+    // — `recreateCore` will fail visibly on its own rather than us guessing.
+    return false;
+  }
+  const want = coreImageTag(channel);
+  // Match the core image line specifically: our repo name, optional tag, at the
+  // start of a line's value. Anchored to the repo so nothing else in the file can
+  // be caught (an app's image, a comment, a volume path).
+  // Group 3 captures the reference suffix as written: `:tag`, `@sha256:…`, or absent.
+  // Matching BOTH forms matters — an earlier version only matched `:tag`, so a
+  // digest-pinned line failed to match at all and was reported as "image line not
+  // found", which is both wrong and alarming in the log.
+  const re = /^(\s*image:\s*)(\S*openmasjid-core)(:[^\s@]+|@\S+)?(\s*)$/m;
+  const m = re.exec(text);
+  if (!m) {
+    log.warn('Could not find the core image line in docker-compose.yml — leaving it alone.');
+    return false;
+  }
+  const suffix = m[3] ?? '';
+  if (suffix.startsWith('@')) {
+    log.info('The core image is pinned to a digest — leaving it as the operator set it.');
+    return true;
+  }
+  if (suffix === `:${want}`) return true; // already correct
+  const next = text.replace(re, `$1$2:${want}$4`);
+  try {
+    fs.writeFileSync(file, next, 'utf8');
+    log.info(`Pointed the core's compose file at :${want} for the ${channel} channel.`);
+    return true;
+  } catch (err) {
+    log.error('Could not update docker-compose.yml with the channel image tag.', err);
+    return false;
+  }
 }
 
 async function inspectSelf(): Promise<{ image: string; hostDataDir: string | null }> {
@@ -84,6 +149,8 @@ export function streamSpawn(cmd: string, args: string[], onLine: (s: string) => 
  */
 export async function recreateCore(onLine: (s: string) => void): Promise<boolean> {
   const { image, hostDataDir } = await inspectSelf();
+  // Must happen BEFORE the compose up below, or it recreates from the old tag.
+  alignComposeImage(getSettings().updateChannel);
   const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
   if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
   args.push(
