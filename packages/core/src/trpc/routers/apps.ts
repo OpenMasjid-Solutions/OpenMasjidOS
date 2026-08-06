@@ -50,14 +50,13 @@ export const appsRouter = router({
     const apps = await listInstalled();
     // `reason` rides along so the UI can word each row honestly. Without it the
     // dashboard rendered every row as "v{current} → v{latest}", which reads as an
-    // upgrade — and printed nonsense like "v0.66.1 → v0.66.0" for a channel move,
-    // or "v0.45.1 → v0.45.1" for a Development refresh.
+    // upgrade — and printed nonsense like "v0.66.1 → v0.66.0" for a channel move.
     const out: {
       id: string;
       name: string;
       current: string;
       latest: string;
-      reason: 'version' | 'channel' | 'dev-refresh';
+      reason: 'version' | 'channel';
       appChannel: 'main' | 'dev';
       channel: 'main' | 'dev';
     }[] = [];

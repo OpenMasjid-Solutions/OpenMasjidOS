@@ -104,18 +104,18 @@ export function UpdateChannel({ onUpdateAll }: { onUpdateAll?: () => void }) {
         </button>
       </div>
 
-      {/* What's actually running. On Development the version number is meaningless
-          (it moves with the branch), so name the branch instead of implying a release. */}
+      {/* What's actually running — one line for both channels. Development used to get
+          its own wording naming the branch, because its version number was the same
+          string as Stable's and so said nothing. Dev builds are now real prereleases
+          (v0.50.0-dev.2), so the version IS the answer on either channel. */}
       {status.data && (
         <div className="setting-row__hint" style={{ marginBlockStart: '0.6rem' }}>
           {busy
             ? t('settings.channelSwitching')
-            : status.data.movingTag
-              ? t('settings.channelDevRunning', { label: status.data.label, branch: status.data.branch })
-              : t('settings.channelRunning', { label: status.data.label, version: status.data.version })}
+            : t('settings.channelRunning', { label: status.data.label, version: status.data.version })}
         </div>
       )}
-      {status.data?.movingTag && (
+      {current === 'dev' && (
         <div className="setting-row__hint" style={{ marginBlockStart: '0.35rem' }}>
           {t('settings.channelDevNote')}
         </div>

@@ -25,7 +25,6 @@ import {
 } from '../docker/compose';
 import { discoverApps } from '../docker/discovery';
 import { docker } from '../docker/client';
-import { containerImageRef } from '../docker/image-ref';
 import { checkCompose } from './compose-validate';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
@@ -36,7 +35,7 @@ import { suppressOfflineAlert } from '../system/offline-suppress';
 import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
 import { getSettings } from '../settings/store';
-import { usesMovingTags, type Channel } from '../system/channel';
+import type { Channel } from '../system/channel';
 import type { AppMeta, InstalledApp, CatalogApp, DeclaredAlert } from './types';
 
 const projectOf = (id: string) => `omos-${id}`;
@@ -60,126 +59,6 @@ const composePath = (id: string) => path.join(appDir(id), 'compose.yml');
 export const composePathOf = composePath;
 const envPath = (id: string) => path.join(appDir(id), '.env');
 const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
-
-/**
- * Image identity for an app's containers — the basis for "did anything actually
- * change?" on the Development channel.
- *
- * A dev catalog entry points at a moving `:dev` tag, so the version string is
- * useless as a signal. What IS reliable: the local image ID a container is running
- * versus the ID that same tag resolves to after a pull. If they match, the container
- * is already running those exact bytes and recreating it would be an outage for
- * nothing — which matters when the "app" is a prayer-times display on a wall.
- */
-async function projectContainers(id: string): Promise<{ ref: string; imageId: string }[]> {
-  try {
-    const list = await docker.listContainers({
-      all: true,
-      filters: { label: [`com.docker.compose.project=${projectOf(id)}`] },
-    });
-    const out: { ref: string; imageId: string }[] = [];
-    for (const c of list) {
-      // `c.Image` is NOT dependably the image NAME. The daemon substitutes the image ID as
-      // soon as that name resolves elsewhere — which is exactly what pulling a moving `:dev`
-      // tag does, so it flips precisely when a new build has arrived. `Config.Image` keeps
-      // the reference the container was created with. See docker/image-ref.ts: this one
-      // field made every Development-channel update report "nothing was changed".
-      let configImage: string | undefined;
-      try {
-        const info = (await docker.getContainer(c.Id).inspect()) as { Config?: { Image?: string } };
-        configImage = info.Config?.Image;
-      } catch {
-        /* fall back to the list value */
-      }
-      out.push({
-        ref: containerImageRef(String(c.Image ?? ''), configImage),
-        imageId: String(c.ImageID ?? ''),
-      });
-    }
-    return out;
-  } catch (err) {
-    // Unknown is not "unchanged": callers treat an empty list as "can't tell", and
-    // fall through to recreating rather than skipping.
-    log.warn(`Could not read container images for ${id}.`, err);
-    return [];
-  }
-}
-
-/** The image IDs the app's containers are running right now. */
-async function runningImageDigests(id: string): Promise<string[]> {
-  return (await projectContainers(id)).map((c) => c.imageId).filter(Boolean);
-}
-
-/** What those same references resolve to locally after a pull. */
-async function pulledImageDigests(id: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const c of await projectContainers(id)) {
-    if (!c.ref) continue;
-    try {
-      const info = (await docker.getImage(c.ref).inspect()) as { Id?: string };
-      if (info.Id) out.push(String(info.Id));
-    } catch {
-      /* reference not present locally — treat as changed, so we recreate */
-    }
-  }
-  return out;
-}
-
-/**
- * The REGISTRY digests of what each container is actually running, keyed by the
- * image reference the compose asked for.
- *
- * Deliberately `RepoDigests` and not the image `Id`. Those are different things: `Id`
- * is the local config digest, `RepoDigests` holds `repo@sha256:…` as the registry
- * knows it. The catalogue publishes a registry manifest digest, so comparing it
- * against `Id` would never match and would report "new build" forever.
- */
-async function runningRepoDigests(id: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  for (const c of await projectContainers(id)) {
-    if (!c.ref) continue;
-    try {
-      const info = (await docker.getImage(c.ref).inspect()) as { RepoDigests?: string[] };
-      const d = (info.RepoDigests ?? [])
-        .map((r) => r.split('@')[1])
-        .find((h): h is string => typeof h === 'string' && h.startsWith('sha256:'));
-      if (d) out.set(c.ref, d);
-    } catch {
-      /* not present locally — leave unknown, which the caller treats as "pull to tell" */
-    }
-  }
-  return out;
-}
-
-/**
- * Is the catalogue advertising a different image than we're running?
- *   true  — definitely different (a new build exists)
- *   false — definitely the same
- *   null  — cannot tell (no digests published, or nothing resolved locally)
- * `null` must never be read as "nothing new"; callers fall back to pulling.
- */
-async function catalogImageDiffers(id: string, app: CatalogApp): Promise<boolean | null> {
-  const published = app.imageDigests;
-  if (!published || Object.keys(published).length === 0) return null;
-  const running = await runningRepoDigests(id);
-  if (running.size === 0) return null;
-  let compared = 0;
-  for (const [ref, digest] of Object.entries(published)) {
-    const mine = running.get(ref);
-    if (!mine) continue; // this reference isn't one of ours / not resolved
-    compared++;
-    if (mine !== digest) return true;
-  }
-  return compared === 0 ? null : false;
-}
-
-/** Same set of images, order-independent. Empty on either side means "can't tell". */
-function sameDigests(a: string[], b: string[]): boolean {
-  if (a.length === 0 || b.length === 0 || a.length !== b.length) return false;
-  const x = [...a].sort();
-  const y = [...b].sort();
-  return x.every((v, i) => v === y[i]);
-}
 
 /**
  * Installed apps whose recorded channel differs from the selected one — i.e. the
@@ -1059,16 +938,17 @@ export interface UpdateCheck {
   /**
    * WHY an update is on offer — the UI wants different words for each, and a
    * boolean alone was the bug that made a channel switch look like "up to date".
-   *   'version'     a genuinely newer release on the same channel
-   *   'channel'     this app is on the other channel and needs moving
-   *   'dev-refresh' Development: the tag moves, so there may be new bytes
+   *   'version'  a genuinely newer version on the same channel
+   *   'channel'  this app is on the other channel and needs moving
+   *
+   * There is deliberately no third, Development-only reason. There used to be
+   * ('dev-refresh'), because dev catalog entries carried the same version as stable
+   * and pointed at a moving `:dev` tag — so the only way to guess at a new build was
+   * to compare image digests, and the answer was usually "can't tell". Dev entries now
+   * publish prerelease versions and pin an immutable per-build tag, so 'version'
+   * covers Development too.
    */
-  reason: 'version' | 'channel' | 'dev-refresh' | null;
-  /**
-   * False when we are OFFERING an update we cannot prove exists — Development with no
-   * published image digests. Safe to show a button for; never safe to email about.
-   */
-  certain: boolean;
+  reason: 'version' | 'channel' | null;
   /** The channel this app is currently on, and the one selected. */
   appChannel: Channel;
   channel: Channel;
@@ -1081,44 +961,30 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
   const meta = loadMeta(id);
   const current = meta?.version ?? '';
   const appChannel: Channel = meta?.channel ?? 'main';
-  const none = { updateAvailable: false, current, latest: null, reason: null, certain: true, appChannel, channel } as const;
+  const none = { updateAvailable: false, current, latest: null, reason: null, appChannel, channel } as const;
   if (!meta || meta.kind !== 'catalog') return none;
   const app = await findCatalogApp(id);
   if (!app) return none;
 
-  // Semver alone was WRONG here, and it is the reason switching channels used to
-  // mean deleting and reinstalling an app. Both catalogues publish the same version
-  // numbers (the dev entry of an app at 0.66.0 is still called 0.66.0), so a pending
-  // channel switch compared equal, the card said "up to date", and the Update button
-  // never appeared — leaving remove-and-reinstall as the only way across.
+  // Two reasons to offer an update, checked most-specific first.
   //
-  // Three independent reasons to offer an update, checked most-specific first:
+  // The channel check has to come FIRST and cannot be folded into the version check:
+  // moving an app between channels is required regardless of what the versions say,
+  // and the target can legitimately be OLDER (going back to Stable). Semver alone was
+  // the bug that made switching channels mean deleting and reinstalling an app.
+  //
+  // The version check now works on both channels, because a dev catalog entry carries
+  // a prerelease version (`0.11.0-dev.1`) that moves with each build instead of
+  // repeating the stable one. That is what removed the whole third branch here.
   let reason: UpdateCheck['reason'] = null;
-  let certain = true;
-  if (appChannel !== channel) {
-    reason = 'channel'; // must move, regardless of what the version says
-  } else if (isNewerVersion(current, app.version)) {
-    reason = 'version';
-  } else if (usesMovingTags(channel)) {
-    // Development: the version can't move, so ask the images. If the catalogue
-    // publishes digests we get a definite answer without pulling; otherwise we can
-    // only offer the pull and let it decide, which is a guess and must not be
-    // notified about.
-    const differs = await catalogImageDiffers(id, app);
-    if (differs === true) reason = 'dev-refresh';
-    else if (differs === false) reason = null; // provably already current
-    else {
-      reason = 'dev-refresh';
-      certain = false;
-    }
-  }
+  if (appChannel !== channel) reason = 'channel';
+  else if (isNewerVersion(current, app.version)) reason = 'version';
 
   return {
     updateAvailable: reason !== null,
     current,
     latest: app.version,
     reason,
-    certain,
     appChannel,
     channel,
   };
@@ -1148,14 +1014,16 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   const switching = appChannel !== channel;
   const downgrading = switching && channel === 'main';
 
-  // Three reasons to proceed, and the version check only governs the first:
-  //   1. a genuinely newer version on the same channel;
-  //   2. a CHANNEL SWITCH — the version may be identical, older, or the same
-  //      moving string, and we still have to move the app;
-  //   3. the Development channel, where the entry tracks a branch and a `:dev`
-  //      tag that never change the version string, so semver can NEVER report an
-  //      update. There we always re-pull and let the image digest decide.
-  if (!switching && !usesMovingTags(channel) && !isNewerVersion(meta.version ?? '', app.version)) {
+  // Two reasons to proceed, and the version check only governs the first:
+  //   1. a genuinely newer version on the same channel — true on Development too,
+  //      now that dev entries carry prerelease versions rather than reusing stable's;
+  //   2. a CHANNEL SWITCH, where the target version may be identical or older and we
+  //      still have to move the app.
+  //
+  // This gate is also what protects against a pointless recreate. Restarting an app is
+  // a real outage when it's a prayer-times display on a wall, so "nothing newer" must
+  // stop here rather than pull-and-recreate on the chance something changed.
+  if (!switching && !isNewerVersion(meta.version ?? '', app.version)) {
     onLine(`${meta.name} is already up to date (v${app.version}).`);
     return;
   }
@@ -1192,11 +1060,10 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
       // where dev-only data can start misbehaving, and the admin is watching.
       onLine('Its data is kept, but anything added by a Development version may not work on Stable.');
     }
-  } else if (usesMovingTags(channel)) {
-    onLine(`Checking ${meta.name} for the latest Development build…`);
   } else {
     onLine(`Updating ${meta.name} from v${meta.version ?? '?'} to v${app.version}…`);
   }
+
   // New compose; keep the user's saved settings (.env) untouched.
   fs.writeFileSync(composePath(id), app.compose, 'utf8');
 
@@ -1237,32 +1104,12 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     httpsPort = undefined;
   }
 
-  // What the app is running RIGHT NOW, so a moving `:dev` tag can be judged by
-  // digest rather than by a version string that never changes.
-  const digestBefore = await runningImageDigests(id);
-
   onLine('');
   onLine('Downloading the new version…');
   if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('Could not download the update. Please check the connection and try again.');
     return;
-  }
-
-  // On the Development channel the pull is the only way to know whether anything
-  // actually changed. If the digests match, the container is already running these
-  // exact bytes — recreating it would be a pointless outage for a display on a wall,
-  // so say so and stop. A channel switch always proceeds: the compose itself changed.
-  if (!switching && usesMovingTags(channel)) {
-    const digestAfter = await pulledImageDigests(id);
-    if (digestBefore.length > 0 && sameDigests(digestBefore, digestAfter)) {
-      onLine('');
-      onLine(`${meta.name} is already running the latest Development build. Nothing was changed.`);
-      // Still record the channel: the app IS on this channel even though the
-      // container did not need recreating.
-      saveMeta({ ...meta, channel });
-      return;
-    }
   }
 
   onLine('');

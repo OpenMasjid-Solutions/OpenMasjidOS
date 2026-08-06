@@ -164,11 +164,10 @@
     "appUpdateRow": "{{name}} — v{{current}} → v{{latest}}",
     "appRowChannelToDev": "{{name}} — switch to the Development version (v{{latest}})",
     "appRowChannelToStable": "{{name}} — return to the Stable version (v{{latest}})",
-    "appRowDevRefresh": "{{name}} — check for a newer Development build",
     "appPendingTitle_one": "1 app is not on your selected channel yet",
     "appPendingTitle_other": "{{count}} apps are not on your selected channel yet",
     "devChannelTitle": "You're on Development builds",
-    "devChannelBody": "This masjid is running what we're still building, not a tested release. There are no version updates to install here — use Settings to pull the newest build, or switch back to Stable."
+    "devChannelBody": "This masjid is running what we're still building, not a tested release. Updates arrive here the same way as on Stable — you'll be told when there's a new build. Switch back to Stable in Settings whenever you like."
   },
   "actions": {
     "open": "Open",
@@ -417,7 +416,6 @@
     "channelDev": "Development",
     "channelOn": "You're on {{label}}",
     "channelRunning": "{{label}} · v{{version}}",
-    "channelDevRunning": "{{label}} · {{branch}} (moves with every change)",
     "channelSwitching": "Switching…",
     "channelDevConfirmTitle": "Switch to Development builds?",
     "channelDevConfirmBody": "Development builds are what we're still working on. They are not tested, they change every day, and they can stop your apps working — including your prayer times display.",
@@ -433,8 +431,7 @@
     "channelPendingBody": "Update them so everything runs the same channel. Their settings and data are kept.",
     "channelUpdateAll": "Update all to {{label}}",
     "channelPendingTag": "Channel change pending",
-    "channelPullLatest": "Pull the latest Development build",
-    "channelDevNote": "On Development there are no version numbers to compare — we re-download and only restart an app if it actually changed.",
+    "channelDevNote": "Development builds are numbered too, so you're told when a new one is ready and update it exactly like a Stable release.",
     "ssl": "Security & SSL",
     "sslHint": "The dashboard is served over HTTPS.",
     "sslSelfSignedNote": "Using a self-signed certificate (valid until {{date}}). Browsers show a one-time \"not secure\" warning per device — click Advanced → Proceed once. Upload your own certificate from a real domain to remove the warning.",

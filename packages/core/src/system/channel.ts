@@ -68,13 +68,36 @@ export function osBranch(channel: Channel): string {
 }
 
 /**
- * The core's Docker image tag. The platform updates by pulling its own image, not
- * by pulling git, so the channel maps to a TAG here rather than a branch.
+ * The core's channel ALIAS image tag — the moving pointer, used when we don't know
+ * (or can't reach) the target version. The platform updates by pulling its own image
+ * rather than by pulling git, so a channel maps to a TAG here, not a branch.
  * `type=ref,event=branch` in the build workflow publishes `:dev` for the dev branch;
  * `:latest` is default-branch-only, which is what keeps Stable stable.
  */
 export function coreImageTag(channel: Channel): string {
   return channel === 'dev' ? 'dev' : 'latest';
+}
+
+/**
+ * The tag to actually PULL for an update, given the version the update check found.
+ *
+ * Development pulls the **exact version** (`:0.50.0-dev.2`), not `:dev`. The two are
+ * not equivalent: `:dev` is a moving alias that can still point at the previous build
+ * while the new one is mid-publish, so pulling it can silently install different bytes
+ * from the version the admin was just told about. Pulling the exact tag either gets
+ * that build or fails loudly — and a visible "that build isn't published yet" beats
+ * an update that quietly does nothing, which is the failure this whole change exists
+ * to remove.
+ *
+ * Stable deliberately stays on `:latest`. There the two ARE equivalent by
+ * construction (only the default branch publishes `:latest`), and `:latest` is what
+ * the installer writes and what every existing box already pulls — so making Stable
+ * depend on a per-version tag would add a new way for a release to fail for no gain.
+ */
+export function coreTargetTag(channel: Channel, version: string | null | undefined): string {
+  const v = String(version ?? '').trim();
+  if (channel === 'dev' && v) return v;
+  return coreImageTag(channel);
 }
 
 /** The App Store catalog for a channel. OpenMasjidAPPS's stable branch IS `main`. */
@@ -110,12 +133,12 @@ export function channelLabel(channel: Channel): string {
   return channel === 'dev' ? 'Development' : 'Stable';
 }
 
-/**
- * On the dev channel a catalog entry tracks a moving branch and a moving `:dev`
- * image tag, so the version string never changes and semver comparison can never
- * report an update. Callers use this to switch from "is it newer?" to "re-pull and
- * compare digests".
- */
-export function usesMovingTags(channel: Channel): boolean {
-  return channel === 'dev';
-}
+// There is deliberately NO `usesMovingTags()` here any more, and nothing should
+// reintroduce one. Both channels now version their builds — Development uses semver
+// prereleases (`0.50.0-dev.2`) and pins an immutable per-build image tag, exactly as
+// Stable pins a release and a digest. That is what lets Development share Stable's
+// update path: compare versions, notify, pull, recreate. Every "Development is
+// special" branch that used to hang off this predicate (digest comparison, published
+// image digests in the catalogue, a manual "check for a new Development build"
+// button, a suppressed update banner) existed only because dev builds had no version
+// to compare, and all of it is gone.

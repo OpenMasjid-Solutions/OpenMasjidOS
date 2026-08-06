@@ -17,27 +17,26 @@ import { docker } from './client';
 import { DATA_DIR } from '../config';
 import { log } from '../logger';
 import { getSettings } from '../settings/store';
-import { coreImageTag, type Channel } from '../system/channel';
+import { coreImageTag, coreTargetTag } from '../system/channel';
+import { checkForUpdate } from '../system/system';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
 const CORE_REPO = 'ghcr.io/openmasjid-solutions/openmasjid-core';
 
 /**
- * Retarget an image reference at the current channel's tag.
+ * Retarget an image reference at a specific tag.
  *
- * The platform updates by pulling its OWN image (not by pulling git), so the channel
- * is expressed as a tag: `:latest` for Stable, `:dev` for Development. We rewrite
- * only the tag and keep whatever repo/registry the container was actually started
- * from, so a masjid running a private mirror or a pinned digest keeps their registry
- * and just changes channel.
+ * The platform updates by pulling its OWN image (not by pulling git), so the update
+ * target is expressed as a tag. We rewrite only the tag and keep whatever
+ * repo/registry the container was actually started from, so a masjid running a private
+ * mirror keeps their registry and just changes what they pull.
  *
  * A digest-pinned reference (`repo@sha256:…`) is left ALONE: the operator pinned it
  * deliberately, and silently converting that to a moving tag would undo the pin.
  */
-function retarget(image: string, channel: Channel): string {
+function retarget(image: string, tag: string): string {
   if (image.includes('@')) return image;
-  const tag = coreImageTag(channel);
   // Split off the tag without mangling a registry port (host:5000/repo:tag).
   const slash = image.lastIndexOf('/');
   const colon = image.lastIndexOf(':');
@@ -46,10 +45,10 @@ function retarget(image: string, channel: Channel): string {
 }
 
 /**
- * Point the core's OWN compose file at the channel's image tag.
+ * Point the core's OWN compose file at a specific image tag.
  *
- * This is the other half of the channel switch, and without it the platform could
- * never actually run a Development build. `recreateCore` recreates the core with
+ * This is the other half of a channel switch, and without it the platform could never
+ * actually run a Development build. `recreateCore` recreates the core with
  * `docker compose -f /data/docker-compose.yml up -d --force-recreate`, and the
  * installer writes that file with a hardcoded `image: …/openmasjid-core:latest`
  * (`IMAGE=` in install.sh). So we pulled `:dev`, then started `:latest` again — the
@@ -65,7 +64,7 @@ function retarget(image: string, channel: Channel): string {
  *
  * Returns true if the file now names the wanted tag (including "already did").
  */
-export function alignComposeImage(channel: Channel): boolean {
+export function alignComposeImage(want: string): boolean {
   const file = path.join(DATA_DIR, 'docker-compose.yml');
   let text: string;
   try {
@@ -75,7 +74,6 @@ export function alignComposeImage(channel: Channel): boolean {
     // — `recreateCore` will fail visibly on its own rather than us guessing.
     return false;
   }
-  const want = coreImageTag(channel);
   // Match the core image line specifically: our repo name, optional tag, at the
   // start of a line's value. Anchored to the repo so nothing else in the file can
   // be caught (an app's image, a comment, a volume path).
@@ -98,23 +96,22 @@ export function alignComposeImage(channel: Channel): boolean {
   const next = text.replace(re, `$1$2:${want}$4`);
   try {
     fs.writeFileSync(file, next, 'utf8');
-    log.info(`Pointed the core's compose file at :${want} for the ${channel} channel.`);
+    log.info(`Pointed the core's compose file at :${want}.`);
     return true;
   } catch (err) {
-    log.error('Could not update docker-compose.yml with the channel image tag.', err);
+    log.error('Could not update docker-compose.yml with the wanted image tag.', err);
     return false;
   }
 }
 
-async function inspectSelf(): Promise<{ image: string; hostDataDir: string | null }> {
-  const channel = getSettings().updateChannel;
-  const fallback = `${CORE_REPO}:${coreImageTag(channel)}`;
+async function inspectSelf(tag: string): Promise<{ image: string; hostDataDir: string | null }> {
+  const fallback = `${CORE_REPO}:${tag}`;
   try {
     const info = await docker.getContainer(CORE_CONTAINER).inspect();
     const running = info.Config?.Image;
     const mount = (info.Mounts ?? []).find((m) => m.Destination === '/data');
     return {
-      image: running ? retarget(running, channel) : fallback,
+      image: running ? retarget(running, tag) : fallback,
       hostDataDir: mount?.Source ?? null,
     };
   } catch {
@@ -146,11 +143,17 @@ export function streamSpawn(cmd: string, args: string[], onLine: (s: string) => 
  * Recreate the core via a DETACHED helper container (it survives the core's
  * restart). Used by both the live update and restore. Returns true once the
  * helper is launched; the core will then be restarted under us.
+ *
+ * `tag` is the image tag to come back on. Omitted (restore) it defaults to the
+ * channel's moving alias, which is what restore has always done: a restored box has
+ * no particular build in mind, and the alias resolves to the newest one on its
+ * channel. The live update passes the exact version it just pulled.
  */
-export async function recreateCore(onLine: (s: string) => void): Promise<boolean> {
-  const { image, hostDataDir } = await inspectSelf();
+export async function recreateCore(onLine: (s: string) => void, tag?: string): Promise<boolean> {
+  const want = tag ?? coreImageTag(getSettings().updateChannel);
+  const { image, hostDataDir } = await inspectSelf(want);
   // Must happen BEFORE the compose up below, or it recreates from the old tag.
-  alignComposeImage(getSettings().updateChannel);
+  alignComposeImage(want);
   const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
   if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
   args.push(
@@ -167,20 +170,37 @@ export async function recreateCore(onLine: (s: string) => void): Promise<boolean
 /** Run the update, streaming progress through onLine. Resolves once the helper
  *  has been launched (the core will then be restarted under us). */
 export async function runUpdate(onLine: (s: string) => void): Promise<void> {
-  const { image } = await inspectSelf();
+  const channel = getSettings().updateChannel;
 
   onLine('Checking for the latest version…');
+  // Ask which version we're going to, and pull THAT — on Development, `:dev` is a
+  // moving alias that can still point at the previous build while a new one publishes,
+  // so pulling it can install different bytes from the version just announced.
+  // Offline, `latest` is null and this falls back to the channel alias.
+  const info = await checkForUpdate().catch(() => null);
+  const tag = coreTargetTag(channel, info?.latest ?? null);
+  const pinned = tag !== coreImageTag(channel);
+  const { image } = await inspectSelf(tag);
+
   onLine(`Downloading ${image}`);
   const pullCode = await streamSpawn('docker', ['pull', image], onLine);
   if (pullCode !== 0) {
     onLine('');
-    onLine('Could not download the update. Please check the internet connection and try again.');
+    if (pinned) {
+      // Distinguish the two real causes. A version we were told about but whose image
+      // isn't in the registry yet is a build still in flight, not a broken network,
+      // and telling someone to check their internet sends them after the wrong thing.
+      onLine(`Could not download version ${tag}.`);
+      onLine('It may still be building — wait a few minutes and try again.');
+    } else {
+      onLine('Could not download the update. Please check the internet connection and try again.');
+    }
     return;
   }
 
   onLine('');
   onLine('Download complete. Applying the update and restarting…');
-  if (!(await recreateCore(onLine))) {
+  if (!(await recreateCore(onLine, tag))) {
     onLine('Could not start the updater. You can update by re-running the installer.');
     return;
   }

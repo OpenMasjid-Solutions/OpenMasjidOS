@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const req = createRequire(__filename);
@@ -52,12 +53,36 @@ test('a channel maps to the right branch, image tag and catalog URL', () => {
   }
 });
 
-test('only Development uses moving tags, and labels are for humans', () => {
-  assert.equal(ch.usesMovingTags('dev'), true);
-  assert.equal(ch.usesMovingTags('main'), false);
+test('labels are for humans', () => {
   // A volunteer reads "Stable", not a branch name.
   assert.equal(ch.channelLabel('main'), 'Stable');
   assert.equal(ch.channelLabel('dev'), 'Development');
+});
+
+test('an update pulls the EXACT version on Development, and :latest on Stable', () => {
+  // Development must not pull `:dev`. That alias can still point at the previous build
+  // while a new one publishes, so pulling it installs different bytes than the version
+  // the admin was just told about — and, before per-build tags existed, there was no
+  // other reference to pull, which is why Development updates could silently do nothing.
+  assert.equal(ch.coreTargetTag('dev', '0.50.0-dev.2'), '0.50.0-dev.2');
+  // Stable stays on the alias: there `:latest` IS the release by construction, and it
+  // is what the installer writes into every box's compose file.
+  assert.equal(ch.coreTargetTag('main', '0.50.0'), 'latest');
+  // Offline / unreadable VERSION → fall back to the alias rather than pulling nothing.
+  for (const v of [null, undefined, '', '   ']) {
+    assert.equal(ch.coreTargetTag('dev', v), 'dev', `${JSON.stringify(v)} falls back to :dev`);
+    assert.equal(ch.coreTargetTag('main', v), 'latest');
+  }
+});
+
+test('there is no moving-tag predicate any more', () => {
+  // Structural, and deliberate. `usesMovingTags()` was the hook every
+  // Development-only branch hung off — digest comparison, a suppressed update banner,
+  // `reason: 'dev-refresh'`. Dev builds are versioned now, so both channels share one
+  // path; a predicate like this reappearing means that split is growing back.
+  assert.equal('usesMovingTags' in ch, false, 'usesMovingTags must stay deleted');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'channel.ts'), 'utf8');
+  assert.doesNotMatch(src, /export function usesMovingTags/);
 });
 
 test('every channel value crossing a boundary is validated', () => {
@@ -174,24 +199,79 @@ test('the switch reads the target catalog before persisting anything', () => {
   assert.match(src, /clearChangelogCache\(\)/);
 });
 
-test('the build publishes a dev image, or the Development channel is inert', () => {
-  // The channel pulls `:dev`. That tag only exists if the workflow builds the dev
-  // branch — otherwise selecting Development leaves the box unable to update at all.
+test('the build publishes a dev image AND a per-version tag, or Development is inert', () => {
   const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'docker-build.yml'), 'utf8');
   assert.match(wf, /branches:\s*\[master,\s*dev\]/, 'dev must trigger a build');
   assert.match(wf, /type=ref,event=branch/, 'which is what tags the image :dev');
+  // The version tag is what the channel actually PULLS (coreTargetTag). Without it,
+  // Development can detect an update and then fail to install it — worse than silence,
+  // because the box says a version is available that cannot be fetched.
+  assert.match(wf, /tr -d[^\n]*< VERSION/, 'the VERSION file must be read');
+  assert.match(
+    wf,
+    /type=raw,value=\$\{\{ steps\.ver\.outputs\.version \}\}/,
+    'and published as a tag, or the Development channel cannot pull its own build',
+  );
   // :latest must stay Stable-only, or Development would overwrite what stable boxes pull.
   assert.match(wf, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/);
+});
+
+/**
+ * Which branch this checkout is FOR, or null if it can't be told.
+ *
+ * The target branch, not the source: a release is a dev→master merge, so its content
+ * is dev's but the version it must carry is master's. `GITHUB_BASE_REF` is set on a
+ * pull_request (the base), `GITHUB_REF_NAME` on a branch push. A tag push and a
+ * detached checkout are genuinely unknown, and get the shape check only.
+ */
+function targetBranch(): 'master' | 'dev' | null {
+  const fromEnv = process.env.GITHUB_BASE_REF || (process.env.GITHUB_REF_TYPE === 'tag' ? '' : process.env.GITHUB_REF_NAME);
+  const name =
+    fromEnv ||
+    (() => {
+      try {
+        return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: path.join(__dirname, '..', '..', '..'),
+          encoding: 'utf8',
+        }).trim();
+      } catch {
+        return '';
+      }
+    })();
+  return name === 'master' || name === 'dev' ? name : null;
+}
+
+test("VERSION matches the branch it's on: a prerelease on dev, a release on master", () => {
+  // The bump IS the publish (CLAUDE.md §13.4). Two ways to get this wrong, both quiet:
+  //   dev carrying a plain release  → dev/VERSION can equal master's, so a dev box has
+  //                                  nothing to compare and goes silent. That is exactly
+  //                                  the bug this change removed, back as an omission.
+  //   master carrying a prerelease → every Stable masjid is offered a dev build.
+  const v = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'VERSION'), 'utf8').trim();
+
+  // Always: a shape both branches must satisfy, and one the update check will accept.
+  // A version the check's own regex rejects is read as "no version published" — which
+  // fails soft and therefore silently.
+  assert.match(v, /^\d+\.\d+\.\d+(-dev\.\d+)?$/, `VERSION must be X.Y.Z or X.Y.Z-dev.N, got "${v}"`);
+  assert.match(v, /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
+
+  const branch = targetBranch();
+  if (branch === 'dev') {
+    assert.match(v, /-dev\.\d+$/, `on dev, VERSION must be a prerelease, got "${v}"`);
+  } else if (branch === 'master') {
+    assert.doesNotMatch(v, /-/, `on master, VERSION must be a release, got "${v}"`);
+  }
+  // Unknown branch (tag push / detached / worktree): the shape check above still ran.
 });
 
 // ── the bug that made channel switching mean delete-and-reinstall ─────────────
 
 test('a pending channel switch is offered as an update, even at the same version', () => {
-  // THE REGRESSION. Both catalogues publish the same version numbers — the dev entry
-  // of an app at 0.66.0 is still called 0.66.0 — so the old semver-only check
-  // compared equal, the card said "up to date", the Update button never appeared,
-  // and removing + reinstalling the app was the only way across. Pinned at the
-  // decision level, since the executor was always able to do the move.
+  // THE REGRESSION. A channel move is required regardless of what the versions say,
+  // and its target can legitimately be OLDER (going back to Stable). When this was
+  // semver-only, a pending switch compared equal, the card said "up to date", the
+  // Update button never appeared, and removing + reinstalling the app was the only way
+  // across. Pinned at the decision level, since the executor could always do the move.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'manager.ts'), 'utf8');
   const fn = src.slice(src.indexOf('export async function checkCatalogUpdate'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
@@ -199,28 +279,57 @@ test('a pending channel switch is offered as an update, even at the same version
   // It must consider the app's channel, not just the version.
   assert.match(body, /appChannel !== channel/, 'a channel mismatch must count as an update');
   assert.match(body, /'channel'/, 'and must be reported as such, so the UI can word it');
-  // And Development must offer a refresh, because its version can never move.
-  assert.match(body, /usesMovingTags\(channel\)/);
-  assert.match(body, /'dev-refresh'/);
-  // The old shape — a bare semver return — must not come back.
-  assert.doesNotMatch(
-    body,
-    /return \{ updateAvailable: isNewerVersion\(current, app\.version\), current, latest: app\.version \};/,
-    'the semver-only return was the bug',
+  // …and the channel check must come FIRST, or a same-version switch is missed again.
+  assert.ok(
+    body.indexOf('appChannel !== channel') < body.indexOf('isNewerVersion'),
+    'the channel check must precede the version check',
   );
+  // The Development-only third branch must NOT come back: dev entries are versioned.
+  assert.doesNotMatch(body, /usesMovingTags|dev-refresh|catalogImageDiffers|certain/);
 });
 
-test('the Development channel does not nag about OS updates', () => {
-  // A permanent "a new version is available" banner on a branch that moves every day
-  // is noise, and it is what the dashboard banner reads. `movingTag` is the signal
-  // for offering an explicit pull instead.
+test('the Development channel reports updates exactly like Stable', () => {
+  // Development used to be pinned to `updateAvailable: false`, because dev/VERSION held
+  // the same string as master's — so the only options were permanent silence or a
+  // permanent nag. Versioned dev builds make the comparison meaningful, so there must be
+  // ONE expression for both channels and no channel test near it.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'system.ts'), 'utf8');
   assert.match(
     src,
-    /updateAvailable: movingTag \? false :/,
-    'on Development updateAvailable must be false so the banner stays quiet',
+    /updateAvailable: latest != null && isNewerVersion\(VERSION, latest\),/,
+    'one semver comparison, both channels',
   );
-  assert.match(src, /movingTag,/, 'but movingTag must still be reported for the explicit action');
+  assert.doesNotMatch(src, /movingTag/, 'the moving-tag special case must stay deleted');
+  // A prerelease must survive the VERSION-file sanity check, or dev reads its own
+  // version file as junk and goes quiet — silently, since the check fails soft.
+  const re = /if \(\/(\^.*?)\/\.test\(raw\)\) latest = raw;/.exec(src);
+  assert.ok(re, 'the VERSION sanity regex must still be there');
+  assert.match('0.50.0-dev.12', new RegExp(re[1]!), 'a prerelease must be accepted');
+  assert.match('0.50.0', new RegExp(re[1]!), 'and so must a plain release');
+});
+
+test('the digest-comparison subsystem is gone, not merely unused', () => {
+  // It existed only to fake a version axis for Development. Left in place it is a
+  // second, contradictory source of truth for "is there an update?" — and the one that
+  // was wrong. Deleting the module is what keeps it from being wired back in.
+  assert.equal(
+    fs.existsSync(path.join(__dirname, '..', 'src', 'docker', 'image-ref.ts')),
+    false,
+    'docker/image-ref.ts must be deleted',
+  );
+  const mgr = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'manager.ts'), 'utf8');
+  for (const dead of [
+    'runningRepoDigests',
+    'catalogImageDiffers',
+    'pulledImageDigests',
+    'runningImageDigests',
+    'sameDigests',
+    'imageDigests',
+  ]) {
+    assert.doesNotMatch(mgr, new RegExp(dead), `${dead} must be gone from the manager`);
+  }
+  const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'types.ts'), 'utf8');
+  assert.doesNotMatch(types, /imageDigests\?:/, 'the catalogue contract must not ask for digests');
 });
 
 test('returning to Stable moves apps back automatically; going to Development does not', () => {
