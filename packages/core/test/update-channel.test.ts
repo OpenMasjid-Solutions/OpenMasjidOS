@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const req = createRequire(__filename);
@@ -215,15 +216,52 @@ test('the build publishes a dev image AND a per-version tag, or Development is i
   assert.match(wf, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/);
 });
 
-test("this repo's dev VERSION is a prerelease, ahead of master", () => {
-  // The bump IS the publish (CLAUDE.md §13.4). If dev/VERSION ever equals master's
-  // again, a dev box has nothing to compare and goes silent — which is the exact bug
-  // this change removed, reappearing as a one-line omission.
+/**
+ * Which branch this checkout is FOR, or null if it can't be told.
+ *
+ * The target branch, not the source: a release is a dev→master merge, so its content
+ * is dev's but the version it must carry is master's. `GITHUB_BASE_REF` is set on a
+ * pull_request (the base), `GITHUB_REF_NAME` on a branch push. A tag push and a
+ * detached checkout are genuinely unknown, and get the shape check only.
+ */
+function targetBranch(): 'master' | 'dev' | null {
+  const fromEnv = process.env.GITHUB_BASE_REF || (process.env.GITHUB_REF_TYPE === 'tag' ? '' : process.env.GITHUB_REF_NAME);
+  const name =
+    fromEnv ||
+    (() => {
+      try {
+        return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: path.join(__dirname, '..', '..', '..'),
+          encoding: 'utf8',
+        }).trim();
+      } catch {
+        return '';
+      }
+    })();
+  return name === 'master' || name === 'dev' ? name : null;
+}
+
+test("VERSION matches the branch it's on: a prerelease on dev, a release on master", () => {
+  // The bump IS the publish (CLAUDE.md §13.4). Two ways to get this wrong, both quiet:
+  //   dev carrying a plain release  → dev/VERSION can equal master's, so a dev box has
+  //                                  nothing to compare and goes silent. That is exactly
+  //                                  the bug this change removed, back as an omission.
+  //   master carrying a prerelease → every Stable masjid is offered a dev build.
   const v = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'VERSION'), 'utf8').trim();
-  assert.match(v, /^\d+\.\d+\.\d+-dev\.\d+$/, `dev/VERSION must be X.Y.Z-dev.N, got "${v}"`);
-  // And the version check's own regex must accept it, or the channel reads its own
-  // VERSION file as unusable.
+
+  // Always: a shape both branches must satisfy, and one the update check will accept.
+  // A version the check's own regex rejects is read as "no version published" — which
+  // fails soft and therefore silently.
+  assert.match(v, /^\d+\.\d+\.\d+(-dev\.\d+)?$/, `VERSION must be X.Y.Z or X.Y.Z-dev.N, got "${v}"`);
   assert.match(v, /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
+
+  const branch = targetBranch();
+  if (branch === 'dev') {
+    assert.match(v, /-dev\.\d+$/, `on dev, VERSION must be a prerelease, got "${v}"`);
+  } else if (branch === 'master') {
+    assert.doesNotMatch(v, /-/, `on master, VERSION must be a release, got "${v}"`);
+  }
+  // Unknown branch (tag push / detached / worktree): the shape check above still ran.
 });
 
 // ── the bug that made channel switching mean delete-and-reinstall ─────────────
