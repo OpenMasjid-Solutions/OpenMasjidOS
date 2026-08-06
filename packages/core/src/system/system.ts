@@ -10,7 +10,8 @@ import { PORT, MACHINE_HOSTNAME } from '../config';
 import { VERSION } from '../version';
 import { log } from '../logger';
 import { getSettings } from '../settings/store';
-import { versionCheckUrl, osBranch, usesMovingTags, type Channel } from './channel';
+import { versionCheckUrl, osBranch, type Channel } from './channel';
+import { isNewerVersion, isPrerelease } from '../util/version';
 
 // A tiny image with a shell to chroot into the host. Reuses the backup image so
 // it's likely already present; override for air-gapped installs.
@@ -73,30 +74,27 @@ export interface UpdateInfo {
   sourceUrl: string;
   /** Which channel this was checked against. */
   channel: Channel;
-  /**
-   * True on the Development channel, where the branch and the `:dev` image tag both
-   * move without the version string changing — so semver can never report an update
-   * and the UI offers "pull latest" instead of "update available".
-   */
-  movingTag: boolean;
+  /** True when the running build is a Development prerelease (`0.50.0-dev.2`). */
+  prerelease: boolean;
 }
 
-/** Compare dotted numeric versions; returns true if b is strictly newer than a. */
-function isNewer(a: string, b: string): boolean {
-  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0);
-  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (y > x) return true;
-    if (y < x) return false;
-  }
-  return false;
-}
-
+/**
+ * Is there a newer core build on this masjid's channel?
+ *
+ * ONE path for both channels, which is the point. Development used to be special-cased
+ * to `updateAvailable: false` because its VERSION file held the same string as
+ * Stable's — the branch moved but the number didn't, so a semver check could only ever
+ * either say nothing (silence, forever) or say "maybe" (a permanent nag that meant
+ * nothing). Neither is a usable answer, and the workaround was a separate manual
+ * "pull the latest Development build" action that couldn't tell you whether there WAS
+ * one.
+ *
+ * Development now publishes prerelease versions (`0.50.0-dev.2`) from the dev branch's
+ * own VERSION file, so this comparison is meaningful on both channels and the answer
+ * is the same kind of fact: a specific newer version, or nothing.
+ */
 export async function checkForUpdate(): Promise<UpdateInfo> {
   const channel = getSettings().updateChannel;
-  const movingTag = usesMovingTags(channel);
   let latest: string | null = null;
   try {
     const res = await fetch(versionCheckUrl(channel), {
@@ -105,7 +103,9 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
     });
     if (res.ok) {
       const raw = (await res.text()).trim();
-      if (/^\d+\.\d+\.\d+/.test(raw)) latest = raw;
+      // Accepts a prerelease suffix — `0.50.0-dev.2` must pass, or the dev channel
+      // reads its own VERSION file as unusable and goes quiet again.
+      if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(raw)) latest = raw;
     }
   } catch (err) {
     log.warn(`Update check failed against ${osBranch(channel)} (offline?).`, err);
@@ -113,15 +113,9 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
   return {
     current: VERSION,
     latest,
-    // `updateAvailable` drives the dashboard's "a new version is available" banner,
-    // so on Development it must be FALSE. The dev branch moves constantly, and
-    // reporting an update every time would nag permanently and mean nothing — the
-    // version number there is not a release. The dashboard shows "you're on
-    // Development" instead, and `movingTag` below is what offers the explicit
-    // "pull the latest Development build" action for when the admin does want it.
-    updateAvailable: movingTag ? false : latest != null && isNewer(VERSION, latest),
+    updateAvailable: latest != null && isNewerVersion(VERSION, latest),
     sourceUrl: SOURCE_URL,
     channel,
-    movingTag,
+    prerelease: isPrerelease(VERSION),
   };
 }

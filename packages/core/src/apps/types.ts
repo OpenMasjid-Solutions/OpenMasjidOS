@@ -23,22 +23,18 @@ export interface PortSpec {
   label?: string;
 }
 
-/** A catalog entry as published by OpenMasjidAPPS in catalog.json. */
+/**
+ * A catalog entry as published by OpenMasjidAPPS in catalog.json.
+ *
+ * `version` is the update axis, on BOTH channels. A Stable entry names a release
+ * (`0.10.2`) and pins a digest; a Development entry names a semver prerelease
+ * (`0.11.0-dev.1`) and pins that exact immutable tag. There was briefly an
+ * `imageDigests` map here so the platform could detect a new dev build by comparing
+ * registry digests — it existed only because dev entries used to repeat the stable
+ * version and point at a moving `:dev` tag, leaving nothing else to compare. Real dev
+ * versions replaced it; don't reintroduce a second update axis.
+ */
 export interface CatalogApp {
-  /**
-   * OPTIONAL, additive (OpenMasjidAPPS): the REGISTRY MANIFEST digest each image
-   * reference in the compose resolved to at catalog-build time, keyed by that exact
-   * reference. Only meaningful on the Development channel, where the tag moves.
-   *
-   * With it we can tell whether a new image exists WITHOUT pulling, which is what
-   * makes a "new Development build" notification honest rather than a guess. Absent
-   * or unparsed means "unknown" and we fall back to pulling to find out — never to
-   * claiming there is nothing new.
-   *
-   * Must NOT appear in the compose itself: the dev compose keeps the bare moving tag,
-   * or "pull latest" stops meaning anything.
-   */
-  imageDigests?: Record<string, string>;
   id: string;
   name: string;
   tagline?: string;

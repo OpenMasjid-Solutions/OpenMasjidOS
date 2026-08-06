@@ -59,18 +59,17 @@ async function checkApps(): Promise<void> {
       const u = await checkCatalogUpdate(a.id);
       // What earns an email, and what does not:
       //
-      //  'version'      yes — a genuinely newer release.
-      //  'dev-refresh'  only when PROVEN (`certain`), i.e. the catalogue published an
-      //                 image digest that differs from what this box is running. A new
-      //                 Development build is worth knowing about, but an unprovable
-      //                 "there might be one" is true on every cycle forever, so it
-      //                 would be pure nagging.
-      //  'channel'      never — the admin started that switch and can see it in the
-      //                 dashboard. Emailing it produced nonsense like "OpenMasjid
-      //                 Students can be updated to version 0.45.1" sent to someone
-      //                 already running 0.45.1.
-      const worthEmailing =
-        u.reason === 'version' || (u.reason === 'dev-refresh' && u.certain);
+      //  'version'  yes — a genuinely newer version. True on Development too now that
+      //             dev builds carry prerelease versions (`0.11.0-dev.2`), so a new
+      //             Development build notifies exactly like a Stable release. It used
+      //             to be unnotifiable: the version never moved, so the only signal
+      //             was "the image MIGHT have changed", which is true on every cycle
+      //             forever and is therefore nagging rather than news.
+      //  'channel'  never — the admin started that switch and can see it in the
+      //             dashboard. Emailing it produced nonsense like "OpenMasjid
+      //             Students can be updated to version 0.45.1" sent to someone
+      //             already running 0.45.1.
+      const worthEmailing = u.reason === 'version';
       if (u.updateAvailable && u.latest && worthEmailing) {
         if (alertedApp.get(a.id) === u.latest) continue;
         alertedApp.set(a.id, u.latest);

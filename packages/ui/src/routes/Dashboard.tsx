@@ -72,10 +72,11 @@ export function Dashboard() {
   // version surfaces right on the dashboard instead of going unnoticed.
   const updateQ = trpc.system.checkUpdate.useQuery(undefined, { refetchInterval: 21_600_000 });
   const updateReady = updateQ.data?.updateAvailable ?? false;
-  // On Development there is no release to announce — the branch moves constantly, so
-  // a version banner would nag forever and mean nothing. Say which channel you are on
-  // instead, and let Settings offer the explicit "pull the latest build" action.
-  const onDevChannel = updateQ.data?.movingTag === true;
+  // A standing "you're on Development" note, so an admin can tell at a glance that
+  // this box runs untested software. It is NOT a substitute for the update banner any
+  // more: Development builds are versioned prereleases, so `updateReady` above is
+  // meaningful on both channels and both banners can show together.
+  const onDevChannel = updateQ.data?.channel === 'dev';
   const [updateOpen, setUpdateOpen] = useState(false);
 
   // App updates — same idea as the core check: surface them right on the dashboard.
@@ -202,15 +203,12 @@ export function Dashboard() {
                   <span style={{ flex: 1, minWidth: 0 }}>
                     {/* Word each row by WHY it's listed. An arrow means "newer", so it
                         must only appear for a genuine version upgrade — never for a
-                        channel move (whose target can legitimately be older) and never
-                        for a Development refresh (where the version cannot change). */}
+                        channel move, whose target can legitimately be older. */}
                     {u.reason === 'channel'
                       ? u.channel === 'dev'
                         ? t('dashboard.appRowChannelToDev', { name: u.name, latest: u.latest })
                         : t('dashboard.appRowChannelToStable', { name: u.name, latest: u.latest })
-                      : u.reason === 'dev-refresh'
-                        ? t('dashboard.appRowDevRefresh', { name: u.name })
-                        : t('dashboard.appUpdateRow', { name: u.name, current: u.current, latest: u.latest })}
+                      : t('dashboard.appUpdateRow', { name: u.name, current: u.current, latest: u.latest })}
                   </span>
                   <button className="btn btn--sm btn--primary" onClick={() => openAppUpdate(u)}>
                     <Download size={14} /> {t('settings.updateNow')}

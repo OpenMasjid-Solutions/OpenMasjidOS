@@ -57,19 +57,35 @@ function load(compose: string | null): {
   return { mod: req('../src/docker/update') as typeof import('../src/docker/update'), file };
 }
 
-test('switching to Development repoints the core compose at :dev', () => {
-  // THE REGRESSION. Without this the box pulls :dev and starts :latest forever.
+test('switching to Development repoints the core compose at the dev build', () => {
+  // THE REGRESSION. Without this the box pulls the dev image and starts :latest forever.
+  // The tag is now the exact VERSION rather than the `:dev` alias, so the compose
+  // records which build this box is actually meant to be running.
   const { mod, file } = load(COMPOSE);
-  assert.equal(mod.alignComposeImage('dev'), true);
+  assert.equal(mod.alignComposeImage('0.50.0-dev.1'), true);
   const out = fs.readFileSync(file, 'utf8');
-  assert.match(out, /image: ghcr\.io\/openmasjid-solutions\/openmasjid-core:dev$/m);
+  assert.match(out, /image: ghcr\.io\/openmasjid-solutions\/openmasjid-core:0\.50\.0-dev\.1$/m);
   assert.doesNotMatch(out, /openmasjid-core:latest/, 'the old tag must be gone');
 });
 
 test('returning to Stable repoints it back at :latest', () => {
-  const { mod, file } = load(COMPOSE.replace(':latest', ':dev'));
-  assert.equal(mod.alignComposeImage('main'), true);
+  const { mod, file } = load(COMPOSE.replace(':latest', ':0.50.0-dev.1'));
+  assert.equal(mod.alignComposeImage('latest'), true);
   assert.match(fs.readFileSync(file, 'utf8'), /openmasjid-core:latest$/m);
+});
+
+test('a prerelease tag survives the rewrite intact', () => {
+  // The tag now contains dots and a hyphen, which the replacement must not eat — a
+  // mangled tag is an image that cannot be pulled, i.e. a box that does not come back.
+  for (const tag of ['0.50.0-dev.1', '0.50.0-dev.12', '1.0.0', 'dev', 'latest']) {
+    const { mod, file } = load(COMPOSE);
+    assert.equal(mod.alignComposeImage(tag), true, tag);
+    const line = fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .find((l) => l.includes('image:'));
+    assert.equal(line, `    image: ghcr.io/openmasjid-solutions/openmasjid-core:${tag}`);
+  }
 });
 
 test('everything else in the file is left byte-identical', () => {
@@ -140,4 +156,31 @@ test('recreateCore aligns the compose before composing up', () => {
   assert.ok(alignAt > 0, 'recreateCore must align the compose image');
   assert.ok(upAt > 0);
   assert.ok(alignAt < upAt, 'and must do it BEFORE the compose up');
+});
+
+test('an update resolves the target version, then pulls and recreates on THAT', () => {
+  // The three have to agree, or the box downloads one build and boots another — which
+  // is the whole class of bug this area keeps producing. Pinned as an order:
+  // resolve the version → pull it → recreate on the same tag.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('export async function runUpdate'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+
+  const resolveAt = body.indexOf('coreTargetTag(');
+  const pullAt = body.indexOf("streamSpawn('docker', ['pull'");
+  const recreateAt = body.indexOf('recreateCore(');
+  assert.ok(body.includes('checkForUpdate('), 'the update must ask which version it is going to');
+  assert.ok(resolveAt > 0, 'and turn that into a concrete tag');
+  assert.ok(resolveAt < pullAt, 'the tag must be resolved BEFORE the pull');
+  assert.ok(pullAt < recreateAt, 'and the pull must precede the recreate');
+  assert.match(body, /recreateCore\(onLine, tag\)/, 'the recreate must use the tag that was pulled');
+});
+
+test('a missing dev build is reported as a missing build, not a network problem', () => {
+  // Pulling an exact version can fail because CI has not published it yet. Telling the
+  // admin to check their internet sends them after the wrong thing entirely, and the
+  // build usually appears a few minutes later.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
+  assert.match(src, /still be building/, 'the in-flight case needs its own message');
+  assert.match(src, /check the internet connection/, 'and the offline case keeps its own');
 });

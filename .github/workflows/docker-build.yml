@@ -102,13 +102,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The VERSION file is the single source of truth (CLAUDE.md §18), and on the dev
+      # branch it holds a prerelease (`0.50.0-dev.2`). Publishing a tag named for it is
+      # what makes the Development channel updatable: the platform pulls the EXACT
+      # version its update check just found, because `:dev` is a moving alias that can
+      # still point at the previous build while a new one is publishing — pulling that
+      # installs different bytes from the version the admin was told about.
+      - name: Read VERSION
+        id: ver
+        run: echo "version=$(tr -d ' \t\r\n' < VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `type=raw` with the VERSION file covers branch pushes, where `type=semver`
+          # does nothing (it only fires on a `v*` tag ref). Both branches get it: on
+          # dev it is the tag the channel pulls, and on master it simply agrees with
+          # what the release tag publishes anyway.
           tags: |
             type=ref,event=branch
+            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref_type == 'branch' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
