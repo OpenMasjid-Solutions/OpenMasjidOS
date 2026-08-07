@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/OS - rounded corners.png" alt="OpenMasjidOS" width="280"/>
+  <a href="https://openmasjidsolutions.org">
+    <img src="assets/OS - rounded corners.png" alt="OpenMasjidOS" width="280"/>
+  </a>
 </p>
 
 <h1 align="center"><b>OpenMasjidOS</b></h1>
