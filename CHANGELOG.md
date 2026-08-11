@@ -7,6 +7,10 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.50.3
+
+- **Security updates to two libraries OpenMasjidOS is built on** — the dashboard's page router and an internal id generator. Neither problem could be reached the way OpenMasjidOS uses them, but we keep these current rather than waiting until one can be.
+
 ## 0.50.2
 
 - **Updates now install the exact version they told you about.** OpenMasjidOS was fetching whichever build was newest at that moment, which on rare occasions was a different one — so an update could appear to succeed while leaving you on the previous version, and keep offering itself. It now downloads the precise version named in the update, and says plainly if that build is still being prepared.
