@@ -76,6 +76,52 @@ test('an update pulls the EXACT version on BOTH channels, never the moving alias
   }
 });
 
+test('arm64 is built natively, never under emulation', () => {
+  // THE HANG. Under QEMU the arm64 leg sat on `RUN npm ci` for 1h47m emitting nothing,
+  // while every amd64 step finished inside a minute; it ended only by being cancelled.
+  // It had been latent for weeks because the layer cache meant `npm ci` rarely re-ran,
+  // so the first dependency change since exposed it — and meanwhile a masjid was told a
+  // version was available that could never be pulled.
+  const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'docker-build.yml'), 'utf8');
+  assert.doesNotMatch(wf, /setup-qemu/, 'no QEMU: emulated arm64 npm ci hangs');
+  assert.match(wf, /ubuntu-24\.04-arm/, 'arm64 must build on a native arm64 runner');
+  assert.match(wf, /platform: linux\/arm64/, 'and arm64 must still be built at all');
+  assert.match(wf, /platform: linux\/amd64/);
+
+  // Every job that builds or publishes needs a deadline. The hang was invisible because
+  // silence is indistinguishable from progress, and GitHub's default would have let it
+  // hold a runner for six hours.
+  const jobs = wf.split(/\n {2}(?=[a-z-]+:\n)/);
+  for (const name of ['build', 'merge']) {
+    const job = jobs.find((j) => j.startsWith(`${name}:`));
+    assert.ok(job, `the ${name} job must exist`);
+    assert.match(job, /timeout-minutes:\s*\d+/, `${name} must have a timeout`);
+  }
+
+  // The per-architecture caches must not share a scope, or the two runners evict each
+  // other's layers every run and the build is randomly cold.
+  assert.match(wf, /scope=\$\{\{ matrix\.platform \}\}/, 'cache scope must be per-platform');
+
+  // And what ships must actually contain both architectures. A list missing arm64
+  // installs fine on a mini-PC and fails on every Raspberry Pi.
+  assert.match(wf, /is missing linux\/\$want/, 'the merge job must verify both arches');
+
+  // Every hand-written image reference must be lowercased. `github.repository_owner` is
+  // `OpenMasjid-Solutions`, and registries reject an uppercase repository name — which
+  // failed the first native-runner run outright. metadata-action lowercases whatever goes
+  // through `images:`, so only references built by hand are at risk.
+  assert.match(wf, /ref=\$\{REGISTRY,,\}\/\$\{IMAGE_NAME,,\}/, 'the ref must be lowercased once');
+  for (const [what, re] of [
+    ['the digest push', /outputs: type=image,name=[^\n]*/],
+    ['the manifest list', /printf '[^\n]*@sha256/],
+    ['the verification', /ref='[^\n]*steps\.meta\.outputs\.version/],
+  ] as const) {
+    const line = re.exec(wf);
+    assert.ok(line, `${what} must exist`);
+    assert.doesNotMatch(line[0], /env\.IMAGE_NAME/, `${what} must not use the raw (cased) name`);
+  }
+});
+
 test(':latest is published from exactly one place — a non-prerelease release tag', () => {
   // `is_default_branch` reads like "only master pushes", but it is ALSO true on a tag
   // push, so `:latest` was written twice per release from two independent builds of the

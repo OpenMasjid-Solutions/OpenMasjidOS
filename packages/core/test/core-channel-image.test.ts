@@ -178,9 +178,23 @@ test('an update resolves the target version, then pulls and recreates on THAT', 
 
 test('a missing dev build is reported as a missing build, not a network problem', () => {
   // Pulling an exact version can fail because CI has not published it yet. Telling the
-  // admin to check their internet sends them after the wrong thing entirely, and the
-  // build usually appears a few minutes later.
+  // admin to check their internet sends them after the wrong thing entirely.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
-  assert.match(src, /still be building/, 'the in-flight case needs its own message');
+  assert.match(src, /hasn't finished publishing/, 'the in-flight case needs its own message');
   assert.match(src, /check the internet connection/, 'and the offline case keeps its own');
+
+  // And no message may promise a duration: one quoted a few minutes while a real build
+  // hung for 1h47m, turning an honest message into a misleading one. Checked against the
+  // strings actually SHOWN to the admin, not the whole file — a first attempt at this
+  // matched the comment above explaining the very mistake, which is a test policing
+  // prose rather than behaviour.
+  const shown = [...src.matchAll(/onLine\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]!);
+  assert.ok(shown.length > 5, 'should have found the user-facing strings');
+  for (const line of shown) {
+    assert.doesNotMatch(
+      line,
+      /\b(seconds?|minutes?|hours?)\b/i,
+      `no message may quote a wait we cannot honour: "${line}"`,
+    );
+  }
 });

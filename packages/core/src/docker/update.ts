@@ -191,7 +191,10 @@ export async function runUpdate(onLine: (s: string) => void): Promise<void> {
       // isn't in the registry yet is a build still in flight, not a broken network,
       // and telling someone to check their internet sends them after the wrong thing.
       onLine(`Could not download version ${tag}.`);
-      onLine('It may still be building — wait a few minutes and try again.');
+      // Deliberately no duration. This said "wait a few minutes" and a real build once
+      // hung for nearly two hours, so the message sent someone back to retry repeatedly
+      // against something that was never going to appear.
+      onLine("That version hasn't finished publishing yet. Try again a little later.");
     } else {
       onLine('Could not download the update. Please check the internet connection and try again.');
     }
