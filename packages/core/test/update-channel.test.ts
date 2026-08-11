@@ -207,11 +207,13 @@ test('the build publishes a dev image AND a per-version tag, or Development is i
   // Development can detect an update and then fail to install it — worse than silence,
   // because the box says a version is available that cannot be fetched.
   assert.match(wf, /tr -d[^\n]*< VERSION/, 'the VERSION file must be read');
-  assert.match(
-    wf,
-    /type=raw,value=\$\{\{ steps\.ver\.outputs\.version \}\}/,
-    'and published as a tag, or the Development channel cannot pull its own build',
-  );
+  // To end of line: the enable expression contains spaces inside `${{ … }}`.
+  const raw = /type=raw,value=\$\{\{ steps\.ver\.outputs\.version \}\}[^\n]*/.exec(wf);
+  assert.ok(raw, 'and published as a tag, or the Development channel cannot pull its own build');
+  // Scoped to dev. Enabled for every branch, a master push republishes `:X.Y.Z` over
+  // what the release tag already published — same source, but a rebuild is not
+  // byte-identical, so a release tag people treat as pinned quietly starts moving.
+  assert.match(raw[0], /ref_name == 'dev'/, 'the per-version tag must be dev-branch only');
   // :latest must stay Stable-only, or Development would overwrite what stable boxes pull.
   assert.match(wf, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/);
 });

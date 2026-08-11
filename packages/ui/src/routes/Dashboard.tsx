@@ -18,7 +18,7 @@ import { UpdateModal } from '../components/UpdateModal';
 import { AppUpdate } from '../components/AppUpdate';
 import { useWindows } from '../components/Windows';
 import { Page } from '../components/Page';
-import { MasjidScene } from '../components/Glyphs';
+import { MasjidMark } from '../components/Glyphs';
 import { staggerContainer } from '../lib/motion';
 import { cn } from '../lib/cn';
 import type { StatsSnapshot } from '../lib/types';
@@ -236,7 +236,11 @@ export function Dashboard() {
         <div className="glass panel">
           <div className="empty-state">
             <div className="empty-art">
-              <MasjidScene size={88} />
+              {/* The real OpenMasjidOS mark, not the generic line-art masjid. It is a
+                  currentColor mask, so `.empty-art`'s primary colour still applies and
+                  it follows the theme — same component the dock, splash and login use,
+                  so the brand reads identically everywhere. */}
+              <MasjidMark size={88} />
             </div>
             <h3>{t('dashboard.noAppsTitle')}</h3>
             <p>{t('dashboard.noAppsBody')}</p>

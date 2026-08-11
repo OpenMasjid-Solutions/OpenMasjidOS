@@ -117,13 +117,18 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # `type=raw` with the VERSION file covers branch pushes, where `type=semver`
-          # does nothing (it only fires on a `v*` tag ref). Both branches get it: on
-          # dev it is the tag the channel pulls, and on master it simply agrees with
-          # what the release tag publishes anyway.
+          # `type=raw` with the VERSION file covers the dev branch, where `type=semver`
+          # does nothing (it only fires on a `v*` tag ref) and so nothing else would
+          # publish a per-build tag.
+          #
+          # Scoped to dev DELIBERATELY. A release's `:X.Y.Z` must come only from its
+          # immutable `v*` tag; enabling this for every branch let a master push
+          # republish `:0.50.0` on top of what the release tag had already published —
+          # same source, but a rebuilt image is not byte-identical, so a "pinned"
+          # release tag quietly started moving.
           tags: |
             type=ref,event=branch
-            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref_type == 'branch' }}
+            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref_name == 'dev' && github.ref_type == 'branch' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
