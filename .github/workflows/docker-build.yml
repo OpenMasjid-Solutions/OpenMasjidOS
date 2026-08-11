@@ -116,6 +116,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Registries reject an uppercase repository name, and `github.repository_owner` is
+      # `OpenMasjid-Solutions`. docker/metadata-action lowercases its own output, so
+      # anything that goes through `images:` is fine — but a reference built by hand is
+      # not, which is what broke the first native-runner run. Resolve it once, here, and
+      # use it everywhere a reference is written literally. (Kept derived from
+      # `repository_owner` rather than hardcoded: this is AGPL and forks are expected to
+      # publish under their own org.)
+      - name: Resolve the image reference (lowercased)
+        id: img
+        run: echo "ref=${REGISTRY,,}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -150,7 +164,7 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.img.outputs.ref }},push-by-digest=true,name-canonical=true,push=true
           # Scoped PER PLATFORM. A single shared scope would have the two runners
           # overwriting each other's cache on every run, which is how you get a build
           # that is mysteriously cold half the time.
@@ -204,6 +218,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Same reason as in `build`: references written by hand must be lowercase.
+      - name: Resolve the image reference (lowercased)
+        id: img
+        run: echo "ref=${REGISTRY,,}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -256,14 +278,14 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            $(printf '${{ steps.img.outputs.ref }}@sha256:%s ' *)
 
       # Prove BOTH architectures are in what was actually published. A manifest list
       # missing arm64 installs perfectly on a mini-PC and fails on every Raspberry Pi —
       # the exact class of failure that must not be discovered by a masjid.
       - name: Verify both architectures were published
         run: |
-          ref='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}'
+          ref='${{ steps.img.outputs.ref }}:${{ steps.meta.outputs.version }}'
           docker buildx imagetools inspect "$ref"
           docker buildx imagetools inspect --raw "$ref" > /tmp/index.json
           for want in amd64 arm64; do

@@ -105,6 +105,21 @@ test('arm64 is built natively, never under emulation', () => {
   // And what ships must actually contain both architectures. A list missing arm64
   // installs fine on a mini-PC and fails on every Raspberry Pi.
   assert.match(wf, /is missing linux\/\$want/, 'the merge job must verify both arches');
+
+  // Every hand-written image reference must be lowercased. `github.repository_owner` is
+  // `OpenMasjid-Solutions`, and registries reject an uppercase repository name — which
+  // failed the first native-runner run outright. metadata-action lowercases whatever goes
+  // through `images:`, so only references built by hand are at risk.
+  assert.match(wf, /ref=\$\{REGISTRY,,\}\/\$\{IMAGE_NAME,,\}/, 'the ref must be lowercased once');
+  for (const [what, re] of [
+    ['the digest push', /outputs: type=image,name=[^\n]*/],
+    ['the manifest list', /printf '[^\n]*@sha256/],
+    ['the verification', /ref='[^\n]*steps\.meta\.outputs\.version/],
+  ] as const) {
+    const line = re.exec(wf);
+    assert.ok(line, `${what} must exist`);
+    assert.doesNotMatch(line[0], /env\.IMAGE_NAME/, `${what} must not use the raw (cased) name`);
+  }
 });
 
 test(':latest is published from exactly one place — a non-prerelease release tag', () => {
