@@ -59,20 +59,36 @@ test('labels are for humans', () => {
   assert.equal(ch.channelLabel('dev'), 'Development');
 });
 
-test('an update pulls the EXACT version on Development, and :latest on Stable', () => {
-  // Development must not pull `:dev`. That alias can still point at the previous build
-  // while a new one publishes, so pulling it installs different bytes than the version
-  // the admin was just told about — and, before per-build tags existed, there was no
-  // other reference to pull, which is why Development updates could silently do nothing.
+test('an update pulls the EXACT version on BOTH channels, never the moving alias', () => {
+  // An alias can point at different bytes than the version just announced, and every
+  // failure that produces is silent: you pull, you recreate, you are still on the old
+  // build, and the check offers the same update forever.
   assert.equal(ch.coreTargetTag('dev', '0.50.0-dev.2'), '0.50.0-dev.2');
-  // Stable stays on the alias: there `:latest` IS the release by construction, and it
-  // is what the installer writes into every box's compose file.
-  assert.equal(ch.coreTargetTag('main', '0.50.0'), 'latest');
+  // Stable used to return 'latest' here on the claim that it was "equivalent by
+  // construction" to the release tag. It was not: `:latest` was written by BOTH the
+  // master-branch build and the release-tag build, so it held different bytes from
+  // `:X.Y.Z` (v0.50.1: latest 5eaf997 vs 0.50.1 23696bb).
+  assert.equal(ch.coreTargetTag('main', '0.50.1'), '0.50.1');
   // Offline / unreadable VERSION → fall back to the alias rather than pulling nothing.
   for (const v of [null, undefined, '', '   ']) {
     assert.equal(ch.coreTargetTag('dev', v), 'dev', `${JSON.stringify(v)} falls back to :dev`);
     assert.equal(ch.coreTargetTag('main', v), 'latest');
   }
+});
+
+test(':latest is published from exactly one place — a non-prerelease release tag', () => {
+  // `is_default_branch` reads like "only master pushes", but it is ALSO true on a tag
+  // push, so `:latest` was written twice per release from two independent builds of the
+  // same commit. That is how a Stable masjid ended up running an image its release tag
+  // did not name.
+  const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'docker-build.yml'), 'utf8');
+  const line = /type=raw,value=latest[^\n]*/.exec(wf);
+  assert.ok(line, ':latest must still be published');
+  assert.doesNotMatch(line[0], /is_default_branch/, 'is_default_branch also fires on tag pushes');
+  assert.match(line[0], /ref_type == 'tag'/, ':latest must come from the tag build only');
+  // And never from a prerelease tag, or one `v*-dev.*` push drags every Stable box
+  // onto a Development build.
+  assert.match(line[0], /!contains\(github\.ref_name, '-'\)/, 'prerelease tags must not move :latest');
 });
 
 test('there is no moving-tag predicate any more', () => {
@@ -214,8 +230,9 @@ test('the build publishes a dev image AND a per-version tag, or Development is i
   // what the release tag already published — same source, but a rebuild is not
   // byte-identical, so a release tag people treat as pinned quietly starts moving.
   assert.match(raw[0], /ref_name == 'dev'/, 'the per-version tag must be dev-branch only');
-  // :latest must stay Stable-only, or Development would overwrite what stable boxes pull.
-  assert.match(wf, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/);
+  // Development must never be able to move `:latest` — asserted in full by the
+  // ':latest is published from exactly one place' test above.
+  assert.doesNotMatch(raw[0], /value=latest/);
 });
 
 /**

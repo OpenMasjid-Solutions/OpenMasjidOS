@@ -68,11 +68,11 @@ export function osBranch(channel: Channel): string {
 }
 
 /**
- * The core's channel ALIAS image tag — the moving pointer, used when we don't know
- * (or can't reach) the target version. The platform updates by pulling its own image
- * rather than by pulling git, so a channel maps to a TAG here, not a branch.
- * `type=ref,event=branch` in the build workflow publishes `:dev` for the dev branch;
- * `:latest` is default-branch-only, which is what keeps Stable stable.
+ * The core's channel ALIAS image tag — the moving pointer. Used only as a FALLBACK,
+ * when the target version isn't known (offline, or an unreadable VERSION file). The
+ * platform updates by pulling its own image rather than by pulling git, so a channel
+ * maps to a TAG here, not a branch. `type=ref,event=branch` publishes `:dev` for the
+ * dev branch; `:latest` is published only by a non-prerelease release tag.
  */
 export function coreImageTag(channel: Channel): string {
   return channel === 'dev' ? 'dev' : 'latest';
@@ -81,23 +81,30 @@ export function coreImageTag(channel: Channel): string {
 /**
  * The tag to actually PULL for an update, given the version the update check found.
  *
- * Development pulls the **exact version** (`:0.50.0-dev.2`), not `:dev`. The two are
- * not equivalent: `:dev` is a moving alias that can still point at the previous build
- * while the new one is mid-publish, so pulling it can silently install different bytes
- * from the version the admin was just told about. Pulling the exact tag either gets
- * that build or fails loudly — and a visible "that build isn't published yet" beats
- * an update that quietly does nothing, which is the failure this whole change exists
- * to remove.
+ * **Both channels pull the exact version** (`:0.50.2`, `:0.50.2-dev.1`) — never the
+ * moving alias. An alias can point at different bytes than the version just announced,
+ * and every failure that produces is silent: you pull, you recreate, you are still on
+ * the old build, and the check keeps offering the same update forever.
  *
- * Stable deliberately stays on `:latest`. There the two ARE equivalent by
- * construction (only the default branch publishes `:latest`), and `:latest` is what
- * the installer writes and what every existing box already pulls — so making Stable
- * depend on a per-version tag would add a new way for a release to fail for no gain.
+ * Stable used to stay on `:latest` here, and the justification in this comment was
+ * simply wrong: it claimed the two were "equivalent by construction". They were not.
+ * `:latest` was published by BOTH the master-branch build and the release-tag build,
+ * two independent runs of the same commit, so it routinely differed from `:X.Y.Z` in
+ * bytes — verified on v0.50.1 (`latest` 5eaf997, `0.50.1` 23696bb). Worse, `:0.50.0`
+ * was itself republished by a README-only commit pushed straight to master, so a
+ * "pinned" release tag had already moved once in the wild.
+ *
+ * The workflow now publishes `:latest` from exactly one place (a non-prerelease `v*`
+ * tag). That makes the alias trustworthy again — and pulling the exact version anyway
+ * means a release whose tag was never pushed fails LOUDLY ("that build isn't published
+ * yet") instead of quietly installing the previous release under the new version's name.
+ *
+ * Falls back to the alias only when there's no version to aim at, which is the offline
+ * case: better to pull something than nothing.
  */
 export function coreTargetTag(channel: Channel, version: string | null | undefined): string {
   const v = String(version ?? '').trim();
-  if (channel === 'dev' && v) return v;
-  return coreImageTag(channel);
+  return v || coreImageTag(channel);
 }
 
 /** The App Store catalog for a channel. OpenMasjidAPPS's stable branch IS `main`. */

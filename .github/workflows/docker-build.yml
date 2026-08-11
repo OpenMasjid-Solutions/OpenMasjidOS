@@ -126,12 +126,21 @@ jobs:
           # republish `:0.50.0` on top of what the release tag had already published —
           # same source, but a rebuilt image is not byte-identical, so a "pinned"
           # release tag quietly started moving.
+          #
+          # `:latest` comes from ONE place: a non-prerelease `v*` tag. `is_default_branch`
+          # looked like it meant that, but it is ALSO true for a tag push — so `:latest`
+          # was written twice per release, by the master-branch build and by the tag
+          # build, two independent runs of the same commit. Whichever finished last won,
+          # so `:latest` routinely held different bytes from `:X.Y.Z` (v0.50.1: latest
+          # 5eaf997 vs 0.50.1 23696bb) and Stable masjids ran an image the release tag
+          # did not name. Excluding prereleases keeps a `v*-dev.*` tag, should one ever
+          # be pushed, from dragging every Stable box onto a Development build.
           tags: |
             type=ref,event=branch
             type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.ref_name == 'dev' && github.ref_type == 'branch' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
