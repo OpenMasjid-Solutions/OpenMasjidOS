@@ -25,29 +25,49 @@ ever leaves the masjid's network to a third-party sending service.
 
 ## Setting it up
 
-1. **Install OpenWA** from the App Store. During install you set an **API key** and a
-   **session name**; keep both.
-2. **Settings → WhatsApp**: choose OpenWA as the gateway and paste the same API key you set
-   when installing it (the `OPENWA_API_KEY` setting, which OpenWA reads as
-   `API_MASTER_KEY`). Leave *Gateway address* empty — an App Store install is found
-   automatically on `127.0.0.1` at its published port. Fill it in only if OpenWA runs on a
-   different machine.
+Everything happens in **Settings → WhatsApp**. Until you switch it on there, the gateway
+app is not in the App Store and WhatsApp does not exist anywhere in OpenMasjidOS.
+
+1. **Switch on “Send messages over WhatsApp.”** A warning appears first, explaining that
+   this uses an unofficial client and that the number can be restricted. Accepting it
+   turns the feature on and makes the gateway installable.
+2. **Install the gateway.** The panel offers **Install the gateway**, which takes you
+   straight to OpenWA's install questions. Set an **API key** there and keep it.
+3. **Paste that same API key** back in Settings → WhatsApp (it is the `OPENWA_API_KEY`
+   setting, which OpenWA reads as `API_MASTER_KEY`). Leave *Gateway address* empty — an
+   App Store install is found automatically at its published port. Fill it in only if
+   OpenWA runs on a different machine.
 
    > **The key is only read on OpenWA’s first boot.** Changing it here later does not
    > rotate the gateway’s key — reinstall OpenWA if you need to change it.
 
-   You do **not** enter a session id. OpenWA mints one as a UUID and its API accepts only
-   a name, so OpenMasjidOS creates the session for you the first time you link a phone —
-   you never open OpenWA’s own admin panel.
-3. **Link your phone.** Enter the number to send *from*, press **Get a code**, then on
-   that phone open WhatsApp → *Settings → Linked devices → Link with phone number* and
-   type the code. A pairing code is used rather than a QR because a masjid's server is
-   usually headless and the admin is usually not standing next to it.
-4. **Settings → Account**: set your own **WhatsApp number**. That is where OS alerts go
+4. **Link your phone — here, not in OpenWA.** Choose the country, type the number to send
+   *from*, press **Get a code**, then on that phone open WhatsApp → *Settings → Linked
+   devices → Link with phone number* and type the code. A pairing code is used rather
+   than a QR because a masjid's server is usually headless and the admin is usually not
+   standing next to it.
+5. **Settings → Account**: set your own **WhatsApp number**. That is where OS alerts go
    and where **Send test message** sends. It is a destination only — never a sign-in.
-5. **Settings → Alerts**: switch on the WhatsApp column for the alerts you want. It is
+6. **Settings → Alerts**: switch on the WhatsApp column for the alerts you want. It is
    **off by default** for every alert, deliberately: configuring a gateway should not
    start messaging phones on its own.
+
+### Why OpenWA is hidden, and when to open it
+
+OpenWA does not appear on your dashboard or in the dock, and the only button that opens
+it is in Settings → WhatsApp. That is deliberate. OpenMasjidOS **owns the connection**: it
+creates the session, starts it, requests the pairing code, and sends every message through
+one paced queue — which is the entire defence against the number being banned.
+
+- **Never link a phone in OpenWA's own interface.** OpenMasjidOS would not know about that
+  session, and you can end up with two connections fighting over one number.
+- **Never send from OpenWA directly.** It bypasses the pacing, which is the one thing
+  keeping the number safe.
+- **Do open it to read or reply to chats** if someone answers a message. That is what it
+  is good for, and it changes nothing the platform relies on.
+
+You never enter a session id anywhere. OpenWA mints one as a UUID and its API accepts only
+a name, so OpenMasjidOS creates and starts the session for you the first time you link.
 
 ## How sending behaves, and why
 
@@ -142,7 +162,10 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 | *Cannot reach the gateway — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
 | *Cannot reach the gateway — the gateway address could not be found* | Only possible with a typed-in *Gateway address*; check the hostname |
 | *The gateway rejected the API key* | Re-paste the key you set when installing OpenWA. Remember it is only read on OpenWA's **first** boot — if you changed it in Settings, reinstall OpenWA instead |
-| *No connection created yet* | The gateway is up but nothing exists on it; pressing **Link your phone** creates it |
+| *No connection created yet* | The gateway is up but nothing exists on it; pressing **Get a code** creates and starts it |
+| *The gateway is still connecting* | The session was just started and its engine is not up yet. Wait a few seconds and press **Get a code** again |
+| *A phone is already linked* | Unlink the current one in OpenWA (*Sessions → Logout*) before linking a different number |
+| *WhatsApp has placed a restriction on this number* | The risk materialised. `reachout_timelock` still allows existing chats; `tos_block` means that number is finished — link a different one and lean on email |
 | *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
 | *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |
 | Messages queue but never arrive | Check quiet hours and the caps in Settings; the panel shows how many are waiting |

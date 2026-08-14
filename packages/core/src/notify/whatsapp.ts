@@ -46,6 +46,7 @@
  */
 import { log } from '../logger';
 import { getInstalled } from '../apps/manager';
+import { OPENWA_APP_ID } from '../apps/managed';
 import { appOrigin } from '../system/app-host';
 import {
   getWhatsAppConfig,
@@ -132,8 +133,9 @@ export function chatIdFor(digits: string): string {
 
 // ── the gateway client ───────────────────────────────────────────────────────────
 
-/** The catalog app id the platform looks for when no gateway URL was typed in. */
-export const OPENWA_APP_ID = 'openwa';
+/** The catalog app id the platform looks for when no gateway URL was typed in. Defined
+ *  in `apps/managed.ts`, which is also what hides it from the dashboard and the store. */
+export { OPENWA_APP_ID };
 
 /**
  * Where the gateway lives.
@@ -271,6 +273,15 @@ export interface GatewayStatus {
   connected: boolean;
   /** OpenWA's own status word, or our reason — shown to the admin verbatim. */
   detail: string;
+  /**
+   * A limit WhatsApp itself has placed on the number, when the gateway reports one. This
+   * is the risk the whole feature is hedged against actually materialising, so it must
+   * reach the admin rather than being swallowed — `reachout_timelock` still allows
+   * existing chats, while `tos_block` and `proxy_block` mean the number is finished.
+   */
+  restriction?: string | null;
+  /** The number currently linked, when the gateway knows it. Confirms which phone is in use. */
+  phone?: string | null;
 }
 
 /**
@@ -324,12 +335,18 @@ export async function gatewayStatus(): Promise<GatewayStatus> {
     }
     return { state: 'problem', reachable: true, connected: false, detail: r.error ?? 'unknown state' };
   }
-  const s = r.json as { status?: unknown } | null;
+  const s = r.json as { status?: unknown; phone?: unknown; restriction?: { kind?: unknown } | null } | null;
   const word = String(s?.status ?? '').toLowerCase();
-  if (word === READY) return { state: 'ready', reachable: true, connected: true, detail: word };
-  if (PENDING_STATUSES.has(word)) return { state: 'pending', reachable: true, connected: false, detail: word };
+  const extra = {
+    restriction: typeof s?.restriction?.kind === 'string' ? s.restriction.kind : null,
+    phone: typeof s?.phone === 'string' ? s.phone : null,
+  };
+  if (word === READY) return { state: 'ready', reachable: true, connected: true, detail: word, ...extra };
+  if (PENDING_STATUSES.has(word)) {
+    return { state: 'pending', reachable: true, connected: false, detail: word, ...extra };
+  }
   // disconnected / action_required / failed, or anything OpenWA adds later.
-  return { state: 'problem', reachable: true, connected: false, detail: word || 'unknown state' };
+  return { state: 'problem', reachable: true, connected: false, detail: word || 'unknown state', ...extra };
 }
 
 /**
@@ -380,19 +397,87 @@ export async function ensureSession(): Promise<{ ok: boolean; id?: string; error
   return { ok: false, error: created.error ?? 'could not create a session' };
 }
 
-/** Ask the gateway for a pairing code so the admin can link the phone without a QR. */
+/**
+ * Bring the session's engine up, because a created session is not a started one.
+ *
+ * OpenWA's lifecycle is create → **start** → pair. A session that was only created has no
+ * engine at all, and every engine route answers `400 Session is not started` — which is
+ * exactly the "the gateway returned 400" a masjid hit when trying to link: the status
+ * panel said "gateway running, no phone linked yet" (true — the session existed) while
+ * linking could never work, because nothing had ever started it.
+ *
+ * Idempotent, three ways, since this runs before every link attempt:
+ *   - already `ready` → linked; nothing to do, and starting again would be wrong
+ *   - `engineLoaded` → an engine is already live, which `start` explicitly refuses
+ *   - `400` from start → "already started", which is the outcome we wanted anyway
+ */
+async function ensureStarted(cfg: WhatsAppConfig): Promise<{ ok: boolean; ready?: boolean; error?: string }> {
+  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+  if (!r.ok) return { ok: false, error: r.error ?? 'could not read the session' };
+  const s = r.json as { status?: unknown; engineLoaded?: unknown } | null;
+  const status = String(s?.status ?? '').toLowerCase();
+  if (status === READY) return { ok: true, ready: true };
+  if (s?.engineLoaded === true) return { ok: true };
+
+  const started = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/start`);
+  // 400 here is OpenWA's "session already started" — the state we were aiming for.
+  if (started.ok || started.status === 400) return { ok: true };
+  if (started.status === 409) {
+    // A teardown from a previous session is still settling, or another node holds the
+    // engine. Documented as retryable, so say so rather than reporting a hard failure.
+    return { ok: false, error: 'The gateway is still finishing a previous operation. Try again in a moment.' };
+  }
+  return { ok: false, error: started.error ?? 'could not start the session' };
+}
+
+/**
+ * Ask the gateway for a pairing code so the admin can link the phone without a QR.
+ *
+ * Creates the session if needed, starts it, then asks — the exact order OpenWA documents.
+ */
 export async function requestPairingCode(phone: string): Promise<{ ok: boolean; code?: string; error?: string }> {
-  const cfg = getWhatsAppConfig();
+  const cfg0 = getWhatsAppConfig();
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(phone);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
-  const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/pairing-code`, {
-    phoneNumber: digits,
-  });
-  if (!r.ok) return { ok: false, error: r.error };
-  const j = r.json as { code?: unknown; pairingCode?: unknown; data?: { code?: unknown } } | null;
-  const code = j?.code ?? j?.pairingCode ?? j?.data?.code;
-  return { ok: true, code: typeof code === 'string' ? code : undefined };
+
+  const session = await ensureSession();
+  if (!session.ok) return { ok: false, error: session.error };
+  // ensureSession may have just recorded a new id, so re-read rather than reusing cfg0.
+  const cfg = getWhatsAppConfig();
+  void cfg0;
+
+  const started = await ensureStarted(cfg);
+  if (!started.ok) return { ok: false, error: started.error };
+  if (started.ready) {
+    return { ok: false, error: 'A phone is already linked. Unlink it in OpenWA first if you want to change it.' };
+  }
+
+  // Starting is asynchronous: the engine exists moments before it can talk to WhatsApp,
+  // and in that window OpenWA answers 409 ("wait for ready and retry"). A few short
+  // waits turn a race the admin would see as a failure into a code on screen.
+  for (let attempt = 1; ; attempt += 1) {
+    const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/pairing-code`, {
+      phoneNumber: digits,
+    });
+    if (r.ok) {
+      const j = r.json as { pairingCode?: unknown; code?: unknown; data?: { code?: unknown } } | null;
+      const code = j?.pairingCode ?? j?.code ?? j?.data?.code;
+      return { ok: true, code: typeof code === 'string' ? code : undefined };
+    }
+    if (r.status === 409 && attempt < 6) {
+      await sleep(2000);
+      continue;
+    }
+    if (r.status === 409) {
+      return { ok: false, error: 'The gateway is still connecting. Wait a few seconds and press the button again.' };
+    }
+    if (r.status === 400) {
+      // Everything we can pre-empt has been; a remaining 400 is the number itself.
+      return { ok: false, error: 'The gateway would not accept that number. Check the country code and try again.' };
+    }
+    return { ok: false, error: r.error };
+  }
 }
 
 /**
@@ -564,6 +649,18 @@ async function pump(): Promise<void> {
           await sleep(60_000);
           continue;
         }
+      }
+
+      // Wait for a session that can actually send. A gateway restart leaves the session
+      // stopped, and a message queued before the admin has linked a phone has simply
+      // arrived early — neither is the message's fault, so neither may consume one of its
+      // retry attempts. `ensureStarted` also recovers a stopped-but-credentialled session.
+      const live = await ensureStarted(cfg);
+      if (!live.ready) {
+        log.warn(`WhatsApp: session not ready to send (${live.error ?? 'not linked yet'}); waiting.`);
+        await setPresence(cfg, false);
+        await sleep(60_000);
+        continue;
       }
 
       await setPresence(cfg, true);

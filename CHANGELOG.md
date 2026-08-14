@@ -42,6 +42,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **Reachability now means "something answered", not "the request succeeded".** Requiring a `200` from the session-list endpoint made the status depend on OpenWA's exact routes — a renamed endpoint would have reported a perfectly healthy gateway as down. Only a transport failure counts as unreachable.
 - `docs/WHATSAPP.md` gains the log command, states that linking happens entirely in OpenMasjidOS (OpenWA's own interface is never opened), and lists each reason with its fix.
 
+**WhatsApp — linking now works, and the feature hides itself until it is wanted**
+
+- **Linking always failed with "the gateway returned 400."** OpenWA's lifecycle is create → **start** → pair, and the platform never started the session — so it had no engine, and every engine route answers `400 Session is not started`. The status panel said "gateway running, no phone linked yet", which was true and pointed nowhere. Starting is now part of linking, idempotently: an already-`ready` session is left alone (and says "a phone is already linked" instead of erroring), a live engine is not restarted, and the `409` that OpenWA returns for the second or two while the engine comes up is waited out rather than shown as a failure.
+- **A message queued before a phone is linked now waits instead of burning its retries.** The same readiness check runs in the send queue, so a gateway restart or an early message is a delay, not five failed attempts and a dropped message.
+- **A WhatsApp-imposed restriction on the number is surfaced.** The gateway reports one; the platform was ignoring it. This is the risk the whole feature is hedged against actually happening, so it now appears in Settings rather than leaving a masjid wondering why messages stopped.
+- **WhatsApp is one switch, off by default, and OpenWA is invisible until it is on.** Turning it on shows the ban-risk warning; accepting it makes the gateway installable and takes you straight to its install questions. Turning it off is immediate.
+- **OpenWA no longer appears on the dashboard, in the dock, or in the App Store** unless WhatsApp is switched on — and even then only in the store. It is opened from Settings alone, with the copy stating plainly that linking happens in OpenMasjidOS and OpenWA is for reading and replying to chats. The platform owns the session (creating, starting, pairing, pacing), and every one of those guarantees breaks if a second phone is linked in OpenWA's own UI or a message is sent from there, outside the queue.
+- **Phone numbers are a proper field now** — pick the country, type the rest. "Enter your number in international format" was a guessing game where three of the four plausible answers were wrong. No phone-number library was added (libphonenumber is ~150 KB gzipped for depth this does not need); the server still refuses anything without a country code and still never guesses one.
+
 **Fixed**
 
 - `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.

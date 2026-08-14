@@ -40,7 +40,9 @@ export function Dock() {
   const [dropHint, setDropHint] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
-  const apps = appsQuery.data ?? [];
+  // Same rule as the dashboard grid: an app the platform drives is not pinnable, because
+  // it is not somewhere the masjid goes (see apps/managed.ts).
+  const apps = (appsQuery.data ?? []).filter((a) => !a.managed);
 
   const pinnedApps = prefs.pinnedApps
     .map((id) => apps.find((a) => a.id === id))

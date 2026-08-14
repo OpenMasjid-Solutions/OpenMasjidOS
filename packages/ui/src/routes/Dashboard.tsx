@@ -66,7 +66,12 @@ export function Dashboard() {
   // The dock polls apps.list every 8s and is always mounted; here we rely on the
   // global staleTime + that shared poll instead of a second interval.
   const appsQuery = trpc.apps.list.useQuery();
-  const apps = appsQuery.data ?? [];
+  // Platform-managed apps are engines the OS drives, not places a masjid goes (currently
+  // the WhatsApp gateway). They are reached from Settings, because opening them directly
+  // is how the platform's session ownership and message pacing get broken — so they are
+  // not cards here. They still count towards "apps running", which is a machine fact.
+  const allApps = appsQuery.data ?? [];
+  const apps = allApps.filter((a) => !a.managed);
 
   // Auto-check for a core update on load (and every ~6h while open) so a new
   // version surfaces right on the dashboard instead of going unnoticed.
@@ -158,7 +163,7 @@ export function Dashboard() {
         <StatCard
           label={t('dashboard.stats.apps')}
           icon={APPS_ICON}
-          value={stats?.appsRunning ?? apps.filter((a) => a.running).length}
+          value={stats?.appsRunning ?? allApps.filter((a) => a.running).length}
         />
       </motion.section>
 

@@ -237,4 +237,10 @@ export interface InstalledApp {
    * an untrusted 3rd-party app never receives the Fabric payload.
    */
   fabric: boolean;
+  /**
+   * True for an app the PLATFORM drives rather than the masjid (see `apps/managed.ts`).
+   * The dashboard hides these from the grid — they are reached through Settings, because
+   * using them directly breaks the invariant the platform is maintaining on their behalf.
+   */
+  managed: boolean;
 }

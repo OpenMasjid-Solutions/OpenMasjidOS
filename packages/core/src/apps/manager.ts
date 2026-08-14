@@ -26,6 +26,7 @@ import {
 import { discoverApps } from '../docker/discovery';
 import { docker } from '../docker/client';
 import { checkCompose } from './compose-validate';
+import { isPlatformManaged } from './managed';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
 // Runtime-only import (called inside functions, never at module load) — no cycle
@@ -531,6 +532,7 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       createdAt: meta.createdAt,
       // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
       fabric: meta.sso === true || meta.notify === true,
+      managed: isPlatformManaged(meta.id),
       exposed: isExposedMeta(meta),
       ...openTarget(meta, disc?.ports ?? []),
     });
@@ -561,6 +563,7 @@ export async function listInstalled(): Promise<InstalledApp[]> {
       running: disc.running,
       ports: disc.ports,
       fabric: false, // recovered/un-vetted apps never get the Fabric hand-off
+      managed: isPlatformManaged(disc.id),
       // Must agree with what `saveMeta(recovered)` just persisted (no `exposed`
       // key), or this row would claim "shared online" while the very next read
       // said otherwise. So it follows the same kind-dependent default as every

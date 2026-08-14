@@ -23,15 +23,10 @@ import {
   markLinked,
   DEFAULT_LIMITS,
 } from '../../store/whatsapp';
-import {
-  gatewayStatus,
-  requestPairingCode,
-  ensureSession,
-  sendTestMessage,
-  queueDepth,
-  toDigits,
-} from '../../notify/whatsapp';
+import { gatewayStatus, requestPairingCode, sendTestMessage, queueDepth, toDigits } from '../../notify/whatsapp';
 import { getAdminPhone } from '../../auth/store';
+import { getInstalled } from '../../apps/manager';
+import { OPENWA_APP_ID } from '../../apps/managed';
 
 /** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
  *  only so the UI gets a friendly error instead of a silent clamp. */
@@ -48,12 +43,43 @@ const limitsInput = z
   })
   .partial();
 
+/**
+ * The gateway app's own state, for the Settings panel.
+ *
+ * Returned from here so the UI never hardcodes the catalog id: `apps/managed.ts` decides
+ * which app is the gateway, and that same decision is what hides it from the dashboard
+ * and the store. `openPort`/`https` mirror an installed app's fields so the UI can build
+ * its address with the helper it already uses for every other app.
+ */
+async function gatewayApp(): Promise<{
+  id: string;
+  installed: boolean;
+  running: boolean;
+  openPort: number | null;
+  https: boolean;
+}> {
+  const app = await getInstalled(OPENWA_APP_ID);
+  return {
+    id: OPENWA_APP_ID,
+    installed: Boolean(app),
+    running: app?.running ?? false,
+    openPort: app?.openPort ?? null,
+    https: app?.https ?? false,
+  };
+}
+
 export const whatsappRouter = router({
-  get: protectedProcedure.query(() => ({
+  get: protectedProcedure.query(async () => ({
     ...getWhatsAppConfigPublic(),
     /** The conservative starting point, so the UI can offer "restore defaults". */
     defaults: DEFAULT_LIMITS,
     queued: queueDepth(),
+    /**
+     * The gateway app itself, so Settings can offer "install it" or "open it" without
+     * the UI hardcoding a catalog id — the platform decides which app is the gateway
+     * (`apps/managed.ts`), and it is deliberately invisible everywhere else.
+     */
+    gateway: await gatewayApp(),
   })),
 
   /**
@@ -106,14 +132,11 @@ export const whatsappRouter = router({
           message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
         });
       }
-      // Create the session if this is the first link. Doing it here (rather than making
-      // the admin press a separate button) is the whole point of managing the id
-      // ourselves: OpenWA mints a UUID and takes only a name, so there is no value a
-      // volunteer could sensibly type.
-      const s = await ensureSession();
-      if (!s.ok) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: s.error ?? 'Could not create a WhatsApp session.' });
-      }
+      // Creating the session, STARTING it and asking for the code are one action here.
+      // Doing it in the sender (rather than making the admin press three buttons) is the
+      // point of managing the session ourselves: OpenWA mints a UUID and takes only a
+      // name, so there is no value a volunteer could sensibly type, and "create" without
+      // "start" is the state in which every link attempt answers 400.
       const r = await requestPairingCode(digits);
       if (!r.ok) {
         throw new TRPCError({

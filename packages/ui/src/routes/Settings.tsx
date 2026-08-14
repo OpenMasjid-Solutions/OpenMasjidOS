@@ -5,6 +5,7 @@
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi } from 'lucide-react';
 import { trpc } from '../lib/trpc';
@@ -17,6 +18,8 @@ import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PhoneField } from '../components/PhoneField';
+import { openApp } from '../lib/apps';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { UpdateChannel } from '../components/UpdateChannel';
 import { ChannelMigrate } from '../components/ChannelMigrate';
@@ -881,18 +884,12 @@ function ChangePassword() {
         <input className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <span className="hint">{t('settings.accountEmailHint')}</span>
       </div>
-      <div className="field" style={{ maxWidth: '20rem' }}>
-        <label className="label">{t('settings.accountPhone')}</label>
-        <input
-          className="input glass-inset"
-          type="tel"
-          autoComplete="tel"
-          placeholder="+1 555 010 1234"
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-        />
-        <span className="hint">{t('settings.accountPhoneHint')}</span>
-      </div>
+      <PhoneField
+        value={phone}
+        onChange={setPhone}
+        label={t('settings.accountPhone')}
+        hint={t('settings.accountPhoneHint')}
+      />
       <button
         className="btn"
         style={{ marginBlockEnd: '1rem' }}
@@ -1605,6 +1602,7 @@ function WhatsAppPanel() {
   const [apiKey, setApiKey] = useState('');
   const [linkPhone, setLinkPhone] = useState('');
   const [pairing, setPairing] = useState<string | null>(null);
+  const [askEnable, setAskEnable] = useState(false);
   const seededWa = useRef(false);
   useEffect(() => {
     if (cfg.data && !seededWa.current) {
@@ -1620,6 +1618,9 @@ function WhatsAppPanel() {
       setApiKey('');
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
+      // Turning the feature on or off changes whether the gateway app is listed at all,
+      // so the store's cached catalog is now stale.
+      utils.store.catalog.invalidate();
       toast(t('settings.whatsappSaved'), 'success');
     },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
@@ -1639,38 +1640,90 @@ function WhatsAppPanel() {
 
   if (!cfg.data) return null;
   const s = status.data;
+  const gw = cfg.data.gateway;
+  const on = provider !== 'none';
+
+  /** Turning it ON is gated on the warning; turning it OFF is immediate and reversible. */
+  function setEnabled(next: boolean) {
+    if (next) return setAskEnable(true);
+    setProvider('none');
+    save.mutate({ provider: 'none' });
+  }
 
   return (
     <section className="glass-raised panel">
       <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
         <StatusDot online={status.isLoading ? undefined : Boolean(s?.connected)} /> {t('settings.whatsapp')}
       </h2>
-      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.whatsappHint')}</p>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.6rem' }}>{t('settings.whatsappHint')}</p>
 
-      {/* The risk warning is not a footnote. OpenWA is an unofficial client and the
-          linked number can be restricted, so an admin must read that BEFORE linking a
-          phone rather than after. */}
-      <div
-        className="glass-inset panel"
-        style={{ marginBlockEnd: '0.8rem', borderInlineStart: '3px solid var(--color-warning)' }}
-      >
-        <div className="setting-row__title">{t('settings.whatsappRiskTitle')}</div>
-        <div className="setting-row__hint">{t('settings.whatsappRiskBody')}</div>
-      </div>
+      {/* One switch owns the whole feature. Off, the gateway app is not even listed in
+          the App Store — nobody can install a WhatsApp client from OpenMasjidOS without
+          first reading, here, what it risks. */}
+      <Toggle checked={on} onChange={setEnabled} label={t('settings.whatsappEnable')} />
 
-      <div className="field" style={{ maxWidth: '22rem' }}>
-        <label className="label">{t('settings.whatsappProvider')}</label>
-        <select
-          className="input glass-inset"
-          value={provider}
-          onChange={(e) => setProvider(e.target.value as 'none' | 'openwa')}
-        >
-          <option value="none">{t('settings.whatsappNone')}</option>
-          <option value="openwa">OpenWA</option>
-        </select>
-      </div>
+      {/* This dialog is the exception to "no confirmation on reversible switches"
+          (ConfirmDialog's own rule): what it risks is not a platform setting but the
+          masjid's phone number, and a banned number does not come back. */}
+      <ConfirmDialog
+        open={askEnable}
+        onClose={() => setAskEnable(false)}
+        onConfirm={() => {
+          setAskEnable(false);
+          setProvider('openwa');
+          save.mutate({ provider: 'openwa' });
+        }}
+        title={t('settings.whatsappRiskTitle')}
+        body={t('settings.whatsappRiskBody')}
+        cost={t('settings.whatsappRiskCost')}
+        confirmLabel={t('settings.whatsappRiskAccept')}
+        pending={save.isPending}
+      />
 
-      {provider !== 'none' && (
+      {on && (
+        <>
+          {/* Step one is the gateway app itself. It is hidden from the dashboard and the
+              store on purpose, so this is the only place it can be installed or opened. */}
+          <div
+            className="glass-inset panel"
+            style={{ marginBlock: '0.8rem', borderInlineStart: '3px solid var(--color-accent)' }}
+          >
+            <div className="setting-row__title">{t('settings.whatsappGatewayStep')}</div>
+            {!gw.installed ? (
+              <>
+                <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+                  {t('settings.whatsappGatewayInstallHint')}
+                </div>
+                <Link className="btn btn--primary" to={`/store?install=${gw.id}`}>
+                  <Download size={15} /> {t('settings.whatsappGatewayInstall')}
+                </Link>
+              </>
+            ) : (
+              <>
+                <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+                  {/* Said plainly, because doing it the other way silently breaks the
+                      platform's ownership of the session and its pacing. */}
+                  {t('settings.whatsappGatewayOpenHint')}
+                </div>
+                <button
+                  className="btn"
+                  disabled={!gw.running || gw.openPort == null}
+                  onClick={() => openApp(gw)}
+                >
+                  <ExternalLink size={15} /> {t('settings.whatsappGatewayOpen')}
+                </button>
+                {!gw.running && (
+                  <span className="hint" style={{ marginInlineStart: '0.5rem' }}>
+                    {t('settings.whatsappGatewayStopped')}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {on && (
         <>
           <div className="field" style={{ maxWidth: '22rem' }}>
             <label className="label">{t('settings.whatsappSession')}</label>
@@ -1737,19 +1790,16 @@ function WhatsAppPanel() {
           <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
             {t('settings.whatsappLinkHint')}
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              className="input glass-inset"
-              type="tel"
-              style={{ maxWidth: '14rem' }}
-              placeholder="+1 555 010 1234"
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <PhoneField
               value={linkPhone}
-              onChange={(e) => setLinkPhone(e.target.value)}
+              onChange={setLinkPhone}
+              hint={t('settings.whatsappLinkNumberHint')}
             />
             <button
               className="btn"
-              disabled={link.isPending || !linkPhone.trim()}
-              onClick={() => link.mutate({ phone: linkPhone.trim() })}
+              disabled={link.isPending || linkPhone.length < 8}
+              onClick={() => link.mutate({ phone: linkPhone })}
             >
               {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
             </button>
@@ -1759,6 +1809,20 @@ function WhatsAppPanel() {
               {t('settings.whatsappCode')} <code>{pairing}</code>
             </p>
           )}
+        </div>
+      )}
+
+      {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
+          limited this number, so the admin hears it here rather than wondering why
+          messages stopped. */}
+      {s?.restriction && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.8rem', borderInlineStart: '3px solid var(--color-danger)' }}
+        >
+          <div className="setting-row__hint">
+            {t('settings.whatsappStateRestricted', { detail: s.restriction })}
+          </div>
         </div>
       )}
 

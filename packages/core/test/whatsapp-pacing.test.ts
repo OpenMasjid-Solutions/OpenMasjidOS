@@ -312,7 +312,8 @@ test('the session id is machine-managed, never typed by an admin', () => {
   const routerSrc = codeOf('trpc/routers/whatsapp.ts');
   assert.doesNotMatch(routerSrc, /sessionId: z\./, 'the API must not accept a session id');
   assert.match(routerSrc, /sessionName: z\./, 'only a human label');
-  assert.match(routerSrc, /ensureSession\(\)/, 'and linking creates the session itself');
+  // Create → start → pair is one action, owned by the sender (see whatsapp-link.test.ts).
+  assert.match(codeOf('notify/whatsapp.ts'), /ensureSession\(\)/, 'linking creates the session itself');
 });
 
 test('the Fabric route queues rather than claiming delivery', () => {
