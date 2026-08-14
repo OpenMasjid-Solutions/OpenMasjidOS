@@ -25,6 +25,7 @@ import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
+import { enqueue as enqueueWhatsApp } from '../notify/whatsapp';
 import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
 import { getLogo, hasLogo } from '../store/branding';
@@ -246,6 +247,39 @@ export function registerFabric(server: FastifyInstance): void {
     }
     const result = await sendEmail({ to, subject, text, html }, app.id);
     return reply.send(result);
+  });
+
+  // Fabric WhatsApp — an app sends a WhatsApp message (a fee reminder to a parent, a
+  // class notice) through the admin's own OpenWA gateway. Requires the `whatsapp`
+  // capability. The app never sees the gateway URL or its API key, and never talks to
+  // WhatsApp itself — which is the point: the anti-ban pacing belongs to the NUMBER,
+  // so it has to be enforced in one place for every caller at once.
+  //
+  // This QUEUES. It does not send. Human pacing puts delivery seconds to minutes away,
+  // and quiet hours can defer it for hours, so `{queued: true}` is the honest answer
+  // and no app may treat it as delivery. Nothing auth-critical (a login code, a
+  // one-time password) may depend on this — say so to app authors, loudly, in
+  // docs/WHATSAPP.md.
+  server.post('/api/fabric/whatsapp', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) {
+      return reply.code(403).send({ queued: false, error: 'This app is not allowed to send WhatsApp messages.' });
+    }
+    const body = (req.body ?? {}) as { to?: unknown; text?: unknown };
+    // A single recipient per call, deliberately. Accepting an array would invite an app
+    // to hand over a thousand numbers in one request, and the shape of the API is the
+    // first place to discourage a blast — the queue would pace it, but the app author
+    // should be thinking one-parent-at-a-time.
+    const to = typeof body.to === 'string' ? body.to : '';
+    const text = typeof body.text === 'string' ? body.text : '';
+    if (!to || !text.trim()) {
+      return reply.code(400).send({ queued: false, error: 'A "to" (phone number) and "text" are required.' });
+    }
+    const result = enqueueWhatsApp({ to, text, source: app.id });
+    // 202: accepted for later delivery, which is exactly what happened.
+    return reply.code(result.queued ? 202 : 400).send(result);
   });
 
   // Fabric alert — an app raises an admin alert (a camera/reader offline, a failed

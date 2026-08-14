@@ -224,6 +224,8 @@ export interface FabricApp {
   domain: boolean;
   /** True if the app may send email via POST /api/fabric/email. */
   email: boolean;
+  /** True if the app may send WhatsApp via POST /api/fabric/whatsapp. */
+  whatsapp: boolean;
   /** Broker capabilities this app SERVES (for target-side authorization). */
   provides: string[];
   /** Broker grants this app may CALL, "<target-app-id>/<capability>". */
@@ -260,6 +262,7 @@ function fabricEntries(): FabricEntry[] {
         stripe: meta.stripe === true,
         domain: meta.domain === true,
         email: meta.email === true,
+        whatsapp: meta.whatsapp === true,
         provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
         consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
@@ -296,6 +299,7 @@ function stripSecret(e: FabricEntry): FabricApp {
     stripe: e.stripe,
     domain: e.domain,
     email: e.email,
+    whatsapp: e.whatsapp,
     provides: e.provides,
     consumes: e.consumes,
   };
@@ -325,6 +329,7 @@ export function needsFabricSecret(caps: {
   stripe?: boolean;
   domain?: boolean;
   email?: boolean;
+  whatsapp?: boolean;
   provides?: string[];
   consumes?: string[];
   alerts?: unknown[];
@@ -334,6 +339,7 @@ export function needsFabricSecret(caps: {
       caps.notify ||
       caps.stripe ||
       caps.domain ||
+      caps.whatsapp ||
       caps.email ||
       (caps.provides && caps.provides.length) ||
       (caps.consumes && caps.consumes.length) ||
@@ -592,8 +598,9 @@ export async function installCatalogApp(
   const stripe = app.stripe === true;
   const domain = app.domain === true;
   const email = app.email === true;
+  const whatsapp = app.whatsapp === true;
   const appAlerts = parseAlerts(app.alerts, app.id);
-  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, email, alerts: appAlerts, ...fabric })
+  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, email, whatsapp, alerts: appAlerts, ...fabric })
     ? crypto.randomBytes(32).toString('base64url')
     : undefined;
   // Per-app tunnel exposure. Nothing is public until the admin says so, so we
@@ -634,6 +641,7 @@ export async function installCatalogApp(
     fabricProvides: fabric.provides.length ? fabric.provides : undefined,
     fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
     email,
+    whatsapp,
     appAlerts: appAlerts.length ? appAlerts : undefined,
     exposed,
     ssoSecret,
@@ -1078,9 +1086,10 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   // Reconcile Fabric broker grants + email/alerts from the refreshed entry.
   const fabric = parseFabric(app.fabric, id);
   const email = app.email === true;
+  const whatsapp = app.whatsapp === true;
   const appAlerts = parseAlerts(app.alerts, id);
   let ssoSecret = meta.ssoSecret;
-  if (needsFabricSecret({ sso, notify, stripe, domain, email, alerts: appAlerts, ...fabric })) {
+  if (needsFabricSecret({ sso, notify, stripe, domain, email, whatsapp, alerts: appAlerts, ...fabric })) {
     if (!ssoSecret) ssoSecret = crypto.randomBytes(32).toString('base64url');
   } else {
     ssoSecret = undefined;
@@ -1134,6 +1143,7 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
     fabricProvides: fabric.provides.length ? fabric.provides : undefined,
     fabricConsumes: fabric.consumes.length ? fabric.consumes : undefined,
     email,
+    whatsapp,
     appAlerts: appAlerts.length ? appAlerts : undefined,
     ssoSecret,
     https: wantsHttps && httpsPort != null,

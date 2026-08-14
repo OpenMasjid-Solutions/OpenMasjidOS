@@ -103,6 +103,13 @@ export interface CatalogApp {
    */
   email?: boolean;
   /**
+   * OPTIONAL — may POST /api/fabric/whatsapp to send a WhatsApp message through the
+   * masjid's own OpenWA gateway. The platform owns the pacing (see notify/whatsapp.ts):
+   * the call QUEUES, it never delivers synchronously, so nothing auth-critical may
+   * depend on it.
+   */
+  whatsapp?: boolean;
+  /**
    * Alert types this app can raise (admin gets a granular on/off per alert; all on
    * by default). The app fires one with POST /api/fabric/alert { alert: "<id>", … }.
    */
@@ -171,6 +178,8 @@ export interface AppMeta {
   fabricConsumes?: string[];
   /** True if this app opted into Fabric email (CatalogApp.email). */
   email?: boolean;
+  /** Recorded at install: may this app send WhatsApp over the Fabric? */
+  whatsapp?: boolean;
   /** Alert types this app can raise (CatalogApp.alerts) — for the granular toggles. */
   appAlerts?: DeclaredAlert[];
   /** Whether this app is exposed over the Cloudflare tunnel. Admin-controlled

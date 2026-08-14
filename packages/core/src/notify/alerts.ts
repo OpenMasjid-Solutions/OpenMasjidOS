@@ -4,8 +4,11 @@
  * Admin alerts + a granular per-alert × per-channel matrix (UniFi-style). An alert
  * is a message the ADMIN cares about — an app going offline, an app-declared event
  * (a camera/reader offline, a failed payment). For EACH alert type the admin
- * chooses which channels it goes to: the admin **email**, the **webhook**, both, or
- * neither (off). Default: both channels on.
+ * chooses which channels it goes to: the admin **email**, the **webhook**, the admin's
+ * **WhatsApp** number, any combination, or none. Email and webhook default ON; WhatsApp
+ * defaults OFF, because it runs through an unofficial client whose linked number can be
+ * restricted — that is a risk an admin takes deliberately, not one that starts the
+ * moment a gateway is configured.
  *
  * (End-user mail — a receipt to a donor, a notice to a parent/teacher — is NOT an
  * alert and is handled entirely by the app via POST /api/fabric/email. The matrix
@@ -19,10 +22,11 @@
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
-import { getAdminEmail } from '../auth/store';
+import { getAdminEmail, getAdminPhone } from '../auth/store';
 import { listAppAlerts } from '../apps/manager';
 import { sendBrandedEmail } from './email';
 import { sendNotification, type NotifyInput } from './notify';
+import { enqueue as enqueueWhatsApp } from './whatsapp';
 
 // OS built-in alert types (source = 'os').
 const OS_ALERTS: { id: string; label: string; description: string }[] = [
@@ -52,9 +56,16 @@ const OS_ALERTS: { id: string; label: string; description: string }[] = [
 export interface AlertChannels {
   email: boolean;
   webhook: boolean;
+  /**
+   * WhatsApp, via the admin's own OpenWA gateway. Defaults to OFF, unlike the other
+   * two — it is an unofficial client and the linked number carries a real risk of
+   * being restricted, so it is a channel an admin opts into rather than one that
+   * starts sending because they configured a gateway.
+   */
+  whatsapp: boolean;
 }
-const DEFAULT_CHANNELS: AlertChannels = { email: true, webhook: true };
-const isDefault = (c: AlertChannels) => c.email && c.webhook;
+const DEFAULT_CHANNELS: AlertChannels = { email: true, webhook: true, whatsapp: false };
+const isDefault = (c: AlertChannels) => c.email && c.webhook && !c.whatsapp;
 
 const ALERTS_PATH = path.join(CONFIG_DIR, 'alerts.json');
 interface AlertsFile {
@@ -71,12 +82,17 @@ function load(): Map<string, AlertChannels> {
   const map = new Map<string, AlertChannels>();
   if (file.channels) {
     for (const [k, v] of Object.entries(file.channels)) {
-      map.set(k, { email: v.email !== false, webhook: v.webhook !== false });
+      // Email/webhook: absent means ON (their default). WhatsApp: absent means OFF —
+      // which is also what every file written before WhatsApp existed says, so an
+      // upgrade never silently starts messaging phones.
+      map.set(k, { email: v.email !== false, webhook: v.webhook !== false, whatsapp: v.whatsapp === true });
     }
   }
-  // Migrate a legacy fully-disabled set → both channels off.
+  // Migrate a legacy fully-disabled set → every channel off.
   if (Array.isArray(file.disabled)) {
-    for (const k of file.disabled) if (!map.has(k)) map.set(k, { email: false, webhook: false });
+    for (const k of file.disabled) {
+      if (!map.has(k)) map.set(k, { email: false, webhook: false, whatsapp: false });
+    }
   }
   return map;
 }
@@ -177,7 +193,14 @@ function cleanSubject(s: string, max = 78): string {
   return `${flat.slice(0, cut > 20 ? cut : max - 1).trim()}…`;
 }
 
-export type AlertResult = { delivered: boolean; email: boolean; webhook: boolean; reason?: string };
+export type AlertResult = {
+  delivered: boolean;
+  email: boolean;
+  webhook: boolean;
+  /** Whether the message was QUEUED for WhatsApp — not whether it has arrived. */
+  whatsapp: boolean;
+  reason?: string;
+};
 
 /**
  * Deliver an admin alert to the channels the admin routed it to (email and/or
@@ -186,8 +209,8 @@ export type AlertResult = { delivered: boolean; email: boolean; webhook: boolean
  */
 export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
   const ch = getAlertChannels(input.source, input.alertId);
-  if (!ch.email && !ch.webhook) {
-    return { delivered: false, email: false, webhook: false, reason: 'disabled_by_admin' };
+  if (!ch.email && !ch.webhook && !ch.whatsapp) {
+    return { delivered: false, email: false, webhook: false, whatsapp: false, reason: 'disabled_by_admin' };
   }
   const label = (input.sourceName || (input.source === 'os' ? 'OpenMasjidOS' : input.source)).trim();
 
@@ -229,5 +252,22 @@ export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
     webhook = w.delivered;
   }
 
-  return { delivered: email || webhook, email, webhook };
+  // WhatsApp channel → the admin's own number, through the paced queue. `queued` is
+  // the honest word: human pacing means this can be minutes away, and quiet hours can
+  // make it hours. An alert is exactly the right shape for that (it is information,
+  // not a login code) — but it is why email stays on by default and this does not.
+  let whatsapp = false;
+  if (ch.whatsapp) {
+    const to = getAdminPhone();
+    if (to) {
+      const title = input.title || firstSentence(input.text);
+      // One plain message. No markdown, no links, no footer: a WhatsApp message that
+      // looks like a templated broadcast is the thing that gets a number flagged.
+      const body = input.source === 'os' ? `${title}\n\n${input.text}` : `${label}: ${title}\n\n${input.text}`;
+      const r = enqueueWhatsApp({ to, text: body, source: `alert:${input.source}` });
+      whatsapp = r.queued;
+    }
+  }
+
+  return { delivered: email || webhook || whatsapp, email, webhook, whatsapp };
 }
