@@ -27,6 +27,7 @@ import { discoverApps } from '../docker/discovery';
 import { docker } from '../docker/client';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
+import { withUpdateLock } from '../system/update-lock';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
 // Runtime-only import (called inside functions, never at module load) — no cycle
@@ -1008,6 +1009,15 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
  * container recreated.
  */
 export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<void> {
+  // One at a time per app. Two of these at once rewrite the same compose.yml while two
+  // `compose up` runs race for the same project — which is how an app stops coming back
+  // after its progress window was closed and the update pressed again.
+  return withUpdateLock(`app:${id}`, 'This app is already being updated. It will finish on its own.', () =>
+    updateCatalogAppInner(id, onLine),
+  );
+}
+
+async function updateCatalogAppInner(id: string, onLine: (s: string) => void): Promise<void> {
   const meta = loadMeta(id);
   if (!meta || meta.kind !== 'catalog') {
     onLine('This app cannot be updated from the store.');

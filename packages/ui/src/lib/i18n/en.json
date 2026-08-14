@@ -658,6 +658,7 @@
   },
   "update": {
     "title": "Updating OpenMasjidOS",
+    "dontClose": "Please leave this open until it finishes.",
     "restarting": "Applying the update and restarting — reconnecting…",
     "done": "Updated to v{{version}}.",
     "doneGeneric": "Update applied.",

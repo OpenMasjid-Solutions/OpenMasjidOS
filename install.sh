@@ -45,7 +45,11 @@ TLS_PORT=443
 APP_TLS_MIN=8443
 APP_TLS_MAX=8452
 DATA_DIR=/opt/openmasjid
-IMAGE=ghcr.io/openmasjid-solutions/openmasjid-core:latest
+CORE_REPO=ghcr.io/openmasjid-solutions/openmasjid-core
+# Default for a FRESH install. `--channel dev` selects Development instead, and on an
+# existing box `resolve_image` keeps whatever tag is already in the compose file — see
+# below, because getting this wrong silently moves a masjid between channels.
+IMAGE="${CORE_REPO}:latest"
 COMPOSE_PROJECT=openmasjid
 
 # Colour codes — we check for terminal support before using them
@@ -393,7 +397,87 @@ setup_data_dir() {
 # Step 5: Write (or refresh) the core docker-compose.yml
 # =============================================================================
 
+# current_core_ref — the core image reference this machine is already using, or empty.
+#
+# The compose file is the honest record of what the box runs: the DASHBOARD's updater
+# writes this same line (`alignComposeImage` in docker/update.ts), so it reflects a
+# channel switch made from Settings. Anchored to our repo name so an app's image, a
+# comment or a volume path can never be picked up.
+current_core_ref() {
+  [ -f "${DATA_DIR}/docker-compose.yml" ] || return 0
+  sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*openmasjid-core[^[:space:]]*\)[[:space:]]*$|\1|p' \
+    "${DATA_DIR}/docker-compose.yml" | head -n 1
+}
+
+# current_channel — dev or main, read from the tag the box is on.
+# A Development build's tag is either the moving `:dev` alias or a semver PRERELEASE
+# (`0.50.4-dev.5`), which is how the whole Development channel is versioned.
+current_channel() {
+  case "$(current_core_ref)" in
+    *:dev|*-dev.*|*-dev) echo "dev" ;;
+    *)                   echo "main" ;;
+  esac
+}
+
+# resolve_image — decide which image reference this run should write.
+#
+# THE RULE THAT WAS MISSING: a masjid's channel is theirs, and the installer must never
+# move them off it by accident. Update and Repair both rewrite the compose file, and both
+# wrote `:latest` unconditionally — so a box on the Development channel that ran the
+# one-liner to repair a broken update was silently put back on Stable, while the dashboard
+# still said Development. Repairing a broken dev box was therefore impossible from the
+# installer: the repair itself changed the channel.
+#
+# Modes differ, because the two actions mean different things:
+#   keep    (Repair)          — the exact reference already there. Repair means "make this
+#                               work again", never "move it to another version".
+#   channel (Update/Install)  — the newest build on the channel this box is already on.
+#                               Keeping the exact pinned version here would make Update a
+#                               no-op, since the dashboard pins the exact version it
+#                               installed.
+#
+# A digest pin is preserved in BOTH modes, exactly as the dashboard's updater does — an
+# operator who pinned it meant it, and quietly unpinning it would be the worst of the
+# three outcomes.
+resolve_image() {
+  local mode="${1:-channel}"
+  local existing
+  existing="$(current_core_ref)"
+
+  # An explicit --channel always wins: that is the operator saying so, on this run.
+  if [ -n "${CHANNEL:-}" ]; then
+    case "${CHANNEL}" in
+      dev)  IMAGE="${CORE_REPO}:dev" ;;
+      *)    IMAGE="${CORE_REPO}:latest" ;;
+    esac
+    return 0
+  fi
+
+  [ -n "${existing}" ] || return 0
+
+  case "${existing}" in
+    *@sha256:*)
+      IMAGE="${existing}"
+      info "Keeping the pinned core image this machine already uses."
+      return 0
+      ;;
+  esac
+
+  if [ "${mode}" = "keep" ]; then
+    IMAGE="${existing}"
+    return 0
+  fi
+
+  if [ "$(current_channel)" = "dev" ]; then
+    IMAGE="${CORE_REPO}:dev"
+    info "This machine is on the Development channel — updating to the latest Development build."
+  else
+    IMAGE="${CORE_REPO}:latest"
+  fi
+}
+
 write_compose_file() {
+  resolve_image "${IMAGE_MODE:-channel}"
   info "Writing core service configuration..."
 
   # We always overwrite this file so re-running the installer picks up any
@@ -683,9 +767,19 @@ print_success() {
 # =============================================================================
 
 # is_installed — true if OpenMasjidOS is already on this machine.
+#
+# Deliberately generous: offering a FRESH INSTALL to a masjid that already has one is the
+# worst answer this script can give, because it reads as "your server is empty" to someone
+# whose apps and data are sitting right there. So any one of these is enough — a missing
+# or damaged compose file (the most likely casualty of a half-finished update) must not
+# make a working install look absent.
 is_installed() {
   [ -f "${DATA_DIR}/docker-compose.yml" ] && return 0
+  # The masjid's own data. If this exists, they are installed, whatever state the rest is in.
+  [ -d "${DATA_DIR}/config" ] && return 0
+  [ -d "${DATA_DIR}/apps" ] && return 0
   if command -v docker &>/dev/null; then
+    # -a, so a stopped or exited core still counts.
     docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^openmasjid-core$' && return 0
   fi
   return 1
@@ -813,6 +907,10 @@ do_repair() {
   check_root
   install_docker
   setup_data_dir
+  # Repair must not move the machine to a different version — only make what is already
+  # there work again. This is the path a masjid reaches for when an update went wrong,
+  # so changing the version underneath them is the last thing it should do.
+  IMAGE_MODE=keep
   write_compose_file
   info "Repairing — re-pulling and recreating the core service..."
   docker pull "${IMAGE}"
@@ -881,6 +979,7 @@ main() {
 
   # Optional non-interactive override: --install / --update / --repair / --uninstall.
   local action=""
+  local want_channel=""
   for arg in "$@"; do
     case "$arg" in
       --install)            action="install" ;;
@@ -888,8 +987,21 @@ main() {
       --repair)             action="repair" ;;
       --reset-signin)       action="reset-signin" ;;
       --uninstall|--remove) action="uninstall" ;;
+      # Which channel to install/update from. Without this the machine keeps whatever
+      # channel it is already on (see resolve_image) — the installer never moves a
+      # masjid between channels on its own.
+      --channel=*)          want_channel="${arg#--channel=}" ;;
+      --dev)                want_channel="dev" ;;
     esac
   done
+  if [ -n "${want_channel}" ]; then
+    case "${want_channel}" in
+      dev|main) CHANNEL="${want_channel}" ;;
+      # Anything else is a typo, and guessing which channel was meant is exactly the
+      # mistake this whole function exists to prevent.
+      *) error "Unknown channel '${want_channel}'. Use --channel=main or --channel=dev." ;;
+    esac
+  fi
 
   # No override → detect state and ask.
   if [ -z "$action" ]; then

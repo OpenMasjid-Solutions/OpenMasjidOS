@@ -36,11 +36,22 @@ export interface StatsSnapshot {
 }
 
 /**
- * Read memory from a mounted host /proc/meminfo. We report used = MemTotal −
- * MemFree, which equals the cgroup's memory.current under lxcfs and matches what
- * Proxmox/`free` show for a container (page cache counts as used). Using
- * MemAvailable instead would subtract reclaimable cache and badly under-report
- * (e.g. 65 MB when the box is really using ~940 MB).
+ * Read memory from a mounted host /proc/meminfo.
+ *
+ * `used` is computed EXACTLY as `free` computes it:
+ *
+ *     used = MemTotal − MemFree − Buffers − (Cached + SReclaimable)
+ *
+ * because `free` and `htop` are what an admin compares this card against, and a number
+ * that disagrees with them reads as the dashboard lying. It previously reported
+ * `MemTotal − MemFree`, which counts the page cache as used — on an ordinary machine
+ * that is most of RAM, so a box with plenty free showed as nearly full. Linux fills
+ * otherwise-idle memory with cache on purpose; that is not consumption.
+ *
+ * MemAvailable is the fallback (same intent, kernel-computed) and `total − free` the last
+ * resort. Note the LXC/Proxmox case does NOT come through here: `readHostCgroupMemory`
+ * is tried first and is authoritative there, which is what the earlier "MemAvailable
+ * under-reports" note was really about.
  */
 function readHostMeminfo(): { total: number; used: number } | null {
   try {
@@ -52,18 +63,46 @@ function readHostMeminfo(): { total: number; used: number } | null {
     const total = kb('MemTotal');
     if (!total) return null;
     const free = kb('MemFree');
-    if (free != null) return { total, used: Math.max(0, total - free) };
-    const avail = kb('MemAvailable') ?? 0;
-    return { total, used: Math.max(0, total - avail) };
+    const buffers = kb('Buffers');
+    const cached = kb('Cached');
+    const sReclaimable = kb('SReclaimable') ?? 0;
+    if (free != null && buffers != null && cached != null) {
+      const used = total - free - buffers - (cached + sReclaimable);
+      // Clamp: a torn read (the file is not atomic) can otherwise produce a negative.
+      return { total, used: Math.max(0, Math.min(total, used)) };
+    }
+    const avail = kb('MemAvailable');
+    if (avail != null) return { total, used: Math.max(0, total - avail) };
+    return free != null ? { total, used: Math.max(0, total - free) } : null;
   } catch {
     return null;
   }
 }
 
-// CPU% is derived from successive /proc/stat readings (the jiffies delta between
-// two collections), so it reflects the machine/LXC, not the core container.
-let prevCpu: { total: number; idle: number } | null = null;
-function readHostCpuPercent(): number | null {
+// CPU% is derived from successive /proc/stat readings (the jiffies delta between two
+// collections), so it reflects the machine/LXC, not the core container.
+let prevCpu: { total: number; idle: number; at: number } | null = null;
+let lastCpuPercent: number | null = null;
+
+/**
+ * The shortest gap that gives a meaningful average.
+ *
+ * THIS IS THE FIX FOR A CPU FIGURE THAT JUMPED AROUND. The baseline is module-level, but
+ * the callers are not: `stats.get` polls, the `stats.stream` subscription polls every 2s,
+ * and EVERY open tab runs its own subscription loop. Whoever called last replaced the
+ * baseline, so the next reading measured whatever fraction of a second had passed since
+ * some other caller — and a jiffies delta over a few milliseconds is nearly random, which
+ * is exactly the wild number an admin sees and calls a lie.
+ *
+ * So a sample is only taken when enough time has passed; in between, every caller gets
+ * the last computed value. One shared, honest figure, however many pollers there are.
+ */
+const MIN_CPU_SAMPLE_MS = 900;
+
+function readHostCpuPercent(now = Date.now()): number | null {
+  // Too soon to measure again — reuse the last real answer rather than computing a
+  // meaningless one and, crucially, WITHOUT moving the baseline.
+  if (prevCpu && now - prevCpu.at < MIN_CPU_SAMPLE_MS) return lastCpuPercent;
   try {
     const txt = fs.readFileSync(`${HOST_PROC}/stat`, 'utf8');
     const line = txt.split('\n').find((l) => l.startsWith('cpu '));
@@ -73,15 +112,26 @@ function readHostCpuPercent(): number | null {
     const idle = (nums[3] ?? 0) + (nums[4] ?? 0); // idle + iowait
     const total = nums.reduce((a, b) => a + b, 0);
     const prev = prevCpu;
-    prevCpu = { total, idle };
+    prevCpu = { total, idle, at: now };
     if (!prev) return null; // need a baseline first
     const dt = total - prev.total;
     const di = idle - prev.idle;
-    if (dt <= 0) return null;
-    return Math.max(0, Math.min(100, Math.round(((dt - di) / dt) * 100)));
+    if (dt <= 0) return lastCpuPercent;
+    lastCpuPercent = Math.max(0, Math.min(100, Math.round(((dt - di) / dt) * 100)));
+    return lastCpuPercent;
   } catch {
     return null;
   }
+}
+
+/** Test seams. These three are the numbers a masjid checks against `free` and `htop`,
+ *  so they are tested directly rather than through a live `collectStats()`. */
+export function __resetCpuSamplerForTests(): void {
+  prevCpu = null;
+  lastCpuPercent = null;
+}
+export function __readHostCpuPercentForTests(now: number): number | null {
+  return readHostCpuPercent(now);
 }
 
 /** Machine/LXC uptime from the mounted host /proc/uptime (os.uptime() would
@@ -230,13 +280,50 @@ async function getCpuInfo(): Promise<{ cores: number; speedGHz: number }> {
   return cpuInfo;
 }
 
-function pickDisk(list: Systeminformation.FsSizeData[]): { used: number; total: number } {
+/**
+ * Storage kept back for the host operating system, and never offered to the masjid.
+ *
+ * A machine whose disk is genuinely 100% full does not just stop installing apps — it
+ * stops being able to write logs, journal, or update itself, and recovering it needs
+ * someone at a terminal in the masjid. So the dashboard treats the last 16 GB as not
+ * ours: the Storage card counts down to "full" 16 GB early, and the low-storage warning
+ * fires while there is still room to fix things.
+ *
+ * This is a floor for the OS, not a quota on apps — nothing prevents an app writing into
+ * the reserve; the platform simply stops telling the masjid that space is theirs.
+ */
+const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
+
+/** Does this mount contain `p`? A boundary check, so `/da` never matches `/data`. */
+function mountContains(mount: string, p: string): boolean {
+  if (!mount) return false;
+  if (mount === '/') return true;
+  return p === mount || p.startsWith(mount.endsWith('/') ? mount : `${mount}/`);
+}
+
+function pickDisk(
+  list: Systeminformation.FsSizeData[],
+  // A parameter rather than reading DATA_DIR directly, so the choice can be tested on any
+  // platform: DATA_DIR is path-resolved, and on Windows `/data` becomes `C:\data`.
+  dataDir: string = DATA_DIR,
+): { used: number; total: number } {
   if (!list || list.length === 0) return { used: 0, total: 0 };
-  const byData = list.find((d) => d.mount && DATA_DIR.startsWith(d.mount) && d.size > 0);
+  // Prefer the filesystem the masjid's data actually lives on, and among candidates the
+  // most specific mount — `/` contains everything, so a plain "contains" test would pick
+  // it over the dedicated volume that /data is really on.
+  const candidates = list.filter((d) => d.size > 0 && mountContains(d.mount, dataDir));
+  const byData = candidates.sort((a, b) => b.mount.length - a.mount.length)[0];
   const root = list.find((d) => d.mount === '/' && d.size > 0);
   const largest = [...list].sort((a, b) => (b.size || 0) - (a.size || 0))[0];
   const chosen = byData ?? root ?? largest;
-  return { used: chosen?.used ?? 0, total: chosen?.size ?? 0 };
+  const size = chosen?.size ?? 0;
+  return {
+    used: chosen?.used ?? 0,
+    // The whole device, less the host OS's reserve. Never negative: on a disk smaller
+    // than the reserve there is simply nothing spare, and reporting a negative total
+    // would render as a nonsense percentage.
+    total: Math.max(0, size - HOST_OS_RESERVE_BYTES),
+  };
 }
 
 export async function collectStats(): Promise<StatsSnapshot> {
@@ -271,4 +358,14 @@ export async function collectStats(): Promise<StatsSnapshot> {
     uptimeSec: readHostUptime() ?? Math.round(si.time().uptime ?? 0),
     appsRunning,
   };
+}
+
+export function __readHostMeminfoForTests(): { total: number; used: number } | null {
+  return readHostMeminfo();
+}
+export function __pickDiskForTests(
+  list: { mount: string; size: number; used: number }[],
+  dataDir = '/data',
+): { used: number; total: number } {
+  return pickDisk(list as unknown as Systeminformation.FsSizeData[], dataDir);
 }

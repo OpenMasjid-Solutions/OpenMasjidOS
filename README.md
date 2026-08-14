@@ -36,6 +36,20 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/Ope
 
 (Works whether your system has `curl` or `wget` — no need to install one first; the installer sets up `curl` for you.) When it finishes, open **`http://<your-server-ip>`** on the same network and create your admin account.
 
+Running the same command again later opens a menu — **Update**, **Repair**, **Reconfigure network** or **Uninstall** — so there is never a second command to remember. It keeps your machine on whatever update channel it is already using, so a Repair never moves you between Stable and Development.
+
+<details>
+<summary>Installing the Development channel</summary>
+
+Development builds are what we are still working on, not a tested release. To start a new machine on that channel, add `--channel=dev`:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)" -- --channel=dev
+```
+
+On a machine that is already installed, switch channels in **Settings → Advanced** instead — it checks the Development catalogue is reachable before moving you, which the installer cannot do.
+</details>
+
 **Think of it as umbrelOS, but built for masjids** — it runs on your own hardware (a Raspberry Pi, a mini-PC, or a Proxmox server), entirely under your control. No subscriptions, no cloud, no data sharing.
 
 ---

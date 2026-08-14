@@ -13,6 +13,15 @@ interface ModalProps {
   title?: string;
   /** Wider dialog. */
   wide?: boolean;
+  /**
+   * Refuse every way out — backdrop, Escape and the corner X all stop working.
+   *
+   * For an operation that must not be interrupted or restarted, and ONLY that: an update
+   * in progress. Use it nowhere else. A dialog a user cannot leave is a trap, and it is
+   * justified here only because leaving this one and pressing the button again used to
+   * run a second update over the first.
+   */
+  locked?: boolean;
   children: ReactNode;
 }
 
@@ -33,17 +42,17 @@ interface ModalProps {
  * animated ancestor, and it fixes every dialog at once because they all build on
  * this component.
  */
-export function Modal({ open, onClose, title, wide, children }: ModalProps) {
+export function Modal({ open, onClose, title, wide, locked, children }: ModalProps) {
   const { t } = useTranslation();
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || locked) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, locked]);
 
   return createPortal(
     <AnimatePresence>
@@ -53,7 +62,7 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
+          onClick={locked ? undefined : onClose}
         >
           <motion.div
             className="modal glass-raised"
@@ -67,9 +76,13 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
           >
             <div className="modal-head">
               {title && <h2 className="modal-title">{title}</h2>}
-              <button className="icon-btn modal-x" aria-label={t('common.close')} onClick={onClose}>
-                <X size={18} />
-              </button>
+              {/* No X at all while locked — a disabled one still invites the click that
+                  the whole lock exists to prevent. */}
+              {!locked && (
+                <button className="icon-btn modal-x" aria-label={t('common.close')} onClick={onClose}>
+                  <X size={18} />
+                </button>
+              )}
             </div>
             <div className="modal-body">{children}</div>
           </motion.div>

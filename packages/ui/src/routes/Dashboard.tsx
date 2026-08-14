@@ -89,12 +89,16 @@ export function Dashboard() {
   const appUpdates = appUpdatesQ.data ?? [];
   const windows = useWindows();
   function openAppUpdate(u: { id: string; name: string }) {
-    windows.open({
+    // Locked until it finishes — same rule as the app card and the core updater: an
+    // update that can be closed can be started twice, and two at once break the app.
+    let winId = -1;
+    winId = windows.open({
       title: t('appUpdate.title', { name: u.name }),
       dedupeKey: `update:${u.id}`,
       wide: true,
+      locked: true,
       icon: <Download size={15} />,
-      node: <AppUpdate id={u.id} name={u.name} />,
+      node: <AppUpdate id={u.id} name={u.name} onDone={() => windows.setLocked(winId, false)} />,
     });
   }
 
