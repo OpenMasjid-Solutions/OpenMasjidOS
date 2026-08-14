@@ -269,6 +269,9 @@ enforced, and you should enforce it too). Build your app to be base-path aware (
 `/<path>`); `GET /api/fabric/site` returns the `basePath` to mount under.
 
 ## Fabric email (`email: true` — sending mail)
+whatsapp: true                    # OPTIONAL - may POST /api/fabric/whatsapp. QUEUES (202), never
+                                  # sends synchronously; one recipient per call; never use for
+                                  # anything auth-critical. See docs/WHATSAPP.md.
 
 The admin configures ONE email provider (SMTP or Resend) in Settings → Email. Set `email: true`
 to opt in; the platform issues your per-app secret, and your **backend** can then send mail through

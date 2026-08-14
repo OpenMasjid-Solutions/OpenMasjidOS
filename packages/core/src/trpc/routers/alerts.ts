@@ -18,7 +18,7 @@ export const alertsRouter = router({
       z.object({
         source: z.string().min(1).max(80),
         id: z.string().min(1).max(60),
-        channel: z.enum(['email', 'webhook']),
+        channel: z.enum(['email', 'webhook', 'whatsapp']),
         enabled: z.boolean(),
       }),
     )

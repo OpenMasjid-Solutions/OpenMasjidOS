@@ -439,6 +439,11 @@ export function Settings() {
       {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
       <EmailPanel />
 
+      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Sits beside Email
+          because it is the same kind of thing — an outbound transport the platform owns
+          on every app's behalf. */}
+      <WhatsAppPanel />
+
       {/* Alerts — granular on/off per alert type (OS + apps) */}
       <AlertsPanel />
 
@@ -828,16 +833,19 @@ function ChangePassword() {
   const [next, setNext] = useState('');
   const [error, setError] = useState('');
 
-  // Admin profile (name + email). Email is where OS alerts are sent; a pre-email
-  // install sets it here for the first time.
+  // Admin profile (name + email + WhatsApp number). Email is where OS alerts are sent;
+  // a pre-email install sets it here for the first time. The phone is the same idea for
+  // the WhatsApp channel — a destination, never a sign-in.
   const me = trpc.auth.me.useQuery();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const seeded = useRef(false);
   useEffect(() => {
     if (me.data && !seeded.current) {
       setName(me.data.name ?? '');
       setEmail(me.data.email ?? '');
+      setPhone(me.data.phone ?? '');
       seeded.current = true;
     }
   }, [me.data]);
@@ -873,11 +881,32 @@ function ChangePassword() {
         <input className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <span className="hint">{t('settings.accountEmailHint')}</span>
       </div>
+      <div className="field" style={{ maxWidth: '20rem' }}>
+        <label className="label">{t('settings.accountPhone')}</label>
+        <input
+          className="input glass-inset"
+          type="tel"
+          autoComplete="tel"
+          placeholder="+1 555 010 1234"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+        />
+        <span className="hint">{t('settings.accountPhoneHint')}</span>
+      </div>
       <button
         className="btn"
         style={{ marginBlockEnd: '1rem' }}
-        disabled={saveProfile.isPending || (!name.trim() && !email.trim())}
-        onClick={() => saveProfile.mutate({ name: name.trim() || undefined, email: email.trim() || undefined })}
+        disabled={saveProfile.isPending || (!name.trim() && !email.trim() && !phone.trim())}
+        onClick={() =>
+          saveProfile.mutate({
+            name: name.trim() || undefined,
+            email: email.trim() || undefined,
+            // Sent even when blank, so clearing the box actually removes the number —
+            // `undefined` would mean "leave it alone" and the field would look cleared
+            // while alerts kept going to the old phone.
+            phone: phone.trim(),
+          })
+        }
       >
         <Check size={15} /> {t('settings.saveProfile')}
       </button>
@@ -1559,6 +1588,197 @@ function EmailPanel() {
 
 /** Granular alert matrix (UniFi-style): OS built-ins + each app's declared alerts,
  *  each routable to Email and/or Webhook (both on by default; both off = muted). */
+/** WhatsApp gateway (OpenWA). The admin installs OpenWA from the App Store, pastes the
+ *  API key + session id it was configured with, links the phone with a pairing code, and
+ *  every alert/app message then flows through the platform's paced queue. The API key is
+ *  write-only here: the server returns an "is set" flag, never the value. */
+function WhatsAppPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const cfg = trpc.whatsapp.get.useQuery();
+  const status = trpc.whatsapp.status.useQuery(undefined, { refetchInterval: 60_000 });
+
+  const [provider, setProvider] = useState<'none' | 'openwa'>('none');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [linkPhone, setLinkPhone] = useState('');
+  const [pairing, setPairing] = useState<string | null>(null);
+  const seededWa = useRef(false);
+  useEffect(() => {
+    if (cfg.data && !seededWa.current) {
+      setProvider(cfg.data.provider);
+      setBaseUrl(cfg.data.baseUrl);
+      setSessionId(cfg.data.sessionId);
+      seededWa.current = true;
+    }
+  }, [cfg.data]);
+
+  const save = trpc.whatsapp.save.useMutation({
+    onSuccess: () => {
+      setApiKey('');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+      toast(t('settings.whatsappSaved'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const link = trpc.whatsapp.link.useMutation({
+    onSuccess: (r) => {
+      setPairing(r.code ?? null);
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const test = trpc.whatsapp.test.useMutation({
+    onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+
+  if (!cfg.data) return null;
+  const s = status.data;
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+        <StatusDot online={status.isLoading ? undefined : Boolean(s?.connected)} /> {t('settings.whatsapp')}
+      </h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.whatsappHint')}</p>
+
+      {/* The risk warning is not a footnote. OpenWA is an unofficial client and the
+          linked number can be restricted, so an admin must read that BEFORE linking a
+          phone rather than after. */}
+      <div
+        className="glass-inset panel"
+        style={{ marginBlockEnd: '0.8rem', borderInlineStart: '3px solid var(--color-warning)' }}
+      >
+        <div className="setting-row__title">{t('settings.whatsappRiskTitle')}</div>
+        <div className="setting-row__hint">{t('settings.whatsappRiskBody')}</div>
+      </div>
+
+      <div className="field" style={{ maxWidth: '22rem' }}>
+        <label className="label">{t('settings.whatsappProvider')}</label>
+        <select
+          className="input glass-inset"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value as 'none' | 'openwa')}
+        >
+          <option value="none">{t('settings.whatsappNone')}</option>
+          <option value="openwa">OpenWA</option>
+        </select>
+      </div>
+
+      {provider !== 'none' && (
+        <>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappSession')}</label>
+            <input
+              className="input glass-inset"
+              value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)}
+              placeholder="masjid-main"
+            />
+            <span className="hint">{t('settings.whatsappSessionHint')}</span>
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappKey')}</label>
+            <input
+              className="input glass-inset"
+              type="password"
+              autoComplete="off"
+              placeholder={cfg.data.hasApiKey ? t('settings.emailSecretKept') : ''}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+            <span className="hint">{t('settings.whatsappKeyHint')}</span>
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappUrl')}</label>
+            <input
+              className="input glass-inset"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={t('settings.whatsappUrlAuto')}
+            />
+            <span className="hint">{t('settings.whatsappUrlHint')}</span>
+          </div>
+        </>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.3rem' }}>
+        <button
+          className="btn"
+          disabled={save.isPending}
+          onClick={() =>
+            save.mutate({
+              provider,
+              baseUrl: baseUrl.trim(),
+              sessionId: sessionId.trim(),
+              apiKey: apiKey.trim() || undefined,
+            })
+          }
+        >
+          <Check size={15} /> {t('common.save')}
+        </button>
+        {cfg.data.configured && (
+          <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>
+            {test.isPending ? t('settings.whatsappTesting') : t('settings.whatsappTest')}
+          </button>
+        )}
+      </div>
+
+      {/* Linking by pairing code, not QR: there is no screen on a headless box to
+          photograph, and the admin may be nowhere near the machine. */}
+      {cfg.data.configured && (
+        <div style={{ marginBlockStart: '0.9rem' }}>
+          <div className="setting-row__title">{t('settings.whatsappLink')}</div>
+          <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
+            {t('settings.whatsappLinkHint')}
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              className="input glass-inset"
+              type="tel"
+              style={{ maxWidth: '14rem' }}
+              placeholder="+1 555 010 1234"
+              value={linkPhone}
+              onChange={(e) => setLinkPhone(e.target.value)}
+            />
+            <button
+              className="btn"
+              disabled={link.isPending || !linkPhone.trim()}
+              onClick={() => link.mutate({ phone: linkPhone.trim() })}
+            >
+              {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
+            </button>
+          </div>
+          {pairing && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+              {t('settings.whatsappCode')} <code>{pairing}</code>
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Live state plus the queue depth, which is the honest answer to "why has my
+          message not arrived?" — it is paced, and may be waiting out quiet hours. */}
+      {s && (
+        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+          {s.configured
+            ? s.connected
+              ? t('settings.whatsappStateReady', { queued: s.queued })
+              : s.reachable
+                ? t('settings.whatsappStateNotLinked')
+                : t('settings.whatsappStateUnreachable')
+            : t('settings.whatsappStateOff')}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function AlertsPanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -1591,6 +1811,7 @@ function AlertsPanel() {
             <div className="setting-row__title" style={{ flex: 1, color: 'var(--color-ink-muted)' }}>{g.label}</div>
             <div style={colHead}>{t('settings.alertsEmail')}</div>
             <div style={colHead}>{t('settings.alertsWebhook')}</div>
+            <div style={colHead}>{t('settings.alertsWhatsapp')}</div>
           </div>
           {g.items.map((r) => (
             <div className="setting-row" key={`${r.source}:${r.id}`}>
@@ -1610,6 +1831,13 @@ function AlertsPanel() {
                   checked={r.channels.webhook}
                   onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'webhook', enabled: v })}
                   label={`${r.label} — ${t('settings.alertsWebhook')}`}
+                />
+              </div>
+              <div style={{ width: '4.5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' }}>
+                <Toggle
+                  checked={r.channels.whatsapp}
+                  onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'whatsapp', enabled: v })}
+                  label={`${r.label} — ${t('settings.alertsWhatsapp')}`}
                 />
               </div>
             </div>

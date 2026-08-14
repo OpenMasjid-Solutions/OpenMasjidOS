@@ -9,6 +9,24 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 ## Unreleased
 
+**Added — WhatsApp notifications (OpenWA)**
+
+- A third notification channel beside email and the webhook, sending through **OpenWA** — a self-hosted, MIT-licensed WhatsApp gateway the masjid installs from the App Store. Nothing leaves the masjid's network to a third-party sending service. The catalogue entry itself belongs to OpenMasjidAPPS (§4/§19); this is the platform half.
+- `store/whatsapp.ts` — gateway vault, chmod 600, API key never returned to the UI (an "is set" flag only), mirroring `store/email.ts`. The gateway is resolved automatically at `127.0.0.1:<published port>` from the app registry, the same no-SSRF rule the Fabric broker follows; a typed `baseUrl` remains as the override for a gateway elsewhere.
+- **Admin WhatsApp number** on the admin record (`auth/store.ts` `phone`, `getAdminPhone()`) and in Settings → Account beside the email. A destination only, never a login identifier, stored as digits so one number has one representation. `updateProfile` sends it even when blank, so clearing the field genuinely removes it rather than silently leaving alerts pointed at the old phone.
+- `AlertChannels.whatsapp`, defaulting **OFF** while email and webhook stay on — it runs through an unofficial client whose number can be restricted, so it is opted into. An `alerts.json` written before this existed has no `whatsapp` key, so absence reads as off and upgrading never starts messaging a phone.
+- `POST /api/fabric/whatsapp`, gated on a new manifest `whatsapp: true`. Returns **202 `{queued}`** — the honest word, since pacing puts delivery seconds to hours away. One recipient per call by design. LAN-only, rate-limited, bodies never logged.
+- Settings → WhatsApp: gateway config, pairing-code linking (no QR — a masjid's server is headless and the admin is rarely beside it), a live status dot that separates "gateway down" from "phone not linked", the queue depth, and a **Send test message** button that bypasses the queue because a test the admin is watching needs an answer on screen.
+- `docs/WHATSAPP.md` — setup, the pacing table, the app-author contract, and the residual ban risk stated plainly rather than buried.
+
+**Why one queue owns all sending.** Ban risk attaches to the phone *number*, not to whichever app had something to say, so it cannot be enforced per app: two apps each sending politely at the same moment still make the number burst. Every message goes through one serialised queue. OpenWA's own `send-bulk` is deliberately unused — it paces within a single request, which does nothing about two requests overlapping. Human behaviour: randomised 6–20s gaps (a fixed interval is itself a fingerprint), a typing indicator scaled to message length, presence online-while-working, a per-recipient cooldown, rolling hour/day caps, a warm-up ramp for a freshly linked number, quiet hours that queue rather than drop, and `contacts/check` before first contact. `clampLimits` means an admin can only make the policy stricter.
+
+**Fixed**
+
+- `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.
+- 10 orphaned translation strings removed in the previous sweep are joined by the addition of the WhatsApp strings; every `t()` key in Settings is now verified to resolve.
+
+
 > This section exists only on `dev` and is the full working record — fixes, internals, CI,
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).

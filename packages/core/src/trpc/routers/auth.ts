@@ -15,6 +15,7 @@ import {
   getUsername,
   getPasswordHash,
   getAdminEmail,
+  getAdminPhone,
   getAdminName,
   createAdminIfUnset,
   setProfile,
@@ -25,6 +26,7 @@ import {
   destroySession,
   destroyAllSessions,
 } from '../../auth/sessions';
+import { toDigits } from '../../notify/whatsapp';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -91,6 +93,9 @@ export const authRouter = router({
     // admin email to an unauthenticated visitor).
     name: ctx.username ? getAdminName() : null,
     email: ctx.username ? getAdminEmail() : null,
+    // Same rule as the email: a phone number is personal data, so it is surfaced only
+    // to a signed-in session, never to a visitor sitting on the login screen.
+    phone: ctx.username ? getAdminPhone() : null,
   })),
 
   /** First-run only: create the admin account (name + email + password) and start a
@@ -162,19 +167,39 @@ export const authRouter = router({
     return { authenticated: false };
   }),
 
-  /** Update the admin's display name and/or email (Settings → Account). The email is
-   *  where OS alerts are sent; a pre-email install sets it here. Does NOT change the
-   *  login username (existing sessions keep working). */
+  /** Update the admin's display name, email and/or WhatsApp number (Settings →
+   *  Account). The email is where OS alerts are sent; a pre-email install sets it
+   *  here. The phone is the same idea for the WhatsApp channel — a destination only,
+   *  never a login identifier. Does NOT change the login username (existing sessions
+   *  keep working). */
   updateProfile: protectedProcedure
     .input(
       z.object({
         name: z.string().trim().min(1).max(80).optional(),
         email: emailField.optional(),
+        /**
+         * Stored as digits, so a number typed as "+1 (555) 010-1234" and the same
+         * number typed as "15550101234" are one value rather than two that look
+         * different to every comparison. An empty string clears it, which is how the
+         * admin turns the WhatsApp destination off without touching the channel
+         * toggles. A country code is required — `toDigits` refuses fewer than 8
+         * digits rather than guessing one, because guessing sends a masjid's message
+         * to a stranger.
+         */
+        phone: z
+          .string()
+          .trim()
+          .max(24)
+          .transform((v) => (v === '' ? '' : (toDigits(v) ?? '')))
+          .refine((v) => v === '' || v.length >= 8, {
+            message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
+          })
+          .optional(),
       }),
     )
     .mutation(({ input }) => {
       setProfile(input);
-      return { name: getAdminName(), email: getAdminEmail() };
+      return { name: getAdminName(), email: getAdminEmail(), phone: getAdminPhone() };
     }),
 
   /** Change the admin password; every existing session is invalidated. */
