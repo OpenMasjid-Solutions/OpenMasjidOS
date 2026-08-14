@@ -19,6 +19,7 @@ import { log } from '../logger';
 import { getSettings } from '../settings/store';
 import { coreImageTag, coreTargetTag } from '../system/channel';
 import { checkForUpdate } from '../system/system';
+import { isPrerelease } from '../util/version';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
@@ -178,6 +179,28 @@ export async function runUpdate(onLine: (s: string) => void): Promise<void> {
   // so pulling it can install different bytes from the version just announced.
   // Offline, `latest` is null and this falls back to the channel alias.
   const info = await checkForUpdate().catch(() => null);
+
+  // Refuse to "update" to what is already running. Without this, every connection to
+  // /api/update performs a full pull + recreate, and the recreate restarts the core —
+  // which drops every in-memory session, signs the dashboard out, and unmounts the
+  // window that opened the stream. Signing back in remounted it and started the whole
+  // thing again: an endless revert loop after returning to Stable, escapable only by
+  // closing the window in the seconds before the restart landed.
+  //
+  // A CHANNEL MOVE still has to proceed even when the version says otherwise, and the
+  // running build states its own channel exactly: a Development build's version is a
+  // prerelease and a Stable one is not. dev→main is prerelease→release (which semver
+  // already calls an upgrade), but main→dev is release→prerelease, which it does not —
+  // so without this the platform would refuse to follow its own channel switch.
+  if (info) {
+    const runningIsDev = isPrerelease(info.current);
+    const wrongChannel = runningIsDev !== (channel === 'dev');
+    if (!info.updateAvailable && !wrongChannel) {
+      onLine('');
+      onLine(`OpenMasjidOS is already up to date (v${info.current}). Nothing was changed.`);
+      return;
+    }
+  }
   const tag = coreTargetTag(channel, info?.latest ?? null);
   const pinned = tag !== coreImageTag(channel);
   const { image } = await inspectSelf(tag);

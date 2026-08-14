@@ -26,7 +26,6 @@ const MIME_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
 };
-export const ALLOWED_LOGO_MIME = Object.keys(MIME_EXT);
 export const MAX_LOGO_BYTES = 1024 * 1024; // 1 MB — plenty for a logo, keeps email light
 
 interface BrandingMeta {

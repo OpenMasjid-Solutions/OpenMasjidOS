@@ -48,9 +48,3 @@ export function joinPath(base: string, name: string): string {
 }
 
 /** Parent directory of a path ("/a/b" → "/a", "/a" → "/"). */
-export function parentPath(p: string): string {
-  if (p === '/' || !p.includes('/')) return '/';
-  const trimmed = p.replace(/\/+$/, '');
-  const idx = trimmed.lastIndexOf('/');
-  return idx <= 0 ? '/' : trimmed.slice(0, idx);
-}

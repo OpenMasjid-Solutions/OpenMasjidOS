@@ -7,7 +7,7 @@ import { prefsStore } from './prefs';
  *  port per app: a flagged (Stripe) app is `https://…:<proxy port>`, every other
  *  app is plain `http://…:<published port>`. We must NOT derive the scheme from
  *  the dashboard's own protocol — the dashboard is HTTPS, but most apps are HTTP. */
-export function appUrl(app: { https?: boolean; openPort?: number | null }): string | null {
+function appUrl(app: { https?: boolean; openPort?: number | null }): string | null {
   if (app.openPort == null) return null;
   const scheme = app.https ? 'https' : 'http';
   return `${scheme}://${window.location.hostname}:${app.openPort}`;

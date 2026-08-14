@@ -52,7 +52,7 @@ function parsePortEntry(entry: unknown, service: string): PublishedPort | null {
   return null;
 }
 
-export function extractPublishedPorts(composeText: string): PublishedPort[] {
+function extractPublishedPorts(composeText: string): PublishedPort[] {
   let doc: unknown;
   try {
     doc = YAML.parse(composeText, { merge: true }); // resolve `<<` so merged-in ports are seen
@@ -111,7 +111,7 @@ async function dockerPublishedPorts(): Promise<Set<number>> {
   return used;
 }
 
-export async function portsInUse(): Promise<Set<number>> {
+async function portsInUse(): Promise<Set<number>> {
   const used = readListeningPorts();
   for (const p of await dockerPublishedPorts()) used.add(p);
   used.add(CORE_PORT);

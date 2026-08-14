@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { isPrerelease } from '../lib/version';
 import { LogStream } from './LogStream';
 
 interface PendingApp {
@@ -29,12 +30,10 @@ interface PendingApp {
 }
 
 export function ChannelMigrate({
-  apps,
   channelLabel,
   /** True when returning to Stable, where the OS should follow the apps back. */
   revertOs,
 }: {
-  apps: PendingApp[];
   channelLabel: string;
   revertOs: boolean;
 }) {
@@ -43,16 +42,44 @@ export function ChannelMigrate({
   const [index, setIndex] = useState(0);
   const [osStarted, setOsStarted] = useState(false);
 
+  // What still needs moving, read LIVE and then snapshotted once.
+  //
+  // It used to arrive as a prop captured when the window was opened, and that made the
+  // migration replay itself for ever. Updating the OS restarts the core, which drops
+  // every in-memory session; the dashboard falls back to the sign-in screen, which
+  // unmounts AppShell — and the window layer renders inside the Dock, so THIS component
+  // unmounts while the window itself survives in WindowsProvider above the router.
+  // Signing back in remounted it with `index` reset to 0 and the original, now-stale
+  // list, so it updated every app again and finished by updating the OS again, which
+  // signed you out again. The only escape was closing the window in the seconds before
+  // the restart landed.
+  //
+  // Reading live state means a remount after a completed migration sees nothing pending
+  // and simply reports done. Snapshotting it means the list can't shift under the index
+  // while we iterate — invalidating the query mid-run is exactly what would do that.
+  const channelQ = trpc.system.channel.useQuery();
+  const [plan, setPlan] = useState<{ apps: PendingApp[]; os: boolean } | null>(null);
+  useEffect(() => {
+    if (plan || !channelQ.data) return;
+    const d = channelQ.data;
+    // The running build states its own channel exactly: a Development build's version
+    // is a prerelease, a Stable one is not. So "is the platform still on the wrong
+    // channel?" needs no extra endpoint.
+    const osWrongChannel = isPrerelease(d.version) !== (d.channel === 'dev');
+    setPlan({ apps: d.pending, os: revertOs && osWrongChannel });
+  }, [plan, channelQ.data, revertOs]);
+
+  const apps = plan?.apps ?? [];
   const current = apps[index];
-  const appsDone = index >= apps.length;
+  const appsDone = plan !== null && index >= apps.length;
 
   // Once every app has moved, bring the OS across too. Automatic rather than
   // another button: the admin already confirmed the channel change, and leaving the
   // platform on the other channel's image is exactly the "mixed channel" state the
   // whole feature exists to prevent.
   useEffect(() => {
-    if (appsDone && revertOs && !osStarted) setOsStarted(true);
-  }, [appsDone, revertOs, osStarted]);
+    if (appsDone && plan?.os && !osStarted) setOsStarted(true);
+  }, [appsDone, plan, osStarted]);
 
   useEffect(() => {
     if (appsDone) {
@@ -93,7 +120,7 @@ export function ChannelMigrate({
           LogStream's reconnect already handles for the ordinary update path. */}
       {appsDone && osStarted && <LogStream wsPath="/api/update" />}
 
-      {appsDone && !revertOs && (
+      {appsDone && !plan?.os && (
         <p style={{ marginBlockStart: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
           {t('settings.channelMigrateDone', { label: channelLabel })}

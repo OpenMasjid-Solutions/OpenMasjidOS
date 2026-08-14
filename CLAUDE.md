@@ -633,14 +633,33 @@ The canonical version lives in the **`VERSION`** file at the repository root. It
 | **MINOR** (2nd) | A meaningful new feature or a significant change to existing behaviour — new page, new tRPC procedure, new installer capability. | `0.1.x` → `0.2.0` |
 | **MAJOR** (1st) | **Reserved for the official public launch.** `1.0.0` signals production-ready, fully stable software. Do not bump to `1.x` before that milestone. | — |
 
-### Current version: `0.1.0`
+**Development builds are semver PRERELEASES** — `dev/VERSION` holds `0.50.4-dev.1`, naming the release it is heading toward. See §13.4: the bump *is* the publish, and the ordering `0.50.3 < 0.50.4-dev.1 < 0.50.4` is what makes the Development channel detectable at all.
 
-We are in **pre-release / active development**. All changes during this phase are `0.1.x` (patch) or `0.2.x`+ (minor feature milestones).
+### Where the version lives per branch
+
+| | `master` | `dev` |
+|---|---|---|
+| `VERSION` | the release, `0.50.3` | a prerelease, `0.50.4-dev.1` |
+| enforced by | `test/update-channel.test.ts`, keyed on the **target** branch | same test, other arm |
+
+A release is a `dev → master` merge. `VERSION` conflicts every single time by design — resolve it to the release number, which completes the merge, so the merge and the bump are one commit.
 
 ### How to bump the version
 1. Edit the `VERSION` file — change the number, nothing else.
 2. Commit with message `chore: bump version to x.y.z`.
-3. Push. CI picks up the new version automatically and stamps it into the build/image. The dashboard shows it in Settings → Advanced.
+3. Push. CI reads `VERSION` and tags the image from it. The dashboard shows it in Settings → Advanced.
+
+### CHANGELOG.md — two audiences, two levels of detail
+
+`CHANGELOG.md` is fetched live by the dashboard ("What's new"), **from the branch matching the masjid's channel** (`changelogUrl()`). So the same file is read by two different people and must be written for both.
+
+**On `master` — releases only, and only what a MASJID would notice.** One `## X.Y.Z` heading per release, a handful of bullets, plain warm language for a volunteer (§14). A masjid does not care that a CI tag predicate changed; they care that updates install. Fold the internal work into one plain sentence, or leave it out. If a release contains nothing user-visible, say so in one line rather than inventing significance.
+
+**On `dev` — an `## Unreleased` section at the top, in full detail.** Everything that has landed on `dev` since the last release goes here as it lands: fixes, internals, CI, refactors, dependency bumps. This is the working record, read by whoever is about to cut a release, so it should be complete rather than curated. Keep the released sections below it byte-identical to master's, so the two files only ever differ by `## Unreleased`.
+
+**At release time**, `## Unreleased` is *rewritten* into a `## X.Y.Z` section holding only the major, user-visible items — not renamed wholesale. The detail has done its job by then; it stays in the git history and the commit messages.
+
+> Why not one file for both: a masjid on Development already reads the dev changelog in the same panel a Stable masjid reads the release notes. Detail there is useful — they opted into untested software. Detail on Stable is noise that buries the one line explaining why their display restarted.
 
 ---
 

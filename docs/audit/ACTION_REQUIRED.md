@@ -15,6 +15,26 @@ across `--all` for key-shaped material and found none: the three pattern hits ar
 no committed `.env`, `.pem`, dump or service-account JSON in any reachable commit. **So there is no
 rotation forced by a leak.**
 
+> **Status re-verified 2026-08-14 (v0.50.4-dev.1).** This file is the July audit's
+> snapshot; the notes below say what is still true in the code TODAY, so it stops reading as
+> a to-do list that may already be done.
+>
+> - **STILL OPEN — Stripe cross-account read.** `GET /api/fabric/stripe?account=<id>`
+>   (`packages/core/src/api/fabric.ts`) takes the account id straight from the query string and
+>   returns that account's `secretKey` and `webhookSecret`. The only check is that the caller
+>   holds the `stripe` capability — nothing binds an app to a particular account, and
+>   `/api/fabric/stripe/accounts` hands the caller the ids to ask for. So any stripe-capable
+>   app can read every account's keys, which is the one place the Fabric's least-privilege
+>   rule does not hold. Fixing it needs a per-app account binding (recorded at install,
+>   enforced here); that changes the app-facing Fabric contract, so it is its own change,
+>   coordinated with OpenMasjidAPPS. The rotation advice below stands until then.
+> - **FIXED — dashboard file access to platform secrets** (`OPENMASJIDOS-004`, v0.47.3):
+>   `files/manager.ts` refuses `config/**`, `.backup-staging/**` and each app's
+>   `compose.yml` / `.env` / `meta.json`, checking the realpath as well as the requested path.
+> - **FIXED — corrupt TLS cert bricking boot** (`OPENMASJIDOS-011`, v0.47.2): the cert is
+>   validated by content, damage is quarantined and regenerated, and the server falls back to
+>   plain HTTP rather than exiting.
+
 Rotate only if either of these is true for your live box:
 
 | Priority | Credential | Rotate if | Why |

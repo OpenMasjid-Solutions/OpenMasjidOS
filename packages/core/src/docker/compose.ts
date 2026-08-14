@@ -141,7 +141,3 @@ export async function composeLogs(project: string, tail = 200): Promise<string> 
   return (res.stdout + res.stderr).trim();
 }
 
-/** Validate a compose file parses + resolves without starting anything. */
-export async function composeConfig(composeFile: string): Promise<RunResult> {
-  return run(['compose', '-f', composeFile, 'config', '--quiet']);
-}
