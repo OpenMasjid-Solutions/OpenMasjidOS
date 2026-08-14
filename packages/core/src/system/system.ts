@@ -76,6 +76,15 @@ export interface UpdateInfo {
   channel: Channel;
   /** True when the running build is a Development prerelease (`0.50.0-dev.2`). */
   prerelease: boolean;
+  /**
+   * WHY an update is offered.
+   *
+   * `'channel'` means the running build belongs to the OTHER channel — a Stable build on
+   * a masjid set to Development, or the reverse. That has to be offered no matter what
+   * the version numbers say, and its target can legitimately be an older number (going
+   * back to Stable always is).
+   */
+  reason: 'version' | 'channel' | null;
 }
 
 /**
@@ -110,12 +119,28 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
   } catch (err) {
     log.warn(`Update check failed against ${osBranch(channel)} (offline?).`, err);
   }
+  // The build we are RUNNING belongs to the other channel. This must be offered whatever
+  // the numbers say, and `runUpdate` has always acted on it (`wrongChannel`) — but the
+  // DETECTOR did not, so nothing ever told the masjid. A box that had ended up on a
+  // Stable image while set to Development therefore sat there for ever: no banner, no
+  // alert, no update, and no explanation. That is not hypothetical — it happened, when an
+  // interrupted update was repaired with the installer and the repair pulled `:latest`.
+  //
+  // Keeping this out of the version comparison also means it survives a numbering
+  // mistake: even with `dev/VERSION` accidentally BELOW the current release (which is how
+  // the box above got stuck), the mismatch alone is enough to offer the way back.
+  const channelMismatch = isPrerelease(VERSION) !== (channel === 'dev');
+  const newerAvailable = latest != null && isNewerVersion(VERSION, latest);
   return {
     current: VERSION,
     latest,
-    updateAvailable: latest != null && isNewerVersion(VERSION, latest),
+    // A channel move needs a target to move TO, so it still requires the channel's
+    // version to have been read — offering an update we cannot perform would be worse
+    // than staying quiet.
+    updateAvailable: newerAvailable || (channelMismatch && latest != null),
     sourceUrl: SOURCE_URL,
     channel,
     prerelease: isPrerelease(VERSION),
+    reason: newerAvailable ? 'version' : channelMismatch && latest != null ? 'channel' : null,
   };
 }

@@ -185,8 +185,22 @@ export function Dashboard() {
         <div className="warn-banner warn-banner--update glass" role="status">
           <Sparkles size={22} />
           <div style={{ flex: 1 }}>
-            <div className="warn-banner__title">{t('dashboard.updateTitle', { version: updateQ.data?.latest })}</div>
-            <div className="warn-banner__body">{t('dashboard.updateBody')}</div>
+            {/* A channel move is not "a new version" — the target can be an older
+                number, and calling it an upgrade when someone is going back to Stable
+                reads as a mistake. Name what is actually happening. */}
+            <div className="warn-banner__title">
+              {updateQ.data?.reason === 'channel'
+                ? t('dashboard.channelFixTitle', {
+                    channel:
+                      updateQ.data.channel === 'dev' ? t('settings.channelDev') : t('settings.channelStable'),
+                  })
+                : t('dashboard.updateTitle', { version: updateQ.data?.latest })}
+            </div>
+            <div className="warn-banner__body">
+              {updateQ.data?.reason === 'channel'
+                ? t('dashboard.channelFixBody', { version: updateQ.data.latest })
+                : t('dashboard.updateBody')}
+            </div>
           </div>
           <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
             <Download size={15} /> {t('settings.updateNow')}
