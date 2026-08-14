@@ -8,7 +8,6 @@
 import type { Variants, Transition } from 'motion/react';
 
 export const springSoft: Transition = { type: 'spring', stiffness: 320, damping: 30, mass: 0.9 };
-export const springSnappy: Transition = { type: 'spring', stiffness: 500, damping: 32 };
 
 /** Gentle crossfade + slight rise — used for route/page entrances. */
 export const fadeRise: Variants = {

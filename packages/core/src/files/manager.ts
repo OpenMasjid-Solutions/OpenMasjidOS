@@ -261,7 +261,7 @@ export function resolveFile(rel: string): { full: string; name: string } {
 }
 
 /** Resolve a directory to upload into (must exist and be a directory). */
-export function resolveUploadDir(relDir: string): string {
+function resolveUploadDir(relDir: string): string {
   const dir = resolve(relDir);
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw new FileError('That folder does not exist.', 'NOT_FOUND');

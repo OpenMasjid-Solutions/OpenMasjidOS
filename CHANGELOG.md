@@ -7,6 +7,35 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## Unreleased
+
+> This section exists only on `dev` and is the full working record — fixes, internals, CI,
+> docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
+> what a masjid would notice (CLAUDE.md §18).
+
+**Fixed**
+
+- **Returning to Stable no longer loops for ever.** Updating the OS restarts the core, which drops every in-memory session; the dashboard falls back to the sign-in screen, unmounting `AppShell` — and the window layer renders inside the `Dock`, so the migration window's subtree unmounted while the window itself survived in `WindowsProvider` above the router. Signing back in remounted `ChannelMigrate` with `index` reset to 0 and its original prop list, so it re-updated every app and then the OS again, signing you out again. Escapable only by closing the window in the seconds before the restart landed. Two independent fixes:
+  - `runUpdate` refuses to "update" to the version already running — the guard `updateCatalogApp` has always had for apps, which the core's own update never got. A channel move still proceeds, decided by whether the running version is a prerelease (`isPrerelease`), because `main → dev` is release → prerelease and semver alone would call that a downgrade and refuse.
+  - `ChannelMigrate` reads what is still pending from `system.channel` and snapshots it once, instead of trusting a prop captured when the window opened. A remount after a completed migration now sees nothing pending. Snapshotting (rather than reading live every render) keeps an invalidation mid-run from shifting the list under the index.
+
+**Removed (dead code)**
+
+- Exports nothing referenced: `composeConfig` (`docker/compose.ts`), `appTlsPortRange` (`system/app-proxy.ts`), `ALLOWED_LOGO_MIME` (`store/branding.ts` — `isAllowedLogoMime` reads `MIME_EXT` directly), `parentPath` (`ui/lib/files.ts`), `springSnappy` (`ui/lib/motion.ts`).
+- Un-exported, used only inside their own module: `extractPublishedPorts` and `portsInUse` (`apps/ports.ts`, both called by `findPortConflicts`), `resolveUploadDir` (`files/manager.ts`), `appUrl` (`ui/lib/apps.ts`).
+- 10 orphaned translation strings: `auth.emailOrUsername`, `dashboard.statusError`, `custom.desc`, `custom.enableFirst`, `community.reposHint`, `settings.channelPullOs`, `settings.channelOn`, `settings.channelPendingTag`, `settings.backupDriveToken`, `errors.viewDetails`.
+
+**Documentation**
+
+- CLAUDE.md §18 rewritten: it still said "Current version: `0.1.0`". Now records the per-branch `VERSION` rule and the two-audience CHANGELOG policy.
+- `docs/audit/ACTION_REQUIRED.md` carries a re-verified status block, so a July snapshot no longer reads as a live to-do list.
+
+**Security**
+
+- Audit re-run. No `eval`, no `new Function`, no `shell: true`, no `innerHTML`; every `spawn` passes an argument array, so no shell interpolation; nothing logs a secret value. `dangerouslySetInnerHTML` appears twice — both in comments stating the repo does not use it.
+- **One finding confirmed still open**: `GET /api/fabric/stripe?account=` lets any stripe-capable app read *every* Stripe account's `secretKey`/`webhookSecret`, because the account id comes from the query string with nothing binding an app to an account. Recorded in `docs/audit/ACTION_REQUIRED.md`; the fix needs a per-app binding and a coordinated OpenMasjidAPPS change, so it is deliberately not in this release.
+- `npm audit` clean at the `high` gate. Two moderates remain and are deliberate: `esbuild` (dev-server advisory, devDependency, absent from the shipped image) and `uuid` via `dockerode` (needs dockerode 4 → 5, a major bump of the dependency that manages every container).
+
 ## 0.50.3
 
 - **Fixed a fault that could stop a new version from being published at all.** The build for Raspberry Pi hardware could stall indefinitely, so an update could be announced and then fail to download. Both kinds of hardware are now built directly, and a stalled build fails quickly instead of hanging.

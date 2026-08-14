@@ -73,10 +73,6 @@ interface AppProxy {
 
 const proxies = new Map<string, AppProxy>();
 
-export function appTlsPortRange(): { min: number; max: number } {
-  return { min: APP_TLS_MIN, max: APP_TLS_MAX };
-}
-
 /** Ports currently bound by app proxies (so allocation doesn't collide). */
 export function activeProxyPorts(): Set<number> {
   return new Set([...proxies.values()].map((p) => p.httpsPort));

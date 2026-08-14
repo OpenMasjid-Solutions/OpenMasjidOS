@@ -210,7 +210,9 @@ export function Settings() {
       icon: <GitBranch size={15} />,
       dedupeKey: 'channel-migrate',
       wide: true,
-      node: <ChannelMigrate apps={ch.pending} channelLabel={ch.label} revertOs={ch.channel === 'main'} />,
+      // No `apps` prop: ChannelMigrate reads what is still pending itself, so a remount
+      // after the OS restart signs everyone out cannot replay a finished migration.
+      node: <ChannelMigrate channelLabel={ch.label} revertOs={ch.channel === 'main'} />,
     });
   }
 
