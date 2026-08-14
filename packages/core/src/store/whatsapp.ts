@@ -12,8 +12,8 @@
  * the sender (`notify/whatsapp.ts`).
  *
  * HOW THE GATEWAY IS FOUND: the normal path is installing OpenWA from the App Store —
- * the platform then resolves it on 127.0.0.1 by its published port, the same way the
- * Fabric broker reaches any app. `baseUrl` here is the OVERRIDE, for a masjid running
+ * the platform then resolves it at its published host port (`system/app-host.ts`), the
+ * same way the Fabric broker reaches any app. `baseUrl` here is the OVERRIDE, for a masjid running
  * OpenWA on another machine or sharing one gateway between sites. The platform does not
  * supervise OpenWA itself: on the safer `whatsapp-web.js` engine it is a headless
  * Chromium costing 300-500 MB per session, and keeping a browser alive does not belong
@@ -163,7 +163,7 @@ export function getWhatsAppConfig(): WhatsAppConfig {
  * True when a usable gateway is configured.
  *
  * `baseUrl` is deliberately NOT required: the normal path is installing OpenWA from
- * the App Store, and the platform then finds it on 127.0.0.1 by its published port
+ * the App Store, and the platform then finds it at its published host port
  * (notify/whatsapp.ts `resolveBaseUrl`). A typed URL is the override for a gateway
  * living elsewhere. The API key and session id ARE required — without them there is
  * nothing to authenticate with and no session to send from.

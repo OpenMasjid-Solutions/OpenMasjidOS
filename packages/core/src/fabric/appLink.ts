@@ -16,8 +16,9 @@
  *     (registerFabricTunnelGuard) 404s tunnel-origin requests before it runs.
  *   - Authorize by STATIC manifest grants: caller.consumes must contain
  *     "<target>/<capability>" AND target.provides must contain the capability.
- *   - Target URL is built ONLY from the registry (127.0.0.1:<published port>) and
- *     validated path segments — never from request-controlled data. No SSRF.
+ *   - Target URL is built ONLY from the registry (the app's published host port, reached
+ *     via system/app-host.ts) and validated path segments — never from
+ *     request-controlled data. No SSRF.
  *   - Strip every caller-supplied identity/forwarding/hop-by-hop header; inject
  *     only the trusted X-OpenMasjid-App-Secret (target's) + X-OpenMasjid-Caller-App.
  *   - JSON only, bodies ≤256 KB each way, 10 s timeout, no redirects, per-caller
@@ -28,6 +29,7 @@
 import http from 'node:http';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { findFabricApp, getFabricApp, getFabricSecret, getInstalled, type FabricApp } from '../apps/manager';
+import { appHost } from '../system/app-host';
 import { log } from '../logger';
 
 const MAX_BODY = 256 * 1024; // 256 KB, each direction
@@ -165,9 +167,9 @@ function defaultDeps(): AppLinkDeps {
       const a = await getInstalled(id);
       return a ? { running: a.running, port: a.ports[0] ?? null } : null;
     },
-    // How the core reaches an app's published host port (host-gateway mapping added
-    // by the installer; localhost in dev). Same target the reverse proxies use.
-    targetHost: process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.internal',
+    // How the core reaches an app's published host port — one definition, shared with
+    // the reverse proxies and the WhatsApp gateway client (system/app-host.ts).
+    targetHost: appHost(),
     timeoutMs: DEFAULT_TIMEOUT_MS,
     rateMax: DEFAULT_RATE_MAX,
     now: () => Date.now(),

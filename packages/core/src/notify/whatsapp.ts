@@ -46,6 +46,7 @@
  */
 import { log } from '../logger';
 import { getInstalled } from '../apps/manager';
+import { appOrigin } from '../system/app-host';
 import {
   getWhatsAppConfig,
   isWhatsAppConfigured,
@@ -137,25 +138,63 @@ export const OPENWA_APP_ID = 'openwa';
 /**
  * Where the gateway lives.
  *
- * Prefers an OpenWA installed from the App Store: the admin installs it with one
- * click and the platform finds it on `127.0.0.1:<published port>` — the same way the
- * Fabric broker reaches an app, and for the same reason (the URL is built only from
- * the registry, never from anything a request supplied, so there is no SSRF surface).
+ * Prefers an OpenWA installed from the App Store: the admin installs it with one click
+ * and the platform finds it at its published host port via `appHost()` — the same target
+ * the Fabric broker and the reverse proxies use, and for the same reason (the URL is
+ * built only from the registry plus a fixed host name, never from anything a request
+ * supplied, so there is no SSRF surface).
  *
- * An explicitly configured `baseUrl` still wins, for a masjid running OpenWA on
- * another machine, or one big enough to share a gateway between sites. So the field
- * stays — it is just no longer the only way in.
+ * The address MUST come from `appHost()`. The first version hardcoded `127.0.0.1`, which
+ * inside the core container is the core itself — so the gateway was unreachable on every
+ * install, no matter how correctly OpenWA was set up. See `system/app-host.ts`.
+ *
+ * An explicitly configured `baseUrl` still wins, for a masjid running OpenWA on another
+ * machine, or one big enough to share a gateway between sites.
+ *
+ * Returns a REASON rather than a bare null: "not installed", "installed but stopped" and
+ * "running but publishing no port" have three different fixes, and collapsing them into
+ * one "cannot reach the gateway" is what made this bug take a round-trip to diagnose.
  */
-export async function resolveBaseUrl(cfg: WhatsAppConfig): Promise<string | null> {
-  if (cfg.baseUrl) return cfg.baseUrl;
+export type GatewayAddress = { url: string; reason?: undefined } | { url: null; reason: string };
+
+export async function resolveBaseUrl(cfg: WhatsAppConfig): Promise<GatewayAddress> {
+  if (cfg.baseUrl) return { url: cfg.baseUrl };
+  let app;
   try {
-    const app = await getInstalled(OPENWA_APP_ID);
-    if (!app || !app.running) return null;
-    const port = app.ports[0];
-    if (!port) return null;
-    return `http://127.0.0.1:${port}`;
+    app = await getInstalled(OPENWA_APP_ID);
   } catch {
-    return null;
+    return { url: null, reason: 'could not read the list of installed apps' };
+  }
+  if (!app) return { url: null, reason: 'OpenWA is not installed — install it from the App Store' };
+  if (!app.running) return { url: null, reason: 'OpenWA is installed but not running' };
+  const port = app.ports[0];
+  if (!port) return { url: null, reason: 'OpenWA is running but is not publishing a port' };
+  return { url: appOrigin(port) };
+}
+
+/**
+ * Turn a `fetch` rejection into something an admin can act on.
+ *
+ * undici reports every transport failure as the same useless `TypeError: fetch failed`
+ * and hides the real cause one level down in `.cause`. That is exactly what a masjid saw
+ * when this module was pointed at the wrong host: "fetch failed", with no hint that the
+ * address was the problem.
+ */
+function describeFetchError(err: unknown): string {
+  const e = err as { name?: string; message?: string; cause?: { code?: string } };
+  if (e?.name === 'TimeoutError') return 'the gateway did not answer in time';
+  switch (e?.cause?.code) {
+    case 'ECONNREFUSED':
+      return 'nothing is listening at the gateway address';
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+      return 'the gateway address could not be found';
+    case 'ECONNRESET':
+      return 'the gateway closed the connection';
+    case 'ETIMEDOUT':
+      return 'the gateway did not answer in time';
+    default:
+      return 'the gateway could not be reached';
   }
 }
 
@@ -165,10 +204,11 @@ async function call(
   path: string,
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; json: unknown; error?: string }> {
-  const base = await resolveBaseUrl(cfg);
-  if (!base) {
-    return { ok: false, status: 0, json: null, error: 'no WhatsApp gateway found — install OpenWA or set its address' };
+  const addr = await resolveBaseUrl(cfg);
+  if (!addr.url) {
+    return { ok: false, status: 0, json: null, error: addr.reason };
   }
+  const base = addr.url;
   const url = `${base}${path}`;
   try {
     const res = await fetch(url, {
@@ -187,13 +227,19 @@ async function call(
       /* some endpoints return no body; not an error by itself */
     }
     if (!res.ok) {
-      // The status is useful; the body may quote the message text, so it is not logged.
-      return { ok: false, status: res.status, json, error: `gateway returned ${res.status}` };
+      // The status and the path are useful for support; the body may quote the message
+      // text, so it is never logged.
+      log.warn(`WhatsApp: gateway ${method} ${path} returned ${res.status} (${base}).`);
+      return { ok: false, status: res.status, json, error: `the gateway returned ${res.status}` };
     }
     return { ok: true, status: res.status, json };
   } catch (err) {
-    const e = err as Error;
-    return { ok: false, status: 0, json: null, error: e.name === 'TimeoutError' ? 'gateway timed out' : e.message };
+    // Log the ADDRESS as well as the reason. Without it, a misconfigured (or, as in
+    // 0.50.4-dev.2, a wrongly-derived) gateway address is indistinguishable in the log
+    // from a gateway that is simply down.
+    const reason = describeFetchError(err);
+    log.warn(`WhatsApp: gateway ${method} ${path} failed — ${reason} (${base}).`);
+    return { ok: false, status: 0, json: null, error: reason };
   }
 }
 
@@ -209,7 +255,14 @@ async function call(
 const READY = 'ready';
 const PENDING_STATUSES = new Set(['created', 'initializing', 'qr_ready', 'authenticating']);
 
-export type SessionState = 'unconfigured' | 'unreachable' | 'no-session' | 'pending' | 'ready' | 'problem';
+export type SessionState =
+  | 'unconfigured'
+  | 'unreachable'
+  | 'bad-key'
+  | 'no-session'
+  | 'pending'
+  | 'ready'
+  | 'problem';
 
 export interface GatewayStatus {
   state: SessionState;
@@ -218,6 +271,23 @@ export interface GatewayStatus {
   connected: boolean;
   /** OpenWA's own status word, or our reason — shown to the admin verbatim. */
   detail: string;
+}
+
+/**
+ * Reachability is "something answered", NOT "the request succeeded".
+ *
+ * Any HTTP status — including 401 and 404 — proves a server is there, so only a
+ * transport failure (`status === 0`) means unreachable. Requiring a 200 made the state
+ * depend on OpenWA's exact routes: a renamed listing endpoint would have reported a
+ * perfectly healthy gateway as down.
+ */
+function transportFailed(r: { ok: boolean; status: number }): boolean {
+  return !r.ok && r.status === 0;
+}
+
+/** A rejected key is its own fix ("re-paste it"), so it gets its own state. */
+function keyRejected(r: { ok: boolean; status: number }): boolean {
+  return !r.ok && (r.status === 401 || r.status === 403);
 }
 
 /** Where the gateway and its session actually stand. */
@@ -231,19 +301,28 @@ export async function gatewayStatus(): Promise<GatewayStatus> {
   // a network fault that wasn't there.
   if (!cfg.sessionId) {
     const probe = await call(cfg, 'GET', '/api/sessions');
-    if (!probe.ok) {
+    if (transportFailed(probe)) {
       return { state: 'unreachable', reachable: false, connected: false, detail: probe.error ?? 'unreachable' };
+    }
+    if (keyRejected(probe)) {
+      return { state: 'bad-key', reachable: true, connected: false, detail: 'the gateway rejected the API key' };
     }
     return { state: 'no-session', reachable: true, connected: false, detail: 'no session created yet' };
   }
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
   if (!r.ok) {
+    if (transportFailed(r)) {
+      return { state: 'unreachable', reachable: false, connected: false, detail: r.error ?? 'unreachable' };
+    }
+    if (keyRejected(r)) {
+      return { state: 'bad-key', reachable: true, connected: false, detail: 'the gateway rejected the API key' };
+    }
     // A 404 here means the session we recorded is gone (deleted in OpenWA, or the volume
     // was wiped) — recoverable by creating another, so don't call the gateway unreachable.
     if (r.status === 404) {
       return { state: 'no-session', reachable: true, connected: false, detail: 'the session no longer exists' };
     }
-    return { state: 'unreachable', reachable: false, connected: false, detail: r.error ?? 'unreachable' };
+    return { state: 'problem', reachable: true, connected: false, detail: r.error ?? 'unknown state' };
   }
   const s = r.json as { status?: unknown } | null;
   const word = String(s?.status ?? '').toLowerCase();

@@ -18,6 +18,7 @@ import https from 'node:https';
 import http from 'node:http';
 import net from 'node:net';
 import { loadCert } from './tls';
+import { appHost } from './app-host';
 import { log } from '../logger';
 
 function envInt(name: string, fallback: number): number {
@@ -27,9 +28,9 @@ function envInt(name: string, fallback: number): number {
 
 const APP_TLS_MIN = envInt('OPENMASJID_APP_TLS_MIN', 8443);
 const APP_TLS_MAX = envInt('OPENMASJID_APP_TLS_MAX', 8452);
-/** How the core reaches an app's published host port (set via the installer's
- *  extra_hosts host-gateway mapping). Falls back to localhost in dev. */
-const TARGET_HOST = process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.internal';
+/** How the core reaches an app's published host port — one definition, shared with the
+ *  Fabric broker, the tunnel ingress and the WhatsApp gateway client. */
+const TARGET_HOST = appHost();
 
 // Client-supplied forwarding/hop-by-hop headers we must not relay verbatim (this
 // edge is a trust boundary; apps trust X-Forwarded-* behind the OS proxy).

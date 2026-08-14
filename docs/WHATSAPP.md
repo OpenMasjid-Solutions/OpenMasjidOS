@@ -124,9 +124,24 @@ a family's fees.
 
 ## Troubleshooting
 
+Everything is done in **OpenMasjidOS → Settings → WhatsApp**. You never open OpenWA's own
+interface — the platform creates the session and requests the pairing code for you. OpenWA
+is only the engine.
+
+If something is wrong, the status line under the panel names the reason. The core's log has
+the same reason plus the address it tried:
+
+```bash
+docker logs --tail 200 openmasjid-core | grep -i whatsapp
+```
+
 | What you see | What it means |
 |---|---|
-| *Cannot reach the gateway* | OpenWA is not installed, not running, or the address is wrong |
+| *Cannot reach the gateway — OpenWA is not installed* | Install it from the App Store |
+| *Cannot reach the gateway — OpenWA is installed but not running* | Start it from the dashboard |
+| *Cannot reach the gateway — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
+| *Cannot reach the gateway — the gateway address could not be found* | Only possible with a typed-in *Gateway address*; check the hostname |
+| *The gateway rejected the API key* | Re-paste the key you set when installing OpenWA. Remember it is only read on OpenWA's **first** boot — if you changed it in Settings, reinstall OpenWA instead |
 | *No connection created yet* | The gateway is up but nothing exists on it; pressing **Link your phone** creates it |
 | *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
 | *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |

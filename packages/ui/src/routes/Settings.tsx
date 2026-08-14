@@ -1776,9 +1776,14 @@ function WhatsAppPanel() {
                 ? t('settings.whatsappStateNoSession')
                 : s.state === 'problem'
                   ? t('settings.whatsappStateProblem', { detail: s.detail })
-                  : s.state === 'unreachable'
-                    ? t('settings.whatsappStateUnreachable')
-                    : t('settings.whatsappStateOff')}
+                  : s.state === 'bad-key'
+                    ? t('settings.whatsappStateBadKey')
+                    : s.state === 'unreachable'
+                      ? // The reason is the whole message here: "OpenWA is not installed"
+                        // and "nothing is listening at the gateway address" have different
+                        // fixes, and a single generic line gave the admin nothing to act on.
+                        t('settings.whatsappStateUnreachable', { detail: s.detail })
+                      : t('settings.whatsappStateOff')}
         </p>
       )}
     </section>

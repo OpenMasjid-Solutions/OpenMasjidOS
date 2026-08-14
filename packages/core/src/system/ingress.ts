@@ -19,11 +19,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { listInstalled, getAppPath } from '../apps/manager';
 import { isViaTunnelHeaders, decodedPath } from './via-tunnel';
+import { appHost } from './app-host';
 import { log } from '../logger';
 
-// How the core reaches an app's published host port (host-gateway mapping added by
-// the installer; localhost in dev). Same target the per-app TLS proxy uses.
-const TARGET_HOST = process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.internal';
+// How the core reaches an app's published host port — one definition, shared with the
+// per-app TLS proxy, the Fabric broker and the WhatsApp gateway client.
+const TARGET_HOST = appHost();
 // Path segments that must never be treated as an app route (platform endpoints).
 const RESERVED = new Set(['api', 'trpc', 'assets']);
 
