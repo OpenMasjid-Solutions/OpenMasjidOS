@@ -9,6 +9,10 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 ## Unreleased
 
+> This section exists only on `dev` and is the full working record — fixes, internals, CI,
+> docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
+> what a masjid would notice (CLAUDE.md §18).
+
 **Added — WhatsApp notifications (OpenWA)**
 
 - A third notification channel beside email and the webhook, sending through **OpenWA** — a self-hosted, MIT-licensed WhatsApp gateway the masjid installs from the App Store. Nothing leaves the masjid's network to a third-party sending service. The catalogue entry itself belongs to OpenMasjidAPPS (§4/§19); this is the platform half.
@@ -21,7 +25,6 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 **Why one queue owns all sending.** Ban risk attaches to the phone *number*, not to whichever app had something to say, so it cannot be enforced per app: two apps each sending politely at the same moment still make the number burst. Every message goes through one serialised queue. OpenWA's own `send-bulk` is deliberately unused — it paces within a single request, which does nothing about two requests overlapping. Human behaviour: randomised 6–20s gaps (a fixed interval is itself a fingerprint), a typing indicator scaled to message length, presence online-while-working, a per-recipient cooldown, rolling hour/day caps, a warm-up ramp for a freshly linked number, quiet hours that queue rather than drop, and `contacts/check` before first contact. `clampLimits` means an admin can only make the policy stricter.
 
-
 **WhatsApp — corrections after OpenMasjidAPPS reviewed the platform half**
 
 - **A rate-limited message is no longer lost.** Every non-2xx was treated alike and the queue dropped the item regardless, so a `429` silently discarded a message. Failures are now classified: `429`, `5xx` and network errors are retried with a widening backoff (bounded at 5 attempts); `4xx` refusals are permanent and are not retried, since repeating them only burns the number’s allowance.
@@ -33,15 +36,7 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 **Fixed**
 
 - `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.
-- 10 orphaned translation strings removed in the previous sweep are joined by the addition of the WhatsApp strings; every `t()` key in Settings is now verified to resolve.
-
-
-> This section exists only on `dev` and is the full working record — fixes, internals, CI,
-> docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
-> what a masjid would notice (CLAUDE.md §18).
-
-**Fixed**
-
+- Every `t()` key in Settings is verified to resolve, after the WhatsApp strings were added and 10 orphans removed.
 - **Returning to Stable no longer loops for ever.** Updating the OS restarts the core, which drops every in-memory session; the dashboard falls back to the sign-in screen, unmounting `AppShell` — and the window layer renders inside the `Dock`, so the migration window's subtree unmounted while the window itself survived in `WindowsProvider` above the router. Signing back in remounted `ChannelMigrate` with `index` reset to 0 and its original prop list, so it re-updated every app and then the OS again, signing you out again. Escapable only by closing the window in the seconds before the restart landed. Two independent fixes:
   - `runUpdate` refuses to "update" to the version already running — the guard `updateCatalogApp` has always had for apps, which the core's own update never got. A channel move still proceeds, decided by whether the running version is a prerelease (`isPrerelease`), because `main → dev` is release → prerelease and semver alone would call that a downgrade and refuse.
   - `ChannelMigrate` reads what is still pending from `system.channel` and snapshots it once, instead of trusting a prop captured when the window opened. A remount after a completed migration now sees nothing pending. Snapshotting (rather than reading live every render) keeps an invalidation mid-run from shifting the list under the index.
