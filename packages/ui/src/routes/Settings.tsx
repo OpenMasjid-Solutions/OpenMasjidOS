@@ -1601,7 +1601,7 @@ function WhatsAppPanel() {
 
   const [provider, setProvider] = useState<'none' | 'openwa'>('none');
   const [baseUrl, setBaseUrl] = useState('');
-  const [sessionId, setSessionId] = useState('');
+  const [sessionName, setSessionName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [linkPhone, setLinkPhone] = useState('');
   const [pairing, setPairing] = useState<string | null>(null);
@@ -1610,7 +1610,7 @@ function WhatsAppPanel() {
     if (cfg.data && !seededWa.current) {
       setProvider(cfg.data.provider);
       setBaseUrl(cfg.data.baseUrl);
-      setSessionId(cfg.data.sessionId);
+      setSessionName(cfg.data.sessionName);
       seededWa.current = true;
     }
   }, [cfg.data]);
@@ -1676,9 +1676,9 @@ function WhatsAppPanel() {
             <label className="label">{t('settings.whatsappSession')}</label>
             <input
               className="input glass-inset"
-              value={sessionId}
-              onChange={(e) => setSessionId(e.target.value)}
-              placeholder="masjid-main"
+              value={sessionName}
+              onChange={(e) => setSessionName(e.target.value)}
+              placeholder="openmasjid"
             />
             <span className="hint">{t('settings.whatsappSessionHint')}</span>
           </div>
@@ -1715,7 +1715,7 @@ function WhatsAppPanel() {
             save.mutate({
               provider,
               baseUrl: baseUrl.trim(),
-              sessionId: sessionId.trim(),
+              sessionName: sessionName.trim() || undefined,
               apiKey: apiKey.trim() || undefined,
             })
           }
@@ -1766,13 +1766,19 @@ function WhatsAppPanel() {
           message not arrived?" — it is paced, and may be waiting out quiet hours. */}
       {s && (
         <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
-          {s.configured
-            ? s.connected
-              ? t('settings.whatsappStateReady', { queued: s.queued })
-              : s.reachable
-                ? t('settings.whatsappStateNotLinked')
-                : t('settings.whatsappStateUnreachable')
-            : t('settings.whatsappStateOff')}
+          {/* One line per distinct state. "Gateway down", "nothing created yet" and
+              "created but not linked" have different fixes, so they must read differently. */}
+          {s.state === 'ready'
+            ? t('settings.whatsappStateReady', { queued: s.queued })
+            : s.state === 'pending'
+              ? t('settings.whatsappStateNotLinked')
+              : s.state === 'no-session'
+                ? t('settings.whatsappStateNoSession')
+                : s.state === 'problem'
+                  ? t('settings.whatsappStateProblem', { detail: s.detail })
+                  : s.state === 'unreachable'
+                    ? t('settings.whatsappStateUnreachable')
+                    : t('settings.whatsappStateOff')}
         </p>
       )}
     </section>

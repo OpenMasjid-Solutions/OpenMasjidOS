@@ -244,6 +244,77 @@ test('sending is serialised, and bulk is deliberately unused', () => {
   assert.doesNotMatch(code, /log\.(info|warn|error)\([^)]*item\.text/, 'never log a message body');
 });
 
+// ── the two defects OpenMasjidAPPS found by reading this code ────────────────────
+
+test('a 429 is a "not yet", not a lost message', () => {
+  // THE BUG. Every non-2xx was treated the same, and the queue shifted the item off
+  // regardless — so a rate-limit response silently DISCARDED a parent's fee reminder.
+  // Rate limiting is the one error a deliberately-paced sender should expect to meet.
+  assert.equal(wa.isRetryableStatus(429), true, '429 must be retried');
+  assert.equal(wa.isRetryableStatus(0), true, 'network error / timeout must be retried');
+  assert.equal(wa.isRetryableStatus(500), true, 'gateway restarting must be retried');
+  assert.equal(wa.isRetryableStatus(502), true);
+  assert.equal(wa.isRetryableStatus(503), true);
+  // Permanent refusals must NOT be retried — repeating them just burns the number's
+  // allowance against a request that can never succeed.
+  for (const s of [400, 401, 403, 404, 409, 422]) {
+    assert.equal(wa.isRetryableStatus(s), false, `${s} is permanent`);
+  }
+});
+
+test('a transient failure keeps its place in the queue, a permanent one does not', () => {
+  const code = codeOf('notify/whatsapp.ts');
+  const pumpAt = code.indexOf('async function pump');
+  const body = code.slice(pumpAt);
+  const retryAt = body.indexOf('outcome.retryable');
+  const shiftAt = body.indexOf('queue.shift()');
+  assert.ok(retryAt > 0, 'the pump must classify the failure');
+  assert.ok(retryAt < shiftAt, 'and must decide BEFORE removing the message from the queue');
+  assert.match(body.slice(retryAt, shiftAt), /continue/, 'a retryable failure keeps its place');
+  // And it must give up eventually rather than looping on a permanently broken gateway.
+  assert.match(code, /MAX_ATTEMPTS/, 'retries must be bounded');
+});
+
+test('qr_ready is NOT connected — the substring trap', () => {
+  // The status test was `/connected|working|open|authenticated|ready/`, and `qr_ready`
+  // contains "ready". So a session merely WAITING to be linked reported as connected —
+  // exactly backwards, and it is the state a fresh install sits in longest.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.doesNotMatch(code, /\/connected\|working\|open/, 'the substring regex must stay gone');
+  // Statuses come from OpenWA's own enum, matched exactly.
+  assert.match(code, /const READY = 'ready'/, 'ready is matched exactly');
+  assert.match(code, /qr_ready/, "and qr_ready is listed as pending, not ready");
+  const pending = code.slice(code.indexOf('PENDING_STATUSES'), code.indexOf('PENDING_STATUSES') + 200);
+  for (const s of ['created', 'initializing', 'qr_ready', 'authenticating']) {
+    assert.match(pending, new RegExp(s), `${s} must count as pending`);
+  }
+});
+
+test('"no session yet" is reported separately from "gateway unreachable"', () => {
+  // They have completely different fixes — one is "press link", the other is "is OpenWA
+  // running?" — so collapsing them sent the admin hunting a network fault that was not
+  // there.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.match(code, /'no-session'/, 'the state must exist');
+  const fn = code.slice(code.indexOf('export async function gatewayStatus'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /if \(!cfg\.sessionId\)/, 'a missing session is checked before being called unreachable');
+  assert.match(body, /404/, 'and a session deleted at the gateway is recoverable, not unreachable');
+});
+
+test('the session id is machine-managed, never typed by an admin', () => {
+  // OpenWA mints a UUID and POST /api/sessions takes only a name, so there is nothing an
+  // admin could sensibly type. Accepting one from the UI would also let a typo point this
+  // masjid at another masjid's session on a shared gateway.
+  const store = codeOf('store/whatsapp.ts');
+  assert.match(store, /export function recordSessionId/, 'the platform records what the gateway minted');
+  assert.doesNotMatch(store, /input\.sessionId/, 'and never takes an id from the settings input');
+  const routerSrc = codeOf('trpc/routers/whatsapp.ts');
+  assert.doesNotMatch(routerSrc, /sessionId: z\./, 'the API must not accept a session id');
+  assert.match(routerSrc, /sessionName: z\./, 'only a human label');
+  assert.match(routerSrc, /ensureSession\(\)/, 'and linking creates the session itself');
+});
+
 test('the Fabric route queues rather than claiming delivery', () => {
   const code = codeOf('api/fabric.ts');
   const at = code.indexOf("'/api/fabric/whatsapp'");

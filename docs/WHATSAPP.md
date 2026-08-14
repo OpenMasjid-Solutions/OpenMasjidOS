@@ -27,10 +27,18 @@ ever leaves the masjid's network to a third-party sending service.
 
 1. **Install OpenWA** from the App Store. During install you set an **API key** and a
    **session name**; keep both.
-2. **Settings → WhatsApp**: choose OpenWA as the gateway, paste the same API key and
-   session name. Leave *Gateway address* empty — the platform finds an App Store install
-   automatically on `127.0.0.1` at its published port. Fill the address in only if OpenWA
-   runs on a different machine.
+2. **Settings → WhatsApp**: choose OpenWA as the gateway and paste the same API key you set
+   when installing it (the `OPENWA_API_KEY` setting, which OpenWA reads as
+   `API_MASTER_KEY`). Leave *Gateway address* empty — an App Store install is found
+   automatically on `127.0.0.1` at its published port. Fill it in only if OpenWA runs on a
+   different machine.
+
+   > **The key is only read on OpenWA’s first boot.** Changing it here later does not
+   > rotate the gateway’s key — reinstall OpenWA if you need to change it.
+
+   You do **not** enter a session id. OpenWA mints one as a UUID and its API accepts only
+   a name, so OpenMasjidOS creates the session for you the first time you link a phone —
+   you never open OpenWA’s own admin panel.
 3. **Link your phone.** Enter the number to send *from*, press **Get a code**, then on
    that phone open WhatsApp → *Settings → Linked devices → Link with phone number* and
    type the code. A pairing code is used rather than a QR because a masjid's server is
@@ -119,7 +127,10 @@ a family's fees.
 | What you see | What it means |
 |---|---|
 | *Cannot reach the gateway* | OpenWA is not installed, not running, or the address is wrong |
-| *No phone is linked yet* | The gateway is up; finish step 3 |
+| *No connection created yet* | The gateway is up but nothing exists on it; pressing **Link your phone** creates it |
+| *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
+| *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |
 | Messages queue but never arrive | Check quiet hours and the caps in Settings; the panel shows how many are waiting |
+| A message was delayed a long time, then arrived | The gateway rate-limited or restarted. A transient failure is retried with a widening backoff (up to 5 attempts) rather than dropped |
 | *That number is not on WhatsApp* | The recipient's number has no WhatsApp account — the platform refuses rather than sending, because that is a ban signal |
 | A test message works but alerts don't | The alert's WhatsApp column is off in Settings → Alerts, or your Account number is empty |

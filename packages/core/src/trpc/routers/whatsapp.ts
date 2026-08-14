@@ -26,6 +26,7 @@ import {
 import {
   gatewayStatus,
   requestPairingCode,
+  ensureSession,
   sendTestMessage,
   queueDepth,
   toDigits,
@@ -74,7 +75,8 @@ export const whatsappRouter = router({
         baseUrl: z.string().trim().max(300).optional(),
         /** Blank = keep the stored key, so changing a limit never re-pastes a secret. */
         apiKey: z.string().max(300).optional(),
-        sessionId: z.string().trim().max(120).optional(),
+        /** Only the NAME. OpenWA mints the id and the platform records it. */
+        sessionName: z.string().trim().max(60).optional(),
         limits: limitsInput.optional(),
       }),
     )
@@ -103,6 +105,14 @@ export const whatsappRouter = router({
           code: 'BAD_REQUEST',
           message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
         });
+      }
+      // Create the session if this is the first link. Doing it here (rather than making
+      // the admin press a separate button) is the whole point of managing the id
+      // ourselves: OpenWA mints a UUID and takes only a name, so there is no value a
+      // volunteer could sensibly type.
+      const s = await ensureSession();
+      if (!s.ok) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: s.error ?? 'Could not create a WhatsApp session.' });
       }
       const r = await requestPairingCode(digits);
       if (!r.ok) {

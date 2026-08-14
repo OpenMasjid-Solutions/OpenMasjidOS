@@ -61,8 +61,17 @@ export interface WhatsAppConfig {
   baseUrl: string;
   /** OpenWA's `X-API-Key`. SECRET — never returned to the UI. */
   apiKey: string;
-  /** The OpenWA session id this masjid sends from. */
+  /**
+   * The OpenWA session UUID this masjid sends from. MACHINE-MANAGED: OpenWA mints it
+   * (every session route is `@Param('id', ParseUUIDPipe)`) and `POST /api/sessions`
+   * accepts only a NAME, so there is no env var an app entry could seed and no value an
+   * admin could sensibly type. The platform creates the session itself and records the
+   * id here, which removes the only manual step in the whole flow — the alternative was
+   * sending a volunteer into another app's admin panel to copy a UUID back.
+   */
   sessionId: string;
+  /** The human label used when creating the session. Alphanumeric and hyphens only. */
+  sessionName: string;
   /** When the session was first linked — the warm-up ramp counts from here. */
   linkedAt: string | null;
   limits: WhatsAppLimits;
@@ -96,6 +105,7 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
   baseUrl: '',
   apiKey: '',
   sessionId: '',
+  sessionName: 'openmasjid',
   linkedAt: null,
   limits: { ...DEFAULT_LIMITS },
 };
@@ -159,7 +169,7 @@ export function getWhatsAppConfig(): WhatsAppConfig {
  * nothing to authenticate with and no session to send from.
  */
 export function isWhatsAppConfigured(): boolean {
-  return cache.provider === 'openwa' && Boolean(cache.apiKey && cache.sessionId);
+  return cache.provider === 'openwa' && Boolean(cache.apiKey);
 }
 
 /** Non-secret view for the admin UI — the API key is only ever an "is set" flag. */
@@ -167,6 +177,7 @@ export interface WhatsAppConfigPublic {
   provider: WhatsAppProvider;
   baseUrl: string;
   sessionId: string;
+  sessionName: string;
   hasApiKey: boolean;
   linkedAt: string | null;
   configured: boolean;
@@ -178,6 +189,7 @@ export function getWhatsAppConfigPublic(): WhatsAppConfigPublic {
     provider: cache.provider,
     baseUrl: cache.baseUrl,
     sessionId: cache.sessionId,
+    sessionName: cache.sessionName,
     hasApiKey: Boolean(cache.apiKey),
     linkedAt: cache.linkedAt,
     configured: isWhatsAppConfigured(),
@@ -190,7 +202,7 @@ export interface WhatsAppUpsert {
   baseUrl?: string;
   /** Blank/omitted = keep the existing key, so a settings tweak never re-pastes it. */
   apiKey?: string;
-  sessionId?: string;
+  sessionName?: string;
   limits?: Partial<WhatsAppLimits>;
 }
 
@@ -218,7 +230,9 @@ function computeNext(input: WhatsAppUpsert): WhatsAppConfig {
   const next: WhatsAppConfig = withDefaults(cache);
   if (input.provider) next.provider = input.provider;
   if (input.baseUrl !== undefined) next.baseUrl = normaliseBaseUrl(input.baseUrl);
-  if (input.sessionId !== undefined) next.sessionId = input.sessionId.trim();
+  // Only the NAME is settable. OpenWA mints the id, so accepting one from the UI would
+  // let a typo point the platform at another masjid's session on a shared gateway.
+  if (input.sessionName !== undefined) next.sessionName = input.sessionName.trim().replace(/[^A-Za-z0-9-]/g, '-');
   if (input.apiKey !== undefined && input.apiKey.trim()) next.apiKey = input.apiKey.trim();
   if (input.limits) next.limits = clampLimits({ ...next.limits, ...input.limits });
   return next;
@@ -240,6 +254,16 @@ export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic 
  * when a pairing code is issued: a freshly linked number is exactly the one WhatsApp
  * watches hardest, so it must not inherit an old number's earned allowance.
  */
+/**
+ * Record the session UUID OpenWA minted for us. Separate from `saveWhatsAppConfig`
+ * because it is not an admin edit — it is the platform remembering what the gateway
+ * told it, and it must not be reachable from the settings input.
+ */
+export function recordSessionId(id: string): void {
+  cache = { ...cache, sessionId: id };
+  persist();
+}
+
 export function markLinked(when: string): void {
   cache = { ...cache, linkedAt: when };
   persist();

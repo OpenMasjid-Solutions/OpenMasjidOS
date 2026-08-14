@@ -21,6 +21,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 **Why one queue owns all sending.** Ban risk attaches to the phone *number*, not to whichever app had something to say, so it cannot be enforced per app: two apps each sending politely at the same moment still make the number burst. Every message goes through one serialised queue. OpenWA's own `send-bulk` is deliberately unused — it paces within a single request, which does nothing about two requests overlapping. Human behaviour: randomised 6–20s gaps (a fixed interval is itself a fingerprint), a typing indicator scaled to message length, presence online-while-working, a per-recipient cooldown, rolling hour/day caps, a warm-up ramp for a freshly linked number, quiet hours that queue rather than drop, and `contacts/check` before first contact. `clampLimits` means an admin can only make the policy stricter.
 
+
+**WhatsApp — corrections after OpenMasjidAPPS reviewed the platform half**
+
+- **A rate-limited message is no longer lost.** Every non-2xx was treated alike and the queue dropped the item regardless, so a `429` silently discarded a message. Failures are now classified: `429`, `5xx` and network errors are retried with a widening backoff (bounded at 5 attempts); `4xx` refusals are permanent and are not retried, since repeating them only burns the number’s allowance.
+- **`qr_ready` no longer reports as connected.** The status check was a substring regex, and `qr_ready` contains `ready` — so a session merely waiting to be paired read as linked, which is the state a fresh install sits in longest. Statuses now match OpenWA’s enum exactly.
+- **“No session yet” is distinguished from “gateway unreachable.”** They have opposite fixes, and conflating them sent the admin looking for a network fault that was not there. A session deleted at the gateway is also recoverable rather than fatal.
+- **The session id is machine-managed.** OpenWA mints a UUID and `POST /api/sessions` takes only a name, so there was no value an admin could type and no env var an app entry could seed. The platform now creates the session itself on first link (idempotently — a name clash adopts the existing one), which removes the only manual step: no volunteer has to open OpenWA’s admin panel to copy a UUID back.
+- The API-key hint now says it is the same key entered when installing OpenWA, and warns that OpenWA reads it only on first boot — so changing it here does not rotate the gateway’s key.
+
 **Fixed**
 
 - `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.

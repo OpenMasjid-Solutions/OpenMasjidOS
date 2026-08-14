@@ -618,9 +618,9 @@
     "whatsappProvider": "Gateway",
     "whatsappNone": "Off",
     "whatsappSession": "Session name",
-    "whatsappSessionHint": "The session name you set when installing OpenWA.",
+    "whatsappSessionHint": "A label for this masjid’s WhatsApp connection. OpenMasjidOS creates the session for you — you never need to open OpenWA to find an id.",
     "whatsappKey": "Gateway key",
-    "whatsappKeyHint": "The API key you set when installing OpenWA. Stored on this server only, and never shown again.",
+    "whatsappKeyHint": "The same key you entered when installing OpenWA (the OPENWA_API_KEY setting). Stored on this server only and never shown again. Note: OpenWA only reads that key the first time it starts, so changing it here later will not change the gateway’s key — reinstall OpenWA if you need to rotate it.",
     "whatsappUrl": "Gateway address",
     "whatsappUrlAuto": "Found automatically",
     "whatsappUrlHint": "Leave empty if you installed OpenWA from the App Store — it is found for you. Only fill this in if the gateway runs on another machine.",
@@ -636,7 +636,9 @@
     "whatsappStateNotLinked": "The gateway is running, but no phone is linked yet. Use “Link your phone” below.",
     "whatsappStateUnreachable": "Cannot reach the gateway. Is OpenWA installed and running?",
     "whatsappStateOff": "WhatsApp is off.",
-    "alertsWhatsapp": "WhatsApp"
+    "alertsWhatsapp": "WhatsApp",
+    "whatsappStateNoSession": "Gateway found, no connection created yet. Use “Link your phone” below and OpenMasjidOS will set it up.",
+    "whatsappStateProblem": "The phone connection needs attention (“{{detail}}”). Try linking it again."
   },
   "update": {
     "title": "Updating OpenMasjidOS",

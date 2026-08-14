@@ -49,6 +49,7 @@ import { getInstalled } from '../apps/manager';
 import {
   getWhatsAppConfig,
   isWhatsAppConfigured,
+  recordSessionId,
   type WhatsAppConfig,
   type WhatsAppLimits,
 } from '../store/whatsapp';
@@ -60,6 +61,8 @@ const MAX_QUEUE = 500;
 /** A text longer than this is refused: WhatsApp's own limit is far higher, but a
  *  multi-thousand-character blast is neither human nor useful. */
 const MAX_TEXT = 4096;
+/** Retries for a transient failure before the message is dropped (and logged). */
+const MAX_ATTEMPTS = 5;
 
 export interface SendRequest {
   /** Recipient in international format. Punctuation is tolerated and stripped. */
@@ -72,6 +75,8 @@ export interface SendRequest {
 interface QueueItem extends SendRequest {
   digits: string;
   enqueuedAt: number;
+  /** Transient-failure retries so far. */
+  attempts: number;
 }
 
 /** Outcome of a single attempt, for the caller's log and the admin's status panel. */
@@ -79,6 +84,28 @@ export interface SendOutcome {
   ok: boolean;
   /** Present when the gateway refused or was unreachable. Never includes the body. */
   error?: string;
+  /**
+   * True when the failure is worth retrying: rate limiting, a 5xx, or a network error.
+   * FALSE for a refusal that will never succeed (a malformed request, a number that is
+   * not on WhatsApp) — retrying those just burns the number's allowance.
+   */
+  retryable?: boolean;
+}
+
+/**
+ * Is an HTTP status worth trying again?
+ *
+ * 429 is the important one. OpenMasjidOS is the single governor of this number (the
+ * gateway app ships with upstream's own pacer disabled so there is exactly one), but a
+ * 429 can still arrive — a shared gateway, a hand-tuned limit, WhatsApp itself pushing
+ * back. Treating it as a permanent failure discarded the message, which is the worst
+ * possible reading of 'slow down'.
+ */
+export function isRetryableStatus(status: number): boolean {
+  if (status === 0) return true; // network error / timeout — never the message's fault
+  if (status === 429) return true; // slow down, not no
+  if (status >= 500) return true; // gateway restarting, engine reloading
+  return false; // 4xx: malformed, unauthorised, unknown session — retrying cannot help
 }
 
 // ── phone numbers ────────────────────────────────────────────────────────────────
@@ -170,18 +197,108 @@ async function call(
   }
 }
 
-/** Is the gateway reachable and the session actually connected? */
-export async function gatewayStatus(): Promise<{ reachable: boolean; connected: boolean; detail: string }> {
+/**
+ * OpenWA's session status enum, verified against its OpenAPI spec. Only `ready` means
+ * "linked and able to send".
+ *
+ * Matching this EXACTLY matters: the first version tested the status with
+ * `/connected|working|open|authenticated|ready/`, and `qr_ready` contains "ready" — so a
+ * session that was merely waiting to be scanned reported as connected. That is precisely
+ * backwards, and it is the state a new install spends most of its time in.
+ */
+const READY = 'ready';
+const PENDING_STATUSES = new Set(['created', 'initializing', 'qr_ready', 'authenticating']);
+
+export type SessionState = 'unconfigured' | 'unreachable' | 'no-session' | 'pending' | 'ready' | 'problem';
+
+export interface GatewayStatus {
+  state: SessionState;
+  /** Kept for the UI's existing shape: reachable = the gateway answered at all. */
+  reachable: boolean;
+  connected: boolean;
+  /** OpenWA's own status word, or our reason — shown to the admin verbatim. */
+  detail: string;
+}
+
+/** Where the gateway and its session actually stand. */
+export async function gatewayStatus(): Promise<GatewayStatus> {
   const cfg = getWhatsAppConfig();
-  if (!isWhatsAppConfigured()) return { reachable: false, connected: false, detail: 'not configured' };
+  if (!isWhatsAppConfigured()) {
+    return { state: 'unconfigured', reachable: false, connected: false, detail: 'not configured' };
+  }
+  // No session yet is NOT "unreachable" — the gateway may be perfectly healthy and simply
+  // have nothing created on it. Reporting the two the same way sent the admin hunting for
+  // a network fault that wasn't there.
+  if (!cfg.sessionId) {
+    const probe = await call(cfg, 'GET', '/api/sessions');
+    if (!probe.ok) {
+      return { state: 'unreachable', reachable: false, connected: false, detail: probe.error ?? 'unreachable' };
+    }
+    return { state: 'no-session', reachable: true, connected: false, detail: 'no session created yet' };
+  }
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
-  if (!r.ok) return { reachable: false, connected: false, detail: r.error ?? 'unreachable' };
-  // OpenWA reports a session status string; treat only an explicitly connected/working
-  // state as connected, so "reachable but not linked" never reads as ready to send.
-  const s = r.json as { status?: unknown; state?: unknown; connected?: unknown } | null;
-  const word = String(s?.status ?? s?.state ?? '').toLowerCase();
-  const connected = s?.connected === true || /connected|working|open|authenticated|ready/.test(word);
-  return { reachable: true, connected, detail: word || (connected ? 'connected' : 'not linked') };
+  if (!r.ok) {
+    // A 404 here means the session we recorded is gone (deleted in OpenWA, or the volume
+    // was wiped) — recoverable by creating another, so don't call the gateway unreachable.
+    if (r.status === 404) {
+      return { state: 'no-session', reachable: true, connected: false, detail: 'the session no longer exists' };
+    }
+    return { state: 'unreachable', reachable: false, connected: false, detail: r.error ?? 'unreachable' };
+  }
+  const s = r.json as { status?: unknown } | null;
+  const word = String(s?.status ?? '').toLowerCase();
+  if (word === READY) return { state: 'ready', reachable: true, connected: true, detail: word };
+  if (PENDING_STATUSES.has(word)) return { state: 'pending', reachable: true, connected: false, detail: word };
+  // disconnected / action_required / failed, or anything OpenWA adds later.
+  return { state: 'problem', reachable: true, connected: false, detail: word || 'unknown state' };
+}
+
+/**
+ * Make sure a session exists, creating one if not, and remember its id.
+ *
+ * The platform does this itself because OpenWA mints the id as a UUID and
+ * `POST /api/sessions` takes only a name — so there is no env var an app entry could
+ * seed, and the alternative was telling a volunteer to open OpenWA's own admin panel and
+ * copy a UUID back into OpenMasjidOS. For a product whose premise is "zero technical
+ * knowledge", that step could not stay.
+ *
+ * Idempotent: a 409 means the name is already taken (we created it on a previous boot and
+ * lost the id, or the volume outlived our config), so look it up by name rather than
+ * creating a second session on the same number.
+ */
+export async function ensureSession(): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const cfg = getWhatsAppConfig();
+  if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
+  if (cfg.sessionId) return { ok: true, id: cfg.sessionId };
+
+  const name = (cfg.sessionName || 'openmasjid').replace(/[^A-Za-z0-9-]/g, '-');
+  const created = await call(cfg, 'POST', '/api/sessions', { name });
+  if (created.ok) {
+    const id = (created.json as { id?: unknown } | null)?.id;
+    if (typeof id === 'string' && id) {
+      recordSessionId(id);
+      log.info('WhatsApp: created a gateway session.');
+      return { ok: true, id };
+    }
+    return { ok: false, error: 'the gateway created a session but returned no id' };
+  }
+  if (created.status === 409) {
+    // Already there under this name — adopt it instead of making a duplicate.
+    const list = await call(cfg, 'GET', '/api/sessions');
+    if (list.ok) {
+      const rows = Array.isArray(list.json)
+        ? (list.json as { id?: unknown; name?: unknown }[])
+        : ((list.json as { sessions?: { id?: unknown; name?: unknown }[] } | null)?.sessions ?? []);
+      const mine = rows.find((s) => s?.name === name);
+      if (mine && typeof mine.id === 'string') {
+        recordSessionId(mine.id);
+        log.info('WhatsApp: adopted the existing gateway session.');
+        return { ok: true, id: mine.id };
+      }
+    }
+    return { ok: false, error: `a session named "${name}" already exists but could not be read` };
+  }
+  return { ok: false, error: created.error ?? 'could not create a session' };
 }
 
 /** Ask the gateway for a pairing code so the admin can link the phone without a QR. */
@@ -323,7 +440,7 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
   if (text.length > MAX_TEXT) return { queued: false, error: `The message is too long (max ${MAX_TEXT}).` };
   if (queue.length >= MAX_QUEUE) return { queued: false, error: 'The WhatsApp queue is full. Try again later.' };
 
-  queue.push({ to: req.to, text, source: req.source, digits, enqueuedAt: Date.now() });
+  queue.push({ to: req.to, text, source: req.source, digits, enqueuedAt: Date.now(), attempts: 0 });
   void pump();
   return { queued: true };
 }
@@ -359,8 +476,41 @@ async function pump(): Promise<void> {
         continue;
       }
 
+      // A session may not exist yet (fresh install, or the gateway's volume was wiped).
+      // Creating it is the platform's job, and failing is transient — wait, don't drop.
+      if (!cfg.sessionId) {
+        const s = await ensureSession();
+        if (!s.ok) {
+          log.warn(`WhatsApp: no usable session yet (${s.error ?? 'unknown'}); will retry.`);
+          await sleep(60_000);
+          continue;
+        }
+      }
+
       await setPresence(cfg, true);
       const outcome = await sendOne(cfg, item);
+
+      // TRANSIENT failures must not lose the message. The first version shifted the item
+      // off the queue whatever happened, so a 429 (or a restarting gateway, or a dropped
+      // connection) silently discarded a parent's fee reminder. Rate limiting in
+      // particular is a "not yet", not a "no" — it is the one error a paced sender should
+      // expect to meet.
+      if (!outcome.ok && outcome.retryable) {
+        item.attempts += 1;
+        if (item.attempts < MAX_ATTEMPTS) {
+          // Back off further each time, so a gateway that is down for a while is not
+          // hammered on our normal cadence.
+          const backoff = Math.min(15 * 60_000, 30_000 * 2 ** (item.attempts - 1));
+          log.warn(
+            `WhatsApp: send for ${item.source} failed (${outcome.error ?? 'unknown'}); ` +
+              `retry ${item.attempts}/${MAX_ATTEMPTS} in ${Math.round(backoff / 1000)}s.`,
+          );
+          await sleep(backoff);
+          continue; // keep it at the head of the queue
+        }
+        log.error(`WhatsApp: giving up on a message for ${item.source} after ${MAX_ATTEMPTS} attempts.`);
+      }
+
       queue.shift();
       if (outcome.ok) {
         sentAt.push(Date.now());
@@ -396,7 +546,7 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
   const registered = await checkRegistered(cfg, item.digits);
   if (registered === false) {
     log.warn(`WhatsApp: ${item.source} addressed a number that is not on WhatsApp — skipped.`);
-    return { ok: false, error: 'that number is not on WhatsApp' };
+    return { ok: false, error: 'that number is not on WhatsApp', retryable: false };
   }
 
   // Type, pause, then send — in that order, because that is the order a person does it.
@@ -418,8 +568,7 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     linkPreview: false,
   });
   if (!r.ok) {
-    log.warn(`WhatsApp: send for ${item.source} failed (${r.error ?? 'unknown'}).`);
-    return { ok: false, error: r.error };
+    return { ok: false, error: r.error, retryable: isRetryableStatus(r.status) };
   }
   log.info(`WhatsApp: delivered a message for ${item.source}.`);
   return { ok: true };
@@ -436,7 +585,7 @@ export async function sendTestMessage(to: string, text: string): Promise<SendOut
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(to);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
-  const outcome = await sendOne(cfg, { to, text, source: 'os:test', digits, enqueuedAt: Date.now() });
+  const outcome = await sendOne(cfg, { to, text, source: 'os:test', digits, enqueuedAt: Date.now(), attempts: 0 });
   if (outcome.ok) {
     sentAt.push(Date.now());
     lastToRecipient.set(digits, Date.now());
