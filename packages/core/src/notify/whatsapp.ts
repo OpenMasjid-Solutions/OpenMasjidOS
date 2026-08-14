@@ -413,6 +413,15 @@ export async function ensureSession(): Promise<{ ok: boolean; id?: string; error
  */
 async function ensureStarted(cfg: WhatsAppConfig): Promise<{ ok: boolean; ready?: boolean; error?: string }> {
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+  // The recorded id can outlive the session it names: OpenWA's volume was wiped, the
+  // session was deleted in its UI, or the gateway was reinstalled. Every later call then
+  // 404s forever with nothing to click, so forget the id and let the caller create
+  // another — the id is ours to manage, which means ours to re-mint.
+  if (r.status === 404) {
+    log.warn('WhatsApp: the recorded session no longer exists at the gateway; creating a new one.');
+    recordSessionId('');
+    return { ok: false, error: 'stale-session' };
+  }
   if (!r.ok) return { ok: false, error: r.error ?? 'could not read the session' };
   const s = r.json as { status?: unknown; engineLoaded?: unknown } | null;
   const status = String(s?.status ?? '').toLowerCase();
@@ -441,14 +450,23 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
   const digits = toDigits(phone);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
 
-  const session = await ensureSession();
-  if (!session.ok) return { ok: false, error: session.error };
-  // ensureSession may have just recorded a new id, so re-read rather than reusing cfg0.
-  const cfg = getWhatsAppConfig();
   void cfg0;
-
-  const started = await ensureStarted(cfg);
-  if (!started.ok) return { ok: false, error: started.error };
+  // Two passes at most: if the id we hold turns out to name a session the gateway no
+  // longer has, `ensureStarted` clears it and the second pass creates a fresh one. A
+  // masjid should never have to know that happened, let alone fix it by hand.
+  let cfg = getWhatsAppConfig();
+  let started: { ok: boolean; ready?: boolean; error?: string } = { ok: false };
+  for (let pass = 0; pass < 2; pass += 1) {
+    const session = await ensureSession();
+    if (!session.ok) return { ok: false, error: session.error };
+    // ensureSession may have just recorded a new id, so re-read rather than reusing cfg0.
+    cfg = getWhatsAppConfig();
+    started = await ensureStarted(cfg);
+    if (started.error !== 'stale-session') break;
+  }
+  if (!started.ok) {
+    return { ok: false, error: started.error === 'stale-session' ? 'Could not create a WhatsApp session.' : started.error };
+  }
   if (started.ready) {
     return { ok: false, error: 'A phone is already linked. Unlink it in OpenWA first if you want to change it.' };
   }
@@ -475,6 +493,15 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
     if (r.status === 400) {
       // Everything we can pre-empt has been; a remaining 400 is the number itself.
       return { ok: false, error: 'The gateway would not accept that number. Check the country code and try again.' };
+    }
+    if (r.status === 404) {
+      // The session existed a moment ago (we just read and started it), so a 404 here is
+      // about the ROUTE, not the session: this build of OpenWA has no pairing-code
+      // endpoint. Say that, rather than leaving a bare status code on screen.
+      return {
+        ok: false,
+        error: "This version of OpenWA doesn't support linking by code. Update it, or link by QR in OpenWA itself.",
+      };
     }
     return { ok: false, error: r.error };
   }

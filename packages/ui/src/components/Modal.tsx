@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { useEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
@@ -20,6 +21,17 @@ interface ModalProps {
  * backdrop or the corner X (or press Escape) to dismiss. Long-lived,
  * minimizable windows (terminals, logs, file viewers) are NOT modals — they
  * live in the window manager (see WindowManager.tsx).
+ *
+ * RENDERED THROUGH A PORTAL TO `document.body`, and it must stay that way. The
+ * backdrop is `position: fixed; inset: 0`, which sounds like "cover the viewport"
+ * but is not: a transform, filter or `will-change` on ANY ancestor makes that
+ * ancestor the containing block instead, and every route is wrapped in a
+ * `motion.div` that animates `y` (Page.tsx `fadeRise`). So dialogs opened from a
+ * page were sized and clipped to the page's content box — the backdrop covered
+ * part of the screen and the dialog sat off-centre, half behind the panels
+ * around it. A portal is the only fix that does not depend on knowing every
+ * animated ancestor, and it fixes every dialog at once because they all build on
+ * this component.
  */
 export function Modal({ open, onClose, title, wide, children }: ModalProps) {
   const { t } = useTranslation();
@@ -33,7 +45,7 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -63,6 +75,7 @@ export function Modal({ open, onClose, title, wide, children }: ModalProps) {
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }

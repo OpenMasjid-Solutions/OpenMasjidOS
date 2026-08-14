@@ -155,6 +155,50 @@ test('an already-linked phone is explained, not reported as a gateway error', as
   }
 });
 
+test('a session id that no longer exists is replaced, not reported as a 404', async () => {
+  // The recorded id outlives the session whenever OpenWA's volume is wiped, the session
+  // is deleted in its UI, or the gateway is reinstalled. Every later call then 404s
+  // forever with nothing on screen to click. The id is the platform's to manage, so it is
+  // also the platform's to re-mint.
+  const calls: string[] = [];
+  const NEW_ID = '99999999-8888-7777-6666-555555555555';
+  let created = false;
+  const server = http.createServer((r, res) => {
+    const url = r.url ?? '';
+    calls.push(`${r.method} ${url.replace(SESSION_ID, ':stale').replace(NEW_ID, ':new')}`);
+    const send = (code: number, body: unknown) => {
+      res.writeHead(code, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+    if (r.method === 'GET' && url === `/api/sessions/${SESSION_ID}`) return send(404, { message: 'not found' });
+    if (r.method === 'POST' && url === '/api/sessions') {
+      created = true;
+      return send(201, { id: NEW_ID, name: 'openmasjid', status: 'created' });
+    }
+    if (r.method === 'GET' && url === `/api/sessions/${NEW_ID}`) {
+      return send(200, { id: NEW_ID, status: 'created', engineLoaded: false });
+    }
+    if (r.method === 'POST' && url === `/api/sessions/${NEW_ID}/start`) return send(200, { status: 'initializing' });
+    if (r.method === 'POST' && url === `/api/sessions/${NEW_ID}/pairing-code`) {
+      return send(201, { pairingCode: 'WXYZ7890' });
+    }
+    return send(404, { message: 'not found' });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await configure(port);
+    const r = await wa.requestPairingCode('+1 555 010 1234');
+    assert.equal(r.ok, true, `a stale id must self-heal: ${r.error ?? ''}`);
+    assert.equal(r.code, 'WXYZ7890');
+    assert.equal(created, true, 'a replacement session must be created');
+    assert.equal(store.getWhatsAppConfigPublic().sessionId, NEW_ID, 'and recorded');
+    assert.ok(calls.includes('POST /api/sessions/:new/start'), 'the new session is started too');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
 test('a number with no country code never reaches the gateway', async () => {
   const gw = stubGateway();
   const port = await gw.listen();

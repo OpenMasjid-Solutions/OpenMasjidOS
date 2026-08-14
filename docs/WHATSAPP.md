@@ -148,8 +148,10 @@ Everything is done in **OpenMasjidOS → Settings → WhatsApp**. You never open
 interface — the platform creates the session and requests the pairing code for you. OpenWA
 is only the engine.
 
-If something is wrong, the status line under the panel names the reason. The core's log has
-the same reason plus the address it tried:
+If something is wrong, the status line under the panel names the reason, and
+**Settings → WhatsApp → View OpenWA logs** shows the gateway's own log — some failures
+(an engine that will not start) are only visible there. The core's log has the same
+reason plus the address it tried:
 
 ```bash
 docker logs --tail 200 openmasjid-core | grep -i whatsapp
@@ -165,6 +167,7 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 | *No connection created yet* | The gateway is up but nothing exists on it; pressing **Get a code** creates and starts it |
 | *The gateway is still connecting* | The session was just started and its engine is not up yet. Wait a few seconds and press **Get a code** again |
 | *A phone is already linked* | Unlink the current one in OpenWA (*Sessions → Logout*) before linking a different number |
+| *This version of OpenWA doesn't support linking by code* | The gateway has no pairing-code endpoint. Update OpenWA |
 | *WhatsApp has placed a restriction on this number* | The risk materialised. `reachout_timelock` still allows existing chats; `tos_block` means that number is finished — link a different one and lean on email |
 | *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
 | *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |

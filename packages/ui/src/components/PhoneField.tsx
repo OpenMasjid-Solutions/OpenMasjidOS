@@ -25,14 +25,17 @@ interface Country {
   iso: string;
   name: string;
   dial: string;
+  /** Shown instead of `name` where one dial code covers several countries. */
+  label?: string;
 }
 
 // Not exhaustive — the countries a masjid using this is realistically in, plus the whole
 // of the Gulf, South Asia, Southeast Asia and Africa where the platform is likeliest to
 // land. "Other" below lets any number be entered in full.
 const COUNTRIES: Country[] = [
-  { iso: 'US', name: 'United States', dial: '1' },
-  { iso: 'CA', name: 'Canada', dial: '1' },
+  // One entry, because they share a dial code: two options with the same `value` would
+  // make picking Canada snap the box back to "United States".
+  { iso: 'US', name: 'United States', dial: '1', label: 'United States / Canada' },
   { iso: 'GB', name: 'United Kingdom', dial: '44' },
   { iso: 'IE', name: 'Ireland', dial: '353' },
   { iso: 'AU', name: 'Australia', dial: '61' },
@@ -75,6 +78,9 @@ const COUNTRIES: Country[] = [
 /** Longest dial code first, so `1876` (Jamaica) is not read as `1` (US). */
 const BY_LENGTH = [...COUNTRIES].sort((a, b) => b.dial.length - a.dial.length);
 
+/** Where an empty field starts. */
+const DEFAULT_DIAL = '1';
+
 export function digitsOnly(s: string): string {
   return String(s ?? '').replace(/[^0-9]/g, '');
 }
@@ -92,14 +98,30 @@ export function splitPhone(e164: string): { dial: string; national: string } {
   return hit ? { dial: hit.dial, national: d.slice(hit.dial.length) } : { dial: '', national: d };
 }
 
-/** Cosmetic grouping so a long string of digits stays readable while being typed. */
+/**
+ * Cosmetic grouping so a long string of digits stays readable while being typed.
+ *
+ * Threes from the left, EXCEPT that a trailing single digit joins the group before it.
+ * That exception is the whole point: plain threes wrote a US number as `555 010 123 4`,
+ * putting a space after the ninth digit and stranding the last one — which is exactly
+ * what a masjid reported. Merging gives `555 010 1234`.
+ *
+ * Deliberately not a per-country pattern. A neutral rule is wrong in a boring way; a
+ * table of national formats is wrong in a confident way, and it would need maintaining
+ * for every country a masjid might be in. Purely presentation — `value` is always bare
+ * digits, and the server is the authority on what is valid.
+ *
+ * Grouping from the left also keeps the digits still as they are typed: anchoring the
+ * last four instead reflows every group on each keystroke.
+ */
 function group(national: string): string {
   const d = digitsOnly(national);
   if (d.length <= 4) return d;
-  // Threes from the left, with the remainder trailing — country-agnostic on purpose. A
-  // per-country pattern would be wrong more often than a neutral one, and this is only
-  // ever presentation: `value` is always the digits.
-  return (d.match(/.{1,3}/g) ?? []).join(' ');
+  const chunks = d.match(/.{1,3}/g) ?? [];
+  if (chunks.length > 1 && chunks[chunks.length - 1]!.length === 1) {
+    chunks[chunks.length - 2] += chunks.pop();
+  }
+  return chunks.join(' ');
 }
 
 interface PhoneFieldProps {
@@ -114,7 +136,13 @@ interface PhoneFieldProps {
 
 export function PhoneField({ value, onChange, label, hint, id, disabled }: PhoneFieldProps) {
   const { t } = useTranslation();
-  const { dial, national } = useMemo(() => splitPhone(value), [value]);
+  const split = useMemo(() => splitPhone(value), [value]);
+  // An empty field starts on +1 rather than "choose a country", so the common case is
+  // type-and-go. A number already stored under a dial code that is not in the list falls
+  // to "Other", where the whole number is typed — defaulting THAT to +1 would silently
+  // rewrite someone's saved number.
+  const dial = split.dial || (digitsOnly(value) ? '' : DEFAULT_DIAL);
+  const national = split.national;
 
   function setDial(next: string) {
     onChange(next ? `${next}${digitsOnly(national)}` : digitsOnly(national));
@@ -147,12 +175,15 @@ export function PhoneField({ value, onChange, label, hint, id, disabled }: Phone
           onChange={(e) => setDial(e.target.value)}
           aria-label={t('settings.phoneCountry')}
         >
-          <option value="">{t('settings.phoneCountryPick')}</option>
+          {/* No "choose a country" placeholder: one is always selected, so there is never
+              a state where typing produces a number with no country code. "Other" is the
+              escape hatch for a country not listed — then the code is typed too. */}
           {COUNTRIES.map((c) => (
             <option key={c.iso} value={c.dial}>
-              {c.name} +{c.dial}
+              {c.label ?? c.name} +{c.dial}
             </option>
           ))}
+          <option value="">{t('settings.phoneCountryOther')}</option>
         </select>
         <input
           id={id}
@@ -169,7 +200,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled }: Phone
           placeholder={t('settings.phoneNumberPlaceholder')}
         />
       </div>
-      <span className="hint">{hint ?? t('settings.phoneHint')}</span>
+      <span className="hint">{dial ? (hint ?? t('settings.phoneHint')) : t('settings.phoneHintOther')}</span>
     </div>
   );
 }

@@ -55,6 +55,21 @@ test('the dashboard and the dock both drop managed apps', () => {
   }
 });
 
+test('dialogs are portalled to the body, so a page animation cannot clip them', () => {
+  // `position: fixed; inset: 0` does NOT mean "the viewport" when any ancestor has a
+  // transform — that ancestor becomes the containing block. Every route is wrapped in a
+  // motion.div that animates `y` (Page.tsx `fadeRise`), so dialogs opened from a page
+  // were sized and clipped to the page's content box: backdrop over part of the screen,
+  // dialog off-centre and half hidden. A portal is the only fix that does not depend on
+  // knowing every animated ancestor.
+  const src = codeOf('ui/src/components/Modal.tsx');
+  assert.match(src, /createPortal\(/, 'the modal must render through a portal');
+  assert.match(src, /document\.body,?\s*\)/, 'and specifically into document.body');
+  // Every dialog in the app builds on this one component, so this covers all of them.
+  const shared = codeOf('ui/src/components/ConfirmDialog.tsx');
+  assert.match(shared, /from '\.\/Modal'/, 'ConfirmDialog must keep building on Modal');
+});
+
 test('the store gate is applied to BOTH the cached read and the forced refresh', () => {
   // Refresh bypasses the cache; if it also bypassed the filter, pressing it would make
   // the hidden app appear.

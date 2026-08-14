@@ -51,6 +51,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **OpenWA no longer appears on the dashboard, in the dock, or in the App Store** unless WhatsApp is switched on — and even then only in the store. It is opened from Settings alone, with the copy stating plainly that linking happens in OpenMasjidOS and OpenWA is for reading and replying to chats. The platform owns the session (creating, starting, pairing, pacing), and every one of those guarantees breaks if a second phone is linked in OpenWA's own UI or a message is sent from there, outside the queue.
 - **Phone numbers are a proper field now** — pick the country, type the rest. "Enter your number in international format" was a guessing game where three of the four plausible answers were wrong. No phone-number library was added (libphonenumber is ~150 KB gzipped for depth this does not need); the server still refuses anything without a country code and still never guesses one.
 
+**Fixed — dialogs, phone fields, and a session that outlived itself**
+
+- **Every dialog in OpenMasjidOS was being clipped to the page behind it.** `position: fixed; inset: 0` does not mean "the viewport" when an ancestor has a transform — that ancestor becomes the containing block, and every route is wrapped in a `motion.div` that animates `y`. So a dialog opened from Settings was sized and positioned inside the settings content box: backdrop over part of the screen, dialog off-centre and half behind the panels. Modals now render through a portal to `document.body`, which fixes every dialog at once and does not depend on knowing which ancestors animate.
+- **Phone numbers start on +1**, and the grouping no longer puts a space after the ninth digit: a US number reads `555 010 1234` rather than `555 010 123 4`. Grouping is from the left so the digits stay still while typing, with a trailing single digit merged into the group before it. "Other country" covers anywhere not in the list.
+- **A recorded session that no longer exists at the gateway now heals itself.** If OpenWA's volume is wiped, its session deleted, or the gateway reinstalled, the stored id names nothing — and every call afterwards returned `404` for ever, with nothing on screen to press. The id is the platform's to manage, so it is now also the platform's to re-mint: a `404` clears it and a fresh session is created and started.
+- A `404` from the pairing route itself is now reported as "this version of OpenWA doesn't support linking by code" rather than a bare status.
+- **Settings → WhatsApp → View OpenWA logs.** Hiding the gateway from the dashboard took its logs with it, and the gateway's own log is the only place some failures show up — an engine that won't start says nothing over the API.
+- The risk dialog said the same thing twice: the body and the highlighted line both told you to use a spare number.
+
 **Fixed**
 
 - `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.

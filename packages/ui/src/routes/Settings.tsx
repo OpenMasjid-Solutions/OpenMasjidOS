@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -19,6 +19,7 @@ import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PhoneField } from '../components/PhoneField';
+import { AppLogs } from '../components/AppLogs';
 import { openApp } from '../lib/apps';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { UpdateChannel } from '../components/UpdateChannel';
@@ -1593,6 +1594,7 @@ function WhatsAppPanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const utils = trpc.useUtils();
+  const windows = useWindows();
   const cfg = trpc.whatsapp.get.useQuery();
   const status = trpc.whatsapp.status.useQuery(undefined, { refetchInterval: 60_000 });
 
@@ -1705,13 +1707,32 @@ function WhatsAppPanel() {
                       platform's ownership of the session and its pacing. */}
                   {t('settings.whatsappGatewayOpenHint')}
                 </div>
-                <button
-                  className="btn"
-                  disabled={!gw.running || gw.openPort == null}
-                  onClick={() => openApp(gw)}
-                >
-                  <ExternalLink size={15} /> {t('settings.whatsappGatewayOpen')}
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    disabled={!gw.running || gw.openPort == null}
+                    onClick={() => openApp(gw)}
+                  >
+                    <ExternalLink size={15} /> {t('settings.whatsappGatewayOpen')}
+                  </button>
+                  {/* Hiding the app took its logs away with it, and the gateway's own log
+                      is the only place some failures are visible (an engine that won't
+                      start says nothing over the API). So the button comes here. */}
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      windows.open({
+                        title: `${t('appDetail.logs')} — OpenWA`,
+                        dedupeKey: `logs:${gw.id}`,
+                        wide: true,
+                        icon: <ScrollText size={15} />,
+                        node: <AppLogs id={gw.id} />,
+                      })
+                    }
+                  >
+                    <ScrollText size={15} /> {t('settings.whatsappLogs')}
+                  </button>
+                </div>
                 {!gw.running && (
                   <span className="hint" style={{ marginInlineStart: '0.5rem' }}>
                     {t('settings.whatsappGatewayStopped')}
