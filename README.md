@@ -207,7 +207,7 @@ Everything lives behind a login on a single, polished dashboard.
 |---|---|---|
 | **CPU** | 4 Cores | 8 Cores |
 | **RAM** | 4 GB | 8 GB |
-| **Storage** | 8 GB free | 32 GB |
+| **Storage** | 16 GB free | 32 GB |
 
 Docker is installed automatically if it isn't already present. The installer detects your OS/architecture, creates `/opt/openmasjid/` for all data, starts the core as a service that survives reboots, and prints your access URL.
 
