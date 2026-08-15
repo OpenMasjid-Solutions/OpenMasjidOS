@@ -53,6 +53,36 @@ export interface WhatsAppLimits {
   quietEndHour: number;
   /** Days after linking during which the caps are reduced (a new number is watched). */
   warmupDays: number;
+  /**
+   * Group caps, tracked SEPARATELY from individual messages.
+   *
+   * One message to a group of 200 is a single outbound message that reaches everyone, so
+   * it must not consume the allowance that fee reminders need — and equally it must not
+   * be unlimited, because posting to a big group every few minutes is its own kind of
+   * spam, and the one people actually complain about.
+   */
+  groupPerHour: number;
+  groupPerDay: number;
+  /** Minimum seconds before the SAME group may be posted to again. */
+  perGroupCooldownSeconds: number;
+}
+
+/**
+ * A group the admin has approved for apps to post into.
+ *
+ * The approval step is the whole security model here. OpenWA's group list contains every
+ * group the linked number belongs to — the imam's family chat, a friends group — so an
+ * app that could enumerate or freely target groups would be able to read those names and
+ * post into them. Apps only ever see this list.
+ */
+export interface ApprovedGroup {
+  /** The WhatsApp group JID, e.g. `120363012345678901@g.us`. The identity. */
+  id: string;
+  /** The admin's label, defaulting to the group's own WhatsApp subject. */
+  label: string;
+  /** Snapshot for the Settings list only — never authoritative, refreshed on demand. */
+  participants?: number;
+  approvedAt: string;
 }
 
 export interface WhatsAppConfig {
@@ -75,6 +105,8 @@ export interface WhatsAppConfig {
   /** When the session was first linked — the warm-up ramp counts from here. */
   linkedAt: string | null;
   limits: WhatsAppLimits;
+  /** Groups the admin has approved for apps to post into. Empty by default. */
+  groups: ApprovedGroup[];
 }
 
 interface WhatsAppFile {
@@ -98,6 +130,11 @@ export const DEFAULT_LIMITS: WhatsAppLimits = {
   quietStartHour: 21,
   quietEndHour: 7,
   warmupDays: 7,
+  // A masjid announcement is an occasional thing; four an hour is already generous,
+  // and a group that hears from you ten times a day starts muting you.
+  groupPerHour: 4,
+  groupPerDay: 10,
+  perGroupCooldownSeconds: 1800,
 };
 
 const DEFAULT_CONFIG: WhatsAppConfig = {
@@ -108,6 +145,7 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
   sessionName: 'openmasjid',
   linkedAt: null,
   limits: { ...DEFAULT_LIMITS },
+  groups: [],
 };
 
 /**
@@ -130,6 +168,12 @@ export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLim
     quietStartHour: clamp(n(l?.quietStartHour, d.quietStartHour), 0, 23),
     quietEndHour: clamp(n(l?.quietEndHour, d.quietEndHour), 0, 23),
     warmupDays: clamp(n(l?.warmupDays, d.warmupDays), 0, 90),
+    // Group ceilings are deliberately far tighter than the individual ones: the blast
+    // radius of one message is the whole group, so "20 an hour" is already well past
+    // anything a masjid has to say.
+    groupPerHour: clamp(n(l?.groupPerHour, d.groupPerHour), 1, 20),
+    groupPerDay: clamp(n(l?.groupPerDay, d.groupPerDay), 1, 50),
+    perGroupCooldownSeconds: clamp(n(l?.perGroupCooldownSeconds, d.perGroupCooldownSeconds), 0, 86_400),
   };
 }
 
@@ -138,7 +182,45 @@ function withDefaults(w: Partial<WhatsAppConfig> | undefined): WhatsAppConfig {
     ...DEFAULT_CONFIG,
     ...(w ?? {}),
     limits: clampLimits(w?.limits),
+    // A file written before groups existed has no `groups` key, and the spread would
+    // leave it undefined — every later `.some()` would then throw. Absence means none
+    // approved, which is also the safe answer.
+    groups: sanitizeGroups(w?.groups),
   };
+}
+
+/**
+ * A group JID as OpenWA addresses it, e.g. `120363012345678901@g.us`.
+ *
+ * Validated wherever it enters — this string is interpolated into a gateway URL path and
+ * arrives from a request body, so it gets the same treatment as every other path segment
+ * in the platform. Anchored, digits and hyphens only, and it must be a GROUP: a `@c.us`
+ * address slipping through here would turn "post to the parents group" into "message one
+ * person", silently.
+ */
+const GROUP_JID_RE = /^[0-9][0-9-]{0,63}@g\.us$/;
+
+export function isGroupJid(id: unknown): id is string {
+  return typeof id === 'string' && GROUP_JID_RE.test(id);
+}
+
+/** Drop anything malformed rather than trusting the file on disk. */
+function sanitizeGroups(list: unknown): ApprovedGroup[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: ApprovedGroup[] = [];
+  for (const raw of list) {
+    const g = raw as Partial<ApprovedGroup>;
+    if (!isGroupJid(g?.id) || seen.has(g.id)) continue;
+    seen.add(g.id);
+    out.push({
+      id: g.id,
+      label: typeof g.label === 'string' && g.label.trim() ? g.label.trim().slice(0, 80) : g.id,
+      participants: typeof g.participants === 'number' ? g.participants : undefined,
+      approvedAt: typeof g.approvedAt === 'string' ? g.approvedAt : new Date(0).toISOString(),
+    });
+  }
+  return out;
 }
 
 let cache: WhatsAppConfig = withDefaults(
@@ -182,6 +264,8 @@ export interface WhatsAppConfigPublic {
   linkedAt: string | null;
   configured: boolean;
   limits: WhatsAppLimits;
+  /** Approved groups, for the Settings list. Not secret — the admin chose them. */
+  groups: ApprovedGroup[];
 }
 
 export function getWhatsAppConfigPublic(): WhatsAppConfigPublic {
@@ -194,6 +278,7 @@ export function getWhatsAppConfigPublic(): WhatsAppConfigPublic {
     linkedAt: cache.linkedAt,
     configured: isWhatsAppConfigured(),
     limits: cache.limits,
+    groups: cache.groups,
   };
 }
 
@@ -267,4 +352,43 @@ export function recordSessionId(id: string): void {
 export function markLinked(when: string): void {
   cache = { ...cache, linkedAt: when };
   persist();
+}
+
+// ── approved groups ──────────────────────────────────────────────────────────────
+
+/** The groups apps may post into. Safe to hand to the UI; never includes anything the
+ *  admin has not explicitly approved. */
+export function listApprovedGroups(): ApprovedGroup[] {
+  return cache.groups;
+}
+
+/**
+ * THE authorisation check for a group send.
+ *
+ * Everything else about group messaging is convenience; this is the security boundary. A
+ * group id arriving in a Fabric request is untrusted until it has passed here, and it is
+ * never used to build a gateway URL before that.
+ */
+export function isApprovedGroup(id: unknown): boolean {
+  return isGroupJid(id) && cache.groups.some((g) => g.id === id);
+}
+
+/** Approve a group (or re-label an already-approved one). */
+export function approveGroup(id: string, label: string, participants?: number): ApprovedGroup[] {
+  if (!isGroupJid(id)) throw new Error('That is not a WhatsApp group.');
+  const clean = label.trim().slice(0, 80) || id;
+  const existing = cache.groups.find((g) => g.id === id);
+  const next = existing
+    ? cache.groups.map((g) => (g.id === id ? { ...g, label: clean, participants } : g))
+    : [...cache.groups, { id, label: clean, participants, approvedAt: new Date().toISOString() }];
+  cache = { ...cache, groups: next };
+  persist();
+  return cache.groups;
+}
+
+/** Withdraw approval. Apps lose the ability to post there immediately — no restart. */
+export function unapproveGroup(id: string): ApprovedGroup[] {
+  cache = { ...cache, groups: cache.groups.filter((g) => g.id !== id) };
+  persist();
+  return cache.groups;
 }

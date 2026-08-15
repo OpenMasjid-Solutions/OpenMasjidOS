@@ -1867,6 +1867,10 @@ function WhatsAppPanel() {
         </p>
       )}
 
+      {/* Groups. Only once a phone is actually linked — there is nothing to list before
+          that, and offering the section would just produce an error. */}
+      {s?.state === 'ready' && <WhatsAppGroups approved={cfg.data.groups} />}
+
       {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
           limited this number, so the admin hears it here rather than wondering why
           messages stopped. */}
@@ -1906,6 +1910,129 @@ function WhatsAppPanel() {
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Approved WhatsApp groups.
+ *
+ * The approval step is the security model, not a convenience: OpenWA's group list holds
+ * EVERY group the linked phone is in — the imam's family chat included — so apps are
+ * never shown it. They see only what an admin deliberately approves here.
+ *
+ * The list is fetched on demand rather than polled: it is a handful of clicks a masjid
+ * makes once, and a background poll of someone's entire group membership every minute is
+ * both wasteful and slightly grim.
+ */
+function WhatsAppGroups({ approved }: { approved: { id: string; label: string; participants?: number }[] }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const [browsing, setBrowsing] = useState(false);
+
+  // Fetched only while the picker is open. The error is rendered inline rather than
+  // toasted: "couldn't read your groups" is about the panel you are looking at, and a
+  // toast would vanish before you had finished reading the list it failed to fill.
+  const groups = trpc.whatsapp.groups.useQuery(undefined, { enabled: browsing, retry: false });
+
+  const refresh = () => {
+    utils.whatsapp.get.invalidate();
+    utils.whatsapp.groups.invalidate();
+  };
+  const approve = trpc.whatsapp.approveGroup.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const unapprove = trpc.whatsapp.unapproveGroup.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+
+  const approvedIds = new Set(approved.map((g) => g.id));
+
+  return (
+    <div style={{ marginBlockStart: '1rem' }}>
+      <div className="setting-row__title">{t('settings.whatsappGroups')}</div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+        {t('settings.whatsappGroupsHint')}
+      </div>
+
+      {approved.length > 0 && (
+        <div className="glass-inset panel" style={{ marginBlockEnd: '0.6rem', padding: '0.6rem 0.9rem' }}>
+          {approved.map((g) => (
+            <div className="setting-row" key={g.id}>
+              <div className="setting-row__text" style={{ flex: 1 }}>
+                <div className="setting-row__title">{g.label}</div>
+                {g.participants != null && (
+                  <div className="setting-row__hint">{t('settings.whatsappGroupMembers', { count: g.participants })}</div>
+                )}
+              </div>
+              <button
+                className="btn btn--sm"
+                disabled={unapprove.isPending}
+                onClick={() => unapprove.mutate({ id: g.id })}
+              >
+                <Trash2 size={14} /> {t('settings.whatsappGroupRemove')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!browsing ? (
+        <button className="btn" onClick={() => setBrowsing(true)}>
+          <RefreshCw size={15} /> {t('settings.whatsappGroupsFind')}
+        </button>
+      ) : (
+        <>
+          {/* Both warnings are real, non-obvious, and cheaper to read than to discover:
+              a WhatsApp group shows every member's number to every other member, and a
+              group that is not announcement-only lets 200 people reply to a notice. */}
+          <div
+            className="glass-inset panel"
+            style={{ marginBlockEnd: '0.6rem', borderInlineStart: '3px solid var(--color-warning)' }}
+          >
+            <div className="setting-row__hint">{t('settings.whatsappGroupsWarning')}</div>
+          </div>
+          {groups.isLoading ? (
+            <p className="setting-row__hint">{t('common.loading')}</p>
+          ) : groups.error ? (
+            <p className="setting-row__hint">{groups.error.message || t('errors.generic')}</p>
+          ) : (groups.data ?? []).length === 0 ? (
+            <p className="setting-row__hint">{t('settings.whatsappGroupsNone')}</p>
+          ) : (
+            <div className="glass-inset panel" style={{ padding: '0.6rem 0.9rem' }}>
+              {(groups.data ?? []).map((g) => (
+                <div className="setting-row" key={g.id}>
+                  <div className="setting-row__text" style={{ flex: 1 }}>
+                    <div className="setting-row__title">
+                      {g.name}
+                      {g.community && <span className="tag" style={{ marginInlineStart: '0.4rem' }}>{t('settings.whatsappGroupCommunity')}</span>}
+                    </div>
+                    <div className="setting-row__hint">
+                      {g.participants != null && t('settings.whatsappGroupMembers', { count: g.participants })}
+                      {/* Posting into an announcement-only group requires being an admin
+                          of it, and that is not something we can fix from here. */}
+                      {g.isAdmin === false && ` · ${t('settings.whatsappGroupNotAdmin')}`}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm"
+                    disabled={approve.isPending || approvedIds.has(g.id)}
+                    onClick={() => approve.mutate({ id: g.id, label: g.name, participants: g.participants })}
+                  >
+                    {approvedIds.has(g.id) ? t('settings.whatsappGroupApproved') : t('settings.whatsappGroupApprove')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="btn btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={() => setBrowsing(false)}>
+            {t('common.close')}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+//
+// Typecheck the TESTS as well as the source.
+//
+// The main tsconfig includes only `src/**/*.ts`, so a change to a function's signature
+// broke two tests silently — `npm run lint` was clean and the failure only appeared when
+// the suite ran. That happened twice in one session (`blockedReason` gaining a Target,
+// and a helper losing a field), and both times the tests were passing arguments the
+// compiler would have rejected instantly.
+//
+// Separate from the build config on purpose: `tsconfig.json` drives the shipped output
+// and must not start emitting test files.
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

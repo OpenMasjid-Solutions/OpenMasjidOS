@@ -21,9 +21,18 @@ import {
   saveWhatsAppConfig,
   isWhatsAppConfigured,
   markLinked,
+  approveGroup,
+  unapproveGroup,
   DEFAULT_LIMITS,
 } from '../../store/whatsapp';
-import { gatewayStatus, requestPairingCode, sendTestMessage, queueDepth, toDigits } from '../../notify/whatsapp';
+import {
+  gatewayStatus,
+  requestPairingCode,
+  sendTestMessage,
+  queueDepth,
+  toDigits,
+  listGatewayGroups,
+} from '../../notify/whatsapp';
 import { getAdminPhone } from '../../auth/store';
 import { getInstalled } from '../../apps/manager';
 import { OPENWA_APP_ID } from '../../apps/managed';
@@ -40,6 +49,9 @@ const limitsInput = z
     quietStartHour: z.number().int().min(0).max(23),
     quietEndHour: z.number().int().min(0).max(23),
     warmupDays: z.number().int().min(0).max(90),
+    groupPerHour: z.number().int().min(1).max(20),
+    groupPerDay: z.number().int().min(1).max(50),
+    perGroupCooldownSeconds: z.number().int().min(0).max(86_400),
   })
   .partial();
 
@@ -147,6 +159,33 @@ export const whatsappRouter = router({
       markLinked(new Date().toISOString());
       return { code: r.code ?? null };
     }),
+
+  /**
+   * The groups the linked phone is in, straight from the gateway — for the admin to pick
+   * from. ADMIN-ONLY: this is the list an app must never see, because it names every
+   * group that phone belongs to, personal ones included.
+   */
+  groups: protectedProcedure.query(async () => {
+    const r = await listGatewayGroups();
+    if (!r.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: r.error ?? "Couldn't read your WhatsApp groups." });
+    return r.groups ?? [];
+  }),
+
+  /** Approve a group for apps to post into (or re-label one already approved). */
+  approveGroup: protectedProcedure
+    .input(z.object({ id: z.string().max(120), label: z.string().trim().max(80), participants: z.number().optional() }))
+    .mutation(({ input }) => {
+      try {
+        return approveGroup(input.id, input.label, input.participants);
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+    }),
+
+  /** Withdraw approval. Apps lose the ability to post there immediately. */
+  unapproveGroup: protectedProcedure
+    .input(z.object({ id: z.string().max(120) }))
+    .mutation(({ input }) => unapproveGroup(input.id)),
 
   /** Send one real message to the admin's own number to prove the setup works. */
   test: protectedProcedure

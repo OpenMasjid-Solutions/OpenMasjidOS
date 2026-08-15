@@ -78,7 +78,10 @@ test('apps still send WhatsApp through the platform, not around it', () => {
   // the path alone found that instead and read past the end of the send handler.
   const at = src.indexOf("server.post('/api/fabric/whatsapp'");
   assert.ok(at > 0, 'the app-facing send route must still exist');
-  assert.match(src.slice(at, at + 1200), /enqueueWhatsApp/, 'and must still go through the queue');
+  // Bounded by the NEXT route registration, not a fixed character count — the handler
+  // grew when group sending was added and a magic window silently stopped covering it.
+  const next = src.indexOf('server.', at + 10);
+  assert.match(src.slice(at, next > at ? next : undefined), /enqueueWhatsApp/, 'must still go through the queue');
 });
 
 test('an app can ask whether WhatsApp is usable, without learning anything about it', () => {

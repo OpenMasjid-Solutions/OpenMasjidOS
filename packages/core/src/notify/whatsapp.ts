@@ -31,8 +31,11 @@
  *  4. **Presence.** Appear online while working, offline once idle. A number that is
  *     permanently online and never reads anything looks like what it is.
  *  5. **Per-recipient cooldown.** One person is never hammered, even if three apps
- *     all have something to say to them.
- *  6. **Caps** per rolling hour and day, platform-wide.
+ *     all have something to say to them. A group has its own, much longer cooldown.
+ *  6. **Caps** per rolling hour and day, platform-wide — and a SEPARATE, tighter pair
+ *     for groups. One group message is a single outbound message that reaches everyone,
+ *     so it must not spend the allowance individual reminders need; but its blast radius
+ *     is the whole group, so it needs a stricter brake of its own.
  *  7. **Warm-up ramp.** A freshly linked number gets a fraction of the caps for
  *     `warmupDays` — the period WhatsApp watches hardest, per OpenWA's guidance.
  *  8. **Quiet hours.** Queued, never dropped. Also simply correct for a masjid: a fee
@@ -52,6 +55,7 @@ import {
   getWhatsAppConfig,
   isWhatsAppConfigured,
   recordSessionId,
+  isApprovedGroup,
   type WhatsAppConfig,
   type WhatsAppLimits,
 } from '../store/whatsapp';
@@ -66,19 +70,40 @@ const MAX_TEXT = 4096;
 /** Retries for a transient failure before the message is dropped (and logged). */
 const MAX_ATTEMPTS = 5;
 
+/**
+ * Who a message is for.
+ *
+ * A group is not "a recipient with a funny number": it has its own address space
+ * (`@g.us` rather than `@c.us`), its own rate budget (one message reaches everyone, so
+ * it must not spend the allowance individual reminders need), and `contacts/check` is
+ * meaningless for it. Making the distinction a type rather than a string test means
+ * every place that treats the two differently has to say so.
+ */
+export type Target = { kind: 'person'; digits: string } | { kind: 'group'; groupId: string };
+
 export interface SendRequest {
   /** Recipient in international format. Punctuation is tolerated and stripped. */
-  to: string;
+  to?: string;
+  /** …or an APPROVED group's JID. Exactly one of `to` / `groupId`. */
+  groupId?: string;
   text: string;
   /** Who asked — an app id, or 'os' for platform alerts. Logged, never sent. */
   source: string;
 }
 
-interface QueueItem extends SendRequest {
-  digits: string;
+interface QueueItem {
+  text: string;
+  source: string;
+  target: Target;
   enqueuedAt: number;
   /** Transient-failure retries so far. */
   attempts: number;
+}
+
+/** The pacing key for a target — also the cooldown map's key, so a person and a group
+ *  can never collide (`@g.us` cannot appear in a digits-only string). */
+function targetKey(t: Target): string {
+  return t.kind === 'person' ? t.digits : `group:${t.groupId}`;
 }
 
 /** Outcome of a single attempt, for the caller's log and the admin's status panel. */
@@ -129,6 +154,11 @@ export function toDigits(raw: string): string | null {
 /** OpenWA addresses individuals as `<digits>@c.us`. */
 export function chatIdFor(digits: string): string {
   return `${digits}@c.us`;
+}
+
+/** The chat id for a target — the one place the two address spaces are resolved. */
+export function chatIdOf(t: Target): string {
+  return t.kind === 'person' ? chatIdFor(t.digits) : t.groupId;
 }
 
 // ── the gateway client ───────────────────────────────────────────────────────────
@@ -349,6 +379,43 @@ export async function gatewayStatus(): Promise<GatewayStatus> {
   return { state: 'problem', reachable: true, connected: false, detail: word || 'unknown state', ...extra };
 }
 
+/** A group the linked phone belongs to, as OpenWA reports it. */
+export interface GatewayGroup {
+  id: string;
+  name: string;
+  participants?: number;
+  /** Whether the linked number is an admin — required to post in an announcement group. */
+  isAdmin?: boolean;
+  /** Set when this group belongs to a WhatsApp Community (it is the Community's JID). */
+  community?: boolean;
+}
+
+/**
+ * List the groups the linked phone is in, for the ADMIN to choose from.
+ *
+ * Never exposed to apps. This is the masjid's whole group membership — personal chats
+ * included — and the entire point of the approval step is that an app sees only what an
+ * admin deliberately put in front of it.
+ */
+export async function listGatewayGroups(): Promise<{ ok: boolean; groups?: GatewayGroup[]; error?: string }> {
+  const cfg = getWhatsAppConfig();
+  if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
+  if (!cfg.sessionId) return { ok: false, error: 'No phone is linked yet.' };
+  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/groups?limit=200`);
+  if (!r.ok) return { ok: false, error: r.error };
+  const rows = Array.isArray(r.json) ? (r.json as Record<string, unknown>[]) : [];
+  const groups = rows
+    .filter((g) => typeof g.id === 'string')
+    .map((g) => ({
+      id: g.id as string,
+      name: typeof g.name === 'string' && g.name.trim() ? g.name : (g.id as string),
+      participants: typeof g.participantsCount === 'number' ? g.participantsCount : undefined,
+      isAdmin: typeof g.isAdmin === 'boolean' ? g.isAdmin : undefined,
+      community: typeof g.linkedParentJID === 'string' && g.linkedParentJID.length > 0,
+    }));
+  return { ok: true, groups };
+}
+
 /**
  * Make sure a session exists, creating one if not, and remember its id.
  *
@@ -528,14 +595,22 @@ async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boo
 
 // ── pacing ───────────────────────────────────────────────────────────────────────
 
-/** Sends within the last rolling day, newest last. Used for both caps. */
+/** Individual sends within the last rolling day, newest last. Used for both caps. */
 const sentAt: number[] = [];
-/** digits → last send, for the per-recipient cooldown. */
+/**
+ * Group posts within the last rolling day. SEPARATE from `sentAt` on purpose: one group
+ * message reaches everyone, so it must not consume the allowance that fee reminders need
+ * — and equally it needs a brake of its own, since a group posted to every few minutes is
+ * the kind of spam people actually complain about.
+ */
+const groupSentAt: number[] = [];
+/** target key → last send, for the per-recipient / per-group cooldown. */
 const lastToRecipient = new Map<string, number>();
 
 function prune(now: number): void {
   const dayAgo = now - 86_400_000;
   while (sentAt.length > 0 && sentAt[0]! < dayAgo) sentAt.shift();
+  while (groupSentAt.length > 0 && groupSentAt[0]! < dayAgo) groupSentAt.shift();
 }
 
 /**
@@ -570,25 +645,32 @@ export function inQuietHours(hour: number, limits: WhatsAppLimits): boolean {
 export function blockedReason(
   now: number,
   hour: number,
-  digits: string,
+  target: Target,
   limits: WhatsAppLimits,
   linkedAt: string | null,
-  history: { sends: number[]; lastPerRecipient: Map<string, number> },
+  history: { sends: number[]; groupSends: number[]; lastPerRecipient: Map<string, number> },
 ): string | null {
+  // Quiet hours apply to BOTH, and more so to a group: a 03:00 fee reminder annoys one
+  // person, a 03:00 group post wakes two hundred.
   if (inQuietHours(hour, limits)) return 'quiet hours';
 
   const factor = warmupFactor(linkedAt, limits, now);
+  const isGroup = target.kind === 'group';
+  // The warm-up ramp applies to groups too. A number linked yesterday posting to a
+  // 200-member group is a strong signal, not a gentle start.
   // At least 1, so a warm-up ramp can never mean "send nothing at all".
-  const hourCap = Math.max(1, Math.floor(limits.perHour * factor));
-  const dayCap = Math.max(1, Math.floor(limits.perDay * factor));
+  const hourCap = Math.max(1, Math.floor((isGroup ? limits.groupPerHour : limits.perHour) * factor));
+  const dayCap = Math.max(1, Math.floor((isGroup ? limits.groupPerDay : limits.perDay) * factor));
+  const sends = isGroup ? history.groupSends : history.sends;
 
-  const inLastHour = history.sends.filter((t) => t > now - 3_600_000).length;
-  if (inLastHour >= hourCap) return 'hourly limit reached';
-  if (history.sends.length >= dayCap) return 'daily limit reached';
+  const inLastHour = sends.filter((t) => t > now - 3_600_000).length;
+  if (inLastHour >= hourCap) return isGroup ? 'hourly group limit reached' : 'hourly limit reached';
+  if (sends.length >= dayCap) return isGroup ? 'daily group limit reached' : 'daily limit reached';
 
-  const last = history.lastPerRecipient.get(digits);
-  if (last !== undefined && now - last < limits.perRecipientCooldownSeconds * 1000) {
-    return 'this recipient was messaged very recently';
+  const cooldown = isGroup ? limits.perGroupCooldownSeconds : limits.perRecipientCooldownSeconds;
+  const last = history.lastPerRecipient.get(targetKey(target));
+  if (last !== undefined && now - last < cooldown * 1000) {
+    return isGroup ? 'this group was posted to very recently' : 'this recipient was messaged very recently';
   }
   return null;
 }
@@ -624,14 +706,34 @@ export function queueDepth(): number {
  */
 export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
   if (!isWhatsAppConfigured()) return { queued: false, error: 'WhatsApp is not set up.' };
-  const digits = toDigits(req.to);
-  if (!digits) return { queued: false, error: 'That phone number needs a country code.' };
+
+  const wantsGroup = Boolean(req.groupId);
+  const wantsPerson = Boolean(req.to);
+  if (wantsGroup === wantsPerson) {
+    return { queued: false, error: 'Send to either a phone number or a group, not both.' };
+  }
+
+  let target: Target;
+  if (wantsGroup) {
+    // The authorisation boundary. An id that has not been approved by the admin never
+    // becomes a target, and therefore never reaches a gateway URL — the approved list is
+    // the only thing that can name a group here.
+    if (!isApprovedGroup(req.groupId)) {
+      return { queued: false, error: 'That group has not been approved for sending.' };
+    }
+    target = { kind: 'group', groupId: req.groupId! };
+  } else {
+    const digits = toDigits(req.to!);
+    if (!digits) return { queued: false, error: 'That phone number needs a country code.' };
+    target = { kind: 'person', digits };
+  }
+
   const text = String(req.text ?? '').trim();
   if (!text) return { queued: false, error: 'The message is empty.' };
   if (text.length > MAX_TEXT) return { queued: false, error: `The message is too long (max ${MAX_TEXT}).` };
   if (queue.length >= MAX_QUEUE) return { queued: false, error: 'The WhatsApp queue is full. Try again later.' };
 
-  queue.push({ to: req.to, text, source: req.source, digits, enqueuedAt: Date.now(), attempts: 0 });
+  queue.push({ text, source: req.source, target, enqueuedAt: Date.now(), attempts: 0 });
   void pump();
   return { queued: true };
 }
@@ -655,8 +757,9 @@ async function pump(): Promise<void> {
       const now = Date.now();
       prune(now);
       const item = queue[0]!;
-      const reason = blockedReason(now, new Date(now).getHours(), item.digits, cfg.limits, cfg.linkedAt, {
+      const reason = blockedReason(now, new Date(now).getHours(), item.target, cfg.limits, cfg.linkedAt, {
         sends: sentAt,
+        groupSends: groupSentAt,
         lastPerRecipient: lastToRecipient,
       });
       if (reason) {
@@ -716,8 +819,9 @@ async function pump(): Promise<void> {
 
       queue.shift();
       if (outcome.ok) {
-        sentAt.push(Date.now());
-        lastToRecipient.set(item.digits, Date.now());
+        // Count against the budget the target actually spends.
+        (item.target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
+        lastToRecipient.set(targetKey(item.target), Date.now());
       }
       if (queue.length > 0) await sleep(nextGapMs(cfg.limits));
     }
@@ -741,15 +845,21 @@ async function setPresence(cfg: WhatsAppConfig, available: boolean): Promise<voi
 }
 
 async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcome> {
-  const chatId = chatIdFor(item.digits);
+  const chatId = chatIdOf(item.target);
 
   // Don't message a number that isn't on WhatsApp — a documented ban signal. `null`
   // means "couldn't check", which proceeds: an unreachable check must not become an
   // outage.
-  const registered = await checkRegistered(cfg, item.digits);
-  if (registered === false) {
-    log.warn(`WhatsApp: ${item.source} addressed a number that is not on WhatsApp — skipped.`);
-    return { ok: false, error: 'that number is not on WhatsApp', retryable: false };
+  //
+  // Skipped for groups: `contacts/check` answers "is this PHONE NUMBER on WhatsApp", so
+  // asking it about a group id is meaningless — and its answer would be "no", which
+  // would silently refuse every group post.
+  if (item.target.kind === 'person') {
+    const registered = await checkRegistered(cfg, item.target.digits);
+    if (registered === false) {
+      log.warn(`WhatsApp: ${item.source} addressed a number that is not on WhatsApp — skipped.`);
+      return { ok: false, error: 'that number is not on WhatsApp', retryable: false };
+    }
   }
 
   // Type, pause, then send — in that order, because that is the order a person does it.
@@ -788,10 +898,11 @@ export async function sendTestMessage(to: string, text: string): Promise<SendOut
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(to);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
-  const outcome = await sendOne(cfg, { to, text, source: 'os:test', digits, enqueuedAt: Date.now(), attempts: 0 });
+  const target: Target = { kind: 'person', digits };
+  const outcome = await sendOne(cfg, { text, source: 'os:test', target, enqueuedAt: Date.now(), attempts: 0 });
   if (outcome.ok) {
     sentAt.push(Date.now());
-    lastToRecipient.set(digits, Date.now());
+    lastToRecipient.set(targetKey(target), Date.now());
   }
   return outcome;
 }
@@ -799,6 +910,7 @@ export async function sendTestMessage(to: string, text: string): Promise<SendOut
 /** Test seam: forget pacing history so a test starts from a known state. */
 export function __resetPacingForTests(): void {
   sentAt.length = 0;
+  groupSentAt.length = 0;
   lastToRecipient.clear();
   onWhatsApp.clear();
   queue.length = 0;

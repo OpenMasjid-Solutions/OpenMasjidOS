@@ -23,7 +23,14 @@ const wa = req('../src/notify/whatsapp') as typeof import('../src/notify/whatsap
 const store = req('../src/store/whatsapp') as typeof import('../src/store/whatsapp');
 
 const L = store.DEFAULT_LIMITS;
-const noHistory = () => ({ sends: [] as number[], lastPerRecipient: new Map<string, number>() });
+const noHistory = () => ({
+  sends: [] as number[],
+  groupSends: [] as number[],
+  lastPerRecipient: new Map<string, number>(),
+});
+/** A person target. `blockedReason` takes a Target now, so groups get their own budget
+ *  without a second copy of the policy — see whatsapp-groups.test.ts. */
+const who = (digits: string) => ({ kind: 'person' as const, digits });
 const NOON = 12; // a safely non-quiet hour
 
 // ── phone numbers ────────────────────────────────────────────────────────────────
@@ -115,7 +122,7 @@ test('the daily cap holds even when the hour is quiet', () => {
 });
 
 function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: string | null = null): string | null {
-  return wa.blockedReason(now, NOON, '15550101234', L, linkedAt, hist);
+  return wa.blockedReason(now, NOON, who('15550101234'), L, linkedAt, hist);
 }
 
 // ── per-recipient cooldown ───────────────────────────────────────────────────────
@@ -128,7 +135,7 @@ test('one person is never hammered, even by different apps', () => {
   hist.lastPerRecipient.set('15550101234', now - 5_000);
   assert.equal(blocked(now, hist), 'this recipient was messaged very recently');
   // A different recipient is unaffected.
-  assert.equal(wa.blockedReason(now, NOON, '447700900123', L, null, hist), null);
+  assert.equal(wa.blockedReason(now, NOON, who('447700900123'), L, null, hist), null);
   // And once the cooldown expires, they can be messaged again.
   hist.lastPerRecipient.set('15550101234', now - (L.perRecipientCooldownSeconds + 1) * 1000);
   assert.equal(blocked(now, hist), null);
@@ -162,7 +169,7 @@ test('the warm-up ramp still allows at least one message', () => {
   // silent total outage rather than a slow start.
   const tiny = { ...L, perHour: 1, perDay: 1 };
   const linkedToday = new Date().toISOString();
-  const r = wa.blockedReason(Date.now(), NOON, '15550101234', tiny, linkedToday, noHistory());
+  const r = wa.blockedReason(Date.now(), NOON, who('15550101234'), tiny, linkedToday, noHistory());
   assert.equal(r, null, 'a brand-new number on a tight cap can still send one message');
 });
 

@@ -76,7 +76,9 @@ function stubStripe(payload: unknown, opts: { status?: number } = {}): () => voi
         headers: { 'content-type': 'application/json' },
       });
     }
-    return real(input as RequestInfo, init);
+    // Derived from `fetch` itself rather than naming a DOM type: this config has no DOM
+    // lib, so `RequestInfo` does not exist here.
+    return real(input as Parameters<typeof fetch>[0], init);
   }) as typeof fetch;
   return () => {
     globalThis.fetch = real;

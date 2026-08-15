@@ -51,6 +51,19 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **OpenWA no longer appears on the dashboard, in the dock, or in the App Store** unless WhatsApp is switched on — and even then only in the store. It is opened from Settings alone, with the copy stating plainly that linking happens in OpenMasjidOS and OpenWA is for reading and replying to chats. The platform owns the session (creating, starting, pairing, pacing), and every one of those guarantees breaks if a second phone is linked in OpenWA's own UI or a message is sent from there, outside the queue.
 - **Phone numbers are a proper field now** — pick the country, type the rest. "Enter your number in international format" was a guessing game where three of the four plausible answers were wrong. No phone-number library was added (libphonenumber is ~150 KB gzipped for depth this does not need); the server still refuses anything without a country code and still never guesses one.
 
+**Added — post to a WhatsApp group**
+
+- **Apps can now send an announcement to a group, so one message reaches everyone.** Telling 200 parents something one at a time costs 200 messages paced over hours — and messaging many people individually is the riskiest thing a WhatsApp number can do. A group post is a single message.
+- **You approve which groups apps may use**, in Settings → WhatsApp → Groups → *Find my groups*. This is the safeguard, not a formality: the gateway can see every group your phone is in, including personal ones, and apps are only ever shown the ones you approve. Withdraw approval at any time and it stops immediately.
+- Two warnings appear before you approve one, because both are easy to learn the hard way: **everyone in a WhatsApp group can see every other member's phone number**, and unless the group is set to "only admins can send", any member can reply to all 200.
+- **OpenMasjidOS will never add anyone to a group.** Adding people who did not ask is the fastest route to a blocked number and a complaint; share a join link instead.
+- Group posts have their own tighter allowance — **4 an hour, 10 a day** — kept separate in both directions, so an announcement never eats the allowance fee reminders need and neither starves the other. Quiet hours still apply, and everything still goes through the one paced queue.
+- **A Community's announcement group works** — it is an ordinary group. **WhatsApp Channels do not**: the gateway has no way to post to a Channel at all, so there is nothing to switch on. Stated plainly in `docs/WHATSAPP.md` so nobody plans around it.
+
+**Internal — the tests are typechecked now**
+
+- `npm run lint` only typechecked `src/`, so a change to a function signature broke two tests silently: the lint was clean and the failure appeared only when the suite ran. It happened twice while building the group support. Tests are now included (`tsconfig.test.json`), and the two latent type errors this uncovered are fixed. Verified by planting the old broken call and confirming the lint catches it.
+
 **Changed — WhatsApp alerts are the platform's, app messages are the app's**
 
 - **The WhatsApp column in Settings → Alerts now covers OpenMasjidOS's own alerts only.** Each app's rows read *"Set up in the app"* instead. The matrix sends to *you*, the admin, and the platform knows exactly one phone number — yours. An app that messages over WhatsApp is almost always reaching a parent about fees or a donor about a receipt, so who it messages and what it says belong in that app's own settings. A toggle here promised something the platform could not do.

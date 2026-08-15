@@ -74,6 +74,42 @@ one paced queue — which is the entire defence against the number being banned.
 You never enter a session id anywhere. OpenWA mints one as a UUID and its API accepts only
 a name, so OpenMasjidOS creates and starts the session for you the first time you link.
 
+## Groups
+
+**One message to a group reaches everyone in it.** For an announcement — "madrasa is closed
+tomorrow" — that is enormously better than messaging 200 parents one at a time: it is a single
+outbound message rather than 200 paced over hours, and messaging many individuals is the
+riskiest thing this number can do.
+
+**Settings → WhatsApp → Groups → Find my groups**, then approve the ones apps may post into.
+Approval is the point: OpenWA can see *every* group the linked phone is in — personal ones
+included — and apps are only ever shown the ones you approve.
+
+Before you approve one, two things that are easy to discover the hard way:
+
+- **Everyone in a WhatsApp group can see every other member's phone number.** For a madrasa
+  that means every family's number is visible to every other family.
+- **Unless the group is set to "only admins can send"** in WhatsApp, any member can reply to
+  everyone. A fee notice to 200 people can turn into 200 replies. Set it in WhatsApp →
+  group → *Group settings → Send messages → Only admins*. You must be an admin of the group
+  to post into it once it is announcement-only.
+
+**Never add people to a group yourself.** OpenMasjidOS will not do it, and neither should you:
+adding someone who did not ask is both the fastest route to a banned number and a complaint
+waiting to happen. Share a join link and let people join.
+
+Group posts have their own, tighter budget — **4 an hour, 10 a day** by default, separate from
+individual messages, so an announcement never eats the allowance fee reminders need, and neither
+starves the other. Quiet hours apply to groups too (more so: a 03:00 post wakes everyone).
+
+### WhatsApp Communities and Channels
+
+- **Communities**: a Community's *announcement group* is an ordinary group, so if the masjid's
+  number is an admin of it, approve it here and post to it like any other.
+- **Channels (Newsletters)**: **not possible.** OpenWA can list, read, create and subscribe to
+  Channels, but it has no endpoint to post a message to one. There is nothing to enable — it is
+  absent from the gateway, not switched off in OpenMasjidOS.
+
 ## How sending behaves, and why
 
 Ban risk attaches to the **phone number**, not to whichever app had something to say. If
@@ -154,6 +190,30 @@ X-OpenMasjid-App-Secret: <your per-app secret>
 | `unreachable` | "The WhatsApp gateway isn't responding." |
 
 You never learn the gateway's address, its key, or which number is linked.
+
+To post an announcement to a group, first read the groups the admin approved for you:
+
+```http
+GET /api/fabric/whatsapp/groups
+X-OpenMasjid-App-Secret: <your per-app secret>
+```
+
+```json
+{ "groups": [{ "id": "120363012345678901@g.us", "label": "Parents — Hifz" }] }
+```
+
+Then send to one, using `group` in place of `to`:
+
+```json
+{ "group": "120363012345678901@g.us", "text": "Madrasa is closed tomorrow, in shaa Allah." }
+```
+
+- The list contains **only** groups the admin approved. You never see the masjid's other
+  groups, and an id you did not get from this list is refused with `403`.
+- The admin can withdraw approval at any time — treat an empty list as "no groups available"
+  and hide the feature rather than erroring.
+- **A group post is for genuine announcements.** Never use one to tell a family about their own
+  fees: their business is not the other 199 members'.
 
 Rules that are not negotiable:
 

@@ -26,6 +26,7 @@ import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
 import { enqueue as enqueueWhatsApp, gatewayStatus as whatsappStatus } from '../notify/whatsapp';
+import { listApprovedGroups, isApprovedGroup } from '../store/whatsapp';
 import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
 import { getLogo, hasLogo } from '../store/branding';
@@ -292,6 +293,24 @@ export function registerFabric(server: FastifyInstance): void {
     return reply.send({ available: reason === 'ready', reason });
   });
 
+  /**
+   * The groups this app may post into — the ones the ADMIN approved, and nothing else.
+   *
+   * The raw OpenWA group list must never cross this boundary: it contains every group the
+   * masjid's number belongs to, including the imam's family chat and whatever else that
+   * phone is in. An app sees only what an admin deliberately put in front of it, and only
+   * ever a label and an opaque id.
+   */
+  server.get('/api/fabric/whatsapp/groups', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [] });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) {
+      return reply.code(403).send({ groups: [], error: 'This app is not allowed to send WhatsApp messages.' });
+    }
+    return reply.send({ groups: listApprovedGroups().map((g) => ({ id: g.id, label: g.label })) });
+  });
+
   server.post('/api/fabric/whatsapp', async (req, reply) => {
     if (!fabricRateOk(req.ip)) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
     const presented = req.headers['x-openmasjid-app-secret'];
@@ -299,17 +318,27 @@ export function registerFabric(server: FastifyInstance): void {
     if (!app || !app.whatsapp) {
       return reply.code(403).send({ queued: false, error: 'This app is not allowed to send WhatsApp messages.' });
     }
-    const body = (req.body ?? {}) as { to?: unknown; text?: unknown };
+    const body = (req.body ?? {}) as { to?: unknown; text?: unknown; group?: unknown };
     // A single recipient per call, deliberately. Accepting an array would invite an app
     // to hand over a thousand numbers in one request, and the shape of the API is the
     // first place to discourage a blast — the queue would pace it, but the app author
     // should be thinking one-parent-at-a-time.
     const to = typeof body.to === 'string' ? body.to : '';
+    const group = typeof body.group === 'string' ? body.group : '';
     const text = typeof body.text === 'string' ? body.text : '';
-    if (!to || !text.trim()) {
-      return reply.code(400).send({ queued: false, error: 'A "to" (phone number) and "text" are required.' });
+    if (!text.trim() || Boolean(to) === Boolean(group)) {
+      return reply
+        .code(400)
+        .send({ queued: false, error: 'Send "text" to either a "to" (phone number) or a "group", not both.' });
     }
-    const result = enqueueWhatsApp({ to, text, source: app.id });
+    // An unapproved group is a 403, not a 400: it is an authorisation answer, and saying
+    // "bad request" would send an app author looking for a typo in their payload.
+    if (group && !isApprovedGroup(group)) {
+      return reply
+        .code(403)
+        .send({ queued: false, error: 'That group has not been approved for sending in OpenMasjidOS.' });
+    }
+    const result = enqueueWhatsApp(group ? { groupId: group, text, source: app.id } : { to, text, source: app.id });
     // 202: accepted for later delivery, which is exactly what happened.
     return reply.code(result.queued ? 202 : 400).send(result);
   });

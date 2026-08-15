@@ -20,7 +20,20 @@ const CALLER_SECRET = 'caller-secret-abcdefghijklmnop';
 const TARGET_SECRET = 'target-secret-abcdefghijklmnop';
 
 function fab(p: Partial<FabricApp> & { id: string }): FabricApp {
-  return { name: p.id, sso: false, notify: false, stripe: false, domain: false, provides: [], consumes: [], ...p };
+  // Every capability defaults OFF, so a fixture only opts into what its test is about —
+  // and a capability added later starts denied here rather than silently granted.
+  return {
+    name: p.id,
+    sso: false,
+    notify: false,
+    stripe: false,
+    domain: false,
+    email: false,
+    whatsapp: false,
+    provides: [],
+    consumes: [],
+    ...p,
+  };
 }
 const caller = fab({ id: 'donations', consumes: ['students/billing'] });
 const target = fab({ id: 'students', provides: ['billing'] });
