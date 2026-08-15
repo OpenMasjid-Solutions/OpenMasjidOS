@@ -1811,20 +1811,23 @@ function WhatsAppPanel() {
           <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
             {t('settings.whatsappLinkHint')}
           </div>
-          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <PhoneField
-              value={linkPhone}
-              onChange={setLinkPhone}
-              hint={t('settings.whatsappLinkNumberHint')}
-            />
-            <button
-              className="btn"
-              disabled={link.isPending || linkPhone.length < 8}
-              onClick={() => link.mutate({ phone: linkPhone })}
-            >
-              {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
-            </button>
-          </div>
+          {/* The button rides INSIDE the field's input row, so it lines up with the
+              number rather than with the bottom of the hint beneath it. */}
+          <PhoneField
+            value={linkPhone}
+            onChange={setLinkPhone}
+            hint={t('settings.whatsappLinkNumberHint')}
+            trailing={
+              <button
+                className="btn"
+                style={{ flex: '0 0 auto' }}
+                disabled={link.isPending || linkPhone.length < 8}
+                onClick={() => link.mutate({ phone: linkPhone })}
+              >
+                {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
+              </button>
+            }
+          />
           {/* The code is typed into a phone held in the other hand, from a screen that
               may be across the room — so it is the biggest thing on the panel, spaced
               like a code rather than set as body text. */}
@@ -1929,6 +1932,8 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const [browsing, setBrowsing] = useState(false);
+  /** The group a test is pending for — a message to a whole group cannot be unsent. */
+  const [confirmTest, setConfirmTest] = useState<{ id: string; label: string } | null>(null);
 
   // Fetched only while the picker is open. The error is rendered inline rather than
   // toasted: "couldn't read your groups" is about the panel you are looking at, and a
@@ -1946,6 +1951,16 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
   const unapprove = trpc.whatsapp.unapproveGroup.useMutation({
     onSuccess: refresh,
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const testGroup = trpc.whatsapp.testGroup.useMutation({
+    onSuccess: () => {
+      setConfirmTest(null);
+      toast(t('settings.whatsappGroupTestSent'), 'success');
+    },
+    onError: (e) => {
+      setConfirmTest(null);
+      toast(e.message || t('errors.generic'), 'error');
+    },
   });
 
   const approvedIds = new Set(approved.map((g) => g.id));
@@ -1967,17 +1982,38 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
                   <div className="setting-row__hint">{t('settings.whatsappGroupMembers', { count: g.participants })}</div>
                 )}
               </div>
-              <button
-                className="btn btn--sm"
-                disabled={unapprove.isPending}
-                onClick={() => unapprove.mutate({ id: g.id })}
-              >
-                <Trash2 size={14} /> {t('settings.whatsappGroupRemove')}
-              </button>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn--sm"
+                  disabled={testGroup.isPending}
+                  onClick={() => setConfirmTest({ id: g.id, label: g.label })}
+                >
+                  {t('settings.whatsappGroupTest')}
+                </button>
+                <button
+                  className="btn btn--sm"
+                  disabled={unapprove.isPending}
+                  onClick={() => unapprove.mutate({ id: g.id })}
+                >
+                  <Trash2 size={14} /> {t('settings.whatsappGroupRemove')}
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
+
+      {/* Confirmed, unlike the test to your own number: everyone in the group receives
+          this, and a message cannot be unsent from two hundred phones. */}
+      <ConfirmDialog
+        open={confirmTest !== null}
+        onClose={() => setConfirmTest(null)}
+        onConfirm={() => confirmTest && testGroup.mutate({ id: confirmTest.id })}
+        title={t('settings.whatsappGroupTestTitle', { name: confirmTest?.label ?? '' })}
+        body={t('settings.whatsappGroupTestBody')}
+        confirmLabel={t('settings.whatsappGroupTestConfirm')}
+        pending={testGroup.isPending}
+      />
 
       {!browsing ? (
         <button className="btn" onClick={() => setBrowsing(true)}>

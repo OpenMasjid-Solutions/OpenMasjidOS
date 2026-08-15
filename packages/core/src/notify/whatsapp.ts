@@ -898,10 +898,33 @@ export async function sendTestMessage(to: string, text: string): Promise<SendOut
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(to);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
-  const target: Target = { kind: 'person', digits };
+  return sendTestTo({ kind: 'person', digits }, text);
+}
+
+/**
+ * The same, to a GROUP the admin approved.
+ *
+ * Still approval-gated, even though this is an admin action: the id comes from a request
+ * body, and "the admin asked" is not a reason to skip the one check that decides which
+ * groups this platform may write to.
+ *
+ * Everyone in the group receives it, which is why the UI confirms first — a test message
+ * cannot be unsent from two hundred phones.
+ */
+export async function sendTestToGroup(groupId: string, text: string): Promise<SendOutcome> {
+  if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
+  if (!isApprovedGroup(groupId)) return { ok: false, error: 'That group has not been approved for sending.' };
+  return sendTestTo({ kind: 'group', groupId }, text);
+}
+
+async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
+  const cfg = getWhatsAppConfig();
   const outcome = await sendOne(cfg, { text, source: 'os:test', target, enqueuedAt: Date.now(), attempts: 0 });
   if (outcome.ok) {
-    sentAt.push(Date.now());
+    // A test bypasses the QUEUE, not the BUDGET. It is a real message from the real
+    // number, so it counts against the same allowance — otherwise pressing the button
+    // repeatedly would be the one way to send unpaced traffic from this platform.
+    (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
   }
   return outcome;

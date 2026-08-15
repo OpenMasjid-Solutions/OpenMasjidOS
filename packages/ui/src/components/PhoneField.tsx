@@ -17,7 +17,7 @@
  * does not need, and Pi-friendliness is a stated value (CLAUDE.md §6). Dial codes are a
  * static table; grouping is cosmetic.
  */
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /** Dial codes, longest-prefix-first at lookup time so +1876 beats +1. */
@@ -132,9 +132,19 @@ interface PhoneFieldProps {
   hint?: string;
   id?: string;
   disabled?: boolean;
+  /**
+   * Rendered on the same row as the inputs — for an action that belongs to the number,
+   * like "Get a code".
+   *
+   * A slot rather than the caller placing a sibling button: the field is a label, a row
+   * of inputs AND a hint, so a button flexed alongside the whole field lines up with the
+   * bottom of the hint text and floats visibly below the inputs. Inside the row it sits
+   * where it belongs, whatever the hint says.
+   */
+  trailing?: ReactNode;
 }
 
-export function PhoneField({ value, onChange, label, hint, id, disabled }: PhoneFieldProps) {
+export function PhoneField({ value, onChange, label, hint, id, disabled, trailing }: PhoneFieldProps) {
   const { t } = useTranslation();
   const split = useMemo(() => splitPhone(value), [value]);
   // An empty field starts on +1 rather than "choose a country", so the common case is
@@ -160,7 +170,8 @@ export function PhoneField({ value, onChange, label, hint, id, disabled }: Phone
   }
 
   return (
-    <div className="field" style={{ maxWidth: '22rem' }}>
+    // Wider when it carries an action, so the button is not squeezed against the number.
+    <div className="field" style={{ maxWidth: trailing ? '34rem' : '22rem' }}>
       {label && (
         <label className="label" htmlFor={id}>
           {label}
@@ -199,6 +210,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled }: Phone
           onChange={(e) => setNational(e.target.value)}
           placeholder={t('settings.phoneNumberPlaceholder')}
         />
+        {trailing}
       </div>
       <span className="hint">{dial ? (hint ?? t('settings.phoneHint')) : t('settings.phoneHintOther')}</span>
     </div>

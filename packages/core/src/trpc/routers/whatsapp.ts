@@ -29,6 +29,7 @@ import {
   gatewayStatus,
   requestPairingCode,
   sendTestMessage,
+  sendTestToGroup,
   queueDepth,
   toDigits,
   listGatewayGroups,
@@ -186,6 +187,26 @@ export const whatsappRouter = router({
   unapproveGroup: protectedProcedure
     .input(z.object({ id: z.string().max(120) }))
     .mutation(({ input }) => unapproveGroup(input.id)),
+
+  /**
+   * Post a test message into an approved group, so the admin can confirm it arrives
+   * before an app ever posts something real.
+   *
+   * Says plainly in the message that it is a test, because everyone in the group sees it
+   * and an unexplained message from the masjid's number invites replies.
+   */
+  testGroup: protectedProcedure
+    .input(z.object({ id: z.string().max(120) }))
+    .mutation(async ({ input }) => {
+      const r = await sendTestToGroup(
+        input.id,
+        'This is a test message from OpenMasjidOS. Announcements for the masjid will arrive here — no reply needed.',
+      );
+      if (!r.ok) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: r.error ?? "The message couldn't be sent." });
+      }
+      return { sent: true };
+    }),
 
   /** Send one real message to the admin's own number to prove the setup works. */
   test: protectedProcedure

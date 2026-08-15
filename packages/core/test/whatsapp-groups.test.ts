@@ -247,3 +247,17 @@ test('the platform never manages group membership', () => {
     assert.ok(!code.includes(forbidden), `the platform must never call ${forbidden}`);
   }
 });
+
+test('a group test is still approval-gated and still spends the group budget', () => {
+  // "The admin asked" is not a reason to skip the one check that decides which groups
+  // this platform may write to — the id still arrives in a request body.
+  const code = codeOf('core/src/notify/whatsapp.ts');
+  const fn = code.slice(code.indexOf('export async function sendTestToGroup'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /isApprovedGroup\(groupId\)/, 'an unapproved group must be refused');
+
+  // A test bypasses the QUEUE, not the BUDGET. It is a real message from the real number,
+  // so repeatedly pressing the button must not be a way to send unpaced traffic.
+  const helper = code.slice(code.indexOf('async function sendTestTo('));
+  assert.match(helper.slice(0, helper.indexOf('\n}\n')), /groupSentAt : sentAt\)\.push/, 'it must count against a cap');
+});

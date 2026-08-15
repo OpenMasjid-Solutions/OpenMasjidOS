@@ -58,6 +58,8 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - Two warnings appear before you approve one, because both are easy to learn the hard way: **everyone in a WhatsApp group can see every other member's phone number**, and unless the group is set to "only admins can send", any member can reply to all 200.
 - **OpenMasjidOS will never add anyone to a group.** Adding people who did not ask is the fastest route to a blocked number and a complaint; share a join link instead.
 - Group posts have their own tighter allowance — **4 an hour, 10 a day** — kept separate in both directions, so an announcement never eats the allowance fee reminders need and neither starves the other. Quiet hours still apply, and everything still goes through the one paced queue.
+- **Send a test message to any approved group**, so you can see it arrive before an app ever posts something real. It asks you to confirm first — everyone in the group receives it, and a message cannot be unsent from two hundred phones — and the message says plainly that it is a test and needs no reply.
+- The **Get a code** button now sits on the same line as the phone number instead of drifting below it.
 - **A Community's announcement group works** — it is an ordinary group. **WhatsApp Channels do not**: the gateway has no way to post to a Channel at all, so there is nothing to switch on. Stated plainly in `docs/WHATSAPP.md` so nobody plans around it.
 
 **Internal — the tests are typechecked now**
