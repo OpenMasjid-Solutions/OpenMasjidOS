@@ -52,6 +52,11 @@ app is not in the App Store and WhatsApp does not exist anywhere in OpenMasjidOS
    **off by default** for every alert, deliberately: configuring a gateway should not
    start messaging phones on its own.
 
+   > **That column covers OpenMasjidOS's own alerts only** — an app going offline, an
+   > update, a disputed payment. Each app's rows say *"Set up in the app"*, because an
+   > app messaging over WhatsApp is reaching a parent or a donor, not you, and only the
+   > app knows who those people are. It still sends through this gateway and this queue.
+
 ### Why OpenWA is hidden, and when to open it
 
 OpenWA does not appear on your dashboard or in the dock, and the only button that opens
@@ -97,6 +102,12 @@ config pasted from a bulk-sending tutorial cannot turn this into a blaster. The 
 3-second gap and some jitter, always.
 
 ## For app authors
+
+**Own your own settings.** The platform's alerts matrix has no WhatsApp column for your
+app, on purpose: it routes to the admin's one number, and your messages are for parents,
+donors and teachers. Which events go out over WhatsApp, and to whom, is a setting in
+*your* app. What you do NOT own is the sending — that stays with the platform, so one
+paced queue protects the masjid's number no matter how many apps are installed.
 
 Declare the capability in your manifest:
 

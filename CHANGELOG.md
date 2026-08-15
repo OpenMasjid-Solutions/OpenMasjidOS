@@ -51,6 +51,14 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **OpenWA no longer appears on the dashboard, in the dock, or in the App Store** unless WhatsApp is switched on — and even then only in the store. It is opened from Settings alone, with the copy stating plainly that linking happens in OpenMasjidOS and OpenWA is for reading and replying to chats. The platform owns the session (creating, starting, pairing, pacing), and every one of those guarantees breaks if a second phone is linked in OpenWA's own UI or a message is sent from there, outside the queue.
 - **Phone numbers are a proper field now** — pick the country, type the rest. "Enter your number in international format" was a guessing game where three of the four plausible answers were wrong. No phone-number library was added (libphonenumber is ~150 KB gzipped for depth this does not need); the server still refuses anything without a country code and still never guesses one.
 
+**Changed — WhatsApp alerts are the platform's, app messages are the app's**
+
+- **The WhatsApp column in Settings → Alerts now covers OpenMasjidOS's own alerts only.** Each app's rows read *"Set up in the app"* instead. The matrix sends to *you*, the admin, and the platform knows exactly one phone number — yours. An app that messages over WhatsApp is almost always reaching a parent about fees or a donor about a receipt, so who it messages and what it says belong in that app's own settings. A toggle here promised something the platform could not do.
+- Nothing changes about how apps send: they still go through OpenMasjidOS, using the gateway you configured, the credentials they never see, and the one paced queue that protects your number. Only the choice of what to send moved.
+- Apps keep their Email and Webhook columns, because those really are "tell the admin something happened".
+- **The pairing code is now big enough to read from across the room**, with a note that it expires — you are typing it into a phone in your other hand.
+- **Once linked, the panel shows which number is sending**, so "connected" is something you can verify rather than take on trust.
+
 **Fixed — a Development machine that was never offered anything**
 
 - **`dev/VERSION` was numbered below the release it followed.** After `0.50.4` shipped, dev kept counting `0.50.4-dev.5`, `-dev.6` — and by semver a prerelease sorts *below* its own release, so `0.50.4-dev.6` is **older** than `0.50.4`. A machine on Stable that switched to Development was therefore correctly told there was nothing newer: no banner, no alert, no error, the dashboard saying Development while running Stable indefinitely. Dev now heads toward the *next* release (`0.50.5-dev.1`), and a test compares the two branches' versions and fails with that explanation, so it cannot recur.

@@ -103,14 +103,41 @@ function persist(): void {
   writeJson(ALERTS_PATH, { channels: Object.fromEntries(channels) });
 }
 
-/** The channel routing for an alert type — defaults to both channels on. */
+/**
+ * WhatsApp is an OS-only channel.
+ *
+ * The matrix routes alerts to the ADMIN. For the platform's own alerts that is the whole
+ * story, so a WhatsApp column makes sense. For an app's alerts it does not: an app that
+ * wants to message people over WhatsApp is almost never trying to reach the admin's phone
+ * — it is reaching a parent about fees, or a donor about a receipt — and those recipients,
+ * their wording and their timing are the app's own business. It configures them in its own
+ * settings and sends through `POST /api/fabric/whatsapp`, which uses the same gateway and
+ * the same paced queue.
+ *
+ * Offering an app a WhatsApp toggle here implied the platform could route its messages to
+ * the right people, which it cannot: it knows one number, the admin's.
+ *
+ * Email and the webhook stay available to apps, because those genuinely are "tell the
+ * admin something happened".
+ */
+export function whatsappAllowed(source: string): boolean {
+  return source === 'os';
+}
+
+/** The channel routing for an alert type — defaults to email + webhook on. */
 export function getAlertChannels(source: string, id: string): AlertChannels {
-  return channels.get(key(source, id)) ?? { ...DEFAULT_CHANNELS };
+  const stored = channels.get(key(source, id)) ?? { ...DEFAULT_CHANNELS };
+  // Enforced on READ, so a file written while the column existed for apps (or edited by
+  // hand) cannot keep sending an app's alerts to the admin's phone.
+  return whatsappAllowed(source) ? stored : { ...stored, whatsapp: false };
 }
 
 /** Turn a single channel on/off for an alert type. Non-default choices are
- *  persisted; a return to the default (both on) drops the entry to keep the file lean. */
+ *  persisted; a return to the default drops the entry to keep the file lean. */
 export function setAlertChannel(source: string, id: string, channel: keyof AlertChannels, enabled: boolean): void {
+  // The UI does not offer this, but the procedure is reachable — refuse rather than
+  // storing a preference that `getAlertChannels` would then ignore.
+  if (channel === 'whatsapp' && !whatsappAllowed(source)) return;
   const next: AlertChannels = { ...getAlertChannels(source, id), [channel]: enabled };
   if (isDefault(next)) channels.delete(key(source, id));
   else channels.set(key(source, id), next);
@@ -124,6 +151,9 @@ export interface AlertTypeInfo {
   label: string;
   description?: string;
   channels: AlertChannels;
+  /** False for an app's alerts — it sends its own WhatsApp messages, to its own
+   *  people, from its own settings. The UI shows that instead of a dead toggle. */
+  whatsappAvailable: boolean;
 }
 
 /** All known alert types (OS built-ins + every installed app's declared alerts),
@@ -136,6 +166,7 @@ export function listAlertTypes(): AlertTypeInfo[] {
     label: a.label,
     description: a.description,
     channels: getAlertChannels('os', a.id),
+    whatsappAvailable: true,
   }));
   for (const app of listAppAlerts()) {
     for (const a of app.alerts) {
@@ -146,6 +177,7 @@ export function listAlertTypes(): AlertTypeInfo[] {
         label: a.label,
         description: a.description,
         channels: getAlertChannels(app.appId, a.id),
+        whatsappAvailable: whatsappAllowed(app.appId),
       });
     }
   }

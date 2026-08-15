@@ -1825,12 +1825,46 @@ function WhatsAppPanel() {
               {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
             </button>
           </div>
+          {/* The code is typed into a phone held in the other hand, from a screen that
+              may be across the room — so it is the biggest thing on the panel, spaced
+              like a code rather than set as body text. */}
           {pairing && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-              {t('settings.whatsappCode')} <code>{pairing}</code>
-            </p>
+            <div
+              className="glass-inset panel"
+              style={{ marginBlockStart: '0.7rem', textAlign: 'center', padding: '1rem 1.2rem' }}
+            >
+              <div className="setting-row__hint" style={{ marginBlockEnd: '0.35rem' }}>
+                {t('settings.whatsappCode')}
+              </div>
+              <code
+                style={{
+                  fontSize: '2.1rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.35em',
+                  // The trailing letter-space would otherwise push the code off-centre.
+                  textIndent: '0.35em',
+                  lineHeight: 1.25,
+                  display: 'block',
+                  userSelect: 'all',
+                }}
+              >
+                {pairing}
+              </code>
+              <div className="setting-row__hint" style={{ marginBlockStart: '0.35rem' }}>
+                {t('settings.whatsappCodeExpires')}
+              </div>
+            </div>
           )}
         </div>
+      )}
+
+      {/* Which phone is actually linked. Without it the panel says "connected" and the
+          admin has to take on trust that it is the number they meant — and on a masjid's
+          spare handset that is exactly the thing worth double-checking. */}
+      {s?.state === 'ready' && s.phone && (
+        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+          {t('settings.whatsappLinkedTo')} <strong>+{s.phone}</strong>
+        </p>
       )}
 
       {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
@@ -1929,12 +1963,31 @@ function AlertsPanel() {
                   label={`${r.label} — ${t('settings.alertsWebhook')}`}
                 />
               </div>
-              <div style={{ width: '4.5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' }}>
-                <Toggle
-                  checked={r.channels.whatsapp}
-                  onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'whatsapp', enabled: v })}
-                  label={`${r.label} — ${t('settings.alertsWhatsapp')}`}
-                />
+              {/* WhatsApp is only for the platform's own alerts. An app that messages
+                  people over WhatsApp is reaching a parent or a donor, not the admin's
+                  phone — so who it messages, and what it says, belongs in that app's own
+                  settings. A toggle here would have implied the platform could route an
+                  app's messages to the right people, when it only knows one number. */}
+              <div
+                style={{
+                  width: '4.5rem',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  paddingInlineStart: '0.4rem',
+                }}
+              >
+                {r.whatsappAvailable ? (
+                  <Toggle
+                    checked={r.channels.whatsapp}
+                    onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'whatsapp', enabled: v })}
+                    label={`${r.label} — ${t('settings.alertsWhatsapp')}`}
+                  />
+                ) : (
+                  <span className="hint" style={{ textAlign: 'center', lineHeight: 1.2 }}>
+                    {t('settings.alertsWhatsappInApp')}
+                  </span>
+                )}
               </div>
             </div>
           ))}
