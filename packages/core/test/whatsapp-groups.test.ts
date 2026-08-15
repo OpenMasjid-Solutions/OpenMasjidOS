@@ -74,13 +74,17 @@ test('a malformed id can never be approved, so it can never be sent to', () => {
   assert.equal(store.listApprovedGroups().some((g) => g.id.includes('..')), false);
 });
 
-test('approving twice re-labels rather than duplicating', () => {
+test('approving twice never duplicates, and never clobbers the nickname', () => {
+  // Re-approving happens whenever the admin opens the picker again. It used to overwrite
+  // the label with WhatsApp's own subject, which would silently undo a rename as a side
+  // effect of browsing — so a nickname is now only changed by renaming it.
   configure();
   store.approveGroup(GROUP, 'First name');
-  store.approveGroup(GROUP, 'Better name');
+  store.renameGroup(GROUP, 'Parents — Hifz');
+  store.approveGroup(GROUP, 'First name');
   const list = store.listApprovedGroups().filter((g) => g.id === GROUP);
-  assert.equal(list.length, 1);
-  assert.equal(list[0]!.label, 'Better name');
+  assert.equal(list.length, 1, 'one entry, not two');
+  assert.equal(list[0]!.label, 'Parents — Hifz', 'the nickname survives');
   store.unapproveGroup(GROUP);
 });
 
@@ -264,4 +268,39 @@ test('a group test is still approval-gated and still spends the group budget', (
   // so repeatedly pressing the button must not be a way to send unpaced traffic.
   const helper = code.slice(code.indexOf('async function sendTestTo('));
   assert.match(helper.slice(0, helper.indexOf('\n}\n')), /groupSentAt : sentAt\)\.push/, 'it must count against a cap');
+});
+
+test('the nickname is the admin\'s, and it is what apps see', () => {
+  // A group called "Proffesionalism" or "MASJID GRP 2 (new)" in WhatsApp is not what an
+  // app should show a parent. The nickname is the masjid's own label for it, and renaming
+  // here never touches the group in WhatsApp — the platform does not edit groups.
+  configure();
+  store.approveGroup(GROUP, 'Proffesionalism', 12, 'Proffesionalism');
+  store.renameGroup(GROUP, 'Parents — Hifz');
+
+  const g = store.listApprovedGroups().find((x) => x.id === GROUP);
+  assert.equal(g?.label, 'Parents — Hifz', 'the nickname is what was set');
+  assert.equal(g?.name, 'Proffesionalism', "and WhatsApp's own subject is kept alongside it");
+
+  // Re-approving (opening the picker again) refreshes the details but must NOT clobber
+  // the nickname — that would undo the rename as a side effect of browsing.
+  store.approveGroup(GROUP, 'Proffesionalism', 15, 'Proffesionalism');
+  assert.equal(store.listApprovedGroups().find((x) => x.id === GROUP)?.label, 'Parents — Hifz');
+  assert.equal(store.listApprovedGroups().find((x) => x.id === GROUP)?.participants, 15, 'details do refresh');
+
+  // An empty nickname is refused — apps would have nothing to show.
+  assert.throws(() => store.renameGroup(GROUP, '   '), /needs a name/);
+  store.unapproveGroup(GROUP);
+});
+
+test('apps receive the nickname, and still nothing else', () => {
+  const code = codeOf('core/src/api/fabric.ts');
+  const at = code.indexOf("server.get('/api/fabric/whatsapp/groups'");
+  assert.ok(at > 0);
+  const body = code.slice(at, code.indexOf('server.post(', at));
+  // `label` IS the nickname — one field, so an app never has to choose between two names.
+  assert.match(body, /id: g\.id, label: g\.label/, 'apps get the id and the nickname');
+  // The WhatsApp subject stays admin-only: it is the masjid's private view of which group
+  // this is, and apps have no use for it.
+  assert.doesNotMatch(body, /g\.name/, "WhatsApp's own subject is not sent to apps");
 });

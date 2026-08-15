@@ -81,7 +81,7 @@ tomorrow" — that is enormously better than messaging 200 parents one at a time
 outbound message rather than 200 paced over hours, and messaging many individuals is the
 riskiest thing this number can do.
 
-**Settings → WhatsApp → Groups → Find my groups**, then approve the ones apps may post into.
+**Settings → WhatsApp → Groups → Find my groups**, then approve the ones apps may post into. Give each one a **nickname** — that is the name apps see, and the only one they see. A group called "MASJID GRP 2 (new)" in WhatsApp can be "Parents — Hifz" here, and renaming it never touches the group itself. Each approved group also shows its **id**: the value apps send to, and the one that turns up in their logs.
 Approval is the point: OpenWA can see *every* group the linked phone is in — personal ones
 included — and apps are only ever shown the ones you approve.
 
@@ -253,6 +253,7 @@ Then send to one, using `group` in place of `to`:
 { "group": "120363012345678901@g.us", "text": "Madrasa is closed tomorrow, in shaa Allah." }
 ```
 
+- `label` is the admin's **nickname** for the group — show it as-is. It is chosen to mean something to the masjid, and the group's real WhatsApp subject is deliberately not sent to you.
 - The list contains **only** groups the admin approved. You never see the masjid's other
   groups, and an id you did not get from this list is refused with `403`.
 - The admin can withdraw approval at any time — treat an empty list as "no groups available"

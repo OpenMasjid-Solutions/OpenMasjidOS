@@ -78,8 +78,18 @@ export interface WhatsAppLimits {
 export interface ApprovedGroup {
   /** The WhatsApp group JID, e.g. `120363012345678901@g.us`. The identity. */
   id: string;
-  /** The admin's label, defaulting to the group's own WhatsApp subject. */
+  /**
+   * The admin's NICKNAME for this group, and the only name apps ever see.
+   *
+   * Separate from `name` because the two serve different people: WhatsApp's own subject
+   * might be "Proffesionalism" or "MASJID GRP 2 (new)", while an app wants to show
+   * something a parent would recognise. Renaming here never touches the group in
+   * WhatsApp — this is the masjid's private label for it.
+   */
   label: string;
+  /** The group's own subject in WhatsApp, snapshotted so the admin can tell which group
+   *  a nickname refers to. Informational; refreshed when the picker is used. */
+  name?: string;
   /** Snapshot for the Settings list only — never authoritative, refreshed on demand. */
   participants?: number;
   approvedAt: string;
@@ -216,6 +226,7 @@ function sanitizeGroups(list: unknown): ApprovedGroup[] {
     out.push({
       id: g.id,
       label: typeof g.label === 'string' && g.label.trim() ? g.label.trim().slice(0, 80) : g.id,
+      name: typeof g.name === 'string' && g.name.trim() ? g.name.trim().slice(0, 120) : undefined,
       participants: typeof g.participants === 'number' ? g.participants : undefined,
       approvedAt: typeof g.approvedAt === 'string' ? g.approvedAt : new Date(0).toISOString(),
     });
@@ -373,15 +384,33 @@ export function isApprovedGroup(id: unknown): boolean {
   return isGroupJid(id) && cache.groups.some((g) => g.id === id);
 }
 
-/** Approve a group (or re-label an already-approved one). */
-export function approveGroup(id: string, label: string, participants?: number): ApprovedGroup[] {
+/** Approve a group, or refresh the details of one already approved. */
+export function approveGroup(id: string, label: string, participants?: number, name?: string): ApprovedGroup[] {
   if (!isGroupJid(id)) throw new Error('That is not a WhatsApp group.');
   const clean = label.trim().slice(0, 80) || id;
   const existing = cache.groups.find((g) => g.id === id);
   const next = existing
-    ? cache.groups.map((g) => (g.id === id ? { ...g, label: clean, participants } : g))
-    : [...cache.groups, { id, label: clean, participants, approvedAt: new Date().toISOString() }];
+    ? // Re-approving refreshes the WhatsApp details but KEEPS the admin's nickname —
+      // renaming is a deliberate act (`renameGroup`), not something that happens as a
+      // side effect of opening the picker again.
+      cache.groups.map((g) => (g.id === id ? { ...g, participants, name: name ?? g.name } : g))
+    : [...cache.groups, { id, label: clean, name, participants, approvedAt: new Date().toISOString() }];
   cache = { ...cache, groups: next };
+  persist();
+  return cache.groups;
+}
+
+/**
+ * Set the admin's nickname for an approved group.
+ *
+ * Apps read this (and nothing else) as the group's name, so it is worth them being able
+ * to show "Parents — Hifz" rather than whatever the group is actually called in WhatsApp.
+ * Renaming here does NOT rename the group in WhatsApp; the platform never edits a group.
+ */
+export function renameGroup(id: string, label: string): ApprovedGroup[] {
+  const clean = label.trim().slice(0, 80);
+  if (!clean) throw new Error('A group needs a name.');
+  cache = { ...cache, groups: cache.groups.map((g) => (g.id === id ? { ...g, label: clean } : g)) };
   persist();
   return cache.groups;
 }

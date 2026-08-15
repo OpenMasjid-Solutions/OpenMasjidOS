@@ -1927,11 +1927,17 @@ function WhatsAppPanel() {
  * makes once, and a background poll of someone's entire group membership every minute is
  * both wasteful and slightly grim.
  */
-function WhatsAppGroups({ approved }: { approved: { id: string; label: string; participants?: number }[] }) {
+function WhatsAppGroups({
+  approved,
+}: {
+  approved: { id: string; label: string; name?: string; participants?: number }[];
+}) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const [browsing, setBrowsing] = useState(false);
+  /** The group being renamed, and the text so far. */
+  const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
   /** The group a test is pending for — a message to a whole group cannot be unsent. */
   const [confirmTest, setConfirmTest] = useState<{ id: string; label: string } | null>(null);
 
@@ -1950,6 +1956,13 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
   });
   const unapprove = trpc.whatsapp.unapproveGroup.useMutation({
     onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const rename = trpc.whatsapp.renameGroup.useMutation({
+    onSuccess: () => {
+      setRenaming(null);
+      refresh();
+    },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
   const testGroup = trpc.whatsapp.testGroup.useMutation({
@@ -1976,11 +1989,57 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
         <div className="glass-inset panel" style={{ marginBlockEnd: '0.6rem', padding: '0.6rem 0.9rem' }}>
           {approved.map((g) => (
             <div className="setting-row" key={g.id}>
-              <div className="setting-row__text" style={{ flex: 1 }}>
-                <div className="setting-row__title">{g.label}</div>
-                {g.participants != null && (
-                  <div className="setting-row__hint">{t('settings.whatsappGroupMembers', { count: g.participants })}</div>
+              <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                {renaming?.id === g.id ? (
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      className="input glass-inset"
+                      style={{ maxWidth: '16rem' }}
+                      autoFocus
+                      value={renaming.label}
+                      maxLength={80}
+                      onChange={(e) => setRenaming({ id: g.id, label: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && renaming.label.trim()) rename.mutate(renaming);
+                        if (e.key === 'Escape') setRenaming(null);
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      disabled={rename.isPending || !renaming.label.trim()}
+                      onClick={() => rename.mutate(renaming)}
+                    >
+                      <Check size={14} /> {t('common.save')}
+                    </button>
+                    <button className="btn btn--sm" onClick={() => setRenaming(null)}>
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    {g.label}
+                    <button
+                      className="icon-btn"
+                      aria-label={t('settings.whatsappGroupRename')}
+                      title={t('settings.whatsappGroupRename')}
+                      onClick={() => setRenaming({ id: g.id, label: g.label })}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
                 )}
+                {/* The group's real WhatsApp subject, when the nickname differs — so the
+                    admin can tell which group a nickname actually refers to. */}
+                {g.name && g.name !== g.label && (
+                  <div className="setting-row__hint">{t('settings.whatsappGroupRealName', { name: g.name })}</div>
+                )}
+                <div className="setting-row__hint">
+                  {g.participants != null && `${t('settings.whatsappGroupMembers', { count: g.participants })} · `}
+                  {/* The id apps send to. Shown because it is the value that appears in an
+                      app's own settings and its logs, and matching it up otherwise means
+                      guessing. Selectable in one click, and it is not a secret. */}
+                  <code style={{ userSelect: 'all', wordBreak: 'break-all' }}>{g.id}</code>
+                </div>
               </div>
               <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                 <button
@@ -2055,7 +2114,9 @@ function WhatsAppGroups({ approved }: { approved: { id: string; label: string; p
                   <button
                     className="btn btn--sm"
                     disabled={approve.isPending || approvedIds.has(g.id)}
-                    onClick={() => approve.mutate({ id: g.id, label: g.name, participants: g.participants })}
+                    onClick={() =>
+                      approve.mutate({ id: g.id, label: g.name, participants: g.participants, name: g.name })
+                    }
                   >
                     {approvedIds.has(g.id) ? t('settings.whatsappGroupApproved') : t('settings.whatsappGroupApprove')}
                   </button>

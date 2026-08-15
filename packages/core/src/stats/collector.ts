@@ -294,6 +294,56 @@ async function getCpuInfo(): Promise<{ cores: number; speedGHz: number }> {
  */
 const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
 
+/**
+ * Total capacity of the machine's real disks, read from sysfs.
+ *
+ * WHY NOT THE FILESYSTEM: the card was reporting a figure far smaller than the machine's
+ * actual disk. Inside the core container `si.fsSize()` sees the container's mounts, and
+ * which of them best represents "this masjid's storage" is a guess that goes wrong on
+ * partitioned disks, on overlay filesystems, and wherever the data directory sits on
+ * something small. The device is the thing an admin can actually look up on an invoice.
+ *
+ * `/sys/block` is readable from inside the container (Docker mounts /sys, and block
+ * devices are not namespaced), and `size` is in 512-byte sectors regardless of the
+ * device's own sector size — that is the kernel's fixed unit for this file.
+ *
+ * Excluded, all for the same reason — they are not additional capacity:
+ *   loop/ram/zram/fd/sr : virtual, in-memory, or optical
+ *   dm-* and md*        : device-mapper and RAID sit ON TOP of real disks, so counting
+ *                         them as well would double the total
+ *   removable           : a USB stick plugged in today is not the masjid's storage
+ *
+ * Returns null when sysfs tells us nothing, so the caller can fall back rather than
+ * reporting zero — a Storage card reading "0" is worse than one reading conservatively.
+ */
+const VIRTUAL_BLOCK = /^(loop|ram|zram|fd|sr|dm-|md|nbd)/;
+const SECTOR_BYTES = 512;
+
+export function physicalDiskBytes(sysBlock = '/sys/block'): number | null {
+  let names: string[];
+  try {
+    names = fs.readdirSync(sysBlock);
+  } catch {
+    return null; // no sysfs (a non-Linux dev box) — the caller falls back
+  }
+  let total = 0;
+  let found = 0;
+  for (const name of names) {
+    if (VIRTUAL_BLOCK.test(name)) continue;
+    try {
+      if (fs.readFileSync(`${sysBlock}/${name}/removable`, 'utf8').trim() === '1') continue;
+      const sectors = Number.parseInt(fs.readFileSync(`${sysBlock}/${name}/size`, 'utf8').trim(), 10);
+      if (!Number.isFinite(sectors) || sectors <= 0) continue;
+      total += sectors * SECTOR_BYTES;
+      found += 1;
+    } catch {
+      // A device that vanished mid-read, or one without these attributes. Skip it
+      // rather than abandoning the whole total.
+    }
+  }
+  return found > 0 ? total : null;
+}
+
 /** Does this mount contain `p`? A boundary check, so `/da` never matches `/data`. */
 function mountContains(mount: string, p: string): boolean {
   if (!mount) return false;
@@ -306,6 +356,8 @@ function pickDisk(
   // A parameter rather than reading DATA_DIR directly, so the choice can be tested on any
   // platform: DATA_DIR is path-resolved, and on Windows `/data` becomes `C:\data`.
   dataDir: string = DATA_DIR,
+  // Injectable so the device-vs-filesystem precedence is testable without a real /sys.
+  deviceBytes: number | null = physicalDiskBytes(),
 ): { used: number; total: number } {
   if (!list || list.length === 0) return { used: 0, total: 0 };
   // Prefer the filesystem the masjid's data actually lives on, and among candidates the
@@ -316,12 +368,21 @@ function pickDisk(
   const root = list.find((d) => d.mount === '/' && d.size > 0);
   const largest = [...list].sort((a, b) => (b.size || 0) - (a.size || 0))[0];
   const chosen = byData ?? root ?? largest;
-  const size = chosen?.size ?? 0;
+  // The DEVICE's capacity is the headline figure: it is what an admin can look up, and
+  // it does not depend on guessing which of a container's mounts represents the masjid's
+  // storage. The filesystem is the fallback when sysfs tells us nothing.
+  //
+  // Known limit, stated rather than hidden: in a Proxmox LXC, /sys/block shows the HOST
+  // NODE's disks, which can be far larger than the container's allotted storage. That
+  // over-reports, and over-reporting means the low-storage warning arrives too late. If a
+  // masjid sees a total that matches their Proxmox host rather than their container,
+  // that is this, and the fix is to prefer the filesystem there.
+  const size = deviceBytes ?? chosen?.size ?? 0;
   return {
     used: chosen?.used ?? 0,
-    // The whole device, less the host OS's reserve. Never negative: on a disk smaller
-    // than the reserve there is simply nothing spare, and reporting a negative total
-    // would render as a nonsense percentage.
+    // Less the host OS's reserve. Never negative: on a disk smaller than the reserve
+    // there is simply nothing spare, and a negative total renders as a nonsense
+    // percentage.
     total: Math.max(0, size - HOST_OS_RESERVE_BYTES),
   };
 }
@@ -366,6 +427,7 @@ export function __readHostMeminfoForTests(): { total: number; used: number } | n
 export function __pickDiskForTests(
   list: { mount: string; size: number; used: number }[],
   dataDir = '/data',
+  deviceBytes: number | null = null,
 ): { used: number; total: number } {
-  return pickDisk(list as unknown as Systeminformation.FsSizeData[], dataDir);
+  return pickDisk(list as unknown as Systeminformation.FsSizeData[], dataDir, deviceBytes);
 }

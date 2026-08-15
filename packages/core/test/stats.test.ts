@@ -127,3 +127,48 @@ test('a mount is matched on a path boundary, not a string prefix', () => {
   ]);
   assert.equal(d.used, 10 * 1024 ** 3, 'must fall back to /, not match /da');
 });
+
+test('storage reports the DEVICE, not whichever filesystem the data landed on', () => {
+  // The card was reading far smaller than the machine's actual disk: inside the container
+  // `si.fsSize()` sees the container's mounts, and picking the one that best represents
+  // "this masjid's storage" is a guess that goes wrong on partitioned disks and overlays.
+  // The device is what an admin can look up on an invoice.
+  const RESERVE = 16 * 1024 ** 3;
+  const device = 256 * 1024 ** 3;
+  const d = stats.__pickDiskForTests(
+    [{ mount: '/', size: 40 * 1024 ** 3, used: 12 * 1024 ** 3 }],
+    '/data',
+    device,
+  );
+  assert.equal(d.total, device - RESERVE, 'the total comes from the device');
+  assert.equal(d.used, 12 * 1024 ** 3, 'used is still what is really used');
+});
+
+test('with no device reading, the filesystem is still used', () => {
+  // A non-Linux dev box has no /sys/block. Falling back beats reporting zero.
+  const RESERVE = 16 * 1024 ** 3;
+  const d = stats.__pickDiskForTests([{ mount: '/', size: 100 * 1024 ** 3, used: 1 }], '/data', null);
+  assert.equal(d.total, 100 * 1024 ** 3 - RESERVE);
+});
+
+test('only real disks count towards the device total', () => {
+  // Virtual and stacked devices are not extra capacity: loop/ram are fake, and dm-*/md*
+  // sit ON TOP of real disks — counting them too would double the machine's storage.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-sysblock-'));
+  const mk = (name: string, sectors: number, removable = 0) => {
+    fs.mkdirSync(path.join(dir, name));
+    fs.writeFileSync(path.join(dir, name, 'size'), `${sectors}\n`);
+    fs.writeFileSync(path.join(dir, name, 'removable'), `${removable}\n`);
+  };
+  const GB = (1024 ** 3) / 512; // sectors per GB
+  mk('nvme0n1', 256 * GB);
+  mk('sda', 500 * GB);
+  mk('loop0', 4 * GB); // a snap/squashfs mount
+  mk('dm-0', 256 * GB); // LUKS/LVM over nvme0n1 — would double it
+  mk('md0', 756 * GB); // RAID over the two real disks — would double it again
+  mk('sdb', 64 * GB, 1); // a USB stick someone left in
+
+  assert.equal(stats.physicalDiskBytes(dir), (256 + 500) * 1024 ** 3, 'only the two real disks');
+  // No sysfs at all reads as "unknown", not as zero.
+  assert.equal(stats.physicalDiskBytes(path.join(dir, 'nope')), null);
+});

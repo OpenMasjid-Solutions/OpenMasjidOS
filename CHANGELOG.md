@@ -75,6 +75,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - At most four images wait in the queue at a time; a fifth is refused until they have gone. Waiting images are held in memory, and on a Raspberry Pi an unlimited queue of posters is how a dashboard runs out of it.
 - Fixed while building this: the send route was subject to a **1 MB request limit on the HTTP front door** — the very address apps use — while the dashboard allowed 25 MB. The two never agreed, and a slightly larger poster would have failed on one and not the other. The limit is now set on the route itself.
 
+**Changed — group nicknames, group ids, and a storage total that matches the machine**
+
+- **Each approved WhatsApp group can be given a nickname**, and that is the name apps use. A group called "MASJID GRP 2 (new)" in WhatsApp can be "Parents — Hifz" in OpenMasjidOS; renaming here never renames the group itself, and its real WhatsApp name is shown underneath so you can tell which is which.
+- **The group's id is shown as well**, because that is the value which appears in an app's own settings and its logs — matching one up otherwise meant guessing.
+- **Storage now reports the machine's actual disk.** It was reading the size of whichever filesystem the masjid's data happened to land on, which inside a container can be far smaller than the real drive — so the card showed a total nowhere near the disk you bought. It reads the device itself now, still holding back 16 GB for the host operating system. Virtual and stacked devices (loop mounts, LVM, RAID) are excluded so nothing is counted twice, and a plugged-in USB stick is not counted as the masjid's storage.
+
 **Changed — WhatsApp alerts are the platform's, app messages are the app's**
 
 - **The WhatsApp column in Settings → Alerts now covers OpenMasjidOS's own alerts only.** Each app's rows read *"Set up in the app"* instead. The matrix sends to *you*, the admin, and the platform knows exactly one phone number — yours. An app that messages over WhatsApp is almost always reaching a parent about fees or a donor about a receipt, so who it messages and what it says belong in that app's own settings. A toggle here promised something the platform could not do.

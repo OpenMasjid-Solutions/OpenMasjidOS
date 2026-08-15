@@ -23,6 +23,7 @@ import {
   markLinked,
   approveGroup,
   unapproveGroup,
+  renameGroup,
   DEFAULT_LIMITS,
 } from '../../store/whatsapp';
 import {
@@ -174,10 +175,29 @@ export const whatsappRouter = router({
 
   /** Approve a group for apps to post into (or re-label one already approved). */
   approveGroup: protectedProcedure
-    .input(z.object({ id: z.string().max(120), label: z.string().trim().max(80), participants: z.number().optional() }))
+    .input(
+      z.object({
+        id: z.string().max(120),
+        label: z.string().trim().max(80),
+        participants: z.number().optional(),
+        name: z.string().trim().max(120).optional(),
+      }),
+    )
     .mutation(({ input }) => {
       try {
-        return approveGroup(input.id, input.label, input.participants);
+        return approveGroup(input.id, input.label, input.participants, input.name);
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+    }),
+
+  /** Rename a group — the admin's own nickname, which is the name apps see. Never
+   *  touches the group in WhatsApp. */
+  renameGroup: protectedProcedure
+    .input(z.object({ id: z.string().max(120), label: z.string().trim().min(1).max(80) }))
+    .mutation(({ input }) => {
+      try {
+        return renameGroup(input.id, input.label);
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
