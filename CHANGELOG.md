@@ -56,6 +56,7 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **The WhatsApp column in Settings → Alerts now covers OpenMasjidOS's own alerts only.** Each app's rows read *"Set up in the app"* instead. The matrix sends to *you*, the admin, and the platform knows exactly one phone number — yours. An app that messages over WhatsApp is almost always reaching a parent about fees or a donor about a receipt, so who it messages and what it says belong in that app's own settings. A toggle here promised something the platform could not do.
 - Nothing changes about how apps send: they still go through OpenMasjidOS, using the gateway you configured, the credentials they never see, and the one paced queue that protects your number. Only the choice of what to send moved.
 - Apps keep their Email and Webhook columns, because those really are "tell the admin something happened".
+- Apps can now ask the platform whether this masjid can send WhatsApp at all, so an app offering "WhatsApp reminders" can say "not set up on this server yet" instead of looking available everywhere and failing only when a real reminder was due. It learns nothing else — not the gateway, not the key, not which number is linked.
 - **The pairing code is now big enough to read from across the room**, with a note that it expires — you are typing it into a phone in your other hand.
 - **Once linked, the panel shows which number is sending**, so "connected" is something you can verify rather than take on trust.
 

@@ -74,7 +74,35 @@ test('apps still send WhatsApp through the platform, not around it', () => {
     .readFileSync(path.join(__dirname, '..', 'src', 'api', 'fabric.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
-  const at = src.indexOf("'/api/fabric/whatsapp'");
+  // Anchor on the POST specifically: a GET on the same path sits above it, and matching
+  // the path alone found that instead and read past the end of the send handler.
+  const at = src.indexOf("server.post('/api/fabric/whatsapp'");
   assert.ok(at > 0, 'the app-facing send route must still exist');
   assert.match(src.slice(at, at + 1200), /enqueueWhatsApp/, 'and must still go through the queue');
+});
+
+test('an app can ask whether WhatsApp is usable, without learning anything about it', () => {
+  // Without this an app's "WhatsApp reminders" switch looks available on every install
+  // and silently fails on the ones with no gateway — and only when a real reminder was
+  // due. But the answer must stay a tiny vocabulary: an app renders one of four
+  // sentences, it does not track OpenWA's lifecycle, and it never learns the gateway
+  // address, the API key or the linked number.
+  const src = fs
+    .readFileSync(path.join(__dirname, '..', 'src', 'api', 'fabric.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const at = src.indexOf("server.get('/api/fabric/whatsapp'");
+  assert.ok(at > 0, 'the availability read must exist');
+  const body = src.slice(at, src.indexOf('server.post(', at));
+
+  assert.match(body, /app\.whatsapp/, 'it must be capability-gated like the send');
+  for (const word of ['ready', 'not-configured', 'not-linked', 'unreachable']) {
+    assert.match(body, new RegExp(`'${word}'`), `${word} must be reportable`);
+  }
+  // Nothing about the gateway itself may cross this boundary. NOTE: the boundary must be
+  // written `\\b` inside a template literal — a bare `\b` there is a BACKSPACE character,
+  // which matches nothing and makes every one of these assertions pass vacuously.
+  for (const leak of ['apiKey', 'baseUrl', 'sessionId', 'phone', 'detail']) {
+    assert.doesNotMatch(body, new RegExp(`\\b${leak}\\b`), `${leak} must not be returned to an app`);
+  }
 });

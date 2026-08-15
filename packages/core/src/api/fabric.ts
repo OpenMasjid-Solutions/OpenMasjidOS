@@ -25,7 +25,7 @@ import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
-import { enqueue as enqueueWhatsApp } from '../notify/whatsapp';
+import { enqueue as enqueueWhatsApp, gatewayStatus as whatsappStatus } from '../notify/whatsapp';
 import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
 import { getLogo, hasLogo } from '../store/branding';
@@ -260,6 +260,38 @@ export function registerFabric(server: FastifyInstance): void {
   // and no app may treat it as delivery. Nothing auth-critical (a login code, a
   // one-time password) may depend on this — say so to app authors, loudly, in
   // docs/WHATSAPP.md.
+  /**
+   * Can this masjid send WhatsApp at all?
+   *
+   * An app needs this to build a settings page honestly: without it, "WhatsApp
+   * reminders" is a switch that looks available on every install and silently fails on
+   * the ones where no gateway was ever set up — and the failure only shows when a real
+   * reminder was due. It also distinguishes "not set up" from "set up but no phone
+   * linked yet", which have completely different fixes and are not the app's to make.
+   *
+   * Deliberately a tiny, stable vocabulary rather than the internal session enum: an app
+   * should render one of four sentences, not track OpenWA's lifecycle. No credentials, no
+   * gateway address, no phone number — LAN-only under /api/fabric like the rest.
+   */
+  server.get('/api/fabric/whatsapp', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ available: false, reason: 'unknown' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) {
+      return reply.code(403).send({ available: false, reason: 'not-allowed' });
+    }
+    const s = await whatsappStatus();
+    const reason =
+      s.state === 'ready'
+        ? 'ready'
+        : s.state === 'unconfigured'
+          ? 'not-configured'
+          : s.state === 'pending' || s.state === 'no-session'
+            ? 'not-linked'
+            : 'unreachable';
+    return reply.send({ available: reason === 'ready', reason });
+  });
+
   server.post('/api/fabric/whatsapp', async (req, reply) => {
     if (!fabricRateOk(req.ip)) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
     const presented = req.headers['x-openmasjid-app-secret'];

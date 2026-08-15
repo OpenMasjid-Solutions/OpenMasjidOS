@@ -131,6 +131,30 @@ Response `202 Accepted`:
 { "queued": true }
 ```
 
+Before offering WhatsApp in your own settings, ask whether this masjid can use it —
+otherwise your switch looks available on every install and fails only when a real message
+was due:
+
+```http
+GET /api/fabric/whatsapp
+X-OpenMasjid-App-Secret: <your per-app secret>
+```
+
+```json
+{ "available": true, "reason": "ready" }
+```
+
+`reason` is one of four words, each with a different thing to tell the admin:
+
+| `reason` | What to say |
+|---|---|
+| `ready` | Nothing — offer the feature |
+| `not-configured` | "WhatsApp isn't set up on this server yet — an admin can add it in OpenMasjidOS → Settings → WhatsApp." |
+| `not-linked` | "WhatsApp is set up but no phone is linked yet." |
+| `unreachable` | "The WhatsApp gateway isn't responding." |
+
+You never learn the gateway's address, its key, or which number is linked.
+
 Rules that are not negotiable:
 
 - **`queued` is not `sent`.** You are told the message was accepted for later delivery.

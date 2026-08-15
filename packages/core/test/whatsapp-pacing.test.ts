@@ -318,7 +318,9 @@ test('the session id is machine-managed, never typed by an admin', () => {
 
 test('the Fabric route queues rather than claiming delivery', () => {
   const code = codeOf('api/fabric.ts');
-  const at = code.indexOf("'/api/fabric/whatsapp'");
+  // Anchor on the POST: a GET on the same path (the availability read) sits above it, so
+  // matching the path alone selected that route instead.
+  const at = code.indexOf("server.post('/api/fabric/whatsapp'");
   assert.ok(at > 0, 'the route must exist');
   // Bound the slice at the NEXT route registration. `indexOf('});')` matched the
   // route's own rate-limit reply, cutting the body off before anything worth asserting.
