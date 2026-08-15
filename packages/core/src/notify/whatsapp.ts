@@ -81,12 +81,51 @@ const MAX_ATTEMPTS = 5;
  */
 export type Target = { kind: 'person'; digits: string } | { kind: 'group'; groupId: string };
 
+/**
+ * An image to send with the message. Images only, deliberately.
+ *
+ * `send-image` is the gateway route this maps to, and handing it a PDF would fail at the
+ * gateway rather than here. Documents, video and audio are each a different route with
+ * different rules (a document REQUIRES a filename; audio has a voice-note format that
+ * silently produces an unplayable bubble if you get it wrong), so they are separate
+ * decisions rather than something that falls out of a permissive mime check.
+ */
+export interface OutgoingMedia {
+  /** Base64 of the image bytes. No `data:` prefix. */
+  data: string;
+  /** `image/png`, `image/jpeg` or `image/webp`. */
+  mimeType: string;
+  /** Optional; shown by some clients when the image is saved. */
+  filename?: string;
+}
+
+/** What we will put in front of WhatsApp. Anything else is refused before queueing. */
+const ALLOWED_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
+/** Decoded image bytes. A 1080×1350 poster is 150–400 KB, so this is ~5× headroom. */
+export const MAX_MEDIA_BYTES = 2 * 1024 * 1024;
+/** OpenWA's own limit on a media caption. Enforced here so it fails at the door with a
+ *  clear message rather than as a gateway 400 after the app was told 202. */
+export const MAX_CAPTION = 1024;
+/**
+ * How many image messages may sit in the queue at once.
+ *
+ * Queued items live in memory, and quiet hours can hold them for hours — on a Raspberry
+ * Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3 the
+ * bytes). Beyond that an app is REFUSED with a clear message rather than the platform
+ * quietly growing; a refusal it can retry is better than an out-of-memory kill that takes
+ * the masjid's whole dashboard with it.
+ */
+export const MAX_QUEUED_MEDIA = 4;
+
 export interface SendRequest {
   /** Recipient in international format. Punctuation is tolerated and stripped. */
   to?: string;
   /** …or an APPROVED group's JID. Exactly one of `to` / `groupId`. */
   groupId?: string;
-  text: string;
+  /** The message, or the image's CAPTION when `media` is present. */
+  text?: string;
+  /** Optional image. With it, `text` becomes the caption and may be omitted. */
+  media?: OutgoingMedia;
   /** Who asked — an app id, or 'os' for platform alerts. Logged, never sent. */
   source: string;
 }
@@ -95,9 +134,43 @@ interface QueueItem {
   text: string;
   source: string;
   target: Target;
+  media?: OutgoingMedia;
   enqueuedAt: number;
   /** Transient-failure retries so far. */
   attempts: number;
+}
+
+/**
+ * Decoded size of a base64 string, and whether it is base64 at all.
+ *
+ * Computed from the length rather than by decoding: the string is already the largest
+ * thing in the request, and materialising a second copy just to measure it is exactly the
+ * wrong move on a Pi. Returns null when the input is not valid base64 — better caught
+ * here than as a gateway error after the caller was told 202.
+ */
+export function base64Bytes(s: string): number | null {
+  if (typeof s !== 'string' || s.length === 0 || s.length % 4 !== 0) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return null;
+  const padding = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+  return (s.length / 4) * 3 - padding;
+}
+
+/** Why this image cannot be sent, or null if it can. Pure, so it is testable directly. */
+export function mediaProblem(m: OutgoingMedia): string | null {
+  const mime = String(m?.mimeType ?? '').toLowerCase().trim();
+  if (!ALLOWED_IMAGE_MIME.has(mime)) {
+    return `Only images are supported (${[...ALLOWED_IMAGE_MIME].join(', ')}).`;
+  }
+  const bytes = base64Bytes(String(m?.data ?? ''));
+  if (bytes === null) return 'The image data is not valid base64.';
+  if (bytes === 0) return 'The image is empty.';
+  if (bytes > MAX_MEDIA_BYTES) {
+    return `That image is ${Math.round(bytes / 1024)} KB; the limit is ${MAX_MEDIA_BYTES / 1024 / 1024} MB.`;
+  }
+  if (m.filename !== undefined && (typeof m.filename !== 'string' || m.filename.length > 255)) {
+    return 'The filename is too long (max 255 characters).';
+  }
+  return null;
 }
 
 /** The pacing key for a target — also the cooldown map's key, so a person and a group
@@ -675,6 +748,21 @@ export function blockedReason(
   return null;
 }
 
+/**
+ * Minimum "typing" time for an image.
+ *
+ * `typingMs` scales with the text, so a poster with a six-word caption would show a
+ * ~2-second flicker before a half-megabyte upload appears — which reads as automated,
+ * not human. Someone sending a picture spends time picking and attaching it.
+ */
+const MEDIA_COMPOSING_FLOOR_MS = 5000;
+
+/** How long to appear busy before this particular message goes out. */
+export function composingMs(item: { text: string; media?: unknown }): number {
+  const base = typingMs(item.text);
+  return item.media ? Math.max(base, MEDIA_COMPOSING_FLOOR_MS) : base;
+}
+
 /** How long to show "typing" for a message of this length. */
 export function typingMs(text: string): number {
   // ~12 characters a second with a floor, capped so a long notice doesn't stall the
@@ -729,11 +817,34 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
   }
 
   const text = String(req.text ?? '').trim();
-  if (!text) return { queued: false, error: 'The message is empty.' };
-  if (text.length > MAX_TEXT) return { queued: false, error: `The message is too long (max ${MAX_TEXT}).` };
+  const media = req.media;
+
+  // With an image, the text is a CAPTION and may be omitted — a poster can speak for
+  // itself. Without one, an empty message is nothing at all.
+  if (!text && !media) return { queued: false, error: 'The message is empty.' };
+
+  if (media) {
+    const problem = mediaProblem(media);
+    if (problem) return { queued: false, error: problem };
+    // The caption limit is the gateway's, not ours, and it is a quarter of the text
+    // limit. Checked here so it fails while the caller is still listening.
+    if (text.length > MAX_CAPTION) {
+      return { queued: false, error: `The caption is too long (max ${MAX_CAPTION} characters).` };
+    }
+    const queuedMedia = queue.reduce((n, q) => n + (q.media ? 1 : 0), 0);
+    if (queuedMedia >= MAX_QUEUED_MEDIA) {
+      return {
+        queued: false,
+        error: `${MAX_QUEUED_MEDIA} images are already waiting to send. Try again once they have gone out.`,
+      };
+    }
+  } else if (text.length > MAX_TEXT) {
+    return { queued: false, error: `The message is too long (max ${MAX_TEXT}).` };
+  }
+
   if (queue.length >= MAX_QUEUE) return { queued: false, error: 'The WhatsApp queue is full. Try again later.' };
 
-  queue.push({ text, source: req.source, target, enqueuedAt: Date.now(), attempts: 0 });
+  queue.push({ text, source: req.source, target, media, enqueuedAt: Date.now(), attempts: 0 });
   void pump();
   return { queued: true };
 }
@@ -867,23 +978,45 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     chatId,
     state: 'typing',
   });
-  await sleep(typingMs(item.text));
+  await sleep(composingMs(item));
   await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats/typing`, {
     chatId,
     state: 'paused',
   });
 
-  const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-text`, {
-    chatId,
-    text: item.text,
-    // No link preview: fetching one is an extra outbound request from the number and
-    // makes an automated message look more like a broadcast.
-    linkPreview: false,
-  });
+  // An image goes to send-image, and it must NEVER fall back to send-text. Delivering the
+  // caption alone would let an app report that a poster went out when only a sentence
+  // did — the masjid would believe the timetable had been published.
+  const r = item.media
+    ? await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-image`, {
+        chatId,
+        base64: item.media.data,
+        // OpenWA spells this all-lowercase; our own API uses `mimeType`. Deliberate — do
+        // not "fix" either side to match the other.
+        mimetype: item.media.mimeType,
+        ...(item.media.filename ? { filename: item.media.filename } : {}),
+        ...(item.text ? { caption: item.text } : {}),
+      })
+    : await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-text`, {
+        chatId,
+        text: item.text,
+        // No link preview: fetching one is an extra outbound request from the number and
+        // makes an automated message look more like a broadcast.
+        linkPreview: false,
+      });
   if (!r.ok) {
+    if (item.media) {
+      // Named distinctly in the log, because "the image failed" and "the message failed"
+      // send someone to different places — a 404 here means the gateway is too old to
+      // have send-image at all.
+      log.error(
+        `WhatsApp: could NOT send the image for ${item.source} (${r.error ?? 'unknown'}). ` +
+          `Nothing was delivered — the caption was not sent on its own.`,
+      );
+    }
     return { ok: false, error: r.error, retryable: isRetryableStatus(r.status) };
   }
-  log.info(`WhatsApp: delivered a message for ${item.source}.`);
+  log.info(`WhatsApp: delivered ${item.media ? 'an image' : 'a message'} for ${item.source}.`);
   return { ok: true };
 }
 

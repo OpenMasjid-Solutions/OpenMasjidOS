@@ -66,6 +66,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 - `npm run lint` only typechecked `src/`, so a change to a function signature broke two tests silently: the lint was clean and the failure appeared only when the suite ran. It happened twice while building the group support. Tests are now included (`tsconfig.test.json`), and the two latent type errors this uncovered are fixed. Verified by planting the old broken call and confirming the lint catches it.
 
+**Added — send an image over WhatsApp**
+
+- Apps can attach an **image** to a WhatsApp message — a poster, a timetable, a notice — with the text becoming its caption. Built for OpenMasjidDisplay's "Iqāmah times are changing" poster.
+- PNG, JPEG or WebP, up to **2 MB**. An image that is too large is refused with a message saying both the limit and how big yours was, rather than a bare failure.
+- **It waits its turn like everything else.** An image is a more noticeable thing to receive than a sentence, so it goes through the same paced queue, the same quiet hours and the same daily limits.
+- **If an image cannot be sent, nothing is sent.** The caption never goes out on its own — otherwise an app would report that a poster had been published when only a sentence had.
+- At most four images wait in the queue at a time; a fifth is refused until they have gone. Waiting images are held in memory, and on a Raspberry Pi an unlimited queue of posters is how a dashboard runs out of it.
+- Fixed while building this: the send route was subject to a **1 MB request limit on the HTTP front door** — the very address apps use — while the dashboard allowed 25 MB. The two never agreed, and a slightly larger poster would have failed on one and not the other. The limit is now set on the route itself.
+
 **Changed — WhatsApp alerts are the platform's, app messages are the app's**
 
 - **The WhatsApp column in Settings → Alerts now covers OpenMasjidOS's own alerts only.** Each app's rows read *"Set up in the app"* instead. The matrix sends to *you*, the admin, and the platform knows exactly one phone number — yours. An app that messages over WhatsApp is almost always reaching a parent about fees or a donor about a receipt, so who it messages and what it says belong in that app's own settings. A toggle here promised something the platform could not do.

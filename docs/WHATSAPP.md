@@ -177,7 +177,7 @@ X-OpenMasjid-App-Secret: <your per-app secret>
 ```
 
 ```json
-{ "available": true, "reason": "ready" }
+{ "available": true, "reason": "ready", "media": true, "maxMediaBytes": 2097152 }
 ```
 
 `reason` is one of four words, each with a different thing to tell the admin:
@@ -189,7 +189,52 @@ X-OpenMasjid-App-Secret: <your per-app secret>
 | `not-linked` | "WhatsApp is set up but no phone is linked yet." |
 | `unreachable` | "The WhatsApp gateway isn't responding." |
 
+`media` says whether you may send an **image**; `maxMediaBytes` is the cap. **Treat both as
+absent-means-no** — an older platform omits them entirely, and reading absence as "yes" means
+rendering a poster and base64-ing half a megabyte into a request that was never going to work.
+
 You never learn the gateway's address, its key, or which number is linked.
+
+### Sending an image
+
+Add an optional `media` to the same call. `text` becomes the image's **caption**, and may be
+omitted — a poster can speak for itself.
+
+```json
+{
+  "group": "120363012345678901@g.us",
+  "text": "Iqāmah times are changing from Monday, 1 June.",
+  "media": {
+    "data": "<base64, no data: prefix>",
+    "mimeType": "image/png",
+    "filename": "iqamah-change.png"
+  }
+}
+```
+
+| | |
+|---|---|
+| **Formats** | `image/png`, `image/jpeg`, `image/webp`. Images only — documents, video and audio are separate routes with different rules and are not supported here. |
+| **Size** | **2 MB decoded.** The whole request, base64 included, is capped at 4 MB. A 1080×1350 poster is typically 150–400 KB, so this is ample. |
+| **Caption** | **1024 characters** — a quarter of the plain-text limit, because that is the gateway's own cap. |
+| **`filename`** | Optional, max 255 characters. Some clients show it when the image is saved. |
+| **In flight** | At most **4 images may be queued at once.** The fifth is refused with a message saying so — retry once they have gone out. Queued bytes sit in memory and quiet hours can hold them for hours; on a Raspberry Pi an unbounded queue of posters is an out-of-memory kill that takes the whole dashboard with it. |
+
+Failures, and what they mean:
+
+| Status | Meaning |
+|---|---|
+| `202` | Queued, exactly as for text. Paced the same way — an image is a *more* conspicuous event than a sentence, not less, so it waits its turn. |
+| `400` | Not an image, not valid base64, caption too long, or four images already waiting. Fix and retry. |
+| `413` | Too large. The message names both caps. Retrying the same bytes cannot help. |
+| `403` | Unapproved group, or your app has no `whatsapp` capability. |
+
+**An image that cannot be sent is never downgraded to its caption.** If the gateway refuses it,
+nothing is delivered — you will not find that a sentence went out in place of your poster and a
+masjid believed the timetable had been published. Note the flip side: like every send here, you
+were told `202` before delivery was attempted, so a gateway-side failure appears in the core's
+log rather than in your response. `docker logs openmasjid-core | grep -i whatsapp` shows it, and
+the line for an image failure says explicitly that the caption was not sent on its own.
 
 To post an announcement to a group, first read the groups the admin approved for you:
 

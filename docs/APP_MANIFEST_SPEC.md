@@ -276,8 +276,10 @@ whatsapp: true                    # OPTIONAL - may POST /api/fabric/whatsapp. QU
                                   # to whom is YOUR setting - the platform's alerts matrix has no
                                   # WhatsApp column for apps. For announcements, GET
                                   # /api/fabric/whatsapp/groups (only the groups the ADMIN
-                                  # approved) and send `group` instead of `to`. See
-                                  # docs/WHATSAPP.md.
+                                  # approved) and send `group` instead of `to`. An optional
+                                  # `media` sends an IMAGE (png/jpeg/webp, 2 MB decoded) with
+                                  # `text` as its caption; check `media` on the GET first, and
+                                  # read an absent field as false. See docs/WHATSAPP.md.
 
 The admin configures ONE email provider (SMTP or Resend) in Settings → Email. Set `email: true`
 to opt in; the platform issues your per-app secret, and your **backend** can then send mail through

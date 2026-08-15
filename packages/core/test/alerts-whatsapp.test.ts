@@ -76,7 +76,7 @@ test('apps still send WhatsApp through the platform, not around it', () => {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
   // Anchor on the POST specifically: a GET on the same path sits above it, and matching
   // the path alone found that instead and read past the end of the send handler.
-  const at = src.indexOf("server.post('/api/fabric/whatsapp'");
+  const at = src.search(/server\.post\(\s*'\/api\/fabric\/whatsapp'/);
   assert.ok(at > 0, 'the app-facing send route must still exist');
   // Bounded by the NEXT route registration, not a fixed character count — the handler
   // grew when group sending was added and a magic window silently stopped covering it.

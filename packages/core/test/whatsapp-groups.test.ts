@@ -229,8 +229,12 @@ test('the send route refuses an unapproved group with 403, not a vague 400', () 
   // It is an authorisation answer. A 400 would send an app author hunting for a typo in
   // their payload instead of asking the admin to approve the group.
   const code = codeOf('core/src/api/fabric.ts');
-  const at = code.indexOf("server.post('/api/fabric/whatsapp'");
-  const body = code.slice(at, at + 2000);
+  const at = code.search(/server\.post\(\s*'\/api\/fabric\/whatsapp'/);
+  assert.ok(at > 0, 'the send route must exist');
+  // Bounded by the next route registration, not a character count: the handler grew when
+  // image support landed and a fixed 2000-char window stopped reaching the guard.
+  const next = code.indexOf('server.', at + 10);
+  const body = code.slice(at, next > at ? next : undefined);
   const guardAt = body.indexOf('isApprovedGroup(group)');
   const enqueueAt = body.indexOf('enqueueWhatsApp(');
   assert.ok(guardAt > 0, 'the route must check approval');
