@@ -2244,6 +2244,46 @@ function WhatsAppCommands() {
   });
   const setScope = trpc.commands.setScope.useMutation({ onSuccess: refresh, onError });
 
+  // The probe's verdict, in words. The raw counts are the evidence; the sentence is
+  // what tells an admin whose problem it is.
+  const [probeResult, setProbeResult] = useState<string | null>(null);
+  const probe = trpc.commands.probe.useMutation({
+    onSuccess: (r) => {
+      const g = r.gateway;
+      // A dead page reads as "no activity" unless it is reported separately — and
+      // that is exactly the failure being looked for.
+      if (g.chatsError) {
+        setProbeResult(t('settings.commandsProbeFailed', { reason: g.chatsError }));
+        return;
+      }
+      if (!g.ok) {
+        setProbeResult(t('settings.commandsProbeFailed', { reason: g.error ?? '' }));
+        return;
+      }
+      const heard = g.incoming;
+      const when = g.newestIncomingAt ? new Date(g.newestIncomingAt).toLocaleString() : '';
+      const chatAt = g.newestChatActivityAt ? Date.parse(g.newestChatActivityAt) : 0;
+      const msgAt = g.newestIncomingAt ? Date.parse(g.newestIncomingAt) : 0;
+      // THE signature of an alive-but-deaf engine: WhatsApp shows a conversation more
+      // recent than anything the gateway managed to record. It can see the chat and
+      // cannot hear the message.
+      const deaf = g.chatsOk && chatAt > 0 && chatAt > msgAt + 60_000;
+
+      if (deaf) {
+        setProbeResult(
+          t('settings.commandsProbeBridgeDead', { when: new Date(chatAt).toLocaleString() }),
+        );
+      } else if (heard === 0) {
+        setProbeResult(t('settings.commandsProbeDeaf'));
+      } else if (r.inbound.counters.seen === 0 && Object.keys(r.inbound.dropped).length === 0) {
+        setProbeResult(t('settings.commandsProbeNotPassedOn', { count: heard, when }));
+      } else {
+        setProbeResult(t('settings.commandsProbeReaching', { count: heard, when }));
+      }
+    },
+    onError,
+  });
+
   if (!cfg.data) return null;
   const { enabled, people, grants, adminPhone, adminName } = cfg.data;
   const s = status.data;
@@ -2484,6 +2524,19 @@ function WhatsAppCommands() {
                     {t('settings.commandsDiagAck', {
                       ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
                     })}
+                  </div>
+                  {/* The one question that splits the problem in half: has the GATEWAY
+                      itself heard anything from WhatsApp? If not, nothing on our side
+                      matters. Read-only, and it reads counts and times — never a body. */}
+                  <div style={{ marginBlockStart: '0.6rem' }}>
+                    <button className="btn btn--sm" disabled={probe.isPending} onClick={() => probe.mutate()}>
+                      {probe.isPending ? t('common.working') : t('settings.commandsProbe')}
+                    </button>
+                    {probeResult && (
+                      <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>
+                        {probeResult}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

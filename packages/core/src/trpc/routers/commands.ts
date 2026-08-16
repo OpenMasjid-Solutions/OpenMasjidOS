@@ -25,6 +25,7 @@ import {
 } from '../../store/commands';
 import { isGrantable, listGrants, listNamespaces } from '../../commands/registry';
 import { inboundStatus } from '../../notify/whatsapp-inbound';
+import { gatewayTraffic } from '../../notify/whatsapp';
 import { menuText } from '../../commands/reply';
 import { getAdminName, getAdminPhone } from '../../auth/store';
 
@@ -49,6 +50,22 @@ export const commandsRouter = router({
   })),
 
   status: protectedProcedure.query(() => inboundStatus()),
+
+  /**
+   * Ask the GATEWAY what it has received from WhatsApp, and pair it with what WE
+   * received from the gateway.
+   *
+   * The two numbers together are the whole diagnosis, and neither is enough alone:
+   *   gateway heard nothing        → the engine is deaf; nothing on our side matters
+   *   gateway heard it, we did not → the emit or our socket
+   *   both heard it, none ran      → our gate dropped it, and `dropped` says why
+   *
+   * Read-only, and it reads counts and timestamps — never a message body.
+   */
+  probe: protectedProcedure.mutation(async () => ({
+    gateway: await gatewayTraffic(),
+    inbound: inboundStatus(),
+  })),
 
   setEnabled: protectedProcedure
     .input(z.object({ enabled: z.boolean() }))

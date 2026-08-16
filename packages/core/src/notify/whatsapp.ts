@@ -1059,6 +1059,141 @@ export async function sendTestToGroup(groupId: string, text: string): Promise<Se
   return sendTestTo({ kind: 'group', groupId }, text);
 }
 
+/** What the gateway itself has received from WhatsApp. Counts and times only. */
+export interface GatewayTraffic {
+  ok: boolean;
+  /** Why we could not ask, in words an admin can act on. */
+  error?: string;
+  /** Messages the gateway has recorded, by direction. */
+  incoming: number;
+  outgoing: number;
+  /** When the newest INCOMING message reached the gateway. */
+  newestIncomingAt: string | null;
+  /** When the newest message of any direction reached it. */
+  newestAt: string | null;
+  /**
+   * WhatsApp's OWN view of recent activity, read live from the engine rather than
+   * from the gateway's database.
+   *
+   * This is what separates the two failures that otherwise look identical. The engine
+   * can end up alive-but-DEAF: WhatsApp Web reloads its page, the socket recovers but
+   * the page→Node event bridge does not, and from then on the session reports `ready`,
+   * sending still works, and not one inbound message is ever handed up. When that
+   * happens the CHAT LIST still advances — the engine can see the conversation — while
+   * no incoming message is ever recorded. Chat activity newer than the newest recorded
+   * message is the signature.
+   */
+  chatsOk: boolean;
+  /** A transport fault reading the chat list. NOT the same as "no activity" — the
+   *  gateway answers 503 when the page itself died, and reporting that as quiet would
+   *  hide the very thing we are looking for. */
+  chatsError?: string;
+  newestChatActivityAt: string | null;
+}
+
+/**
+ * Ask the gateway what it has actually received from WhatsApp.
+ *
+ * This is the one question that separates the two halves of "commands don't work":
+ * if the gateway has recorded an inbound message, it heard the phone and the failure
+ * is downstream of it (the emit, our socket, our gate). If it has recorded nothing,
+ * the engine is deaf and no amount of fixing our side will help.
+ *
+ * Deliberately reads the DB-backed list rather than the live engine: it answers "did
+ * this ever arrive" rather than "is the browser healthy right now", and it works even
+ * while the engine is mid-reload.
+ *
+ * NOTE the trap: this endpoint takes a bare path parameter with no UUID validation,
+ * so passing the session NAME returns 200 with an empty list — which reads exactly
+ * like "the gateway has received nothing". The session id we hold is the UUID, which
+ * is the correct one; do not "helpfully" switch this to the name.
+ *
+ * Counts and timestamps only. Message bodies are never read out of the response.
+ */
+export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
+  const empty = {
+    incoming: 0,
+    outgoing: 0,
+    newestIncomingAt: null,
+    newestAt: null,
+    chatsOk: false,
+    newestChatActivityAt: null,
+  };
+  const cfg = getWhatsAppConfig();
+  if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.', ...empty };
+  if (!cfg.sessionId) return { ok: false, error: 'No phone is linked yet.', ...empty };
+  const sid = encodeURIComponent(cfg.sessionId);
+
+  // WhatsApp's own view first. A 503 here means the page died — a transport fault, and
+  // explicitly not "no activity".
+  const chats = await call(cfg, 'GET', `/api/sessions/${sid}/chats?limit=50`);
+  let newestChat = 0;
+  let chatsOk = false;
+  let chatsError: string | undefined;
+  if (chats.ok) {
+    chatsOk = true;
+    const list = Array.isArray(chats.json) ? (chats.json as Record<string, unknown>[]) : [];
+    for (const c of list) {
+      // `timestamp` is unix SECONDS of last activity.
+      const ts = typeof c.timestamp === 'number' && c.timestamp > 0 ? c.timestamp * 1000 : 0;
+      if (ts > newestChat) newestChat = ts;
+    }
+  } else {
+    chatsError =
+      chats.status === 503
+        ? "The gateway's connection to WhatsApp has died — it needs restarting or re-linking."
+        : chats.status === 409
+          ? 'The gateway is still starting up.'
+          : (chats.error ?? `The gateway answered ${chats.status}.`);
+  }
+
+  const r = await call(cfg, 'GET', `/api/sessions/${sid}/messages?limit=${Math.min(100, Math.max(1, limit))}`);
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: r.error ?? `The gateway answered ${r.status}.`,
+      ...empty,
+      chatsOk,
+      chatsError,
+      newestChatActivityAt: newestChat ? new Date(newestChat).toISOString() : null,
+    };
+  }
+
+  const rows = Array.isArray((r.json as { messages?: unknown })?.messages)
+    ? ((r.json as { messages: unknown[] }).messages as Record<string, unknown>[])
+    : [];
+
+  let incoming = 0;
+  let outgoing = 0;
+  let newestIncoming = 0;
+  let newest = 0;
+  for (const m of rows) {
+    // `timestamp` is unix SECONDS; `createdAt` is an ISO string. Prefer the former.
+    const ts =
+      typeof m.timestamp === 'number' && m.timestamp > 0
+        ? m.timestamp * 1000
+        : typeof m.createdAt === 'string'
+          ? Date.parse(m.createdAt)
+          : 0;
+    const inbound = m.direction === 'incoming';
+    if (inbound) incoming += 1;
+    else outgoing += 1;
+    if (Number.isFinite(ts) && ts > newest) newest = ts;
+    if (inbound && Number.isFinite(ts) && ts > newestIncoming) newestIncoming = ts;
+  }
+
+  return {
+    ok: true,
+    incoming,
+    outgoing,
+    newestIncomingAt: newestIncoming ? new Date(newestIncoming).toISOString() : null,
+    newestAt: newest ? new Date(newest).toISOString() : null,
+    chatsOk,
+    chatsError,
+    newestChatActivityAt: newestChat ? new Date(newestChat).toISOString() : null,
+  };
+}
+
 /**
  * Send one message and WAIT — the ONE non-queued path, shared by the admin's test
  * button and the command reply lane.
