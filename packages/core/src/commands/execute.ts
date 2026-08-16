@@ -26,6 +26,7 @@ import {
   startApp,
   stopApp,
   updateCatalogApp,
+  verifyStayedUp,
 } from '../apps/manager';
 import { isPlatformManaged } from '../apps/managed';
 import { UpdateBusyError } from '../system/update-lock';
@@ -322,6 +323,21 @@ async function runOsVerb(command: CommandEntry, target: { id: string; name: stri
     }
     log.warn(`WhatsApp commands: "${command.id}" on ${target.id} failed — ${(err as Error).message}`);
     return ctx.reply(`I couldn't ${command.id} ${target.name}. Have a look on the dashboard.`);
+  }
+
+  // Don't claim it worked until it has stayed up. `compose up` exits 0 the moment a
+  // container starts, so a crash-loop would otherwise get "Prayer Times is running
+  // again" — and the admin, who cannot see the dashboard, would believe it.
+  if (command.id !== 'stop') {
+    const crash = await verifyStayedUp(target.id);
+    if (crash !== null) {
+      log.warn(`WhatsApp commands: "${command.id}" on ${target.id} did not stay running.`);
+      audit(command, target.name, ctx);
+      return ctx.reply(
+        `${target.name} started and then stopped again. Something is wrong with it — ` +
+          'have a look at its logs on the dashboard.',
+      );
+    }
   }
 
   log.info(

@@ -13,6 +13,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — an update that leaves an app broken no longer says it worked**
+
+- **Updating an app reported "Done" even when the new version could not start.** Docker considers an app started the moment the container is created, so an app that boots, fails and restarts forever counted as a clean update — the only sign was the dashboard quietly showing it as stopped, with the reason buried in container logs you had to know to go and look for. The update now waits to see whether it stayed running, and if it didn't, says so and shows the last thing the app printed before it stopped. Same for starting or restarting an app by WhatsApp, where you cannot see the dashboard at all.
+- This came from a real one: a WhatsApp gateway update added a new requirement that the existing settings didn't meet, and nothing joined up "the update worked" with "the app is off".
+
 **Added — run things from WhatsApp**
 
 - **An authorised phone can now run admin commands by messaging the masjid's number.** `!os stats` for how the server is doing, `!os apps` for what is running, `!os restart 2` to bring a wedged display back, `!os update 3` to update one app — and each installed app can offer its own commands under `!<app>`. The point is the wall-mounted box in a cupboard: fixing a stuck screen no longer means being on the LAN with a browser.

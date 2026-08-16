@@ -1128,6 +1128,42 @@ export async function appLogs(id: string, tail = 200): Promise<string> {
   return composeLogs(projectOf(id), tail);
 }
 
+/** How long to give a container to prove it is going to stay up. */
+const SETTLE_MS = 3_000;
+const SETTLE_SAMPLES = 3;
+
+/**
+ * Did the app actually STAY running?
+ *
+ * `docker compose up -d` exits 0 once a container is created and started — it says
+ * nothing about whether the process inside then died. A container that boots, throws,
+ * and is restarted by `restart: unless-stopped` therefore looked like a clean success:
+ * the update reported "Done", and the only symptom was the dashboard quietly showing
+ * the app as not running, with the actual reason buried in container logs the admin
+ * had to go and find. That happened for real when a gateway update added a new
+ * config guard the masjid's existing settings did not satisfy.
+ *
+ * Sampled a few times rather than once, because a crash-loop spends part of its cycle
+ * genuinely `running` and a single check can land in that window.
+ *
+ * Returns null when it is up, or the last few log lines when it is not.
+ */
+export async function verifyStayedUp(id: string): Promise<string | null> {
+  let up = false;
+  for (let i = 0; i < SETTLE_SAMPLES; i++) {
+    await new Promise((r) => setTimeout(r, SETTLE_MS));
+    up = (await getInstalled(id))?.running === true;
+    if (!up) break; // one bad sample is enough — a healthy app is up on every one
+  }
+  if (up) return null;
+  try {
+    const logs = await composeLogs(projectOf(id), 40);
+    return logs.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface UpdateCheck {
   updateAvailable: boolean;
   current: string;
@@ -1376,6 +1412,23 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     if (cur?.ports[0] != null) ensureProxy(id, httpsPort, cur.ports[0]);
   } else {
     stopProxy(id);
+  }
+
+  // `compose up` exiting 0 only means the container STARTED. Check it is still up
+  // before claiming the update worked — a new version that rejects the masjid's
+  // existing settings boots, throws, and restarts forever, and saying "Done" there
+  // sends the admin hunting through container logs for a reason we already have.
+  onLine('');
+  onLine('Checking it stayed running…');
+  const crash = await verifyStayedUp(id);
+  if (crash !== null) {
+    onLine('');
+    onLine(`${meta.name} was updated to v${app.version}, but it is not staying running.`);
+    onLine('This usually means the new version needs a setting the app does not have yet.');
+    onLine('');
+    onLine('The last thing it printed before stopping:');
+    for (const line of crash.split('\n').slice(-12)) onLine(`  ${line}`);
+    return;
   }
 
   onLine('');
