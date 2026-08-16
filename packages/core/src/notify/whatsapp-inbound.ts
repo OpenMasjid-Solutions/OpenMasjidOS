@@ -13,10 +13,24 @@
  * one address rule in system/app-host.ts), so it adds no inbound surface at all and
  * works on an install that was set up before this feature existed.
  *
- * THE EVENT NAME IS NOT IN OPENWA'S PUBLIC DOCS. So this does not bet on one: it
- * subscribes with onAny() and filters. `lastEventAt` records ANY event, which is what
- * lets the Settings panel distinguish "connected and hearing nothing" from
- * "connected and working" — the exact failure an undocumented API makes likely.
+ * HOW OPENWA'S REAL-TIME API ACTUALLY WORKS. None of this is in its public docs; it
+ * was read out of the gateway source after a first attempt connected cleanly and then
+ * received nothing at all, forever. Three things, and getting any one wrong produces
+ * exactly that symptom:
+ *
+ *   1. The gateway lives on the `/events` NAMESPACE. Connecting to the default root
+ *      namespace succeeds and joins a socket nothing ever emits to.
+ *   2. Delivery is entirely ROOM-SCOPED (`session:<id>:<event>`), and rooms are joined
+ *      only by sending a subscribe frame. There is no firehose and no auto-join, so a
+ *      connected-but-unsubscribed client is in zero rooms and hears nothing.
+ *   3. Every server frame arrives on the single Socket.IO channel `'message'`. The
+ *      WhatsApp event name is INSIDE the payload, at `payload.event`. Listening for a
+ *      channel called `message.received` can therefore never fire.
+ *
+ * The same channel also carries ERROR frames (`UNAUTHORIZED`, `FORBIDDEN_SESSION`, …).
+ * A bad key is not refused at the handshake — the connection is accepted, an error
+ * frame is sent, and the socket is closed. So not listening on `'message'` also meant
+ * silently discarding the one message that would have explained the silence.
  *
  * This module NEVER sends. Replies go out through notify/whatsapp.ts, which owns the
  * one queue and the budget.
@@ -63,12 +77,36 @@ export interface InboundStatus {
   retryInMs: number | null;
   /** Volume only, no content. */
   counters: { seen: number; ran: number; ignoredUnknown: number; unparseable: number };
+  /**
+   * Distinct event NAMES the gateway has emitted, most recent first.
+   *
+   * Names only — never a payload, never a body. This exists because OpenWA does not
+   * document its real-time event names, so "the socket is up but nothing is arriving"
+   * has two very different causes that look identical from outside: the gateway is
+   * genuinely emitting nothing, or it is emitting something our filter does not
+   * recognise. An empty list distinguishes them in one glance, and a non-empty one
+   * hands over the exact string the filter needs to match.
+   */
+  eventNames: string[];
 }
+
+/** The namespace the gateway's Socket.IO server is mounted on. Not the root. */
+const EVENTS_NAMESPACE = '/events';
+/** Every server frame — events, subscribe acks and errors — arrives on this channel. */
+const FRAME_CHANNEL = 'message';
+/** The one `payload.event` we act on. */
+const INBOUND_EVENT = 'message.received';
 
 // ── event-name filtering ─────────────────────────────────────────────────────────
 
-/** Checked FIRST. These contain "message" but are NOT one — parsing a `message.ack`
- *  as a command would re-execute on every reply we send. */
+/**
+ * Does this `payload.event` name carry an inbound message?
+ *
+ * Applied to the name INSIDE the frame, never to the Socket.IO channel (which is
+ * always `message`). The reject-list is checked first and matters most: `message.ack`
+ * is emitted for every message we ourselves send, so treating one as inbound would
+ * re-run a command on the delivery receipt of its own reply.
+ */
 const NOT_A_MESSAGE = /(ack|status|update|revoke|delete|edit|reaction|receipt|presence|typing|call|group|state)/i;
 const MESSAGE_NAME =
   /^(on)?(message|messages|messagecreate|newmessage|messagereceived|incomingmessage|chatmessage)$/;
@@ -96,12 +134,26 @@ let attempt = 0;
 let authFailures = 0;
 let connectedAt = 0;
 let lastEventAt = 0;
+/** True once the gateway has acked our subscribe. Until then we are in no rooms. */
+let subscribed = false;
 let lastProbeAt = 0;
 let stopped = true;
 let state: InboundState = 'off';
 let detail = 'Commands are switched off.';
 let retryAt = 0;
 const counters = { seen: 0, ran: 0, ignoredUnknown: 0, unparseable: 0 };
+/** Distinct event names seen, newest first. Names are schema, not content. */
+const eventNames: string[] = [];
+const MAX_EVENT_NAMES = 12;
+
+function noteEventName(event: string): void {
+  const name = String(event).slice(0, 60);
+  const at = eventNames.indexOf(name);
+  if (at === 0) return;
+  if (at > 0) eventNames.splice(at, 1);
+  eventNames.unshift(name);
+  if (eventNames.length > MAX_EVENT_NAMES) eventNames.length = MAX_EVENT_NAMES;
+}
 const unparseableSeen = new Set<string>();
 /** Rate-limit the "a stranger tried a command" line so it cannot flood the log. */
 const strangerLogged = new Map<string, number>();
@@ -122,6 +174,7 @@ export function inboundStatus(): InboundStatus {
     lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null,
     retryInMs: retryAt ? Math.max(0, retryAt - Date.now()) : null,
     counters: { ...counters },
+    eventNames: [...eventNames],
   };
 }
 
@@ -187,6 +240,7 @@ function teardown(): void {
   }
   socket = null;
   connectedAt = 0;
+  subscribed = false;
 }
 
 async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
@@ -195,11 +249,13 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
   const { io } = await import('socket.io-client');
   setState('connecting', 'Connecting to the gateway…');
 
-  const s = io(d.origin, {
+  // The NAMESPACE is part of the URL for socket.io-client. Connecting to `d.origin`
+  // alone lands on the root namespace, which this gateway never emits to.
+  const s = io(`${d.origin}${EVENTS_NAMESPACE}`, {
     path: process.env.OPENMASJID_OPENWA_SOCKET_PATH ?? '/socket.io',
     auth: { apiKey: d.key },
     // Not websocket-only: socket.io-client only guarantees extraHeaders on the
-    // polling handshake, and X-API-Key is half of the authentication.
+    // polling handshake, and X-API-Key is the fallback the gateway reads.
     extraHeaders: { 'X-API-Key': d.key },
     // WE own the backoff — socket.io's own retry knows nothing about the other four
     // preconditions and would hammer a deliberately stopped gateway.
@@ -209,11 +265,18 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
     autoConnect: false,
   });
   socket = s;
+  const sessionId = d.sessionId;
 
   s.on('connect', () => {
     connectedAt = Date.now();
     authFailures = 0;
-    setState('connected', 'Listening for commands.');
+    subscribed = false;
+    setState('connected', 'Connected — subscribing…');
+    // Rooms are the ONLY delivery path, and they are joined here or not at all.
+    // Subscribing to this session explicitly rather than to '*': a key scoped to
+    // particular sessions is refused the wildcard (FORBIDDEN_SESSION), and refused as
+    // an error frame rather than as a visible failure.
+    s.emit(FRAME_CHANNEL, { type: 'subscribe', sessionId, events: [INBOUND_EVENT] });
   });
 
   s.on('connect_error', (err: Error) => {
@@ -232,13 +295,62 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
     scheduleRetry(`The gateway connection dropped (${reason}).`);
   });
 
-  s.onAny((event: string, ...args: unknown[]) => {
+  // Everything the gateway says arrives here: subscribe acks, errors, and events.
+  s.on(FRAME_CHANNEL, (frame: unknown) => {
     lastEventAt = Date.now();
-    if (!isMessageEvent(event)) return;
-    void handleInbound(event, args);
+    handleFrame(frame);
+  });
+
+  // Kept purely as a diagnostic. If the gateway ever moves to another channel, this
+  // is what shows the new name instead of leaving us with silence to interpret.
+  s.onAny((event: string) => {
+    if (event !== FRAME_CHANNEL) {
+      lastEventAt = Date.now();
+      noteEventName(`channel:${event}`);
+    }
   });
 
   s.connect();
+}
+
+/** One frame from the gateway. Names and types only ever reach the log — never data. */
+function handleFrame(frame: unknown): void {
+  const f = frame && typeof frame === 'object' ? (frame as Record<string, unknown>) : null;
+  if (!f) return;
+  const type = typeof f.type === 'string' ? f.type : '';
+
+  if (type === 'subscribed') {
+    subscribed = true;
+    setState('connected', 'Listening for commands.');
+    return;
+  }
+
+  if (type === 'error') {
+    // A bad key is NOT a handshake rejection here — it is one of these, followed by a
+    // disconnect. Surfacing the code is the difference between "commands are broken"
+    // and "the key is wrong" / "that key may not watch this session".
+    const code = typeof f.code === 'string' ? f.code : 'unknown';
+    noteEventName(`error:${code}`);
+    if (/UNAUTHORIZED|FORBIDDEN/i.test(code)) authFailures += 1;
+    setState('error', `The gateway refused the connection (${code}).`);
+    log.warn(`WhatsApp commands: the gateway sent an error frame (${code}).`);
+    return;
+  }
+
+  if (type !== 'event') return; // 'pong' and anything else we do not act on
+
+  const payload = f.payload && typeof f.payload === 'object' ? (f.payload as Record<string, unknown>) : null;
+  const name = payload && typeof payload.event === 'string' ? payload.event : '';
+  if (!payload || !name) return;
+  noteEventName(name);
+
+  // Filter on the INNER name. `message.ack` fires for every message we send, so
+  // treating one as inbound would re-run a command on its own reply's receipt.
+  if (!isMessageEvent(name)) {
+    log.debug(`WhatsApp commands: ignoring gateway event "${name}".`);
+    return;
+  }
+  void handleInbound(name, [payload.data]);
 }
 
 function scheduleRetry(why: string): void {
@@ -349,8 +461,17 @@ async function reconcile(): Promise<void> {
 
   if (socket) {
     if (connectedAt && Date.now() - connectedAt > STABLE_MS) attempt = 0;
-    if (state === 'connected' && !lastEventAt && Date.now() - connectedAt > SILENT_AFTER_MS) {
-      setState('silent', 'Connected, but the gateway has not sent anything yet.');
+    if (state === 'connected' && connectedAt && Date.now() - connectedAt > SILENT_AFTER_MS) {
+      // Two different silences, and they have different fixes. Without the subscribe
+      // ack we are in no rooms, so nothing can ever arrive no matter how much traffic
+      // the phone sees — that is our problem. With it, we are in the right room and
+      // the gateway simply has not had an inbound message to send — which is normal
+      // until someone actually messages the number.
+      if (!subscribed) {
+        setState('silent', 'Connected, but the gateway did not confirm our subscription.');
+      } else if (!lastEventAt) {
+        setState('silent', 'Connected, but the gateway has not sent anything yet.');
+      }
     }
     return;
   }

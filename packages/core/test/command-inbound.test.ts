@@ -277,3 +277,62 @@ test('idle senders are evicted, and the map is bounded', () => {
   convo.touch(ALICE, NOW + 60 * 60_000);
   assert.equal(convo.__conversationSizeForTests(), 1, 'everything idle was swept');
 });
+
+// ── the gateway's real wire protocol ─────────────────────────────────────────────
+// None of this is in OpenWA's public docs. It was read out of the gateway source
+// after a first attempt connected cleanly and then received nothing at all, forever.
+// Each of the three is independently sufficient to reproduce that silence, so each
+// gets its own assertion rather than being covered by one happy-path test.
+
+test('we connect to the /events namespace, not the root', () => {
+  // The root namespace accepts the connection and is never emitted to, so getting
+  // this wrong looks exactly like a healthy connection.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  assert.match(code, /const EVENTS_NAMESPACE = '\/events'/);
+  assert.match(code, /io\(`\$\{d\.origin\}\$\{EVENTS_NAMESPACE\}`/, 'the namespace must be part of the URL');
+});
+
+test('we subscribe on connect, because rooms are the only delivery path', () => {
+  // A connected socket that never subscribes belongs to zero rooms and receives
+  // nothing, forever. There is no firehose and no auto-join.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  const onConnect = code.slice(code.indexOf("s.on('connect'"), code.indexOf("s.on('connect_error'"));
+  assert.match(onConnect, /type: 'subscribe'/, 'connecting must be followed by subscribing');
+  // The explicit session id, not '*': a key scoped to particular sessions is refused
+  // the wildcard, and refused as an error frame rather than as a visible failure.
+  assert.match(onConnect, /sessionId,/);
+  assert.ok(!/sessionId: '\*'/.test(onConnect), "must not subscribe with the '*' wildcard");
+});
+
+test('the inbound filter runs on payload.event, never the channel name', () => {
+  // Every frame arrives on the single channel `message`; the WhatsApp event name is
+  // inside the payload. Filtering on the channel would match every frame — including
+  // message.ack, which fires for every message WE send, so a command would re-run on
+  // the delivery receipt of its own reply.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  assert.match(code, /const FRAME_CHANNEL = 'message'/);
+  assert.match(code, /isMessageEvent\(name\)/, 'the inner name is what gets filtered');
+  assert.equal(isMessageEvent('message.received'), true);
+  assert.equal(isMessageEvent('message.ack'), false, 'our own delivery receipts must not re-run commands');
+  assert.equal(isMessageEvent('message.sent'), false);
+});
+
+test('an auth failure arrives as a frame, and must be surfaced', () => {
+  // A bad key is NOT refused at the handshake here: the connection is accepted, an
+  // error frame is sent on the same channel, and the socket is closed. Not listening
+  // for it is why "connected, no auth error" was misleading.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  const fn = code.slice(code.indexOf('function handleFrame'));
+  assert.match(fn, /type === 'error'/, 'error frames must be handled');
+  assert.match(fn, /UNAUTHORIZED\|FORBIDDEN/, 'an auth refusal must count as an auth failure');
+  assert.match(fn, /refused the connection/, 'and must reach the admin');
+});
+
+test('"connected but silent" distinguishes unsubscribed from merely quiet', () => {
+  // Different problems with different fixes: no subscribe ack means we are in no
+  // rooms and nothing can EVER arrive; subscribed-but-quiet just means nobody has
+  // messaged the number yet, which is normal.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  assert.match(code, /did not confirm our subscription/);
+  assert.match(code, /has not sent anything yet/);
+});

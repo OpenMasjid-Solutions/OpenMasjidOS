@@ -2430,19 +2430,44 @@ function WhatsAppCommands() {
           )}
 
           {s && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
-              {s.state === 'connected'
-                ? t('settings.commandsStateConnected')
-                : s.state === 'silent'
-                  ? t('settings.commandsStateSilent')
-                  : s.state === 'no-senders'
-                    ? t('settings.commandsStateNoSenders')
-                    : s.state === 'not-linked'
-                      ? t('settings.commandsStateNotLinked')
-                      : s.state === 'off'
-                        ? t('settings.commandsStateOff')
-                        : t('settings.commandsStateProblem', { detail: s.detail })}
-            </p>
+            <>
+              <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+                {s.state === 'connected'
+                  ? t('settings.commandsStateConnected')
+                  : s.state === 'silent'
+                    ? s.detail
+                    : s.state === 'no-senders'
+                      ? t('settings.commandsStateNoSenders')
+                      : s.state === 'not-linked'
+                        ? t('settings.commandsStateNotLinked')
+                        : s.state === 'off'
+                          ? t('settings.commandsStateOff')
+                          : t('settings.commandsStateProblem', { detail: s.detail })}
+              </p>
+              {/* Shown only when something is wrong. It is the difference between "it
+                  doesn't work" and a fact somebody can act on: an empty list means the
+                  gateway has said nothing at all to us, a non-empty one names exactly
+                  what it did say. Event names only — never a payload, never a body. */}
+              {(s.state === 'silent' || s.state === 'error') && (
+                <div className="glass-inset panel" style={{ marginBlockStart: '0.5rem', padding: '0.6rem 0.9rem' }}>
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagHeard')}{' '}
+                    {s.eventNames.length === 0 ? (
+                      <strong>{t('settings.commandsDiagNothing')}</strong>
+                    ) : (
+                      <code style={{ userSelect: 'all' }}>{s.eventNames.join(', ')}</code>
+                    )}
+                  </div>
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagCounts', {
+                      seen: s.counters.seen,
+                      ignored: s.counters.ignoredUnknown,
+                      unreadable: s.counters.unparseable,
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </>
       )}
