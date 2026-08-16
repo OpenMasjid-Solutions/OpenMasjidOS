@@ -702,6 +702,33 @@ export function inQuietHours(hour: number, limits: WhatsAppLimits): boolean {
 }
 
 /**
+ * The hour/day caps alone, warm-up applied. Split out of `blockedReason` so the cap
+ * arithmetic exists in ONE place and the reply lane can ask the cap question without
+ * also asking about quiet hours and the per-recipient cooldown, neither of which
+ * applies to answering someone who just messaged us (see `replyTo`).
+ */
+export function capExceeded(
+  now: number,
+  target: Target,
+  limits: WhatsAppLimits,
+  linkedAt: string | null,
+  history: { sends: number[]; groupSends: number[] },
+): 'hour' | 'day' | null {
+  const factor = warmupFactor(linkedAt, limits, now);
+  const isGroup = target.kind === 'group';
+  // The warm-up ramp applies to groups too. A number linked yesterday posting to a
+  // 200-member group is a strong signal, not a gentle start.
+  // At least 1, so a warm-up ramp can never mean "send nothing at all".
+  const hourCap = Math.max(1, Math.floor((isGroup ? limits.groupPerHour : limits.perHour) * factor));
+  const dayCap = Math.max(1, Math.floor((isGroup ? limits.groupPerDay : limits.perDay) * factor));
+  const sends = isGroup ? history.groupSends : history.sends;
+
+  if (sends.filter((t) => t > now - 3_600_000).length >= hourCap) return 'hour';
+  if (sends.length >= dayCap) return 'day';
+  return null;
+}
+
+/**
  * Why the next send cannot happen yet, or null if it can. Pure so the whole policy is
  * testable without a gateway, a clock or a network.
  */
@@ -717,18 +744,10 @@ export function blockedReason(
   // person, a 03:00 group post wakes two hundred.
   if (inQuietHours(hour, limits)) return 'quiet hours';
 
-  const factor = warmupFactor(linkedAt, limits, now);
   const isGroup = target.kind === 'group';
-  // The warm-up ramp applies to groups too. A number linked yesterday posting to a
-  // 200-member group is a strong signal, not a gentle start.
-  // At least 1, so a warm-up ramp can never mean "send nothing at all".
-  const hourCap = Math.max(1, Math.floor((isGroup ? limits.groupPerHour : limits.perHour) * factor));
-  const dayCap = Math.max(1, Math.floor((isGroup ? limits.groupPerDay : limits.perDay) * factor));
-  const sends = isGroup ? history.groupSends : history.sends;
-
-  const inLastHour = sends.filter((t) => t > now - 3_600_000).length;
-  if (inLastHour >= hourCap) return isGroup ? 'hourly group limit reached' : 'hourly limit reached';
-  if (sends.length >= dayCap) return isGroup ? 'daily group limit reached' : 'daily limit reached';
+  const over = capExceeded(now, target, limits, linkedAt, history);
+  if (over === 'hour') return isGroup ? 'hourly group limit reached' : 'hourly limit reached';
+  if (over === 'day') return isGroup ? 'daily group limit reached' : 'daily limit reached';
 
   const cooldown = isGroup ? limits.perGroupCooldownSeconds : limits.perRecipientCooldownSeconds;
   const last = history.lastPerRecipient.get(targetKey(target));
@@ -1040,17 +1059,67 @@ export async function sendTestToGroup(groupId: string, text: string): Promise<Se
   return sendTestTo({ kind: 'group', groupId }, text);
 }
 
-async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
+/**
+ * Send one message and WAIT — the ONE non-queued path, shared by the admin's test
+ * button and the command reply lane.
+ *
+ * Bypasses the QUEUE, never the BUDGET. It is a real message from the real number, so
+ * it counts against the same allowance — otherwise "message yourself in a loop" would
+ * be the one unmetered way to send from this platform.
+ *
+ * Note it still WRITES `lastToRecipient` while never reading it. That map gates the
+ * QUEUE, and the queue absolutely should hold off on someone we are mid-conversation
+ * with. Removing the write is the obvious wrong edit.
+ */
+export async function sendImmediate(target: Target, text: string, source: string): Promise<SendOutcome> {
   const cfg = getWhatsAppConfig();
-  const outcome = await sendOne(cfg, { text, source: 'os:test', target, enqueuedAt: Date.now(), attempts: 0 });
+  const outcome = await sendOne(cfg, { text, source, target, enqueuedAt: Date.now(), attempts: 0 });
   if (outcome.ok) {
-    // A test bypasses the QUEUE, not the BUDGET. It is a real message from the real
-    // number, so it counts against the same allowance — otherwise pressing the button
-    // repeatedly would be the one way to send unpaced traffic from this platform.
     (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
   }
   return outcome;
+}
+
+async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
+  return sendImmediate(target, text, 'os:test');
+}
+
+/**
+ * Reply to someone who just messaged us.
+ *
+ * Takes DIGITS, never a JID, so it is structurally incapable of posting into a group.
+ *
+ * Why this is allowed to skip the pacing at all: a solicited reply to a known contact
+ * is the LOWEST-risk traffic this number can emit — it is the same shape WhatsApp's
+ * own commercial API models as a customer-service window. What gets a number flagged
+ * is unsolicited volume to non-contacts, which is the opposite. And a reply that
+ * arrives forty minutes later, behind a backlog or after quiet hours, is not a reply;
+ * it is a bug. Quiet hours protect a recipient from being woken by noise they did not
+ * ask for — someone who typed a command at 23:00 is not being woken by the answer.
+ *
+ * The per-recipient cooldown is deliberately NOT consulted: it exists to stop three
+ * apps independently messaging one parent, and applied here it would make a
+ * back-and-forth impossible (`!os stats`, answer, then 55 seconds of silence).
+ */
+export async function replyTo(digits: string, text: string): Promise<SendOutcome> {
+  if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
+  return sendImmediate({ kind: 'person', digits }, text, 'os:command');
+}
+
+/**
+ * Has the number's allowance run out? Hour/day caps only — see `replyTo` for why
+ * quiet hours and the cooldown are excluded by design.
+ */
+export function replyBudget(): { ok: true } | { ok: false; reason: 'hour' | 'day' } {
+  const cfg = getWhatsAppConfig();
+  const now = Date.now();
+  prune(now);
+  const reason = capExceeded(now, { kind: 'person', digits: '' }, cfg.limits, cfg.linkedAt, {
+    sends: sentAt,
+    groupSends: groupSentAt,
+  });
+  return reason ? { ok: false, reason } : { ok: true };
 }
 
 /** Test seam: forget pacing history so a test starts from a known state. */

@@ -266,8 +266,14 @@ test('a group test is still approval-gated and still spends the group budget', (
 
   // A test bypasses the QUEUE, not the BUDGET. It is a real message from the real number,
   // so repeatedly pressing the button must not be a way to send unpaced traffic.
-  const helper = code.slice(code.indexOf('async function sendTestTo('));
+  //
+  // Anchored on `sendImmediate`, which is where the counting lives now: the test-send
+  // and the command reply lane share ONE non-queued path rather than each growing
+  // their own. `sendTestTo` is a one-line delegation to it, asserted below so the two
+  // cannot drift apart.
+  const helper = code.slice(code.indexOf('export async function sendImmediate('));
   assert.match(helper.slice(0, helper.indexOf('\n}\n')), /groupSentAt : sentAt\)\.push/, 'it must count against a cap');
+  assert.match(code, /async function sendTestTo\([^)]*\): Promise<SendOutcome> \{\s*return sendImmediate\(/);
 });
 
 test('the nickname is the admin\'s, and it is what apps see', () => {

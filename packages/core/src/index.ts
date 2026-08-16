@@ -33,6 +33,8 @@ import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
 import { startStripeMonitor } from './system/stripe-monitor';
+import { setInboundHandler, startWhatsAppInbound } from './notify/whatsapp-inbound';
+import { handleInboundCommand } from './commands/execute';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -288,6 +290,13 @@ async function main() {
   // to a new subnet used to leave every app calling the old IP forever, because
   // OPENMASJID_BASE_URL was resolved once at install and never revisited.
   startAddressMonitor();
+
+  // Listen for admin commands sent to the masjid's WhatsApp number. No-op — it does
+  // not even open a socket — until the feature is switched on AND someone is on the
+  // authorised list AND a phone is linked. Outbound is untouched: replies go through
+  // the one queue in notify/whatsapp.ts.
+  setInboundHandler(handleInboundCommand);
+  startWhatsAppInbound();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

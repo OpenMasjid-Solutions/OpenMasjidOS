@@ -51,6 +51,12 @@ const OS_ALERTS: { id: string; label: string; description: string }[] = [
     description:
       'Someone asked their bank to reverse a payment (a chargeback). Usually needs a reply before a deadline.',
   },
+  {
+    id: 'command-run',
+    label: 'Something was changed from WhatsApp',
+    description:
+      'Someone on your commands list started, stopped or updated an app by sending a message. There is one admin account, so this is the record of who did what.',
+  },
 ];
 
 export interface AlertChannels {

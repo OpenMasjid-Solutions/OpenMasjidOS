@@ -80,10 +80,12 @@ function entry(digits: string, now: number): Entry {
   return e;
 }
 
-/** Record that this authorised sender just messaged us, and sweep. */
+/** Record that this authorised sender just messaged us, and sweep.
+ *  Insert BEFORE sweeping, or the cap is always overshot by the new entry — and the
+ *  entry just touched is the newest, so it is never the one evicted. */
 export function touch(digits: string, now: number): void {
-  sweep(now);
   entry(digits, now).lastInboundAt = now;
+  sweep(now);
 }
 
 /** The reply lane's guard: we only ever reply to someone who just messaged us, so a
