@@ -88,6 +88,19 @@ export interface InboundStatus {
    * hands over the exact string the filter needs to match.
    */
   eventNames: string[];
+  /** How the subscribe went. Three outcomes a single boolean used to collapse. */
+  subscribeAck: AckState;
+  /** The gateway's code when it refused us, e.g. FORBIDDEN_SESSION. */
+  subscribeAckCode: string;
+  /**
+   * Why messages were discarded, counted by reason.
+   *
+   * The single most useful diagnostic here, because most of the gate's fourteen drops
+   * are debug-level only — so a message that DID arrive and was thrown away looked
+   * exactly like nothing arriving at all. These are reason words and integers; no
+   * content of any kind.
+   */
+  dropped: Record<string, number>;
 }
 
 /** The namespace the gateway's Socket.IO server is mounted on. Not the root. */
@@ -136,12 +149,20 @@ let connectedAt = 0;
 let lastEventAt = 0;
 /** True once the gateway has acked our subscribe. Until then we are in no rooms. */
 let subscribed = false;
+/** How the subscribe went — three outcomes that a single boolean collapsed into one. */
+export type AckState = 'pending' | 'confirmed' | 'timed-out' | 'refused';
+let ackState: AckState = 'pending';
+let ackCode = '';
+/** Generous: this is one round trip on a LAN, but a busy gateway can be slow to boot. */
+const SUBSCRIBE_ACK_MS = 10_000;
 let lastProbeAt = 0;
 let stopped = true;
 let state: InboundState = 'off';
 let detail = 'Commands are switched off.';
 let retryAt = 0;
 const counters = { seen: 0, ran: 0, ignoredUnknown: 0, unparseable: 0 };
+/** Drop reason → count. Reason words and integers only, never content. */
+const dropped: Record<string, number> = {};
 /** Distinct event names seen, newest first. Names are schema, not content. */
 const eventNames: string[] = [];
 const MAX_EVENT_NAMES = 12;
@@ -175,6 +196,9 @@ export function inboundStatus(): InboundStatus {
     retryInMs: retryAt ? Math.max(0, retryAt - Date.now()) : null,
     counters: { ...counters },
     eventNames: [...eventNames],
+    subscribeAck: ackState,
+    subscribeAckCode: ackCode,
+    dropped: { ...dropped },
   };
 }
 
@@ -269,14 +293,41 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
 
   s.on('connect', () => {
     connectedAt = Date.now();
+    // Otherwise retryInMs keeps counting down a retry that already happened.
+    retryAt = 0;
     authFailures = 0;
     subscribed = false;
+    ackState = 'pending';
     setState('connected', 'Connected — subscribing…');
+
     // Rooms are the ONLY delivery path, and they are joined here or not at all.
     // Subscribing to this session explicitly rather than to '*': a key scoped to
-    // particular sessions is refused the wildcard (FORBIDDEN_SESSION), and refused as
-    // an error frame rather than as a visible failure.
-    s.emit(FRAME_CHANNEL, { type: 'subscribe', sessionId, events: [INBOUND_EVENT] });
+    // particular sessions is refused the wildcard (FORBIDDEN_SESSION).
+    //
+    // THE CALLBACK IS LOAD-BEARING. The gateway's subscribe handler RETURNS its reply
+    // rather than emitting it, and NestJS's socket.io adapter routes a returned value
+    // as `if (response.event) socket.emit(...) else ack(response)`. The reply carries
+    // `type`, not `event` — so without a callback here the adapter simply drops it.
+    // The subscribe itself still works (the room join happens before the return),
+    // which is exactly what makes this easy to miss: messages arrive fine while we
+    // report "unconfirmed" forever. A REFUSAL rides the same ack, so dropping it also
+    // discards the one frame that would explain a real failure.
+    s.timeout(SUBSCRIBE_ACK_MS).emit(
+      FRAME_CHANNEL,
+      { type: 'subscribe', sessionId, events: [INBOUND_EVENT] },
+      (err: Error | null, reply: unknown) => {
+        if (err) {
+          // No ack inside the window. The rooms may well be joined anyway, so this is
+          // reported as unconfirmed — never as a failure that stops us listening.
+          ackState = 'timed-out';
+          log.warn('WhatsApp commands: the gateway did not acknowledge our subscription.');
+          return;
+        }
+        // Shared with the channel listener on purpose: if a future gateway emits the
+        // ack instead of returning it, both routes set `subscribed`.
+        handleFrame(reply);
+      },
+    );
   });
 
   s.on('connect_error', (err: Error) => {
@@ -321,6 +372,7 @@ function handleFrame(frame: unknown): void {
 
   if (type === 'subscribed') {
     subscribed = true;
+    ackState = 'confirmed';
     setState('connected', 'Listening for commands.');
     return;
   }
@@ -330,6 +382,12 @@ function handleFrame(frame: unknown): void {
     // disconnect. Surfacing the code is the difference between "commands are broken"
     // and "the key is wrong" / "that key may not watch this session".
     const code = typeof f.code === 'string' ? f.code : 'unknown';
+    // A refusal of the SUBSCRIBE arrives the same way, and is the difference between
+    // "the gateway is unhappy with us" and "that key may not watch this session".
+    if (!subscribed) {
+      ackState = 'refused';
+      ackCode = code;
+    }
     noteEventName(`error:${code}`);
     if (/UNAUTHORIZED|FORBIDDEN/i.test(code)) authFailures += 1;
     setState('error', `The gateway refused the connection (${code}).`);
@@ -363,7 +421,7 @@ function scheduleRetry(why: string): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = setTimeout(() => {
     retryTimer = null;
-    void reconcile();
+    kick();
   }, wait);
   retryTimer.unref?.();
 }
@@ -391,6 +449,10 @@ async function handleInbound(event: string, args: unknown[]): Promise<void> {
     }
     return;
   }
+
+  // Counted before the switch, so every reason is recorded — including the six that
+  // are otherwise debug-only and therefore invisible on a real install.
+  dropped[outcome.drop] = (dropped[outcome.drop] ?? 0) + 1;
 
   switch (outcome.drop) {
     case 'unparseable': {
@@ -437,7 +499,45 @@ export function noteStrangerAttempt(digits: string): void {
 
 // ── lifecycle ────────────────────────────────────────────────────────────────────
 
+/**
+ * Run reconcile without letting a failure vanish.
+ *
+ * `desired()` shells to Docker and makes an HTTP call, and every caller used a bare
+ * `void reconcile()` — so a throw became an unhandled rejection with no log line and
+ * no state change, leaving the panel frozen on its last value and indistinguishable
+ * from a healthy connection.
+ */
+function kick(): void {
+  void reconcile().catch((err) => {
+    log.warn(`WhatsApp commands: a connection check failed — ${(err as Error).message}`);
+  });
+}
+
+let reconciling = false;
+let reconcilePending = false;
+
 async function reconcile(): Promise<void> {
+  if (stopped) return;
+  // Reentrancy guard: reconcileWhatsAppInbound() fires on every settings mutation
+  // while this function awaits twice, and two concurrent entries can each build a
+  // socket — leaving one orphaned with its listeners still attached.
+  if (reconciling) {
+    reconcilePending = true;
+    return;
+  }
+  reconciling = true;
+  try {
+    await reconcileInner();
+  } finally {
+    reconciling = false;
+    if (reconcilePending) {
+      reconcilePending = false;
+      kick();
+    }
+  }
+}
+
+async function reconcileInner(): Promise<void> {
   if (stopped) return;
   const d = await desired();
 
@@ -461,17 +561,21 @@ async function reconcile(): Promise<void> {
 
   if (socket) {
     if (connectedAt && Date.now() - connectedAt > STABLE_MS) attempt = 0;
-    if (state === 'connected' && connectedAt && Date.now() - connectedAt > SILENT_AFTER_MS) {
-      // Two different silences, and they have different fixes. Without the subscribe
-      // ack we are in no rooms, so nothing can ever arrive no matter how much traffic
-      // the phone sees — that is our problem. With it, we are in the right room and
-      // the gateway simply has not had an inbound message to send — which is normal
-      // until someone actually messages the number.
-      if (!subscribed) {
-        setState('silent', 'Connected, but the gateway did not confirm our subscription.');
-      } else if (!lastEventAt) {
-        setState('silent', 'Connected, but the gateway has not sent anything yet.');
-      }
+    // 'silent' means "we have reason to think this is broken", NOT "nothing arrived".
+    // A subscribed socket with no traffic is the normal state of a masjid nobody has
+    // messaged yet — flagging that as a fault trains an admin to ignore the dot, and
+    // it was wrong on the one install it ran on.
+    //
+    // Not latching, either: a late ack must be able to clear it, which the old
+    // `state === 'connected'` guard made impossible.
+    if (state === 'silent' && subscribed) setState('connected', 'Listening for commands.');
+    if (!subscribed && state === 'connected' && connectedAt && Date.now() - connectedAt > SILENT_AFTER_MS) {
+      setState(
+        'silent',
+        ackState === 'refused'
+          ? `The gateway refused our subscription (${ackCode}).`
+          : 'Connected, but the gateway did not confirm the subscription.',
+      );
     }
     return;
   }
@@ -483,7 +587,7 @@ async function reconcile(): Promise<void> {
  *  immediately rather than up to 30 seconds later. */
 export function reconcileWhatsAppInbound(): void {
   if (stopped) return;
-  void reconcile();
+  kick();
 }
 
 export function startWhatsAppInbound(): void {
@@ -495,8 +599,8 @@ export function startWhatsAppInbound(): void {
     resetConversations();
     reconcileWhatsAppInbound();
   });
-  void reconcile();
-  timer = setInterval(() => void reconcile(), RECONCILE_MS);
+  kick();
+  timer = setInterval(() => kick(), RECONCILE_MS);
   timer.unref?.();
 }
 

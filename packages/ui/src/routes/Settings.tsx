@@ -2465,6 +2465,26 @@ function WhatsAppCommands() {
                       unreadable: s.counters.unparseable,
                     })}
                   </div>
+                  {/* The reason a message that DID arrive was thrown away. Without
+                      this, "it arrived and we discarded it" and "nothing arrived" look
+                      identical from here — which is exactly the ambiguity that cost a
+                      round trip. Reason words and counts; no content. */}
+                  {Object.keys(s.dropped).length > 0 && (
+                    <div className="setting-row__hint">
+                      {t('settings.commandsDiagDropped')}{' '}
+                      <code style={{ userSelect: 'all' }}>
+                        {Object.entries(s.dropped)
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([reason, n]) => `${reason} ×${n}`)
+                          .join(', ')}
+                      </code>
+                    </div>
+                  )}
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagAck', {
+                      ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
+                    })}
+                  </div>
                 </div>
               )}
             </>

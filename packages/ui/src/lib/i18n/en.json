@@ -704,6 +704,8 @@
     "commandsDiagHeard": "What the gateway has sent us:",
     "commandsDiagNothing": "nothing at all",
     "commandsDiagCounts": "{{seen}} command(s) read, {{ignored}} from numbers not on the list, {{unreadable}} not understood.",
+    "commandsDiagDropped": "Messages that arrived but were not acted on:",
+    "commandsDiagAck": "Subscription: {{ack}}",
     "commandsStateNoSenders": "Add someone above and commands will start working.",
     "commandsStateNotLinked": "Link a phone first, above.",
     "commandsStateOff": "Commands are off.",

@@ -328,11 +328,60 @@ test('an auth failure arrives as a frame, and must be surfaced', () => {
   assert.match(fn, /refused the connection/, 'and must reach the admin');
 });
 
-test('"connected but silent" distinguishes unsubscribed from merely quiet', () => {
-  // Different problems with different fixes: no subscribe ack means we are in no
-  // rooms and nothing can EVER arrive; subscribed-but-quiet just means nobody has
-  // messaged the number yet, which is normal.
+test('the subscribe passes an ack callback, and the reply is what confirms it', () => {
+  // The gateway's subscribe handler RETURNS its reply rather than emitting it, and
+  // NestJS's socket.io adapter routes a returned value as
+  // `if (response.event) socket.emit(...) else ack(response)`. The reply carries
+  // `type`, not `event` — so with no callback the adapter drops it on the floor.
+  //
+  // The room join happens BEFORE that return, so messages arrive regardless. That is
+  // what made this so misleading on a real install: commands worked while the panel
+  // reported "did not confirm our subscription" forever, pointing the next
+  // investigation straight at the one part that was fine.
   const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
-  assert.match(code, /did not confirm our subscription/);
-  assert.match(code, /has not sent anything yet/);
+  const onConnect = code.slice(code.indexOf("s.on('connect'"), code.indexOf("s.on('connect_error'"));
+  assert.match(onConnect, /\.timeout\(SUBSCRIBE_ACK_MS\)\.emit\(/, 'the emit must carry a timeout + callback');
+  assert.match(onConnect, /\(err: Error \| null, reply: unknown\)/, 'and an ack callback');
+  assert.match(onConnect, /handleFrame\(reply\)/, 'the reply goes through the same handler as a channel frame');
+  // A missing ack must not stop us listening — the rooms may well be joined anyway.
+  assert.match(onConnect, /ackState = 'timed-out'/);
+  assert.ok(!/teardown\(\)/.test(onConnect), 'a missing ack must never tear the socket down');
+});
+
+test('"silent" means broken, not merely quiet', () => {
+  // A subscribed socket with no traffic is the NORMAL state of a masjid nobody has
+  // messaged yet. Flagging that as a fault trains an admin to ignore the dot, and it
+  // was wrong on the first install it ran on.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  const fn = code.slice(code.indexOf('async function reconcileInner'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(!/!lastEventAt/.test(body), 'no-traffic must NOT be reported as a fault');
+  assert.match(body, /!subscribed && state === 'connected'/, 'only an unconfirmed subscription is');
+  // And it must not latch: a late ack has to be able to clear it.
+  assert.match(body, /state === 'silent' && subscribed/);
+});
+
+test('every drop reason is counted, so a discarded message is not invisible', () => {
+  // Most of the gate's drops are debug-only, so "it arrived and we threw it away"
+  // looked exactly like "nothing arrived" — the ambiguity that cost a round trip.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  const handler = code.slice(code.indexOf('async function handleInbound'));
+  const counted = handler.indexOf('dropped[outcome.drop]');
+  const switched = handler.indexOf('switch (outcome.drop)');
+  assert.ok(counted > 0, 'drops must be counted');
+  assert.ok(counted < switched, 'counted BEFORE the switch, so no reason can be missed');
+});
+
+test('a reconcile failure is logged, and cannot run twice at once', () => {
+  // desired() shells to Docker and makes an HTTP call. Every call site used a bare
+  // `void reconcile()`, so a throw was an unhandled rejection with no log line and no
+  // state change — the panel froze on its last value, indistinguishable from a live
+  // connection. And two concurrent entries could each build a socket, orphaning one
+  // with its listeners still attached.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  assert.match(code, /void reconcile\(\)\.catch\(/, 'failures must be caught and logged');
+  assert.match(code, /if \(reconciling\)/, 'and it must not run reentrantly');
+  // No bare call sites left.
+  const bare = code.split('\n').filter((l) => /void reconcile\(\)/.test(l) && !/\.catch\(/.test(l) && !/^\s*\*/.test(l));
+  assert.deepEqual(bare, [], `these call sites bypass kick(): ${bare.join(' | ')}`);
 });
