@@ -110,6 +110,58 @@ starves the other. Quiet hours apply to groups too (more so: a 03:00 post wakes 
   Channels, but it has no endpoint to post a message to one. There is nothing to enable — it is
   absent from the gateway, not switched off in OpenMasjidOS.
 
+## Running things by message (commands)
+
+**Settings → WhatsApp → Commands**, off by default. Turn it on, add the people you trust, and
+tick what each of them may do. Then they can message the masjid's number:
+
+```
+!help                 what you're allowed to do
+!os stats             how the server is doing
+!os apps              what's installed, and what's running
+!os updates           which apps have an update waiting
+!os restart 2         restart the second app in that list
+!display              what the Notice Board app can do
+!display 2 Jumu'ah is at 1:30    run its second command, with your message
+```
+
+Anything that changes something asks first:
+
+```
+Restart "Prayer Times"?
+It will be unavailable for a moment.
+
+Reply  !yes K7QM  to go ahead.
+Ignore this to cancel. It expires in 90 seconds.
+```
+
+The code is deliberately not the word "yes". You already had to be on the list to get here, so
+the code is not about proving who you are — it is about making sure the *right* message runs.
+A code has to be read off that exact prompt, where "yes" gets typed reflexively at a stale
+question, a forwarded screenshot, or the wrong one of two prompts.
+
+**Things worth knowing before you switch it on**
+
+- **Anyone holding one of those phones can do these things.** There is no password step. If a
+  phone is lost or a number changes hands, remove it here immediately.
+- **Every command must start with `!`.** Ordinary conversation with the masjid's number is
+  completely untouched — not read as a command, not logged, not replied to.
+- **Only one-to-one chats.** A command sent in a group does nothing at all, ever. Otherwise
+  every member of an announcement group would have the restart button.
+- **A number that is not on the list gets no reply whatsoever.** Not even "you're not allowed".
+  Answering would tell a stranger this number runs your server, and would spend the sending
+  allowance your fee reminders need.
+- **Anything that changes something is also emailed to you** (Settings → Alerts → "Something was
+  changed from WhatsApp"). There is one admin account, so this is your record of who did what.
+- Replies are in English, whatever your dashboard language — the same limitation the alert
+  emails have today.
+
+**What is deliberately not offered**, and will not be: restarting the machine itself, reading
+app logs (they contain passwords and personal data, and a chat keeps a copy forever), updating
+OpenMasjidOS itself (it would replace the very thing holding the conversation, so it could never
+tell you it worked), and removing an app. Updating a single *app* is fine and is offered — only
+that app restarts. The WhatsApp gateway app itself is refused for the same reason as the OS.
+
 ## How sending behaves, and why
 
 Ban risk attaches to the **phone number**, not to whichever app had something to say. If

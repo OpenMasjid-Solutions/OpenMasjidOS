@@ -13,6 +13,17 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Added — run things from WhatsApp**
+
+- **An authorised phone can now run admin commands by messaging the masjid's number.** `!os stats` for how the server is doing, `!os apps` for what is running, `!os restart 2` to bring a wedged display back, `!os update 3` to update one app — and each installed app can offer its own commands under `!<app>`. The point is the wall-mounted box in a cupboard: fixing a stuck screen no longer means being on the LAN with a browser.
+- **Off by default, and nobody can use it until you add them.** Settings → WhatsApp → Commands, behind a warning that says plainly what it means: whoever holds one of those phones can start, stop and update your apps, with no password step. Each person gets a tick per app, plus a separate "view" and "control" for the server itself.
+- **A number that is not on your list gets no reply at all** — not even a refusal. Answering would confirm to a stranger that this number runs your server, and would spend the sending allowance your fee reminders need.
+- **Ordinary conversation is completely untouched.** Every command starts with `!`; anything else is not read as a command, not logged and not replied to. Commands sent in a group never do anything.
+- **Anything that changes something asks first**, with a short code read off that exact prompt rather than the word "yes" — so a stale question, or a forwarded screenshot, cannot run the wrong thing. It also emails you afterwards, under a new "Something was changed from WhatsApp" alert: there is one admin account, so that is your record of who did what.
+- **Deliberately not offered:** restarting the machine, reading app logs (they contain passwords and personal details, and a chat keeps a copy forever), updating OpenMasjidOS itself, and removing an app. Updating a single app is offered, because only that app restarts.
+- Apps declare their commands in their manifest, like they already declare alerts. See `docs/APP_MANIFEST_SPEC.md`; the platform decides who may run what, renders the menu and asks for confirmation, and the app is only ever asked to do the thing.
+- **Fixed on the way:** updating an app wrote the new `compose.yml` to disk *before* validating the refreshed manifest, so a malformed one left the new compose beside the old metadata and the next start ran it believing it was the old version.
+
 **Added — WhatsApp notifications (OpenWA)**
 
 - A third notification channel beside email and the webhook, sending through **OpenWA** — a self-hosted, MIT-licensed WhatsApp gateway the masjid installs from the App Store. Nothing leaves the masjid's network to a third-party sending service. The catalogue entry itself belongs to OpenMasjidAPPS (§4/§19); this is the platform half.

@@ -328,3 +328,76 @@ POST ${OPENMASJID_BASE_URL}/api/fabric/alert
   alert off — not an error. Declaring `alerts:` alone issues your secret (no other capability needed).
 - Alerts go to the ADMIN (email + webhook). To email an arbitrary recipient (a donor/parent), use
   `POST /api/fabric/email` above instead.
+
+---
+
+## Admin commands (`commands:` — things an admin can run from WhatsApp)
+
+Declare commands an authorised admin can run against your app by sending a WhatsApp message to
+the masjid's number (`!<your-app-id>`). **The platform owns everything except the doing:** it
+decides who may run what, renders the numbered menu, asks for confirmation, and formats the
+reply. You are asked only to execute one command you declared.
+
+```yaml
+commands:
+  - id: whats-on                    # kebab-case, stable — this is what we send you
+    label: What's on the screen now # shown in the menu and in Settings
+    description: Reads back the current notice.
+  - id: post-notice
+    label: Put a message on the screen
+    argument:                       # OMIT if the command takes no text
+      label: message                # one or two words: "add your message after the number"
+      required: false               # default true
+    confirm: true                   # ask the sender to confirm first
+```
+
+Rules the catalog build enforces, so an install can never surprise you:
+
+- At most **12** commands. A numbered menu longer than that does not fit in one message.
+- `id` must be kebab-case, **not all digits** (`!display 2` must only ever mean "the second
+  option"), and not one of `help`, `yes`, `no`, `cancel`, `stop`.
+- `argument` must be an **object with a `label`**. `argument: true` is rejected rather than
+  coerced — it reads like "takes an argument" but carries no label, and accepting it would mean
+  silently discarding whatever a volunteer typed while telling them it worked.
+- Set `confirm: true` for anything people will see or that cannot be undone. It also puts the
+  command in the admin's audit alert.
+
+### Serving it
+
+```
+POST /fabric/commands/run          ← on your app's own web port, like every /fabric/* route
+  X-OpenMasjid-App-Secret: <your OWN OPENMASJID_APP_SECRET>
+  X-OpenMasjid-Caller-App: omos:platform
+  { "command": "post-notice", "text": "Jumu'ah is at 1:30", "requestId": "…", "locale": "en" }
+```
+
+Answer with HTTP 200 and JSON:
+
+| Meaning | Body |
+|---|---|
+| Done | `{ "ok": true, "text": "The notice is on the screen now." }` |
+| Failed, and you can say why | `{ "ok": false, "error": "The screen is switched off at the wall." }` |
+| Not a command you know (HTTP 404) | `{ "ok": false, "code": "unknown_command" }` |
+| Still starting up (HTTP 503) | `{ "ok": false, "code": "not_ready", "error": "…" }` |
+
+- **Verify BOTH headers.** `X-OpenMasjid-App-Secret` must equal your own `OPENMASJID_APP_SECRET`,
+  and `X-OpenMasjid-Caller-App` must be exactly `omos:platform`. That value can never be an app
+  id — the colon is outside the charset every app id is validated against — so it is the platform
+  and only the platform.
+- Declaring `commands:` alone issues your secret; no other capability is needed.
+- **`commands` is a RESERVED Fabric capability.** Putting it in `fabric.provides` is refused at
+  install and by the catalog build: it would let another app reach this same handler through the
+  app-to-app broker, which is a different trust boundary sharing a path prefix.
+- Your `text` and `error` are plain text, ≤1000 characters. The platform strips control
+  characters, collapses blank lines and trims to the message cap — you cannot make one answer
+  look like three messages.
+- Reply promptly: **10 second timeout**, 16 KB response cap. A command a volunteer is waiting on
+  is not the place for a long job; kick it off and say you have.
+- `/fabric/*` is LAN-only and never served over the tunnel, exactly as for every other Fabric
+  route.
+
+### What the platform will never ask you to do
+
+Commands are an ADMIN channel. There is no way for a command to name a phone number, and there
+never will be — that is the line between an admin channel and a spam gateway. To message a
+parent or a donor, use `POST /api/fabric/whatsapp` with your own app's settings, as before.

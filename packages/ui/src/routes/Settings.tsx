@@ -1874,6 +1874,10 @@ function WhatsAppPanel() {
           that, and offering the section would just produce an error. */}
       {s?.state === 'ready' && <WhatsAppGroups approved={cfg.data.groups} />}
 
+      {/* Commands. Same gate as Groups: there is nothing to configure before a phone
+          is linked, and offering it would only produce an error. */}
+      {s?.state === 'ready' && <WhatsAppCommands />}
+
       {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
           limited this number, so the admin hears it here rather than wondering why
           messages stopped. */}
@@ -2129,6 +2133,262 @@ function WhatsAppGroups({
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Admin commands over WhatsApp.
+ *
+ * The matrix is TRANSPOSED relative to the alerts one: rows are scopes, columns are
+ * people. The person axis is the small stable one (a masjid trusts a handful of
+ * numbers); the scope axis grows with every app installed. Rows = people × columns =
+ * a dozen apps is unusable at panel width.
+ *
+ * Each row lists the commands it grants, because "allow Yusuf !notice-board" is not
+ * legible on its own — and an app can add a command in an update, so the admin should
+ * be able to see what a grant currently covers.
+ */
+function WhatsAppCommands() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const cfg = trpc.commands.get.useQuery();
+  const status = trpc.commands.status.useQuery(undefined, { refetchInterval: 30_000 });
+
+  const [askEnable, setAskEnable] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<{ phone: string; label: string } | null>(null);
+  const [newPhone, setNewPhone] = useState('');
+  const [newName, setNewName] = useState('');
+
+  const refresh = () => {
+    void utils.commands.get.invalidate();
+    void utils.commands.status.invalidate();
+  };
+  const onError = (e: { message?: string }) => toast(e.message || t('errors.generic'), 'error');
+
+  const setEnabled = trpc.commands.setEnabled.useMutation({ onSuccess: refresh, onError });
+  const addPerson = trpc.commands.addPerson.useMutation({
+    onSuccess: () => {
+      setNewPhone('');
+      setNewName('');
+      refresh();
+    },
+    onError,
+  });
+  const removePerson = trpc.commands.removePerson.useMutation({
+    onSuccess: () => {
+      setConfirmRemove(null);
+      refresh();
+    },
+    onError,
+  });
+  const setScope = trpc.commands.setScope.useMutation({ onSuccess: refresh, onError });
+
+  if (!cfg.data) return null;
+  const { enabled, people, grants, adminPhone, adminName } = cfg.data;
+  const s = status.data;
+
+  // Group the rows the way the alerts matrix does, so OpenMasjidOS's two halves sit
+  // under one heading.
+  const groups = new Map<string, typeof grants>();
+  for (const g of grants) groups.set(g.group, [...(groups.get(g.group) ?? []), g]);
+
+  const colHead = {
+    width: '5rem',
+    textAlign: 'center' as const,
+    color: 'var(--color-ink-muted)',
+    fontSize: '0.8rem',
+    paddingInlineStart: '0.4rem',
+  };
+  const cell = { width: '5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' };
+
+  const alreadyListed = people.some((p) => p.phone === adminPhone);
+
+  return (
+    <div style={{ marginBlockStart: '1rem' }}>
+      <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        {t('settings.commands')}
+        {enabled && <StatusDot online={s?.state === 'connected'} />}
+      </div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.commandsHint')}</div>
+
+      <div className="setting-row">
+        <div className="setting-row__text" style={{ flex: 1 }}>
+          <div className="setting-row__title">{t('settings.commandsEnable')}</div>
+          <div className="setting-row__hint">{t('settings.commandsEnableHint')}</div>
+        </div>
+        <Toggle
+          checked={enabled}
+          onChange={(v) => (v ? setAskEnable(true) : setEnabled.mutate({ enabled: false }))}
+          label={t('settings.commandsEnable')}
+        />
+      </div>
+
+      {enabled && (
+        <>
+          {/* People. Kept visible even with the switch off would be pointless here —
+              but turning it off never DELETES the list, which would be surprising loss. */}
+          <div className="setting-row__title" style={{ marginBlockStart: '0.8rem' }}>
+            {t('settings.commandsPeople')}
+          </div>
+          <div className="setting-row__hint">{t('settings.commandsPeopleHint')}</div>
+
+          {people.length > 0 && (
+            <div className="glass-inset panel" style={{ marginBlock: '0.6rem', padding: '0.6rem 0.9rem' }}>
+              {people.map((p) => (
+                <div className="setting-row" key={p.phone}>
+                  <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                    <div className="setting-row__title">{p.label}</div>
+                    <div className="setting-row__hint">
+                      +{p.phone}
+                      {p.scopes.length === 0 && ` · ${t('settings.commandsNoGrants')}`}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm"
+                    disabled={removePerson.isPending}
+                    onClick={() => setConfirmRemove({ phone: p.phone, label: p.label })}
+                  >
+                    {t('common.remove')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'end', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: '15rem' }}>
+              <PhoneField
+                id="cmd-phone"
+                label={t('settings.commandsPhone')}
+                value={newPhone}
+                onChange={setNewPhone}
+                disabled={addPerson.isPending}
+              />
+            </div>
+            <div className="field" style={{ minWidth: '10rem' }}>
+              <label className="field__label" htmlFor="cmd-name">{t('settings.commandsName')}</label>
+              <input
+                id="cmd-name"
+                className="input glass-inset"
+                value={newName}
+                maxLength={60}
+                placeholder={t('settings.commandsNamePlaceholder')}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn btn--primary"
+              disabled={addPerson.isPending || !newPhone.trim() || !newName.trim()}
+              onClick={() => addPerson.mutate({ phone: newPhone, label: newName })}
+            >
+              {t('settings.commandsAdd')}
+            </button>
+            {/* Offered, never automatic: the admin's number was collected as a place to
+                send alerts, not as a way to authorise changes. No scopes are ticked. */}
+            {adminPhone && !alreadyListed && (
+              <button
+                className="btn btn--sm"
+                onClick={() => addPerson.mutate({ phone: adminPhone, label: adminName || t('settings.commandsMe') })}
+              >
+                {t('settings.commandsAddMe')}
+              </button>
+            )}
+          </div>
+
+          {people.length > 0 && (
+            <>
+              <div className="setting-row__title" style={{ marginBlockStart: '1rem' }}>
+                {t('settings.commandsWhoCan')}
+              </div>
+              {/* Physical on purpose: `overflow-inline` is barely supported, and a
+                  horizontal scroller flips correctly in RTL on its own. */}
+              <div style={{ overflowX: 'auto' }}>
+                {[...groups.entries()].map(([group, rows]) => (
+                  <div key={group} style={{ marginBlockStart: '0.7rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'end', marginBlockEnd: '0.15rem' }}>
+                      <div className="setting-row__title" style={{ flex: 1, color: 'var(--color-ink-muted)' }}>
+                        {group}
+                      </div>
+                      {people.map((p) => (
+                        <div key={p.phone} style={colHead}>{p.label}</div>
+                      ))}
+                    </div>
+                    {rows.map((r) => (
+                      <div className="setting-row" key={r.key}>
+                        <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                          <div className="setting-row__title">{r.label || `!${r.word}`}</div>
+                          <div className="setting-row__hint">
+                            {r.available
+                              ? r.commands.map((c) => c.label).join(' · ')
+                              : t('settings.commandsAppNone')}
+                          </div>
+                        </div>
+                        {people.map((p) =>
+                          r.available ? (
+                            <div key={p.phone} style={cell}>
+                              <Toggle
+                                checked={p.scopes.includes(r.key)}
+                                onChange={(v) => setScope.mutate({ phone: p.phone, scope: r.key, allowed: v })}
+                                label={`${p.label} — ${r.group} ${r.label}`}
+                              />
+                            </div>
+                          ) : (
+                            // A third state, not a dead switch: there is nothing to grant.
+                            <div key={p.phone} style={{ ...cell, alignItems: 'center' }}>
+                              <span className="hint">—</span>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {s && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+              {s.state === 'connected'
+                ? t('settings.commandsStateConnected')
+                : s.state === 'silent'
+                  ? t('settings.commandsStateSilent')
+                  : s.state === 'no-senders'
+                    ? t('settings.commandsStateNoSenders')
+                    : s.state === 'not-linked'
+                      ? t('settings.commandsStateNotLinked')
+                      : s.state === 'off'
+                        ? t('settings.commandsStateOff')
+                        : t('settings.commandsStateProblem', { detail: s.detail })}
+            </p>
+          )}
+        </>
+      )}
+
+      <ConfirmDialog
+        open={askEnable}
+        onClose={() => setAskEnable(false)}
+        onConfirm={() => {
+          setAskEnable(false);
+          setEnabled.mutate({ enabled: true });
+        }}
+        title={t('settings.commandsRiskTitle')}
+        body={t('settings.commandsRiskBody')}
+        cost={t('settings.commandsRiskCost')}
+        confirmLabel={t('settings.commandsRiskAccept')}
+        pending={setEnabled.isPending}
+      />
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        onClose={() => setConfirmRemove(null)}
+        onConfirm={() => confirmRemove && removePerson.mutate({ phone: confirmRemove.phone })}
+        title={t('settings.commandsRemoveTitle', { name: confirmRemove?.label ?? '' })}
+        body={t('settings.commandsRemoveBody')}
+        confirmLabel={t('common.remove')}
+        pending={removePerson.isPending}
+      />
     </div>
   );
 }
