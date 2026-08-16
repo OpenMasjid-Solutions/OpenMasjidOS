@@ -51,6 +51,7 @@ import { log } from '../logger';
 import { getInstalled } from '../apps/manager';
 import { OPENWA_APP_ID } from '../apps/managed';
 import { appOrigin } from '../system/app-host';
+import { chatIdFor, toDigits } from '../util/phone';
 import {
   getWhatsAppConfig,
   isWhatsAppConfigured,
@@ -211,23 +212,12 @@ export function isRetryableStatus(status: number): boolean {
 // ── phone numbers ────────────────────────────────────────────────────────────────
 
 /**
- * Reduce a human-typed number to the digits WhatsApp wants.
- *
- * Deliberately strict about what it will NOT do: it never guesses a country code. A
- * number stored as "555 0123" could be in any country, and quietly prefixing the
- * platform's guess would send a masjid's fee reminder to a stranger. No country code
- * (fewer than 8 digits) is a refusal, not a repair.
+ * `toDigits` (never guesses a country code) and `chatIdFor` now live in
+ * `util/phone.ts`, so a store can canonicalise a number without importing the sender.
+ * Re-exported here because this is where the rest of the platform has always found
+ * them.
  */
-export function toDigits(raw: string): string | null {
-  const digits = String(raw ?? '').replace(/[^0-9]/g, '');
-  if (digits.length < 8 || digits.length > 15) return null; // E.164 allows max 15
-  return digits;
-}
-
-/** OpenWA addresses individuals as `<digits>@c.us`. */
-export function chatIdFor(digits: string): string {
-  return `${digits}@c.us`;
-}
+export { toDigits, chatIdFor };
 
 /** The chat id for a target — the one place the two address spaces are resolved. */
 export function chatIdOf(t: Target): string {

@@ -115,6 +115,12 @@ export interface CatalogApp {
    */
   alerts?: DeclaredAlert[];
   /**
+   * Commands an admin can run against this app from WhatsApp (`!<app-id>`). The
+   * platform renders the menu and decides WHO may run them; the app is only ever
+   * asked to EXECUTE one it declared, via POST /fabric/commands/run.
+   */
+  commands?: DeclaredCommand[];
+  /**
    * Request to be reachable from the internet through the OS's Cloudflare tunnel.
    * This is only a REQUEST — the admin still confirms exposure at install (and can
    * toggle it later in Settings). When exposed, the app's public URL is delivered
@@ -145,6 +151,33 @@ export interface DeclaredAlert {
   label: string;
   /** Optional one-line description of when it fires. */
   description?: string;
+}
+
+/** The free text a command takes after its name. Absent = the command takes none. */
+export interface DeclaredCommandArgument {
+  /** One or two words naming what to type, e.g. "message". Shown in the menu. */
+  label: string;
+  /** Default true. False = the command runs with or without it. */
+  required?: boolean;
+}
+
+/**
+ * A command an admin can run from WhatsApp (manifest `commands:`). Mirrors
+ * DeclaredAlert deliberately: the app declares, the platform authorises and
+ * renders, the app only executes.
+ */
+export interface DeclaredCommand {
+  /** Stable kebab-case id — what the platform sends back to the app. */
+  id: string;
+  /** Short human label, shown in the WhatsApp menu and in Settings. */
+  label: string;
+  /** Optional one-line description of what it does. */
+  description?: string;
+  /** The free-text argument this command takes, if any. */
+  argument?: DeclaredCommandArgument;
+  /** Ask the sender to confirm first. Set it for anything people will see, or
+   *  anything that cannot be undone. */
+  confirm?: boolean;
 }
 
 /** App-to-app broker grants declared in a catalog app's manifest (CatalogApp.fabric). */
@@ -182,6 +215,9 @@ export interface AppMeta {
   whatsapp?: boolean;
   /** Alert types this app can raise (CatalogApp.alerts) — for the granular toggles. */
   appAlerts?: DeclaredAlert[];
+  /** Commands this app offers over WhatsApp (CatalogApp.commands) — the menu the
+   *  platform renders, and the gate for what it will ask the app to run. */
+  appCommands?: DeclaredCommand[];
   /** Whether this app is exposed over the Cloudflare tunnel. Admin-controlled
    *  (default from the manifest `tunnel:true` at install; toggleable in Settings).
    *  `undefined` means "installed before per-app exposure existed" — grandfathered

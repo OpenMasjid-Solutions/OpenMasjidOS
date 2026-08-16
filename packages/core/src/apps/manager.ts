@@ -38,13 +38,40 @@ import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
 import { getSettings } from '../settings/store';
 import type { Channel } from '../system/channel';
-import type { AppMeta, InstalledApp, CatalogApp, DeclaredAlert } from './types';
+import type {
+  AppMeta,
+  InstalledApp,
+  CatalogApp,
+  DeclaredAlert,
+  DeclaredCommand,
+  DeclaredCommandArgument,
+} from './types';
 
 const projectOf = (id: string) => `omos-${id}`;
 // App ids reserved for OpenMasjidOS's OWN infrastructure (run as omos-* compose
 // projects but NOT user apps). Never listed on the dashboard; an older build may
 // have recovered one into a meta.json, so listInstalled also cleans those up.
 const RESERVED_APP_IDS = new Set(['cloudflared']);
+
+/**
+ * App ids we refuse to INSTALL, because the word already names the platform.
+ *
+ * A WhatsApp command's namespace IS the app id (`!students`), so an app called
+ * `os` would shadow `!os`; and `omos:platform` is what the platform calls itself
+ * when it invokes an app directly (fabric/proxy.ts).
+ *
+ * Deliberately NOT added to RESERVED_APP_IDS: that set means "stray platform
+ * infrastructure", and listInstalled DELETES the directory of anything in it
+ * (see the cleanup below). Reserving a word there would destroy a masjid's data
+ * the moment someone shipped an app under it. Refusing at install is the whole
+ * job; nothing here ever removes an existing directory.
+ */
+const RESERVED_ID_WORDS = new Set(['os', 'omos', 'openmasjid', 'openmasjidos', 'platform', 'help']);
+
+/** True if this id names the platform rather than an app. Refuse it at install. */
+export function isReservedAppId(id: string): boolean {
+  return RESERVED_ID_WORDS.has(id.toLowerCase());
+}
 
 // Defense-in-depth: ids are already validated at every API/catalog boundary,
 // but never let a path escape APPS_DIR even if a bad id slips through.
@@ -335,6 +362,7 @@ export function needsFabricSecret(caps: {
   provides?: string[];
   consumes?: string[];
   alerts?: unknown[];
+  commands?: unknown[];
 }): boolean {
   return Boolean(
     caps.sso ||
@@ -345,7 +373,11 @@ export function needsFabricSecret(caps: {
       caps.email ||
       (caps.provides && caps.provides.length) ||
       (caps.consumes && caps.consumes.length) ||
-      (caps.alerts && caps.alerts.length),
+      (caps.alerts && caps.alerts.length) ||
+      // Required, not cosmetic: the platform proves a command call is genuine by
+      // presenting the app's OWN secret, so a commands-only app without one could
+      // never be called at all.
+      (caps.commands && caps.commands.length),
   );
 }
 
@@ -398,6 +430,129 @@ export function appDeclaresAlert(appId: string, alertId: string): boolean {
 }
 
 /**
+ * The capability name the platform uses to call an app's declared commands. It is
+ * RESERVED: an app may not put it in `fabric.provides`, because that would let
+ * another app reach the very same /fabric/commands/run handler through the broker
+ * (`consumes: ["<app>/commands"]`) and turn an admin-only surface into an
+ * app-to-app one. Same path prefix, different trust boundary.
+ */
+export const COMMANDS_CAPABILITY = 'commands';
+
+/** Command ids that would collide with the platform's own words in a chat. */
+const RESERVED_COMMAND_IDS = new Set(['help', 'yes', 'no', 'cancel', 'stop']);
+/** A numbered menu longer than this stops being a menu and stops fitting a reply. */
+const MAX_APP_COMMANDS = 12;
+
+/**
+ * Validate + normalise a catalog app's `commands:` list (manifest). Throws a
+ * friendly error on a malformed shape; returns the cleaned list. Mirrors the
+ * OpenMasjidAPPS catalog-build validator — keep the two in step, or "passes the
+ * catalog build" stops meaning "installs cleanly".
+ */
+export function parseCommands(commands: unknown, appId: string): DeclaredCommand[] {
+  if (commands == null) return [];
+  if (!Array.isArray(commands)) throw new Error(`"${appId}": "commands" must be a list.`);
+  if (commands.length > MAX_APP_COMMANDS) {
+    throw new Error(`"${appId}": an app can offer at most ${MAX_APP_COMMANDS} commands.`);
+  }
+  const out: DeclaredCommand[] = [];
+  const seen = new Set<string>();
+  for (const c of commands) {
+    const obj = c && typeof c === 'object' && !Array.isArray(c) ? (c as Record<string, unknown>) : null;
+    if (!obj) throw new Error(`"${appId}": each command must be an object with an "id" and a "label".`);
+    const { id, label, description, argument, confirm } = obj;
+
+    if (typeof id !== 'string' || !CAPABILITY_RE.test(id)) {
+      throw new Error(`"${appId}": each command needs a kebab-case "id" (a–z, 0–9, -).`);
+    }
+    // An all-digit id would be ambiguous with a menu selection: `!display 2` could
+    // mean "the second option" or "the command called 2". The parser's grammar
+    // depends on that being impossible.
+    if (/^\d+$/.test(id)) throw new Error(`"${appId}": command id "${id}" cannot be all digits.`);
+    if (RESERVED_COMMAND_IDS.has(id)) {
+      throw new Error(`"${appId}": command id "${id}" is reserved by OpenMasjidOS.`);
+    }
+    if (seen.has(id)) throw new Error(`"${appId}": duplicate command id "${id}".`);
+    seen.add(id);
+
+    if (typeof label !== 'string' || !label.trim()) {
+      throw new Error(`"${appId}": command "${id}" needs a "label".`);
+    }
+    if (description != null && typeof description !== 'string') {
+      throw new Error(`"${appId}": command "${id}" has a "description" that is not text.`);
+    }
+    if (confirm != null && typeof confirm !== 'boolean') {
+      throw new Error(`"${appId}": command "${id}" has a "confirm" that is not true or false.`);
+    }
+
+    // Deliberately strict, and NOT coerced. `argument: true` reads like it means
+    // "takes an argument" but carries no label, and silently dropping it would
+    // throw away whatever a volunteer typed while telling them it worked.
+    let arg: DeclaredCommandArgument | undefined;
+    if (argument != null) {
+      if (typeof argument !== 'object' || Array.isArray(argument)) {
+        throw new Error(`"${appId}": command "${id}" — "argument" must be an object with a "label".`);
+      }
+      const a = argument as Record<string, unknown>;
+      if (typeof a.label !== 'string' || !a.label.trim()) {
+        throw new Error(`"${appId}": command "${id}" — "argument" needs a "label".`);
+      }
+      if (a.required != null && typeof a.required !== 'boolean') {
+        throw new Error(`"${appId}": command "${id}" — "argument.required" must be true or false.`);
+      }
+      arg = {
+        label: a.label.trim().slice(0, 40),
+        ...(a.required === false ? { required: false } : {}),
+      };
+    }
+
+    out.push({
+      id,
+      label: label.trim().slice(0, 80),
+      description: typeof description === 'string' ? description.trim().slice(0, 200) : undefined,
+      argument: arg,
+      confirm: confirm === true ? true : undefined,
+    });
+  }
+  return out;
+}
+
+/** Every installed app's declared commands — for the WhatsApp menu and the
+ *  Settings matrix. Meta-only and synchronous: it sits on the path of an
+ *  arriving message, so it must not wait on Docker. */
+export function listAppCommands(): { appId: string; appName: string; commands: DeclaredCommand[] }[] {
+  const out: { appId: string; appName: string; commands: DeclaredCommand[] }[] = [];
+  for (const id of listMetaIds()) {
+    if (RESERVED_APP_IDS.has(id)) continue;
+    const meta = loadMeta(id);
+    if (meta && Array.isArray(meta.appCommands) && meta.appCommands.length) {
+      out.push({ appId: id, appName: meta.name ?? id, commands: meta.appCommands });
+    }
+  }
+  return out;
+}
+
+/** Did this app declare `commandId`? The per-call gate, like appDeclaresAlert —
+ *  returns the command itself, because the caller needs its argument/confirm. */
+export function getAppCommand(appId: string, commandId: string): DeclaredCommand | null {
+  const meta = loadMeta(appId);
+  return meta?.appCommands?.find((c) => c.id === commandId) ?? null;
+}
+
+/** Every installed app's id and name, straight from meta.json — synchronous and
+ *  Docker-free. Use this when you need the ROSTER (which apps exist); use
+ *  listInstalled() when you need running state or ports. */
+export function listMetaSummaries(): { id: string; name: string; kind: AppMeta['kind'] }[] {
+  const out: { id: string; name: string; kind: AppMeta['kind'] }[] = [];
+  for (const id of listMetaIds()) {
+    if (RESERVED_APP_IDS.has(id)) continue;
+    const meta = loadMeta(id);
+    if (meta) out.push({ id, name: meta.name ?? id, kind: meta.kind });
+  }
+  return out;
+}
+
+/**
  * Validate + normalise a catalog app's `fabric` block. Throws a friendly error on a
  * malformed shape (so an install/update surfaces it), returns the flattened grants.
  * Kept manual (no schema dep) to mirror the OpenMasjidAPPS catalog-build validator.
@@ -415,6 +570,15 @@ export function parseFabric(fabric: unknown, appId: string): { provides: string[
       const cap = p && typeof p === 'object' ? (p as { capability?: unknown }).capability : undefined;
       if (typeof cap !== 'string' || !CAPABILITY_RE.test(cap)) {
         throw new Error(`"${appId}": each fabric.provides entry needs a kebab-case "capability" (a–z, 0–9, -).`);
+      }
+      // Reserved: /fabric/commands/run is an ADMIN surface the platform calls. If an
+      // app could advertise it as a broker capability, another app could reach the
+      // same handler with consumes:["<app>/commands"]. Use the manifest `commands:`
+      // block instead — it is the same endpoint under a different trust boundary.
+      if (cap === COMMANDS_CAPABILITY) {
+        throw new Error(
+          `"${appId}": "${COMMANDS_CAPABILITY}" is reserved for admin commands — declare them under "commands:", not fabric.provides.`,
+        );
       }
       provides.push(cap);
     }
@@ -590,9 +754,14 @@ export async function installCatalogApp(
   baseUrl?: string | null,
   expose?: boolean,
 ): Promise<InstalledApp> {
-  // Validate the Fabric block FIRST — a malformed grant must fail before we write
-  // any files (throws a friendly error surfaced by the install mutation).
+  // Validate the manifest FIRST — a malformed grant or command must fail before we
+  // write any files (throws a friendly error surfaced by the install mutation).
   const fabric = parseFabric(app.fabric, app.id);
+  const appAlerts = parseAlerts(app.alerts, app.id);
+  const appCommands = parseCommands(app.commands, app.id);
+  if (isReservedAppId(app.id)) {
+    throw new Error(`"${app.id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
+  }
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
   // Fabric capabilities are opt-in per app. An app that uses SSO, notifications,
@@ -603,8 +772,17 @@ export async function installCatalogApp(
   const domain = app.domain === true;
   const email = app.email === true;
   const whatsapp = app.whatsapp === true;
-  const appAlerts = parseAlerts(app.alerts, app.id);
-  const ssoSecret = needsFabricSecret({ sso, notify, stripe, domain, email, whatsapp, alerts: appAlerts, ...fabric })
+  const ssoSecret = needsFabricSecret({
+    sso,
+    notify,
+    stripe,
+    domain,
+    email,
+    whatsapp,
+    alerts: appAlerts,
+    commands: appCommands,
+    ...fabric,
+  })
     ? crypto.randomBytes(32).toString('base64url')
     : undefined;
   // Per-app tunnel exposure. Nothing is public until the admin says so, so we
@@ -647,6 +825,7 @@ export async function installCatalogApp(
     email,
     whatsapp,
     appAlerts: appAlerts.length ? appAlerts : undefined,
+    appCommands: appCommands.length ? appCommands : undefined,
     exposed,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
@@ -680,6 +859,12 @@ async function installStack(opts: {
   expose?: boolean;
 }): Promise<InstalledApp> {
   const { id, name, kind, composeText, env, icon, baseUrl, expose } = opts;
+  // Before anything is written: a custom/community id the admin chose freely must
+  // not be a word the platform uses for itself (it would shadow `!os` in a
+  // WhatsApp command, among other things).
+  if (isReservedAppId(id)) {
+    throw new Error(`"${id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
+  }
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
   writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
@@ -1085,24 +1270,42 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     onLine(`Updating ${meta.name} from v${meta.version ?? '?'} to v${app.version}…`);
   }
 
-  // New compose; keep the user's saved settings (.env) untouched.
-  fs.writeFileSync(composePath(id), app.compose, 'utf8');
-
   // Reconcile Fabric capabilities from the REFRESHED entry so an author can add
   // OR revoke sso/notifications on update — the capability gate reads meta, so a
   // withdrawn capability must stop working. Keep the user's settings + the
   // install-time OPENMASJID_BASE_URL; only the per-app secret tracks capability.
+  //
+  // Parsed BEFORE the compose is written, exactly as install does. These throw on a
+  // malformed manifest, and until v0.51.0 they ran AFTER the write — so a bad
+  // manifest left the new compose.yml on disk beside the old meta.json, and the
+  // next reup or Start ran the new stack believing it was the old version.
+  const fabric = parseFabric(app.fabric, id);
+  const appAlerts = parseAlerts(app.alerts, id);
+  const appCommands = parseCommands(app.commands, id);
+
+  // New compose; keep the user's saved settings (.env) untouched.
+  fs.writeFileSync(composePath(id), app.compose, 'utf8');
+
   const sso = app.sso === true;
   const notify = app.notifications === true;
   const stripe = app.stripe === true;
   const domain = app.domain === true;
-  // Reconcile Fabric broker grants + email/alerts from the refreshed entry.
-  const fabric = parseFabric(app.fabric, id);
   const email = app.email === true;
   const whatsapp = app.whatsapp === true;
-  const appAlerts = parseAlerts(app.alerts, id);
   let ssoSecret = meta.ssoSecret;
-  if (needsFabricSecret({ sso, notify, stripe, domain, email, whatsapp, alerts: appAlerts, ...fabric })) {
+  if (
+    needsFabricSecret({
+      sso,
+      notify,
+      stripe,
+      domain,
+      email,
+      whatsapp,
+      alerts: appAlerts,
+      commands: appCommands,
+      ...fabric,
+    })
+  ) {
     if (!ssoSecret) ssoSecret = crypto.randomBytes(32).toString('base64url');
   } else {
     ssoSecret = undefined;
@@ -1158,6 +1361,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     email,
     whatsapp,
     appAlerts: appAlerts.length ? appAlerts : undefined,
+    appCommands: appCommands.length ? appCommands : undefined,
     ssoSecret,
     https: wantsHttps && httpsPort != null,
     httpsPort: httpsPort ?? undefined,
