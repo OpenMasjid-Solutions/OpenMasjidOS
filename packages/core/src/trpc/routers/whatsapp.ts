@@ -36,7 +36,7 @@ import {
   listGatewayGroups,
 } from '../../notify/whatsapp';
 import { getAdminPhone } from '../../auth/store';
-import { getInstalled } from '../../apps/manager';
+import { getInstalled, restartApp, startApp, verifyStayedUp } from '../../apps/manager';
 import { OPENWA_APP_ID } from '../../apps/managed';
 
 /** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
@@ -95,6 +95,35 @@ export const whatsappRouter = router({
      */
     gateway: await gatewayApp(),
   })),
+
+  /**
+   * Start or restart the gateway app.
+   *
+   * It has to live here because the gateway is deliberately hidden from the dashboard
+   * grid and the dock (`apps/managed.ts`) — which also removed the only Start button
+   * in the product. A masjid whose gateway stopped therefore had no way to start it
+   * again short of a root terminal, which is exactly when they can least afford one.
+   *
+   * Verifies rather than assuming: `compose up` exits 0 the moment a container is
+   * created, so a gateway that boots and dies would otherwise report a cheerful
+   * success. On failure the container's own last words come back with the result, so
+   * the reason is on screen instead of behind the logs button.
+   */
+  restartGateway: protectedProcedure.mutation(async () => {
+    const app = await getInstalled(OPENWA_APP_ID);
+    if (!app) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'OpenWA is not installed.' });
+    try {
+      // `startApp` runs `compose up`, which RECREATES the container when its config
+      // changed — that is what makes this the recovery path after a settings fix, not
+      // just a bounce.
+      if (app.running) await restartApp(OPENWA_APP_ID);
+      else await startApp(OPENWA_APP_ID);
+    } catch (err) {
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+    }
+    const output = await verifyStayedUp(OPENWA_APP_ID);
+    return { ok: output === null, output: output ?? undefined };
+  }),
 
   /**
    * Live status for the panel's dot. Deliberately reports reachable and connected

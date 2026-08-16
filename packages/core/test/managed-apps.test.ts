@@ -78,3 +78,29 @@ test('the store gate is applied to BOTH the cached read and the forced refresh',
   assert.match(catalogLine, /catalog: protectedProcedure\.query\(async \(\) => visibleToAdmin\(/);
   assert.match(catalogLine, /refresh: protectedProcedure\.mutation\(async \(\) => visibleToAdmin\(/);
 });
+
+test('hiding the gateway must not take away its only Start button', () => {
+  // The gateway is deliberately absent from the dashboard grid and the dock, and that
+  // is also where every other app's Start/Restart lives. So hiding it removed the only
+  // way to start it in the whole product: a masjid whose gateway stopped — which is
+  // exactly when WhatsApp is unavailable — had no route back short of a root terminal.
+  // Reported from a real install after a gateway update refused to boot.
+  const router = codeOf('core/src/trpc/routers/whatsapp.ts');
+  assert.match(router, /restartGateway: protectedProcedure\.mutation/, 'the gateway needs its own start control');
+  // It must RECREATE, not just bounce: this is the recovery path after a settings fix,
+  // and `compose start` would reuse the old container with the old environment.
+  assert.match(router, /startApp\(OPENWA_APP_ID\)/);
+  // And it must verify rather than assume — `compose up` exits 0 the moment a
+  // container is created, so a gateway that boots and dies would report success.
+  const fn = router.slice(router.indexOf('restartGateway:'));
+  const body = fn.slice(0, fn.indexOf('\n  /**'));
+  assert.match(body, /verifyStayedUp\(OPENWA_APP_ID\)/, 'it must check the container stayed up');
+  assert.ok(
+    body.indexOf('verifyStayedUp') > body.indexOf('startApp('),
+    'the check must come after the start, not before',
+  );
+
+  const ui = codeOf('ui/src/routes/Settings.tsx');
+  assert.match(ui, /trpc\.whatsapp\.restartGateway\.useMutation/, 'the panel must expose it');
+  assert.match(ui, /whatsappGatewayCrashed/, 'a failed start must show the reason inline');
+});

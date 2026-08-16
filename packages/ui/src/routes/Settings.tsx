@@ -1605,6 +1605,8 @@ function WhatsAppPanel() {
   const [linkPhone, setLinkPhone] = useState('');
   const [pairing, setPairing] = useState<string | null>(null);
   const [askEnable, setAskEnable] = useState(false);
+  /** The gateway's own last words when a start attempt did not stick. */
+  const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
   const seededWa = useRef(false);
   useEffect(() => {
     if (cfg.data && !seededWa.current) {
@@ -1637,6 +1639,17 @@ function WhatsAppPanel() {
   });
   const test = trpc.whatsapp.test.useMutation({
     onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const restartGateway = trpc.whatsapp.restartGateway.useMutation({
+    onSuccess: (r) => {
+      // Only clear the previous failure when this attempt actually held — otherwise
+      // the panel would flash back to looking healthy while the container restarts.
+      setGatewayCrash(r.ok ? null : (r.output ?? null));
+      if (r.ok) toast(t('settings.whatsappGatewayStarted'), 'success');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
 
@@ -1708,6 +1721,22 @@ function WhatsAppPanel() {
                   {t('settings.whatsappGatewayOpenHint')}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {/* The gateway is hidden from the dashboard grid and the dock, which
+                      also took away the only Start button in the product — so a masjid
+                      whose gateway stopped had no way to start it again short of a root
+                      terminal, exactly when they can least afford one. */}
+                  <button
+                    className="btn"
+                    disabled={restartGateway.isPending}
+                    onClick={() => restartGateway.mutate()}
+                  >
+                    <RefreshCw size={15} />{' '}
+                    {restartGateway.isPending
+                      ? t('settings.whatsappGatewayStarting')
+                      : gw.running
+                        ? t('settings.whatsappGatewayRestart')
+                        : t('settings.whatsappGatewayStart')}
+                  </button>
                   <button
                     className="btn"
                     disabled={!gw.running || gw.openPort == null}
@@ -1733,10 +1762,36 @@ function WhatsAppPanel() {
                     <ScrollText size={15} /> {t('settings.whatsappLogs')}
                   </button>
                 </div>
-                {!gw.running && (
+                {!gw.running && !gatewayCrash && (
                   <span className="hint" style={{ marginInlineStart: '0.5rem' }}>
                     {t('settings.whatsappGatewayStopped')}
                   </span>
+                )}
+                {/* When it starts and dies, the reason is already in hand — putting it
+                    on screen beats sending the admin to the logs button to find the one
+                    line that matters. */}
+                {gatewayCrash && (
+                  <div style={{ marginBlockStart: '0.6rem' }}>
+                    <div className="setting-row__hint" style={{ color: 'var(--color-danger)' }}>
+                      {t('settings.whatsappGatewayCrashed')}
+                    </div>
+                    <pre
+                      style={{
+                        marginBlockStart: '0.4rem',
+                        maxHeight: '11rem',
+                        overflow: 'auto',
+                        fontSize: '0.76rem',
+                        lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        padding: '0.6rem 0.75rem',
+                        borderRadius: '4px',
+                        background: 'var(--color-surface-sunken, rgba(0,0,0,0.25))',
+                      }}
+                    >
+                      {gatewayCrash}
+                    </pre>
+                  </div>
                 )}
               </>
             )}
