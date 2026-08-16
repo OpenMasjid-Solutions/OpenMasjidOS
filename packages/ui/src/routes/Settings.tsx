@@ -39,10 +39,14 @@ const TIMEZONES: string[] = (() => {
 })();
 
 /** A small red/green/grey status dot. `online` undefined = unknown (grey). */
-function StatusDot({ online }: { online: boolean | undefined }) {
+function StatusDot({ online, label: override }: { online: boolean | undefined; label?: string }) {
   const { t } = useTranslation();
   const color = online === undefined ? 'var(--color-ink-muted)' : online ? '#22c55e' : '#ef4444';
-  const label = online === undefined ? t('settings.statusChecking') : online ? t('settings.statusOnline') : t('settings.statusOffline');
+  // `override` exists for states that are not simply up or down. "Connected, but the
+  // gateway has sent nothing" is red because the feature does not work — but calling
+  // it "Offline" sends the admin to check a connection that is fine.
+  const label =
+    override ?? (online === undefined ? t('settings.statusChecking') : online ? t('settings.statusOnline') : t('settings.statusOffline'));
   return (
     <span
       title={label}
@@ -2264,7 +2268,12 @@ function WhatsAppCommands() {
     <div style={{ marginBlockStart: '1rem' }}>
       <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
         {t('settings.commands')}
-        {enabled && <StatusDot online={s?.state === 'connected'} />}
+        {enabled && (
+          <StatusDot
+            online={s?.state === 'connected'}
+            label={s?.state === 'silent' ? t('settings.commandsDotSilent') : undefined}
+          />
+        )}
       </div>
       <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.commandsHint')}</div>
 
@@ -2305,52 +2314,68 @@ function WhatsAppCommands() {
                     disabled={removePerson.isPending}
                     onClick={() => setConfirmRemove({ phone: p.phone, label: p.label })}
                   >
-                    {t('common.remove')}
+                    {t('actions.remove')}
                   </button>
                 </div>
               ))}
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'end', flexWrap: 'wrap' }}>
-            <div style={{ minWidth: '15rem' }}>
-              <PhoneField
-                id="cmd-phone"
-                label={t('settings.commandsPhone')}
-                value={newPhone}
-                onChange={setNewPhone}
-                disabled={addPerson.isPending}
-              />
+          {/* Aligned at the TOP, not the bottom. PhoneField carries its own hint under
+              the inputs, so bottom-aligning made every sibling hang two lines lower
+              than the number field it sits beside. Both blocks are label + control row,
+              so their labels and their inputs line up on their own. The Add button
+              lives INSIDE the name field's control row for the same reason — as a
+              third flex child it had no label above it and nothing to align to. */}
+          <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <PhoneField
+              id="cmd-phone"
+              label={t('settings.commandsPhone')}
+              value={newPhone}
+              onChange={setNewPhone}
+              disabled={addPerson.isPending}
+            />
+            <div className="field" style={{ flex: '1 1 16rem', minInlineSize: '13rem' }}>
+              <label className="label" htmlFor="cmd-name">{t('settings.commandsName')}</label>
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                <input
+                  id="cmd-name"
+                  className="input glass-inset"
+                  style={{ flex: '1 1 auto', minInlineSize: '8rem' }}
+                  value={newName}
+                  maxLength={60}
+                  placeholder={t('settings.commandsNamePlaceholder')}
+                  disabled={addPerson.isPending}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newPhone.trim() && newName.trim()) {
+                      addPerson.mutate({ phone: newPhone, label: newName });
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn--primary"
+                  style={{ flex: '0 0 auto' }}
+                  disabled={addPerson.isPending || !newPhone.trim() || !newName.trim()}
+                  onClick={() => addPerson.mutate({ phone: newPhone, label: newName })}
+                >
+                  {t('settings.commandsAdd')}
+                </button>
+              </div>
             </div>
-            <div className="field" style={{ minWidth: '10rem' }}>
-              <label className="field__label" htmlFor="cmd-name">{t('settings.commandsName')}</label>
-              <input
-                id="cmd-name"
-                className="input glass-inset"
-                value={newName}
-                maxLength={60}
-                placeholder={t('settings.commandsNamePlaceholder')}
-                onChange={(e) => setNewName(e.target.value)}
-              />
-            </div>
-            <button
-              className="btn btn--primary"
-              disabled={addPerson.isPending || !newPhone.trim() || !newName.trim()}
-              onClick={() => addPerson.mutate({ phone: newPhone, label: newName })}
-            >
-              {t('settings.commandsAdd')}
-            </button>
-            {/* Offered, never automatic: the admin's number was collected as a place to
-                send alerts, not as a way to authorise changes. No scopes are ticked. */}
-            {adminPhone && !alreadyListed && (
-              <button
-                className="btn btn--sm"
-                onClick={() => addPerson.mutate({ phone: adminPhone, label: adminName || t('settings.commandsMe') })}
-              >
-                {t('settings.commandsAddMe')}
-              </button>
-            )}
           </div>
+          {/* Offered, never automatic: the admin's number was collected as a place to
+              send alerts, not as a way to authorise changes. No scopes are ticked.
+              On its own line so it cannot disturb the alignment above. */}
+          {adminPhone && !alreadyListed && (
+            <button
+              className="btn btn--sm"
+              style={{ marginBlockStart: '0.4rem' }}
+              onClick={() => addPerson.mutate({ phone: adminPhone, label: adminName || t('settings.commandsMe') })}
+            >
+              {t('settings.commandsAddMe')}
+            </button>
+          )}
 
           {people.length > 0 && (
             <>
@@ -2441,7 +2466,7 @@ function WhatsAppCommands() {
         onConfirm={() => confirmRemove && removePerson.mutate({ phone: confirmRemove.phone })}
         title={t('settings.commandsRemoveTitle', { name: confirmRemove?.label ?? '' })}
         body={t('settings.commandsRemoveBody')}
-        confirmLabel={t('common.remove')}
+        confirmLabel={t('actions.remove')}
         pending={removePerson.isPending}
       />
     </div>
