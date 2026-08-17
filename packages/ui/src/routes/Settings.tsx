@@ -1600,17 +1600,35 @@ function WhatsAppPanel() {
   const utils = trpc.useUtils();
   const windows = useWindows();
   const cfg = trpc.whatsapp.get.useQuery();
-  const status = trpc.whatsapp.status.useQuery(undefined, { refetchInterval: 60_000 });
+  const [pairing, setPairing] = useState<string | null>(null);
+  // While a pairing code is on screen the admin is standing at their phone typing it
+  // in, and the only thing they want to know is whether it worked. A one-minute poll
+  // meant reloading the page to find out. Fast only during that window — every poll is
+  // an HTTP call to the gateway.
+  const status = trpc.whatsapp.status.useQuery(undefined, {
+    refetchInterval: pairing ? 3_000 : 60_000,
+  });
 
   const [provider, setProvider] = useState<'none' | 'openwa'>('none');
   const [baseUrl, setBaseUrl] = useState('');
   const [sessionName, setSessionName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [linkPhone, setLinkPhone] = useState('');
-  const [pairing, setPairing] = useState<string | null>(null);
   const [askEnable, setAskEnable] = useState(false);
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
+  // The pairing code stops being useful the instant the phone is linked, and leaving
+  // it on screen is what made "did that work?" a page reload.
+  useEffect(() => {
+    if (pairing && status.data?.state === 'ready') {
+      setPairing(null);
+      toast(t('settings.whatsappLinkedNow'), 'success');
+      void utils.whatsapp.get.invalidate();
+    }
+    // `toast`/`utils`/`t` are stable for the life of the panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairing, status.data?.state]);
+
   const seededWa = useRef(false);
   useEffect(() => {
     if (cfg.data && !seededWa.current) {

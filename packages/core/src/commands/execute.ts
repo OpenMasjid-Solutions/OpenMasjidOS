@@ -31,7 +31,7 @@ import {
 import { isPlatformManaged } from '../apps/managed';
 import { UpdateBusyError } from '../system/update-lock';
 import { deliverAlert } from '../notify/alerts';
-import { replyBudget, replyTo } from '../notify/whatsapp';
+import { replyTo } from '../notify/whatsapp';
 import { COMMAND_PREFIX, OS_CONTROL, OS_SCOPE_WORD, recordCommandUse } from '../store/commands';
 import { namespacesFor, listNamespaces } from './registry';
 import { parseCommand } from './parse';
@@ -335,27 +335,27 @@ function osConfirmWords(id: string, appName: string): [string, string] {
   }
 }
 
-/**
- * A mutating command with no allowance left must NOT run.
+/*
+ * THERE IS DELIBERATELY NO BUDGET CHECK HERE ANY MORE.
  *
- * "It restarted but you will never know" is the worst outcome available here: the
- * admin cannot tell whether it worked, so they try again, and again. The result still
- * reaches them — by email or webhook, a channel that is not exhausted. A read-only
- * command in the same state is simply dropped, because nothing changed.
+ * There used to be one, refusing any mutating command once the hour/day cap was
+ * reached, on the reasoning that "it restarted but you will never know" is worse than
+ * not running it. That reasoning was simply wrong: `replyTo` goes through
+ * `sendImmediate`, which calls `sendOne` directly and never consults the caps. A reply
+ * always goes out. So the check protected nothing and blocked real admin work — and it
+ * did it with the least helpful sentence available ("I've hit today's WhatsApp
+ * limit"), while every read-only command kept working, which made it look broken
+ * rather than deliberate.
+ *
+ * It bit hard on a freshly linked number: the warm-up ramp cuts the caps to a quarter
+ * for the first days, so twelve an hour becomes three, and an admin testing the
+ * feature exhausted it in minutes — locking out exactly the commands they were trying.
+ *
+ * What actually bounds this is the INBOUND rate limit (five commands, one back every
+ * fifteen seconds, in commands/gate.ts). Replies are answers to a human who just
+ * messaged us and is waiting; they are still recorded against the budget, so the
+ * QUEUE backs off for unsolicited traffic, which is what the caps are for.
  */
-function budgetBlocks(command: CommandEntry, what: string, ctx: Ctx): boolean {
-  const mutating = command.scope === OS_CONTROL || command.confirm === true;
-  if (!mutating) return false;
-  if (replyBudget().ok) return false;
-  log.warn(`WhatsApp commands: "${command.id}" not run — the WhatsApp allowance is spent.`);
-  void deliverAlert({
-    source: 'os',
-    alertId: 'command-run',
-    title: 'A WhatsApp command could not be run',
-    text: `"${command.label}" for ${what} was not run: today's WhatsApp allowance is used up, so there would have been no way to tell you how it went.`,
-  }).catch(() => undefined);
-  return true;
-}
 
 async function runOsVerb(command: CommandEntry, target: { id: string; name: string }, ctx: Ctx): Promise<void> {
   // "Is there anything to do?" is a READ, and it has to come before the budget gate.
@@ -372,7 +372,6 @@ async function runOsVerb(command: CommandEntry, target: { id: string; name: stri
     }
   }
 
-  if (budgetBlocks(command, target.name, ctx)) return ctx.reply(say.budgetSpent());
 
   const started = Date.now();
   try {
@@ -473,7 +472,6 @@ async function runAppVerb(
   ctx: Ctx,
   followUpToken?: string,
 ): Promise<void> {
-  if (budgetBlocks(command, nsLabel, ctx)) return ctx.reply(say.budgetSpent());
   const out = await runAppCommand({
     appId: word,
     commandId: command.id,

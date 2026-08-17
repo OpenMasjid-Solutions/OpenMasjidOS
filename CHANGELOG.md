@@ -13,6 +13,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — updating an app by message, and knowing when your phone has linked**
+
+- **`!os update` always refused with "I've hit today's WhatsApp limit".** It was checking the sending allowance before doing anything that changes something — but replies don't use that allowance at all, so the check protected nothing and blocked real work. It bit hardest on a freshly linked number, where the safety ramp cuts the hourly allowance to a quarter, so testing the feature locked out the very commands being tested. Removed. What actually limits commands is the five-in-a-row cap on messages coming in, which is tighter anyway.
+- **After typing a pairing code, the page now tells you the moment it works** — with a confirmation, and the code disappears. It used to check once a minute, so you had to reload to find out.
+
 **Added — commands can hold a conversation**
 
 - **An app can ask you a question or two, and you just reply.** No `!` needed while it's waiting: `!display schedule-iqamah` → "Which prayer?" → `Maghrib` → "What time?" and so on. Send `exit` to leave it, and it lapses on its own after a few minutes' silence — so an abandoned half-answered question never leaves your ordinary messages being read as commands. Starting any new `!` command abandons it too. While something is waiting, a plain `yes` or `no` is enough to confirm.

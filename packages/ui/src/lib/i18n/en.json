@@ -677,6 +677,7 @@
     "whatsappGatewayCrashed": "It started and then stopped again. This is the last thing it printed:",
     "whatsappCodeExpires": "Type it into WhatsApp within a couple of minutes — it expires.",
     "whatsappLinkedTo": "Sending from",
+    "whatsappLinkedNow": "Your phone is linked. WhatsApp is ready.",
     "commands": "Commands",
     "commandsHint": "Let trusted people run things by sending a message to this number — check how the server is doing, or restart an app without being at the dashboard.",
     "commandsEnable": "Allow commands by message",
