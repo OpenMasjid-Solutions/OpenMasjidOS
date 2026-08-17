@@ -150,7 +150,7 @@ test('a group message is dropped even from an authorised sender', () => {
     [{ id: 'g1', chatId: '120363012345678901@g.us', author: `${ALICE}@c.us`, body: '!os stats', fromMe: false, timestamp: Math.floor(NOW / 1000) }],
     { now: NOW, connectedAt: CONNECTED },
   );
-  assert.equal(r.pass === false && r.drop, 'not-direct');
+  assert.equal(r.pass === false && r.drop, 'not-direct(g.us)', 'the reason names the address space');
 });
 
 test('media and non-text types are dropped', () => {
@@ -390,4 +390,60 @@ test('a reconcile failure is logged, and cannot run twice at once', () => {
   // No bare call sites left.
   const bare = code.split('\n').filter((l) => /void reconcile\(\)/.test(l) && !/\.catch\(/.test(l) && !/^\s*\*/.test(l));
   assert.deepEqual(bare, [], `these call sites bypass kick(): ${bare.join(' | ')}`);
+});
+
+// ── the gateway's own answer beats guessing at JIDs ──────────────────────────────
+// The first real install dropped a perfectly good command as `not-direct`. WhatsApp is
+// migrating chats to `@lid` privacy ids, which are neither a group nor a phone number,
+// so inferring "is this one-to-one" from the JID shape got it wrong. The gateway
+// already tells us, engine-neutrally.
+
+test('isGroup from the gateway is authoritative, both ways', () => {
+  // A LID chat is NOT a group, however little it looks like a phone number.
+  const lid = normaliseInbound([
+    { chatId: '188889999@lid', isGroup: false, isLidSender: true, senderPhone: ALICE, body: '!help', fromMe: false },
+  ]);
+  assert.equal(lid.ok && lid.msg.isDirect, true, 'a lid chat is one-to-one');
+  assert.equal(lid.ok && lid.msg.fromDigits, ALICE, 'the resolved number identifies the sender');
+  assert.equal(lid.ok && lid.msg.shape, 'lid');
+
+  // And a group stays a group even when the chat id looks like a person.
+  const grp = normaliseInbound([{ chatId: `${ALICE}@c.us`, isGroup: true, body: 'hi', fromMe: false }]);
+  assert.equal(grp.ok && grp.msg.isDirect, false, 'the flag wins over the JID shape');
+});
+
+test('a privacy id with no resolved number is refused, and says so distinctly', () => {
+  // RESOLVE_LID_TO_PHONE is off by default on the gateway, so senderPhone is null and
+  // there is no identity to check against the list. Refusing is right — but it must
+  // not be reported as "not-direct", because that sends the admin looking at the wrong
+  // thing entirely. The fix here is a gateway setting, not a wrong chat.
+  enable();
+  const r = gate(
+    [{ id: 'l1', chatId: '188889999@lid', isGroup: false, isLidSender: true, body: '!help', fromMe: false, timestamp: Math.floor(NOW / 1000) }],
+    { now: NOW, connectedAt: CONNECTED },
+  );
+  assert.equal(r.pass, false);
+  assert.equal(r.pass === false && r.drop, 'no-sender-number(lid)');
+});
+
+test('the sender is resolved from the most authoritative field available', () => {
+  // senderPhone beats the JID, and the contact cache is the last resort — a `@lid`
+  // JID contains no phone number at all, so without one of these we cannot say who
+  // sent it.
+  const viaContact = normaliseInbound([
+    { chatId: '188889999@lid', isGroup: false, body: 'hi', fromMe: false, contact: { number: ALICE } },
+  ]);
+  assert.equal(viaContact.ok && viaContact.msg.fromDigits, ALICE);
+
+  // An ordinary @c.us chat still resolves from the JID with nothing else present.
+  const plain = normaliseInbound([{ chatId: `${ALICE}@c.us`, isGroup: false, body: 'hi', fromMe: false }]);
+  assert.equal(plain.ok && plain.msg.fromDigits, ALICE);
+  assert.equal(plain.ok && plain.msg.shape, 'c.us');
+});
+
+test('a status broadcast is never a command, whatever else it claims', () => {
+  const r = normaliseInbound([
+    { chatId: `${ALICE}@c.us`, isGroup: false, isStatusBroadcast: true, body: '!help', fromMe: false },
+  ]);
+  assert.equal(r.ok && r.msg.isDirect, false);
 });

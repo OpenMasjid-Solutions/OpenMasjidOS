@@ -28,7 +28,7 @@
  *
  * A partially parseable message is dropped, never guessed at.
  */
-import { jidDigits, isDirectJid } from '../util/phone';
+import { jidDigits, isDirectJid, toDigits } from '../util/phone';
 
 export interface InboundMessage {
   /** '' when the gateway sent none — the gate then derives a dedupe key. */
@@ -45,6 +45,14 @@ export interface InboundMessage {
   body: string;
   type: string | null;
   hasMedia: boolean;
+  /**
+   * The address space the chat used — `c.us`, `lid`, `g.us`, … Diagnostics only, and
+   * safe to surface: it is the domain half of the JID, never the number.
+   *
+   * Earns its place because "we rejected this" and "we could not tell who sent it"
+   * were the same drop reason on a real install, and the difference is the whole fix.
+   */
+  shape: string;
 }
 
 export type NormaliseResult =
@@ -132,13 +140,31 @@ export function normaliseInbound(args: unknown[]): NormaliseResult {
   // fromMe: unknown means ours, so a reply can never loop back in as a command.
   const fromMe = firstBool(root, ['fromMe', 'key.fromMe', 'isFromMe', 'self']) ?? true;
 
-  // isDirect: positive proof only. In a group the SENDER is `author` while `chatId`
-  // is the group, so a whitelist check against chatId there reads the wrong field —
-  // and a gateway that reported the sender AS the chat id would look direct. Both are
-  // covered by also requiring any author present to be the same person as the chat.
-  const authorMatches = !authorId || jidDigits(authorId) === jidDigits(chatId);
-  const isDirect = isDirectJid(chatId) && authorMatches;
-  const fromDigits = isDirect ? jidDigits(chatId) : null;
+  // Prefer the gateway's OWN answer when it gives one. `isGroup` is engine-neutral and
+  // authoritative; inferring it from the JID was guesswork that got this wrong on the
+  // first real install, because WhatsApp is migrating chats to `@lid` privacy ids and
+  // a LID chat is not a group but does not look like `@c.us` either.
+  const isGroupFlag = firstBool(root, ['isGroup']);
+  const isStatusBroadcast = firstBool(root, ['isStatusBroadcast']) === true;
+  const isDirect = isStatusBroadcast
+    ? false
+    : isGroupFlag !== null
+      ? !isGroupFlag
+      : // No flag: fall back to positive proof, and keep the old belt-and-braces that
+        // any author present names the same person as the chat. A gateway that put the
+        // group in `author` and the sender in `chatId` would otherwise look direct.
+        isDirectJid(chatId) && (!authorId || jidDigits(authorId) === jidDigits(chatId));
+
+  // Who sent it, in order of authority. A `@lid` sender has NO phone number in its
+  // JID — that is the point of a privacy id — so the gateway's resolved number is the
+  // only way to identify them, and the contact cache is the last resort.
+  const fromDigits = isDirect
+    ? (toDigits(firstString(root, ['senderPhone']) ?? '') ??
+      jidDigits(authorId) ??
+      jidDigits(chatId) ??
+      jidDigits(firstString(root, ['from'])) ??
+      toDigits(firstString(root, ['contact.number']) ?? ''))
+    : null;
 
   // Any hint of media counts as media. Absence does NOT: a plain text message carries
   // no media field, so treating "no hint" as media would drop every real command.
@@ -153,9 +179,16 @@ export function normaliseInbound(args: unknown[]): NormaliseResult {
 
   if (!body && !hasMedia) return { ok: false, reason: 'no-body', keys };
 
+  // The domain half only. Safe to surface, and the one fact that tells an admin
+  // whether the address space is the problem.
+  // NOT `at` — that is the path-reader helper above, and shadowing it here broke every
+  // field lookup in this function.
+  const domainAt = chatId.lastIndexOf('@');
+  const shape = domainAt >= 0 ? chatId.slice(domainAt + 1).toLowerCase().slice(0, 20) : 'no-domain';
+
   return {
     ok: true,
-    msg: { id, chatId, authorId, fromDigits, fromMe, isDirect, timestampMs, body, type, hasMedia },
+    msg: { id, chatId, authorId, fromDigits, fromMe, isDirect, timestampMs, body, type, hasMedia, shape },
   };
 }
 

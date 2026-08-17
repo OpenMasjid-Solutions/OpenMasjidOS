@@ -28,11 +28,22 @@ const DEDUPE_TTL_MS = 10 * 60_000;
 /** Types we will read as text. Absent is allowed — many gateways omit it entirely. */
 const TEXT_TYPES = new Set(['chat', 'text', 'extendedtext', 'extendedtextmessage', 'conversation']);
 
+/**
+ * Why a message was discarded.
+ *
+ * Two of these carry the chat's address SHAPE in brackets — `not-direct(lid)`,
+ * `no-sender-number(lid)`. The bare words were ambiguous on a real install: they said
+ * a message had been rejected without saying whether the problem was the chat, the
+ * address space, or a missing identity, and those have three different fixes. The
+ * shape is the domain half of a JID; it is never a number.
+ */
 export type DropReason =
   | 'commands-off'
   | 'unparseable'
   | 'from-me'
   | 'not-direct'
+  | `not-direct(${string})`
+  | `no-sender-number(${string})`
   | 'not-text'
   | 'empty'
   | 'too-long'
@@ -92,7 +103,14 @@ export function gate(args: unknown[], ctx: GateContext): GateOutcome {
 
   // 4. One-to-one only. A command in a group would hand the restart button to every
   //    member of a 200-person announcement group.
-  if (!msg.isDirect || !msg.fromDigits) return { pass: false, drop: 'not-direct' };
+  if (!msg.isDirect) return { pass: false, drop: `not-direct(${msg.shape})` as DropReason };
+
+  // 4b. Direct, but we cannot say WHO from. A `@lid` privacy id carries no phone
+  //     number, so unless the gateway resolves it (RESOLVE_LID_TO_PHONE) there is no
+  //     identity to check against the list — and an unidentifiable sender must never
+  //     be authorised. Reported separately from 'not-direct' because the fix is
+  //     completely different: this one is a gateway setting, not a wrong chat.
+  if (!msg.fromDigits) return { pass: false, drop: `no-sender-number(${msg.shape})` as DropReason };
 
   // 5. Text only. An image caption is a plausible place to hide `!os stop x`.
   if (msg.hasMedia) return { pass: false, drop: 'not-text' };
