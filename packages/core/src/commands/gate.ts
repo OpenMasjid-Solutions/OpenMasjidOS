@@ -96,7 +96,20 @@ export function gate(args: unknown[], ctx: GateContext): GateOutcome {
   // 2. A message we cannot read cannot be authorised.
   const parsed = normaliseInbound(args);
   if (!parsed.ok) return { pass: false, drop: 'unparseable', keys: parsed.keys };
-  const msg = parsed.msg;
+  return gateMessage(parsed.msg, ctx);
+}
+
+/**
+ * The checks, against an already-normalised message.
+ *
+ * Split out so a caller can enrich the message first — specifically, resolve a `@lid`
+ * sender to a phone number over the gateway's REST lookup, which is async while this
+ * is not. It must happen BEFORE the gate rather than as a retry: steps 11 and 13 have
+ * side effects (the duplicate LRU, the rate-limit bucket), so running the gate twice
+ * for one message would double-count both.
+ */
+export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome {
+  if (!areCommandsEnabled()) return { pass: false, drop: 'commands-off' };
 
   // 3. Our own sends echo back; a reply containing a command would loop forever.
   if (msg.fromMe) return { pass: false, drop: 'from-me' };

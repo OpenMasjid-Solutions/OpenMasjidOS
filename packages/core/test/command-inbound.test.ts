@@ -22,7 +22,7 @@ process.env.OPENMASJID_DATA_DIR = dataDir;
 const req = createRequire(__filename);
 const store = req('../src/store/commands') as typeof import('../src/store/commands');
 const { normaliseInbound } = req('../src/commands/normalise') as typeof import('../src/commands/normalise');
-const { gate, __resetGateForTests, REPLAY_QUIET_MS, MAX_AGE_MS } =
+const { gate, gateMessage, __resetGateForTests, REPLAY_QUIET_MS, MAX_AGE_MS } =
   req('../src/commands/gate') as typeof import('../src/commands/gate');
 const convo = req('../src/commands/conversation') as typeof import('../src/commands/conversation');
 const { isMessageEvent } = req('../src/notify/whatsapp-inbound') as typeof import('../src/notify/whatsapp-inbound');
@@ -446,4 +446,60 @@ test('a status broadcast is never a command, whatever else it claims', () => {
     { chatId: `${ALICE}@c.us`, isGroup: false, isStatusBroadcast: true, body: '!help', fromMe: false },
   ]);
   assert.equal(r.ok && r.msg.isDirect, false);
+});
+
+test('a privacy-id sender is flagged for resolution, not silently accepted', () => {
+  // The platform resolves it over the gateway's REST lookup before gating — so the
+  // normaliser's job is to say "this is a real 1:1 chat whose sender I cannot name",
+  // and to hand over the JID to ask about.
+  const r = normaliseInbound([
+    { chatId: '188889999@lid', isGroup: false, isLidSender: true, body: '!help', fromMe: false },
+  ]);
+  assert.equal(r.ok && r.msg.isDirect, true);
+  assert.equal(r.ok && r.msg.fromDigits, null, 'a lid carries no number');
+  assert.equal(r.ok && r.msg.senderJid, '188889999@lid', 'and the JID to resolve is handed over');
+
+  // Nothing to resolve when the number is already known, or when it is not 1:1.
+  const known = normaliseInbound([{ chatId: `${ALICE}@c.us`, isGroup: false, body: 'hi', fromMe: false }]);
+  assert.equal(known.ok && known.msg.senderJid, null);
+  const grp = normaliseInbound([{ chatId: '120363@g.us', isGroup: true, body: 'hi', fromMe: false }]);
+  assert.equal(grp.ok && grp.msg.senderJid, null);
+});
+
+test('resolution happens BEFORE the gate, never as a retry', () => {
+  // The gate's duplicate LRU and rate-limit bucket have side effects, so gating a
+  // message twice — once to discover it needs resolving, once after — would
+  // double-count both and eventually throttle a sender for one message.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
+  const fn = code.slice(code.indexOf('async function handleInbound'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.ok(
+    body.indexOf('resolveLidPhone(') < body.indexOf('gateMessage('),
+    'resolve first, then gate exactly once',
+  );
+  // And the enriched message is what gets gated.
+  assert.match(body, /msg = \{ \.\.\.msg, fromDigits: phone \}/);
+});
+
+test('an authorised sender behind a privacy id passes once resolved', () => {
+  // The whole point: with a number attached, a lid sender is an ordinary sender.
+  enable();
+  const r = gateMessage(
+    {
+      id: 'lid-ok',
+      chatId: '188889999@lid',
+      authorId: null,
+      fromDigits: ALICE, // as the resolver would have filled in
+      fromMe: false,
+      isDirect: true,
+      timestampMs: NOW,
+      body: '!os stats',
+      type: 'chat',
+      hasMedia: false,
+      shape: 'lid',
+      senderJid: null,
+    },
+    { now: NOW, connectedAt: CONNECTED },
+  );
+  assert.equal(r.pass, true, 'a resolved lid sender is just a sender');
 });

@@ -40,9 +40,10 @@ import { log } from '../logger';
 import { areCommandsEnabled, listCommandPeople, onCommandConfigChange } from '../store/commands';
 import { getWhatsAppConfig, isWhatsAppConfigured } from '../store/whatsapp';
 import { maskDigits } from '../util/phone';
-import { gate, type GateOutcome } from '../commands/gate';
+import { gate, gateMessage, type GateOutcome } from '../commands/gate';
+import { normaliseInbound } from '../commands/normalise';
 import { resetConversations } from '../commands/conversation';
-import { gatewayStatus, resolveBaseUrl } from './whatsapp';
+import { gatewayStatus, resolveBaseUrl, resolveLidPhone } from './whatsapp';
 
 const RECONCILE_MS = 30_000;
 const STATUS_PROBE_MS = 60_000;
@@ -466,7 +467,23 @@ function scheduleRetry(why: string): void {
 // ── the message path ─────────────────────────────────────────────────────────────
 
 async function handleInbound(event: string, args: unknown[]): Promise<void> {
-  const outcome = gate(args, { now: Date.now(), connectedAt: connectedAt || Date.now() });
+  const ctx = { now: Date.now(), connectedAt: connectedAt || Date.now() };
+
+  // Resolve a privacy-id sender BEFORE gating, not as a retry: the gate's duplicate
+  // suppression and rate-limit bucket have side effects, so running it twice for one
+  // message would double-count both.
+  const parsed = normaliseInbound(args);
+  let outcome: GateOutcome;
+  if (!parsed.ok) {
+    outcome = gate(args, ctx);
+  } else {
+    let msg = parsed.msg;
+    if (msg.senderJid) {
+      const phone = await resolveLidPhone(msg.senderJid);
+      if (phone) msg = { ...msg, fromDigits: phone };
+    }
+    outcome = gateMessage(msg, ctx);
+  }
 
   if (outcome.pass) {
     counters.seen += 1;

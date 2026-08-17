@@ -1059,6 +1059,54 @@ export async function sendTestToGroup(groupId: string, text: string): Promise<Se
   return sendTestTo({ kind: 'group', groupId }, text);
 }
 
+/**
+ * Turn a `@lid` privacy id into a phone number, using the gateway's own lookup.
+ *
+ * WhatsApp is migrating chats to privacy ids, which carry no number — so for those
+ * senders this is the ONLY way to get an identity to check against the commands list.
+ * The gateway can attach it to every message itself, but only when the operator sets
+ * `RESOLVE_LID_TO_PHONE=true`, which is off by default and is not something a masjid
+ * should have to know about. Asking over REST works on an install as it stands today,
+ * with no app update.
+ *
+ * Cached, INCLUDING misses: an unmapped sender is usually permanently unmapped, and
+ * re-asking on every message would spend the gateway's rate limit to keep learning
+ * the same nothing.
+ *
+ * Best-effort by design — never throws, returns null on anything unexpected. A null
+ * means "cannot identify", which the caller must treat as "not authorised".
+ */
+const lidPhones = new Map<string, string | null>();
+const LID_CACHE_MAX = 500;
+
+export async function resolveLidPhone(jid: string): Promise<string | null> {
+  if (!jid) return null;
+  const cached = lidPhones.get(jid);
+  if (cached !== undefined) return cached;
+
+  const cfg = getWhatsAppConfig();
+  if (!isWhatsAppConfigured() || !cfg.sessionId) return null;
+
+  let phone: string | null = null;
+  try {
+    const r = await call(
+      cfg,
+      'GET',
+      `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/${encodeURIComponent(jid)}/phone`,
+    );
+    if (r.ok) {
+      const raw = (r.json as { phone?: unknown })?.phone;
+      phone = typeof raw === 'string' ? toDigits(raw) : null;
+    }
+  } catch {
+    /* best effort — an unresolvable sender is simply unauthorised */
+  }
+
+  if (lidPhones.size >= LID_CACHE_MAX) lidPhones.clear();
+  lidPhones.set(jid, phone);
+  return phone;
+}
+
 /** What the gateway itself has received from WhatsApp. Counts and times only. */
 export interface GatewayTraffic {
   ok: boolean;

@@ -53,6 +53,13 @@ export interface InboundMessage {
    * were the same drop reason on a real install, and the difference is the whole fix.
    */
   shape: string;
+  /**
+   * The sender's JID when we could not get a phone number out of it — i.e. a `@lid`
+   * privacy id. Set only when `isDirect` is true and `fromDigits` is null, so it reads
+   * as "this is a real one-to-one chat whose sender we cannot yet name". The gateway
+   * can resolve it over REST; see `resolveLidPhone`.
+   */
+  senderJid: string | null;
 }
 
 export type NormaliseResult =
@@ -186,9 +193,27 @@ export function normaliseInbound(args: unknown[]): NormaliseResult {
   const domainAt = chatId.lastIndexOf('@');
   const shape = domainAt >= 0 ? chatId.slice(domainAt + 1).toLowerCase().slice(0, 20) : 'no-domain';
 
+  // Only worth resolving when the chat is genuinely one-to-one and the sender has no
+  // number in their address. `author` first: in any shape where both exist, that is
+  // the person rather than the conversation.
+  const senderJid = isDirect && !fromDigits ? (authorId ?? firstString(root, ['from']) ?? chatId) : null;
+
   return {
     ok: true,
-    msg: { id, chatId, authorId, fromDigits, fromMe, isDirect, timestampMs, body, type, hasMedia, shape },
+    msg: {
+      id,
+      chatId,
+      authorId,
+      fromDigits,
+      fromMe,
+      isDirect,
+      timestampMs,
+      body,
+      type,
+      hasMedia,
+      shape,
+      senderJid,
+    },
   };
 }
 
