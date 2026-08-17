@@ -74,6 +74,14 @@ export interface InboundStatus {
   connectedAt: string | null;
   /** The last event of ANY name — proves the wiring independently of parsing. */
   lastEventAt: string | null;
+  /**
+   * The last raw transport packet, set below the application layer entirely.
+   *
+   * Packets flowing with no events means the server is not emitting to our room;
+   * no packets at all means the socket is not really carrying anything despite
+   * reporting connected. Those need opposite fixes and look identical without this.
+   */
+  lastPacketAt: string | null;
   retryInMs: number | null;
   /** Volume only, no content. */
   counters: { seen: number; ran: number; ignoredUnknown: number; unparseable: number };
@@ -147,6 +155,8 @@ let attempt = 0;
 let authFailures = 0;
 let connectedAt = 0;
 let lastEventAt = 0;
+/** Raw engine traffic, set independently of anything the application layer parses. */
+let lastPacketAt = 0;
 /** True once the gateway has acked our subscribe. Until then we are in no rooms. */
 let subscribed = false;
 /** How the subscribe went — three outcomes that a single boolean collapsed into one. */
@@ -193,6 +203,7 @@ export function inboundStatus(): InboundStatus {
     detail,
     connectedAt: connectedAt ? new Date(connectedAt).toISOString() : null,
     lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null,
+    lastPacketAt: lastPacketAt ? new Date(lastPacketAt).toISOString() : null,
     retryInMs: retryAt ? Math.max(0, retryAt - Date.now()) : null,
     counters: { ...counters },
     eventNames: [...eventNames],
@@ -312,9 +323,22 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
     // which is exactly what makes this easy to miss: messages arrive fine while we
     // report "unconfirmed" forever. A REFUSAL rides the same ack, so dropping it also
     // discards the one frame that would explain a real failure.
+    // Subscribing to EVERY event for this session, not just message.received.
+    //
+    // The emitter unions `session:<id>:<event>` with `session:<id>:*`, so the wildcard
+    // is a superset — and on the install this was debugged against, a socket confirmed
+    // in the exact `message.received` room still received nothing at all while the
+    // gateway was demonstrably recording inbound messages. A wildcard room removes the
+    // event name as a variable, and makes every other event the session emits visible
+    // to the diagnostic, which is what turns the next failure into a fact.
+    //
+    // The extra traffic is a handful of frames on a LAN, all of which `isMessageEvent`
+    // discards. Note this is the EVENT wildcard, not the session one: a key scoped to
+    // particular sessions is refused `sessionId: '*'`, but `events: ['*']` is
+    // explicitly allowed.
     s.timeout(SUBSCRIBE_ACK_MS).emit(
       FRAME_CHANNEL,
-      { type: 'subscribe', sessionId, events: [INBOUND_EVENT] },
+      { type: 'subscribe', sessionId, events: ['*'] },
       (err: Error | null, reply: unknown) => {
         if (err) {
           // No ack inside the window. The rooms may well be joined anyway, so this is
@@ -352,6 +376,14 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
     handleFrame(frame);
   });
 
+  // Raw transport activity, independent of anything the application layer does with
+  // it. This is the one signal that separates "the server is not emitting to us" from
+  // "the socket is not really carrying anything" — two states that look identical
+  // from a `connected` flag and an empty event list.
+  s.io.engine?.on('packet', () => {
+    lastPacketAt = Date.now();
+  });
+
   // Kept purely as a diagnostic. If the gateway ever moves to another channel, this
   // is what shows the new name instead of leaving us with silence to interpret.
   s.onAny((event: string) => {
@@ -369,6 +401,11 @@ function handleFrame(frame: unknown): void {
   const f = frame && typeof frame === 'object' ? (frame as Record<string, unknown>) : null;
   if (!f) return;
   const type = typeof f.type === 'string' ? f.type : '';
+
+  // Record EVERY frame by type, before any branch can discard it. Without this,
+  // "the gateway sent nothing" and "the gateway sent something I didn't recognise"
+  // are the same empty list — and they need completely different fixes.
+  noteEventName(`frame:${type || 'untyped'}`);
 
   if (type === 'subscribed') {
     subscribed = true;

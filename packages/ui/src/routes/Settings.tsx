@@ -2532,6 +2532,16 @@ function WhatsAppCommands() {
                       ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
                     })}
                   </div>
+                  {/* Raw transport activity vs application events. Traffic with no
+                      events means the gateway is not emitting to us; no traffic at all
+                      means the socket is not really carrying anything despite saying
+                      connected. Opposite fixes, identical symptoms without this. */}
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagWire', {
+                      packet: s.lastPacketAt ? new Date(s.lastPacketAt).toLocaleTimeString() : '—',
+                      event: s.lastEventAt ? new Date(s.lastEventAt).toLocaleTimeString() : '—',
+                    })}
+                  </div>
                   {/* The one question that splits the problem in half: has the GATEWAY
                       itself heard anything from WhatsApp? If not, nothing on our side
                       matters. Read-only, and it reads counts and times — never a body. */}

@@ -706,6 +706,7 @@
     "commandsDiagCounts": "{{seen}} command(s) read, {{ignored}} from numbers not on the list, {{unreadable}} not understood.",
     "commandsDiagDropped": "Messages that arrived but were not acted on:",
     "commandsDiagAck": "Subscription: {{ack}}",
+    "commandsDiagWire": "Last activity on the connection: {{packet}} · last message from the gateway: {{event}}",
     "commandsProbe": "Check what the gateway has heard",
     "commandsProbeFailed": "Couldn't ask the gateway — {{reason}}",
     "commandsProbeDeaf": "The gateway has no record of receiving ANY message from WhatsApp. So this isn't about commands — WhatsApp isn't reaching the gateway at all. Try unlinking and re-linking the phone.",

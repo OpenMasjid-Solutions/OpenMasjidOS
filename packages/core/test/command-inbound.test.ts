@@ -296,12 +296,18 @@ test('we subscribe on connect, because rooms are the only delivery path', () => 
   // A connected socket that never subscribes belongs to zero rooms and receives
   // nothing, forever. There is no firehose and no auto-join.
   const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'whatsapp-inbound.ts'), 'utf8');
-  const onConnect = code.slice(code.indexOf("s.on('connect'"), code.indexOf("s.on('connect_error'"));
+  // Comments stripped first. An earlier version of this test matched prose in a
+  // comment that merely MENTIONED the wildcard, and failed on a correct change.
+  const onConnect = code
+    .slice(code.indexOf("s.on('connect'"), code.indexOf("s.on('connect_error'"))
+    .replace(/^\s*\/\/.*$/gm, '');
   assert.match(onConnect, /type: 'subscribe'/, 'connecting must be followed by subscribing');
-  // The explicit session id, not '*': a key scoped to particular sessions is refused
-  // the wildcard, and refused as an error frame rather than as a visible failure.
+  // The explicit SESSION id, never the session wildcard: a key scoped to particular
+  // sessions is refused it, and refused as an error frame rather than a visible
+  // failure. The EVENT wildcard is a different field and is deliberately used.
   assert.match(onConnect, /sessionId,/);
-  assert.ok(!/sessionId: '\*'/.test(onConnect), "must not subscribe with the '*' wildcard");
+  assert.ok(!/sessionId: '\*'/.test(onConnect), 'must not subscribe with the session wildcard');
+  assert.match(onConnect, /events: \['\*'\]/, 'subscribes to every event for this session');
 });
 
 test('the inbound filter runs on payload.event, never the channel name', () => {
