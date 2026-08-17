@@ -13,6 +13,10 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — light mode is readable again**
+
+- **Light mode was showing dark text on a dark background, whichever wallpaper you picked.** The light theme had its own pale backdrop all along, but every wallpaper was defined as a dark one and quietly overrode it — so the frosted panels sat on near-black, came out grey, and then had dark blue writing put on top. Each wallpaper now has a light version that keeps its colour: Ocean is still blue, Forest still green, so the picker means the same thing in either theme.
+
 **Fixed — updating an app by message, and knowing when your phone has linked**
 
 - **`!os update` always refused with "I've hit today's WhatsApp limit".** It was checking the sending allowance before doing anything that changes something — but replies don't use that allowance at all, so the check protected nothing and blocked real work. It bit hardest on a freshly linked number, where the safety ramp cuts the hourly allowance to a quarter, so testing the feature locked out the very commands being tested. Removed. What actually limits commands is the five-in-a-row cap on messages coming in, which is tighter anyway.

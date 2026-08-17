@@ -243,6 +243,88 @@
   --aurora-gold: rgba(203, 213, 225, 0.10);
 }
 
+/* ── Light-theme wallpapers ───────────────────────────────────────────────────
+ * This is what made light mode unreadable, and it was a cascade accident rather than
+ * a colour choice. Every [data-wallpaper] block above is a DARK gradient, they come
+ * after [data-theme="light"] with the SAME specificity, and `data-wallpaper` is always
+ * set (prefs.ts defaults it to "aurora"). So light theme never got its own light
+ * scene: it painted its glass — white at 55% alpha — over a near-black wallpaper,
+ * which composites to mid-grey, then wrote #0C4A6E dark-blue ink on top. Well under
+ * AA, on every screen at once, with nothing in the light-theme block itself wrong.
+ *
+ * Rather than force light theme onto a dark scene (and give up its adaptive ink), each
+ * wallpaper gets a light counterpart that KEEPS ITS HUE and inverts the lightness:
+ * ocean is still blue, forest still green, so the picker means the same thing in both
+ * themes. Two-attribute selectors, so they win regardless of where they sit in the
+ * file — order is what caused this, and relying on order again would only hide it.
+ *
+ * Adopted from OpenMasjidStudents, which ported this token file and then had to fix
+ * exactly this. Both repos are AGPL-3.0, so the borrowing is clean (CLAUDE.md §3).
+ * ─────────────────────────────────────────────────────────────────────────── */
+[data-theme="light"][data-wallpaper="aurora"] {
+  --scene-base: #EAF6FF;
+  --scene-gradient: linear-gradient(150deg, #cfeaf7 0%, #e3f2fb 50%, #f4fbff 100%);
+  --aurora-cyan: rgba(2, 132, 199, 0.16);
+  --aurora-navy: rgba(186, 230, 253, 0.50);
+  --aurora-gold: rgba(217, 119, 6, 0.08);
+}
+[data-theme="light"][data-wallpaper="ocean"] {
+  --scene-base: #E8F2FD;
+  --scene-gradient: linear-gradient(150deg, #c7dcf7 0%, #dceafc 50%, #f0f7ff 100%);
+  --aurora-cyan: rgba(56, 189, 248, 0.22);
+  --aurora-navy: rgba(37, 99, 235, 0.16);
+  --aurora-gold: rgba(45, 212, 191, 0.12);
+}
+[data-theme="light"][data-wallpaper="twilight"] {
+  --scene-base: #F2EDFC;
+  --scene-gradient: linear-gradient(150deg, #ded0f7 0%, #ebe2fb 50%, #f7f3ff 100%);
+  --aurora-cyan: rgba(147, 51, 234, 0.16);
+  --aurora-navy: rgba(124, 58, 237, 0.14);
+  --aurora-gold: rgba(236, 72, 153, 0.10);
+}
+[data-theme="light"][data-wallpaper="berry"] {
+  --scene-base: #FCEDF6;
+  --scene-gradient: linear-gradient(150deg, #f7d3e8 0%, #fae3f1 50%, #fff2f9 100%);
+  --aurora-cyan: rgba(219, 39, 119, 0.16);
+  --aurora-navy: rgba(162, 28, 175, 0.14);
+  --aurora-gold: rgba(251, 113, 133, 0.12);
+}
+[data-theme="light"][data-wallpaper="sunset"] {
+  --scene-base: #FFF1E8;
+  --scene-gradient: linear-gradient(150deg, #fbd9c0 0%, #fde8d8 50%, #fff6ef 100%);
+  --aurora-cyan: rgba(245, 158, 11, 0.20);
+  --aurora-navy: rgba(244, 63, 94, 0.14);
+  --aurora-gold: rgba(251, 146, 60, 0.18);
+}
+[data-theme="light"][data-wallpaper="ember"] {
+  --scene-base: #FFEDE8;
+  --scene-gradient: linear-gradient(150deg, #fbd2c4 0%, #fde3d8 50%, #fff4f0 100%);
+  --aurora-cyan: rgba(234, 88, 12, 0.20);
+  --aurora-navy: rgba(220, 38, 38, 0.14);
+  --aurora-gold: rgba(250, 204, 21, 0.16);
+}
+[data-theme="light"][data-wallpaper="forest"] {
+  --scene-base: #E9F7EE;
+  --scene-gradient: linear-gradient(150deg, #c8ecd5 0%, #ddf3e5 50%, #f1fbf5 100%);
+  --aurora-cyan: rgba(22, 163, 74, 0.18);
+  --aurora-navy: rgba(21, 128, 61, 0.14);
+  --aurora-gold: rgba(132, 204, 22, 0.14);
+}
+[data-theme="light"][data-wallpaper="night"] {
+  --scene-base: #EBF0FC;
+  --scene-gradient: linear-gradient(150deg, #cdd9f7 0%, #e0e8fb 50%, #f2f6ff 100%);
+  --aurora-cyan: rgba(59, 130, 246, 0.18);
+  --aurora-navy: rgba(30, 58, 138, 0.14);
+  --aurora-gold: rgba(99, 102, 241, 0.10);
+}
+[data-theme="light"][data-wallpaper="graphite"] {
+  --scene-base: #F1F3F6;
+  --scene-gradient: linear-gradient(150deg, #d8dee7 0%, #e6eaf0 50%, #f5f7fa 100%);
+  --aurora-cyan: rgba(100, 116, 139, 0.14);
+  --aurora-navy: rgba(51, 65, 85, 0.12);
+  --aurora-gold: rgba(148, 163, 184, 0.10);
+}
+
 /* Smooth theme transition.
  * Scoped to the surfaces and text that actually re-colour on a theme flip,
  * rather than every node in the tree (which put a 4-prop transition — including
