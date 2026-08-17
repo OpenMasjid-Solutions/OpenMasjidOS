@@ -40,10 +40,43 @@ export interface PendingConfirm {
   action: PendingAction;
 }
 
+/**
+ * An app is mid-question with this sender.
+ *
+ * The ONLY thing that relaxes the `!` prefix rule, and deliberately the narrowest
+ * relaxation that works: the platform has just asked something on the app's behalf,
+ * so the next message is unambiguously an answer. A prefix is only needed where a
+ * message could be either a command or ordinary conversation, and here it cannot.
+ *
+ * Bounded three ways, because a session that outlives the exchange is exactly how
+ * ordinary chat starts getting read as input: idle timeout, absolute lifetime, and a
+ * turn cap. Any of them expiring closes it silently — the sender is back to needing
+ * a prefix, which is the safe state.
+ */
+export interface AppSession {
+  /** The namespace word — the app id. Re-authorised on every turn. */
+  word: string;
+  appLabel: string;
+  commandId: string;
+  /** Opaque to us; the app's own handle on the conversation it is running. */
+  token: string;
+  turns: number;
+  openedAt: number;
+  lastAt: number;
+}
+
+/** Idle. Short: an abandoned exchange must stop capturing conversation quickly. */
+export const SESSION_IDLE_MS = 3 * 60_000;
+/** Absolute, however chatty. */
+const SESSION_MAX_MS = 15 * 60_000;
+/** A question-and-answer flow, not an interface. */
+const SESSION_MAX_TURNS = 12;
+
 interface Entry {
   menu: MenuSnapshot | null;
   apps: AppListSnapshot | null;
   pending: PendingConfirm | null;
+  session: AppSession | null;
   lastInboundAt: number;
   tokens: number;
   tokensAt: number;
@@ -57,6 +90,7 @@ function fresh(now: number): Entry {
     menu: null,
     apps: null,
     pending: null,
+    session: null,
     lastInboundAt: now,
     tokens: BUCKET_CAP,
     tokensAt: now,
@@ -184,8 +218,77 @@ export function takePending(digits: string, code: string, now: number): TakePend
   return { ok: true, action: p.action };
 }
 
+/**
+ * Consume a pending confirmation answered with a plain "yes".
+ *
+ * Legitimate only because the platform asked THIS question moments ago and is holding
+ * exactly one — the ambiguity the code guards against (a stale prompt, the wrong one
+ * of two) cannot arise inside a live exchange. `!yes CODE` still works everywhere,
+ * including with no exchange open, which is the only path available then.
+ */
+export function takeConfirmed(digits: string, now: number): TakePending {
+  const e = state.get(digits);
+  const p = e?.pending;
+  if (!e || !p) return { ok: false, why: 'none' };
+  if (now - p.askedAt > CONFIRM_TTL_MS) {
+    e.pending = null;
+    return { ok: false, why: 'expired' };
+  }
+  e.pending = null;
+  return { ok: true, action: p.action };
+}
+
 export function hasPending(digits: string): boolean {
   return Boolean(state.get(digits)?.pending);
+}
+
+// ── app sessions ─────────────────────────────────────────────────────────────────
+
+export function openSession(
+  digits: string,
+  s: Omit<AppSession, 'turns' | 'openedAt' | 'lastAt'>,
+  now: number,
+): void {
+  const e = entry(digits, now);
+  const existing = e.session && e.session.word === s.word ? e.session : null;
+  e.session = {
+    ...s,
+    // Turns accumulate across the whole exchange, not per question — the cap is on
+    // the conversation, and resetting it each turn would make it meaningless.
+    turns: (existing?.turns ?? 0) + 1,
+    openedAt: existing?.openedAt ?? now,
+    lastAt: now,
+  };
+}
+
+/** The live session, or null. Expiry is checked on READ so a stale one can never be
+ *  used, whatever ran or did not run in the meantime. */
+export function getSession(digits: string, now: number): AppSession | null {
+  const e = state.get(digits);
+  const s = e?.session;
+  if (!e || !s) return null;
+  if (now - s.lastAt > SESSION_IDLE_MS || now - s.openedAt > SESSION_MAX_MS || s.turns > SESSION_MAX_TURNS) {
+    e.session = null;
+    return null;
+  }
+  return s;
+}
+
+export function clearSession(digits: string): void {
+  const e = state.get(digits);
+  if (e) e.session = null;
+}
+
+/**
+ * Are we waiting on this person for something?
+ *
+ * The single question the gate asks before enforcing the `!` prefix. True only when
+ * the platform has actually asked them something — an app mid-question, or a
+ * confirmation it is holding — so ordinary conversation is untouched at every other
+ * moment.
+ */
+export function awaitingReply(digits: string, now: number): boolean {
+  return getSession(digits, now) !== null || hasPending(digits);
 }
 
 export function clearPending(digits: string): void {

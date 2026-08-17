@@ -32,7 +32,7 @@ import { isPlatformManaged } from '../apps/managed';
 import { UpdateBusyError } from '../system/update-lock';
 import { deliverAlert } from '../notify/alerts';
 import { replyBudget, replyTo } from '../notify/whatsapp';
-import { OS_CONTROL, OS_SCOPE_WORD, recordCommandUse } from '../store/commands';
+import { COMMAND_PREFIX, OS_CONTROL, OS_SCOPE_WORD, recordCommandUse } from '../store/commands';
 import { namespacesFor, listNamespaces } from './registry';
 import { parseCommand } from './parse';
 import { runAppCommand } from '../fabric/appCommands';
@@ -110,6 +110,24 @@ export async function handleInboundCommand(outcome: GateOutcome): Promise<void> 
   const ctx = makeCtx(digits, person.label, now);
   recordCommandUse(digits, now);
 
+  // A message with no prefix only reached the gate because we are waiting on an
+  // answer. Deal with that before parsing: it is a reply, not a command.
+  const body = msg.body.trim();
+  if (!body.startsWith(COMMAND_PREFIX)) {
+    try {
+      await handleBareReply(body, ctx);
+    } catch (err) {
+      log.error(`WhatsApp commands: a reply from ${maskDigits(digits)} failed — ${(err as Error).message}`);
+      await ctx.reply('Something went wrong at my end. Nothing was changed.');
+    }
+    return;
+  }
+  // Starting a fresh command abandons whatever was being asked. Saying so beats
+  // leaving them to wonder whether the half-finished thing still happens.
+  if (convo.getSession(digits, now)) {
+    convo.clearSession(digits);
+  }
+
   const namespaces = namespacesFor(digits);
   const result = parseCommand(msg.body, {
     now,
@@ -126,6 +144,56 @@ export async function handleInboundCommand(outcome: GateOutcome): Promise<void> 
     log.error(`WhatsApp commands: "${result.kind}" from ${maskDigits(digits)} failed — ${(err as Error).message}`);
     await ctx.reply('Something went wrong at my end. Nothing was changed.');
   }
+}
+
+/** Words that end an exchange. Bare, because typing `!exit` mid-conversation is the
+ *  friction this whole feature exists to remove. */
+const EXIT_WORDS = new Set(['exit', 'quit', 'done', 'cancel', 'stop', 'nevermind', 'never mind']);
+const YES_WORDS = new Set(['yes', 'y', 'yeah', 'yep', 'ok', 'okay']);
+const NO_WORDS = new Set(['no', 'n', 'nope']);
+
+/**
+ * A message with no prefix, which the gate only let through because we are waiting on
+ * an answer. Two things can be waiting: an app mid-question, or a confirmation.
+ */
+async function handleBareReply(body: string, ctx: Ctx): Promise<void> {
+  const word = body.toLowerCase().replace(/[.!?]+$/, '');
+
+  if (EXIT_WORDS.has(word)) {
+    const had = convo.getSession(ctx.digits, ctx.now) !== null || convo.hasPending(ctx.digits);
+    convo.clearSession(ctx.digits);
+    convo.clearPending(ctx.digits);
+    return ctx.reply(had ? say.sessionEnded() : say.nothingToCancel());
+  }
+
+  // A held confirmation takes precedence: it is the more consequential thing waiting,
+  // and inside an exchange the platform has just asked THIS question, so a plain yes
+  // is unambiguous — which was the only reason the code existed.
+  if (convo.hasPending(ctx.digits)) {
+    if (YES_WORDS.has(word)) {
+      const taken = convo.takeConfirmed(ctx.digits, ctx.now);
+      if (!taken.ok) return ctx.reply(say.expiredConfirm());
+      return runConfirmed(taken.action, ctx);
+    }
+    if (NO_WORDS.has(word)) {
+      convo.clearPending(ctx.digits);
+      return ctx.reply(say.cancelled());
+    }
+    return ctx.reply(say.answerYesOrNo());
+  }
+
+  const session = convo.getSession(ctx.digits, ctx.now);
+  if (!session) return; // expired between the gate and here; silence is right
+
+  // Re-authorise on EVERY turn. A grant removed mid-conversation must take effect
+  // immediately, not when the session happens to expire.
+  const ns = namespacesFor(ctx.digits).find((n) => n.word === session.word);
+  const command = ns?.commands.find((c) => c.id === session.commandId);
+  if (!ns || !command) {
+    convo.clearSession(ctx.digits);
+    return ctx.reply(say.sessionLost(session.appLabel));
+  }
+  return runAppVerb(ns.word, ns.label, command, body, ctx, session.token);
 }
 
 async function dispatch(r: ReturnType<typeof parseCommand>, ctx: Ctx): Promise<void> {
@@ -290,6 +358,20 @@ function budgetBlocks(command: CommandEntry, what: string, ctx: Ctx): boolean {
 }
 
 async function runOsVerb(command: CommandEntry, target: { id: string; name: string }, ctx: Ctx): Promise<void> {
+  // "Is there anything to do?" is a READ, and it has to come before the budget gate.
+  // Otherwise asking to update an app that is already current answered "I've hit
+  // today's WhatsApp limit" — technically true, useless, and it hides the actual
+  // answer, which is that there was nothing to do in the first place.
+  if (command.id === 'update') {
+    try {
+      const check = await checkCatalogUpdate(target.id);
+      if (!check.updateAvailable) return ctx.reply(`${target.name} is already up to date.`);
+    } catch {
+      // A community or custom app has no catalogue version to compare against. Fall
+      // through and let the update path give its own answer.
+    }
+  }
+
   if (budgetBlocks(command, target.name, ctx)) return ctx.reply(say.budgetSpent());
 
   const started = Date.now();
@@ -389,6 +471,7 @@ async function runAppVerb(
   command: CommandEntry,
   text: string | undefined,
   ctx: Ctx,
+  followUpToken?: string,
 ): Promise<void> {
   if (budgetBlocks(command, nsLabel, ctx)) return ctx.reply(say.budgetSpent());
   const out = await runAppCommand({
@@ -396,12 +479,28 @@ async function runAppVerb(
     commandId: command.id,
     text,
     requestId: crypto.randomUUID(),
+    followUpToken,
   });
   if (out.ok) {
+    if (out.followUpToken) {
+      // The app is asking for more. Hold the exchange open so their next message
+      // needs no prefix — and only theirs, only for this app.
+      convo.openSession(
+        ctx.digits,
+        { word, appLabel: nsLabel, commandId: command.id, token: out.followUpToken },
+        ctx.now,
+      );
+      log.info(`WhatsApp commands: "${command.id}" from ${maskDigits(ctx.digits)} — awaiting a reply (${word}).`);
+      return ctx.reply(out.text);
+    }
+    convo.clearSession(ctx.digits);
     log.info(`WhatsApp commands: "${command.id}" from ${maskDigits(ctx.digits)} — done (${word}).`);
     audit(command, nsLabel, ctx);
     return ctx.reply(out.text);
   }
+  // A failure ends the exchange: continuing to capture bare replies for something
+  // that is not listening any more is how ordinary chat gets read as input.
+  convo.clearSession(ctx.digits);
   log.warn(`WhatsApp commands: "${command.id}" from ${maskDigits(ctx.digits)} — ${out.code} (${word}).`);
   // When the app explained itself, its own words beat anything we could substitute.
   return ctx.reply(out.code === 'app_error' && out.text ? out.text : appFailureText(nsLabel, out.code, word));

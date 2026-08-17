@@ -13,6 +13,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Added — commands can hold a conversation**
+
+- **An app can ask you a question or two, and you just reply.** No `!` needed while it's waiting: `!display schedule-iqamah` → "Which prayer?" → `Maghrib` → "What time?" and so on. Send `exit` to leave it, and it lapses on its own after a few minutes' silence — so an abandoned half-answered question never leaves your ordinary messages being read as commands. Starting any new `!` command abandons it too. While something is waiting, a plain `yes` or `no` is enough to confirm.
+- **Asking to update an app that is already current now says so**, instead of reporting that the day's WhatsApp allowance was used up. It never checked whether there was anything to do first — technically true, useless, and it hid the actual answer.
+
 **Fixed — an update that leaves an app broken no longer says it worked**
 
 - **Updating an app reported "Done" even when the new version could not start.** Docker considers an app started the moment the container is created, so an app that boots, fails and restarts forever counted as a clean update — the only sign was the dashboard quietly showing it as stopped, with the reason buried in container logs you had to know to go and look for. The update now waits to see whether it stayed running, and if it didn't, says so and shows the last thing the app printed before it stopped. Same for starting or restarting an app by WhatsApp, where you cannot see the dashboard at all.

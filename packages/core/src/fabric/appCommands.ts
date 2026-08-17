@@ -49,7 +49,19 @@ export type AppCommandCode =
   | 'no_secret';
 
 export type AppCommandOutcome =
-  | { ok: true; text: string }
+  | {
+      ok: true;
+      text: string;
+      /**
+       * The app is mid-question and wants the sender's next message.
+       *
+       * Opaque to us — it is the app's own handle on the conversation it is running,
+       * so the platform holds no flow state of its own beyond who it belongs to.
+       * While set, the platform relaxes the `!` prefix for that sender and posts
+       * their next message straight back with this token.
+       */
+      followUpToken?: string;
+    }
   | { ok: false; code: AppCommandCode; text?: string };
 
 export interface AppCommandRequest {
@@ -58,6 +70,9 @@ export interface AppCommandRequest {
   /** The free text the sender typed after the command. Never the command word or `!`. */
   text?: string;
   requestId: string;
+  /** Set when this message is an ANSWER to a question the app asked — the token it
+   *  handed back last turn. Absent on the first call of an exchange. */
+  followUpToken?: string;
 }
 
 /**
@@ -80,7 +95,7 @@ function tidy(raw: unknown): string {
 }
 
 export async function runAppCommand(reqInput: AppCommandRequest): Promise<AppCommandOutcome> {
-  const { appId, commandId, text, requestId } = reqInput;
+  const { appId, commandId, text, requestId, followUpToken } = reqInput;
 
   // Re-check the declaration NOW. A menu snapshot can name a command the app withdrew
   // in an update since it was shown.
@@ -94,7 +109,9 @@ export async function runAppCommand(reqInput: AppCommandRequest): Promise<AppCom
   const secret = getFabricSecret(appId);
   if (!secret) return { ok: false, code: 'no_secret' };
 
-  const body = Buffer.from(JSON.stringify({ command: commandId, text, requestId, locale: 'en' }));
+  const body = Buffer.from(
+    JSON.stringify({ command: commandId, text, requestId, locale: 'en', followUpToken }),
+  );
   if (body.length > MAX_REQUEST_BYTES) return { ok: false, code: 'payload_too_large' };
 
   const started = Date.now();
@@ -131,7 +148,13 @@ export async function runAppCommand(reqInput: AppCommandRequest): Promise<AppCom
 
     if (obj.ok === true) {
       const said = tidy(obj.text);
-      return { ok: true, text: said || 'Done.' };
+      // Bounded and charset-checked before it is ever echoed back: it becomes part of
+      // a later request body, and an app should not be able to smuggle anything
+      // through it.
+      const raw = (obj.followUp as { token?: unknown } | undefined)?.token;
+      const followUpToken =
+        typeof raw === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(raw) ? raw : undefined;
+      return { ok: true, text: said || 'Done.', followUpToken };
     }
     if (obj.ok === false) {
       // The app worked and refused, or hit a problem it can describe. Its own words

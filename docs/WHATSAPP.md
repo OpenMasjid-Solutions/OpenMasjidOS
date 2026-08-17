@@ -140,6 +140,23 @@ the code is not about proving who you are — it is about making sure the *right
 A code has to be read off that exact prompt, where "yes" gets typed reflexively at a stale
 question, a forwarded screenshot, or the wrong one of two prompts.
 
+Some commands ask you a question or two. While one is waiting, just reply normally —
+no `!` needed — and send `exit` if you change your mind:
+
+```
+!display schedule-iqamah
+  Which prayer?
+Maghrib
+  What time, and from when?
+7:15pm, starting Friday
+  Done. Maghrib iqamah is 7:15pm from Fri 22 Aug.
+```
+
+That is the only time the `!` is optional, and it lapses on its own after a few
+minutes' silence, so an abandoned half-answered question never leaves your ordinary
+messages being read as input. Starting any new `!` command abandons it too. While
+something is waiting, a plain `yes` or `no` is enough to confirm.
+
 **Things worth knowing before you switch it on**
 
 - **Anyone holding one of those phones can do these things.** There is no password step. If a

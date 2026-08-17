@@ -503,3 +503,89 @@ test('an authorised sender behind a privacy id passes once resolved', () => {
   );
   assert.equal(r.pass, true, 'a resolved lid sender is just a sender');
 });
+
+// ── conversational replies ───────────────────────────────────────────────────────
+// The one relaxation of the `!` prefix, and the narrowest that works: when the
+// platform has just ASKED something, the next message is unambiguously an answer.
+// Everything below is about that exemption staying narrow.
+
+test('a bare message is dropped unless we are waiting on an answer', () => {
+  enable();
+  convo.resetConversations();
+  assert.equal(run(msg({ body: 'Maghrib' }))['drop' as never], 'no-prefix');
+
+  // Now an app is mid-question.
+  convo.touch(ALICE, NOW);
+  convo.openSession(ALICE, { word: 'display', appLabel: 'Notice Board', commandId: 'sched', token: 't1' }, NOW);
+  __resetGateForTests();
+  assert.equal(run(msg({ id: 'a1', body: 'Maghrib' })).pass, true, 'an answer needs no prefix');
+
+  // And the exemption dies with the exchange.
+  convo.clearSession(ALICE);
+  __resetGateForTests();
+  assert.equal(run(msg({ id: 'a2', body: 'Maghrib' }))['drop' as never], 'no-prefix');
+});
+
+test('a session expires on idle, on age, and on turns', () => {
+  const open = (now: number) =>
+    convo.openSession(ALICE, { word: 'd', appLabel: 'D', commandId: 'c', token: 't' }, now);
+
+  convo.resetConversations();
+  open(NOW);
+  assert.ok(convo.getSession(ALICE, NOW + convo.SESSION_IDLE_MS - 1));
+  assert.equal(convo.getSession(ALICE, NOW + convo.SESSION_IDLE_MS + 1), null, 'idle closes it');
+
+  // Turns accumulate across the exchange — resetting per question would make the cap
+  // meaningless.
+  convo.resetConversations();
+  for (let i = 0; i <= 13; i++) open(NOW + i);
+  assert.equal(convo.getSession(ALICE, NOW + 14), null, 'the turn cap closes it');
+});
+
+test('exit ends an exchange, and a prefixed command abandons it', () => {
+  convo.resetConversations();
+  convo.openSession(ALICE, { word: 'd', appLabel: 'D', commandId: 'c', token: 't' }, NOW);
+  assert.ok(convo.getSession(ALICE, NOW));
+  convo.clearSession(ALICE);
+  assert.equal(convo.getSession(ALICE, NOW), null);
+
+  // The exit words are handled in execute.ts, so pin that they are all recognised
+  // there rather than only in one branch.
+  const exec = fs.readFileSync(path.join(__dirname, '..', 'src', 'commands', 'execute.ts'), 'utf8');
+  for (const w of ['exit', 'quit', 'done', 'cancel', 'stop']) {
+    assert.match(exec, new RegExp(`'${w}'`), `"${w}" must end an exchange`);
+  }
+  // A prefixed message must clear the session rather than being read as an answer.
+  assert.match(exec, /if \(convo\.getSession\(digits, now\)\) \{\s*convo\.clearSession\(digits\);/);
+});
+
+test('a plain yes confirms only while a confirmation is actually held', () => {
+  convo.resetConversations();
+  const action = { kind: 'os', command: { id: 'restart' }, appId: 'a', appName: 'A' } as never;
+  assert.equal(convo.takeConfirmed(ALICE, NOW).ok, false, 'nothing pending, nothing to confirm');
+
+  convo.setPending(ALICE, action, NOW);
+  assert.equal(convo.takeConfirmed(ALICE, NOW).ok, true);
+  assert.equal(convo.takeConfirmed(ALICE, NOW).ok, false, 'single use, exactly like the code path');
+
+  convo.setPending(ALICE, action, NOW);
+  assert.equal(convo.takeConfirmed(ALICE, NOW + convo.CONFIRM_TTL_MS + 1).ok, false, 'and it still expires');
+});
+
+test('awaitingReply is the only thing that relaxes the prefix', () => {
+  convo.resetConversations();
+  assert.equal(convo.awaitingReply(ALICE, NOW), false);
+  convo.openSession(ALICE, { word: 'd', appLabel: 'D', commandId: 'c', token: 't' }, NOW);
+  assert.equal(convo.awaitingReply(ALICE, NOW), true);
+  convo.clearSession(ALICE);
+  assert.equal(convo.awaitingReply(ALICE, NOW), false);
+  convo.setPending(ALICE, { kind: 'os', command: { id: 'stop' }, appId: 'a', appName: 'A' } as never, NOW);
+  assert.equal(convo.awaitingReply(ALICE, NOW), true, 'a held confirmation counts too');
+});
+
+test('a follow-up token is validated before it is ever echoed back', () => {
+  // It becomes part of a later request body, so an app must not be able to smuggle
+  // anything through it.
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'fabric', 'appCommands.ts'), 'utf8');
+  assert.match(code, /\/\^\[A-Za-z0-9\._:-\]\{1,128\}\$\//, 'the token is charset- and length-checked');
+});

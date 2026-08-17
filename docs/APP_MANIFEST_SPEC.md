@@ -396,6 +396,40 @@ Answer with HTTP 200 and JSON:
 - `/fabric/*` is LAN-only and never served over the tunnel, exactly as for every other Fabric
   route.
 
+### Asking a follow-up question
+
+A command can hold a short conversation. Return a `followUp.token` alongside your text
+and the platform will treat the sender's **next message as an answer** — no `!` prefix
+needed — and POST it straight back to you with that token:
+
+```jsonc
+// your reply to `!notice-board schedule`
+{ "ok": true, "text": "Which prayer?", "followUp": { "token": "sched-881" } }
+
+// the platform then sends you their answer
+{ "command": "schedule", "text": "Maghrib", "followUpToken": "sched-881",
+  "requestId": "…", "locale": "en" }
+
+// keep going, or finish by simply omitting followUp
+{ "ok": true, "text": "What time?", "followUp": { "token": "sched-881" } }
+{ "ok": true, "text": "Done. Maghrib iqamah is 7:15pm from Friday." }
+```
+
+- **The token is yours.** The platform stores it against that one sender and hands it
+  back; it holds no other state about your flow. Put whatever you need in it (a row
+  id, a step name), keep it to `A-Za-z0-9._:-` and ≤128 characters — it is validated
+  before being echoed, because it ends up in a later request body.
+- **The exchange is bounded, and can end without you.** Three minutes idle, fifteen
+  minutes total, twelve turns, the sender typing `exit` / `cancel` / `done`, or the
+  sender starting any new `!` command. You will simply stop receiving answers — so
+  never leave a half-applied change waiting on a reply that may not come. Apply on the
+  last answer, or keep your own draft and expire it.
+- **Any `ok:false` ends it**, so a failure cannot leave the sender's ordinary
+  conversation being captured as input.
+- **The sender is re-authorised on every turn.** A grant removed mid-conversation
+  takes effect at once.
+- **Ask one thing at a time.** These are WhatsApp messages, not a form.
+
 ### What the platform will never ask you to do
 
 Commands are an ADMIN channel. There is no way for a command to name a phone number, and there

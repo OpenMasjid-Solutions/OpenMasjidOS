@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import { authoriseSender, areCommandsEnabled, COMMAND_PREFIX, type CommandPerson } from '../store/commands';
 import { normaliseInbound, type InboundMessage } from './normalise';
-import { shouldNoticeThrottle, takeToken, touch } from './conversation';
+import { awaitingReply, shouldNoticeThrottle, takeToken, touch } from './conversation';
 
 /** Backlog replays land in the moments after a socket comes up. Nobody types a
  *  command in the same three seconds, so this costs a real admin nothing. */
@@ -168,7 +168,13 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
   //     ordinary conversation with the masjid's number drains their own bucket and is
   //     then told "too many commands" — and ordinary chat would be metered at all,
   //     which it must not be.
-  if (!body.startsWith(COMMAND_PREFIX)) return { pass: false, drop: 'no-prefix', digits: msg.fromDigits };
+  //     The ONE exemption, and it is narrow by construction: when the platform has
+  //     just asked this person something — an app mid-question, or a confirmation it
+  //     is holding — their next message is unambiguously an answer, which is the very
+  //     thing the prefix exists to disambiguate. Every other moment still needs it.
+  if (!body.startsWith(COMMAND_PREFIX) && !awaitingReply(msg.fromDigits, ctx.now)) {
+    return { pass: false, drop: 'no-prefix', digits: msg.fromDigits };
+  }
 
   // 13. Per-sender rate limit. Only command ATTEMPTS are metered.
   if (!takeToken(msg.fromDigits, ctx.now)) {

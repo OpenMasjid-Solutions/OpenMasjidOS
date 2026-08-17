@@ -198,6 +198,10 @@ export const say = {
   expiredConfirm: () => 'That has expired. Send the command again if you still want to.',
   expiredMenu: (word: string) => `That list has expired. Send !${word} for a fresh one.`,
   cancelled: () => "Alright, I've left it alone.",
+  sessionEnded: () => "Alright, we're done. Send a command starting with ! whenever you need me.",
+  answerYesOrNo: () => "Just reply yes or no — or send exit to leave it.",
+  sessionLost: (appName: string) =>
+    `${appName} can't carry on with that. Start again when you're ready.`,
   nothingToCancel: () => "There's nothing waiting for an answer.",
   // Deliberately NOT "Update failed": a refusal is information, and calling it a
   // failure is what pushes an admin into retrying the thing that is already running.

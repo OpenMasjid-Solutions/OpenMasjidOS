@@ -225,8 +225,12 @@ test('the executor never logs a message body', () => {
     );
     assert.ok(!/,\s*err\s*\)/.test(body), `${f}: an error object is passed to a logger`);
   }
-  // The body reaches exactly one place: the parser.
-  const bodyUses = exec.match(/msg\.body/g) ?? [];
-  assert.equal(bodyUses.length, 1, 'the body is read once, to parse it');
-  assert.match(exec, /parseCommand\(msg\.body,/);
+  // The body is legitimately READ in more than one place now — parsed as a command, or
+  // passed to an app as an answer to its question — so counting occurrences proves
+  // nothing about safety. What matters is that it never reaches a logger. Assert that.
+  for (const line of exec.split('\n')) {
+    if (!/log\.(error|warn|info|debug)\(/.test(line)) continue;
+    assert.ok(!/\bbody\b/.test(line), `a logger line mentions the body: ${line.trim()}`);
+  }
+  assert.match(exec, /parseCommand\(msg\.body,/, 'and it still reaches the parser');
 });
