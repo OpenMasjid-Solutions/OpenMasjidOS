@@ -2484,11 +2484,18 @@ function WhatsAppCommands() {
                           ? t('settings.commandsStateOff')
                           : t('settings.commandsStateProblem', { detail: s.detail })}
               </p>
-              {/* Shown only when something is wrong. It is the difference between "it
-                  doesn't work" and a fact somebody can act on: an empty list means the
-                  gateway has said nothing at all to us, a non-empty one names exactly
-                  what it did say. Event names only — never a payload, never a body. */}
-              {(s.state === 'silent' || s.state === 'error') && (
+              {/* ALWAYS shown, not just when the platform thinks something is wrong.
+                  The case that matters most is precisely the one where it thinks all is
+                  well — connected, subscribed, acked — and no message ever arrives. On
+                  the first real install this box was hidden behind a 'silent' state
+                  that the ack fix had just stopped it from reaching, so the admin was
+                  left staring at "Listening for commands." with no way to look further.
+
+                  It is the difference between "it doesn't work" and a fact somebody can
+                  act on: an empty list means the gateway has said nothing at all to us,
+                  a non-empty one names exactly what it did say. Event names only —
+                  never a payload, never a body. */}
+              {(
                 <div className="glass-inset panel" style={{ marginBlockStart: '0.5rem', padding: '0.6rem 0.9rem' }}>
                   <div className="setting-row__hint">
                     {t('settings.commandsDiagHeard')}{' '}
