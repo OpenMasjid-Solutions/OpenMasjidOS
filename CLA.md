@@ -138,5 +138,7 @@ full terms above.
 
 ---
 
-*Questions about this Agreement: open an issue or contact the maintainers at the
-address in the repository's README.*
+*Questions about this Agreement: open an issue at
+<https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues>. (This previously pointed at
+"the address in the repository's README", which lists no contact address — so the one line
+telling a contributor how to ask a legal question led nowhere.)*

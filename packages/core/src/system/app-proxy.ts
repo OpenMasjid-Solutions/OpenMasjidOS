@@ -18,6 +18,7 @@ import https from 'node:https';
 import http from 'node:http';
 import net from 'node:net';
 import { loadCert } from './tls';
+import { appHost } from './app-host';
 import { log } from '../logger';
 
 function envInt(name: string, fallback: number): number {
@@ -27,9 +28,9 @@ function envInt(name: string, fallback: number): number {
 
 const APP_TLS_MIN = envInt('OPENMASJID_APP_TLS_MIN', 8443);
 const APP_TLS_MAX = envInt('OPENMASJID_APP_TLS_MAX', 8452);
-/** How the core reaches an app's published host port (set via the installer's
- *  extra_hosts host-gateway mapping). Falls back to localhost in dev. */
-const TARGET_HOST = process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.internal';
+/** How the core reaches an app's published host port — one definition, shared with the
+ *  Fabric broker, the tunnel ingress and the WhatsApp gateway client. */
+const TARGET_HOST = appHost();
 
 // Client-supplied forwarding/hop-by-hop headers we must not relay verbatim (this
 // edge is a trust boundary; apps trust X-Forwarded-* behind the OS proxy).
@@ -39,6 +40,12 @@ const STRIP_HEADERS = [
   'x-forwarded-host',
   'x-forwarded-port',
   'forwarded',
+  // This listener is LAN-facing and never sits behind Cloudflare, so any
+  // cf-connecting-ip on it was typed by the caller. It used to be preferred over the
+  // socket peer, which let anyone on the network pick the IP the app logged and rate-
+  // limited by. Stripped, and deliberately not re-added: unlike the tunnel ingress,
+  // there is no case here where the header is genuine.
+  'cf-connecting-ip',
   'connection',
   'keep-alive',
   'transfer-encoding',
@@ -46,10 +53,10 @@ const STRIP_HEADERS = [
   'proxy-authorization',
 ];
 
-/** Real client IP: Cloudflare's CF-Connecting-IP if present, else the TLS peer. */
+/** Real client IP: the TLS peer. Nothing on this path may override it — see the
+ *  cf-connecting-ip note in STRIP_HEADERS. */
 function clientIp(req: import('node:http').IncomingMessage): string {
-  const cf = req.headers['cf-connecting-ip'];
-  return (typeof cf === 'string' && cf) || req.socket?.remoteAddress || '';
+  return req.socket?.remoteAddress || '';
 }
 
 /** Strip spoofable forwarding headers and set trusted ones. TLS is terminated

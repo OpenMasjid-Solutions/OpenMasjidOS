@@ -3,6 +3,11 @@
 
 # Remediation — what shipped, how it was verified, how to undo it
 
+> **Historical record.** This is a point-in-time audit report, not a live to-do list. It describes
+> the tree as it was at the commit named below; do not read an item here as currently outstanding
+> without checking the code. Items still open are tracked in `ACTION_REQUIRED.md` and, where they
+> matter to how the platform is built, in `CLAUDE.md §15`.
+
 **Branch:** `audit/security-2026-07-30` · **Base:** `cf32b878` (`pre-audit-2026-07-30`)
 **Merged to `master`:** yes, as PR #3 → `a01f16c`, by the maintainer. CI green on `master`; the
 published image's `revision` label was checked against `master` HEAD after the merge. Autonomous push

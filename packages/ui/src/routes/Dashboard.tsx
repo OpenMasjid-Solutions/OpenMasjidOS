@@ -66,7 +66,12 @@ export function Dashboard() {
   // The dock polls apps.list every 8s and is always mounted; here we rely on the
   // global staleTime + that shared poll instead of a second interval.
   const appsQuery = trpc.apps.list.useQuery();
-  const apps = appsQuery.data ?? [];
+  // Platform-managed apps are engines the OS drives, not places a masjid goes (currently
+  // the WhatsApp gateway). They are reached from Settings, because opening them directly
+  // is how the platform's session ownership and message pacing get broken — so they are
+  // not cards here. They still count towards "apps running", which is a machine fact.
+  const allApps = appsQuery.data ?? [];
+  const apps = allApps.filter((a) => !a.managed);
 
   // Auto-check for a core update on load (and every ~6h while open) so a new
   // version surfaces right on the dashboard instead of going unnoticed.
@@ -84,20 +89,30 @@ export function Dashboard() {
   const appUpdates = appUpdatesQ.data ?? [];
   const windows = useWindows();
   function openAppUpdate(u: { id: string; name: string }) {
-    windows.open({
+    // Locked until it finishes — same rule as the app card and the core updater: an
+    // update that can be closed can be started twice, and two at once break the app.
+    let winId = -1;
+    winId = windows.open({
       title: t('appUpdate.title', { name: u.name }),
       dedupeKey: `update:${u.id}`,
       wide: true,
+      locked: true,
       icon: <Download size={15} />,
-      node: <AppUpdate id={u.id} name={u.name} />,
+      node: <AppUpdate id={u.id} name={u.name} onDone={() => windows.setLocked(winId, false)} />,
     });
   }
 
   const name = prefs.dashboardName.trim() || me.data?.username || t('dashboard.yourMasjid');
-  const cpuSub =
-    stats && stats.cpuCores
-      ? `${stats.cpuCores} cores${stats.cpuSpeedGHz ? ` · ${stats.cpuSpeedGHz.toFixed(1)} GHz` : ''}`
-      : undefined;
+  // Pluralised and translated: "1 core" is not "1 cores", and a Pi is a single-core-visible
+  // box often enough for that to show. The speed variant is a separate key so a translator
+  // can reorder the two halves.
+  const cpuSub = (() => {
+    if (!stats || !stats.cpuCores) return undefined;
+    const cores = t('dashboard.stats.cores', { count: stats.cpuCores });
+    return stats.cpuSpeedGHz
+      ? t('dashboard.stats.coresSpeed', { cores, speed: stats.cpuSpeedGHz.toFixed(1) })
+      : cores;
+  })();
 
   const diskPct = percent(stats?.diskUsed ?? 0, stats?.diskTotal ?? 0);
   const diskLow = (stats?.diskTotal ?? 0) > 0 && diskPct >= 80;
@@ -158,7 +173,7 @@ export function Dashboard() {
         <StatCard
           label={t('dashboard.stats.apps')}
           icon={APPS_ICON}
-          value={stats?.appsRunning ?? apps.filter((a) => a.running).length}
+          value={stats?.appsRunning ?? allApps.filter((a) => a.running).length}
         />
       </motion.section>
 
@@ -176,8 +191,22 @@ export function Dashboard() {
         <div className="warn-banner warn-banner--update glass" role="status">
           <Sparkles size={22} />
           <div style={{ flex: 1 }}>
-            <div className="warn-banner__title">{t('dashboard.updateTitle', { version: updateQ.data?.latest })}</div>
-            <div className="warn-banner__body">{t('dashboard.updateBody')}</div>
+            {/* A channel move is not "a new version" — the target can be an older
+                number, and calling it an upgrade when someone is going back to Stable
+                reads as a mistake. Name what is actually happening. */}
+            <div className="warn-banner__title">
+              {updateQ.data?.reason === 'channel'
+                ? t('dashboard.channelFixTitle', {
+                    channel:
+                      updateQ.data.channel === 'dev' ? t('settings.channelDev') : t('settings.channelStable'),
+                  })
+                : t('dashboard.updateTitle', { version: updateQ.data?.latest })}
+            </div>
+            <div className="warn-banner__body">
+              {updateQ.data?.reason === 'channel'
+                ? t('dashboard.channelFixBody', { version: updateQ.data.latest })
+                : t('dashboard.updateBody')}
+            </div>
           </div>
           <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
             <Download size={15} /> {t('settings.updateNow')}

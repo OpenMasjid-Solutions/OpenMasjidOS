@@ -57,8 +57,17 @@ export function UpdateModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} wide title={t('update.title')}>
+    // Locked until the update has finished. Leaving mid-update and pressing Update again
+    // started a SECOND one over the first — two helpers recreating the same container,
+    // which is how a masjid's box stopped coming back at all. The server refuses a second
+    // run regardless (system/update-lock.ts); this stops the admin reaching for it.
+    <Modal open={open} onClose={onClose} wide locked={phase !== 'done'} title={t('update.title')}>
       {open && <LogStream wsPath="/api/update" onClosed={onClosed} />}
+      {phase !== 'done' && (
+        <p className="hint" style={{ marginTop: '0.6rem' }}>
+          {t('update.dontClose')}
+        </p>
+      )}
       <div style={{ marginTop: '0.85rem', minHeight: '2rem' }}>
         {phase === 'restarting' && (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

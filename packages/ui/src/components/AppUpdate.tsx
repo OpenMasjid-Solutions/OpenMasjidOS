@@ -10,7 +10,16 @@ import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
 import { LogStream } from './LogStream';
 
-export function AppUpdate({ id, name }: { id: string; name: string }) {
+export function AppUpdate({
+  id,
+  name,
+  onDone,
+}: {
+  id: string;
+  name: string;
+  /** Called once the update has finished, so the window that owns this can unlock. */
+  onDone?: () => void;
+}) {
   const { t } = useTranslation();
   const utils = trpc.useUtils();
   const [done, setDone] = useState(false);
@@ -23,8 +32,14 @@ export function AppUpdate({ id, name }: { id: string; name: string }) {
           setDone(true);
           utils.apps.list.invalidate();
           utils.apps.get.invalidate({ id });
+          onDone?.();
         }}
       />
+      {!done && (
+        <p className="hint" style={{ marginTop: '0.6rem' }}>
+          {t('update.dontClose')}
+        </p>
+      )}
       {done && (
         <p style={{ marginTop: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span className="status-dot" /> {t('appUpdate.done', { name })}

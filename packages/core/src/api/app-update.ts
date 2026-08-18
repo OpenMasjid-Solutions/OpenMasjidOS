@@ -31,8 +31,13 @@ export function registerAppUpdate(server: FastifyInstance): void {
     try {
       await updateCatalogApp(id, send);
     } catch (err) {
-      log.error('app update failed', err);
-      send(`Update failed: ${(err as Error).message}`);
+      // Same as the core updater: a refused second run is the guard working, not a fault.
+      if ((err as Error).name === 'UpdateBusyError') {
+        send((err as Error).message);
+      } else {
+        log.error('app update failed', err);
+        send(`Update failed: ${(err as Error).message}`);
+      }
     }
     try {
       socket.close();

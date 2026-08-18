@@ -103,10 +103,23 @@ export interface CatalogApp {
    */
   email?: boolean;
   /**
+   * OPTIONAL — may POST /api/fabric/whatsapp to send a WhatsApp message through the
+   * masjid's own OpenWA gateway. The platform owns the pacing (see notify/whatsapp.ts):
+   * the call QUEUES, it never delivers synchronously, so nothing auth-critical may
+   * depend on it.
+   */
+  whatsapp?: boolean;
+  /**
    * Alert types this app can raise (admin gets a granular on/off per alert; all on
    * by default). The app fires one with POST /api/fabric/alert { alert: "<id>", … }.
    */
   alerts?: DeclaredAlert[];
+  /**
+   * Commands an admin can run against this app from WhatsApp (`!<app-id>`). The
+   * platform renders the menu and decides WHO may run them; the app is only ever
+   * asked to EXECUTE one it declared, via POST /fabric/commands/run.
+   */
+  commands?: DeclaredCommand[];
   /**
    * Request to be reachable from the internet through the OS's Cloudflare tunnel.
    * This is only a REQUEST — the admin still confirms exposure at install (and can
@@ -140,6 +153,33 @@ export interface DeclaredAlert {
   description?: string;
 }
 
+/** The free text a command takes after its name. Absent = the command takes none. */
+export interface DeclaredCommandArgument {
+  /** One or two words naming what to type, e.g. "message". Shown in the menu. */
+  label: string;
+  /** Default true. False = the command runs with or without it. */
+  required?: boolean;
+}
+
+/**
+ * A command an admin can run from WhatsApp (manifest `commands:`). Mirrors
+ * DeclaredAlert deliberately: the app declares, the platform authorises and
+ * renders, the app only executes.
+ */
+export interface DeclaredCommand {
+  /** Stable kebab-case id — what the platform sends back to the app. */
+  id: string;
+  /** Short human label, shown in the WhatsApp menu and in Settings. */
+  label: string;
+  /** Optional one-line description of what it does. */
+  description?: string;
+  /** The free-text argument this command takes, if any. */
+  argument?: DeclaredCommandArgument;
+  /** Ask the sender to confirm first. Set it for anything people will see, or
+   *  anything that cannot be undone. */
+  confirm?: boolean;
+}
+
 /** App-to-app broker grants declared in a catalog app's manifest (CatalogApp.fabric). */
 export interface FabricGrants {
   /** Capabilities this app serves at /fabric/<capability>/<method> on its web port. */
@@ -171,8 +211,13 @@ export interface AppMeta {
   fabricConsumes?: string[];
   /** True if this app opted into Fabric email (CatalogApp.email). */
   email?: boolean;
+  /** Recorded at install: may this app send WhatsApp over the Fabric? */
+  whatsapp?: boolean;
   /** Alert types this app can raise (CatalogApp.alerts) — for the granular toggles. */
   appAlerts?: DeclaredAlert[];
+  /** Commands this app offers over WhatsApp (CatalogApp.commands) — the menu the
+   *  platform renders, and the gate for what it will ask the app to run. */
+  appCommands?: DeclaredCommand[];
   /** Whether this app is exposed over the Cloudflare tunnel. Admin-controlled
    *  (default from the manifest `tunnel:true` at install; toggleable in Settings).
    *  `undefined` means "installed before per-app exposure existed" — grandfathered
@@ -228,4 +273,10 @@ export interface InstalledApp {
    * an untrusted 3rd-party app never receives the Fabric payload.
    */
   fabric: boolean;
+  /**
+   * True for an app the PLATFORM drives rather than the masjid (see `apps/managed.ts`).
+   * The dashboard hides these from the grid — they are reached through Settings, because
+   * using them directly breaks the invariant the platform is maintaining on their behalf.
+   */
+  managed: boolean;
 }

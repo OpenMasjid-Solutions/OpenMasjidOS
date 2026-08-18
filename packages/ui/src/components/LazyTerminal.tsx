@@ -6,12 +6,14 @@
  * loads faster. Same props as Terminal.
  */
 import { lazy, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 
 const TerminalImpl = lazy(() => import('./Terminal').then((m) => ({ default: m.Terminal })));
 
 export function LazyTerminal({ wsPath }: { wsPath: string }) {
+  const { t } = useTranslation();
   return (
-    <Suspense fallback={<div className="hint" style={{ padding: '1rem' }}>Loading…</div>}>
+    <Suspense fallback={<div className="hint" style={{ padding: '1rem' }}>{t('common.loading')}</div>}>
       <TerminalImpl wsPath={wsPath} />
     </Suspense>
   );

@@ -25,6 +25,22 @@ import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
+import {
+  enqueue as enqueueWhatsApp,
+  gatewayStatus as whatsappStatus,
+  mediaProblem,
+  MAX_MEDIA_BYTES,
+  type OutgoingMedia,
+} from '../notify/whatsapp';
+
+/**
+ * Body cap for the WhatsApp send route: 4 MB of JSON for a 2 MB image.
+ *
+ * Base64 inflates the bytes by 4/3, and the envelope (caption, group id, field names)
+ * rides on top. Set per route rather than per server — see the handler.
+ */
+const FABRIC_WHATSAPP_BODY_LIMIT = 4 * 1024 * 1024;
+import { listApprovedGroups, isApprovedGroup } from '../store/whatsapp';
 import { deliverAlert } from '../notify/alerts';
 import { getSettings } from '../settings/store';
 import { getLogo, hasLogo } from '../store/branding';
@@ -247,6 +263,166 @@ export function registerFabric(server: FastifyInstance): void {
     const result = await sendEmail({ to, subject, text, html }, app.id);
     return reply.send(result);
   });
+
+  // Fabric WhatsApp — an app sends a WhatsApp message (a fee reminder to a parent, a
+  // class notice) through the admin's own OpenWA gateway. Requires the `whatsapp`
+  // capability. The app never sees the gateway URL or its API key, and never talks to
+  // WhatsApp itself — which is the point: the anti-ban pacing belongs to the NUMBER,
+  // so it has to be enforced in one place for every caller at once.
+  //
+  // This QUEUES. It does not send. Human pacing puts delivery seconds to minutes away,
+  // and quiet hours can defer it for hours, so `{queued: true}` is the honest answer
+  // and no app may treat it as delivery. Nothing auth-critical (a login code, a
+  // one-time password) may depend on this — say so to app authors, loudly, in
+  // docs/WHATSAPP.md.
+  /**
+   * Can this masjid send WhatsApp at all?
+   *
+   * An app needs this to build a settings page honestly: without it, "WhatsApp
+   * reminders" is a switch that looks available on every install and silently fails on
+   * the ones where no gateway was ever set up — and the failure only shows when a real
+   * reminder was due. It also distinguishes "not set up" from "set up but no phone
+   * linked yet", which have completely different fixes and are not the app's to make.
+   *
+   * Deliberately a tiny, stable vocabulary rather than the internal session enum: an app
+   * should render one of four sentences, not track OpenWA's lifecycle. No credentials, no
+   * gateway address, no phone number — LAN-only under /api/fabric like the rest.
+   */
+  server.get('/api/fabric/whatsapp', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ available: false, reason: 'unknown' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) {
+      return reply.code(403).send({ available: false, reason: 'not-allowed' });
+    }
+    const s = await whatsappStatus();
+    const reason =
+      s.state === 'ready'
+        ? 'ready'
+        : s.state === 'unconfigured'
+          ? 'not-configured'
+          : s.state === 'pending' || s.state === 'no-session'
+            ? 'not-linked'
+            : 'unreachable';
+    // `media` tells an app whether it can send an IMAGE before it renders a poster and
+    // base64s half a megabyte into a request that was never going to work. An older
+    // platform omits the field entirely, and an app must read that absence as false.
+    return reply.send({
+      available: reason === 'ready',
+      reason,
+      media: reason === 'ready',
+      maxMediaBytes: MAX_MEDIA_BYTES,
+    });
+  });
+
+  /**
+   * The groups this app may post into — the ones the ADMIN approved, and nothing else.
+   *
+   * The raw OpenWA group list must never cross this boundary: it contains every group the
+   * masjid's number belongs to, including the imam's family chat and whatever else that
+   * phone is in. An app sees only what an admin deliberately put in front of it, and only
+   * ever a label and an opaque id.
+   */
+  server.get('/api/fabric/whatsapp/groups', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [] });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) {
+      return reply.code(403).send({ groups: [], error: 'This app is not allowed to send WhatsApp messages.' });
+    }
+    return reply.send({ groups: listApprovedGroups().map((g) => ({ id: g.id, label: g.label })) });
+  });
+
+  server.post(
+    '/api/fabric/whatsapp',
+    {
+      // THE ROUTE, not the instance. This handler is registered on BOTH servers, and they
+      // do not agree: the dashboard allows 25 MB while the HTTP front door — which is
+      // exactly what an app reaches over OPENMASJID_BASE_URL — was left on Fastify's 1 MB
+      // default. A base64 poster lands around 200–550 KB, so it fits today and a slightly
+      // larger one would have failed on one server and not the other. Setting it per
+      // route makes both correct without raising the ceiling for every other front-door
+      // route (the tunnel ingress among them).
+      //
+      // 4 MB of JSON for a 2 MB image: base64 is 4/3 the bytes, plus the envelope.
+      bodyLimit: FABRIC_WHATSAPP_BODY_LIMIT,
+      // Fastify's own 413 says "Request body is too large" and never names the limit,
+      // which leaves an app author guessing how much to shrink a poster by. Scoped to
+      // this route, so nothing else's error handling changes.
+      errorHandler: (err, _req, reply) => {
+        if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE' || err.statusCode === 413) {
+          return reply.code(413).send({
+            queued: false,
+            error:
+              `That request is too large. Images may be up to ${MAX_MEDIA_BYTES / 1024 / 1024} MB ` +
+              `(the whole request, base64 included, is capped at ${FABRIC_WHATSAPP_BODY_LIMIT / 1024 / 1024} MB).`,
+          });
+        }
+        // Anything else keeps Fastify's behaviour — and the body is never echoed back,
+        // because it holds the caption and the image.
+        return reply.code(err.statusCode ?? 500).send({ queued: false, error: 'That request could not be read.' });
+      },
+    },
+    async (req, reply) => {
+      if (!fabricRateOk(req.ip)) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
+      const presented = req.headers['x-openmasjid-app-secret'];
+      const app = findFabricApp(typeof presented === 'string' ? presented : null);
+      if (!app || !app.whatsapp) {
+        return reply.code(403).send({ queued: false, error: 'This app is not allowed to send WhatsApp messages.' });
+      }
+      const body = (req.body ?? {}) as { to?: unknown; text?: unknown; group?: unknown; media?: unknown };
+      // A single recipient per call, deliberately. Accepting an array would invite an app
+      // to hand over a thousand numbers in one request, and the shape of the API is the
+      // first place to discourage a blast — the queue would pace it, but the app author
+      // should be thinking one-parent-at-a-time.
+      const to = typeof body.to === 'string' ? body.to : '';
+      const group = typeof body.group === 'string' ? body.group : '';
+      const text = typeof body.text === 'string' ? body.text : '';
+
+      // An optional image. `text` becomes its caption, and may be omitted entirely — a
+      // poster can speak for itself.
+      let media: OutgoingMedia | undefined;
+      if (body.media != null) {
+        const m = body.media as { data?: unknown; mimeType?: unknown; filename?: unknown };
+        if (typeof m.data !== 'string' || typeof m.mimeType !== 'string') {
+          return reply
+            .code(400)
+            .send({ queued: false, error: '"media" needs "data" (base64) and "mimeType".' });
+        }
+        media = {
+          data: m.data,
+          mimeType: m.mimeType,
+          ...(typeof m.filename === 'string' ? { filename: m.filename } : {}),
+        };
+        const problem = mediaProblem(media);
+        // 413 for "too big", 400 for "wrong shape" — an app retrying a 413 with the same
+        // bytes is wasting its time, and the status should say so.
+        if (problem) {
+          const tooBig = problem.includes('the limit is');
+          return reply.code(tooBig ? 413 : 400).send({ queued: false, error: problem });
+        }
+      }
+
+      if ((!text.trim() && !media) || Boolean(to) === Boolean(group)) {
+        return reply.code(400).send({
+          queued: false,
+          error: 'Send "text" (or "media") to either a "to" (phone number) or a "group", not both.',
+        });
+      }
+      // An unapproved group is a 403, not a 400: it is an authorisation answer, and saying
+      // "bad request" would send an app author looking for a typo in their payload.
+      if (group && !isApprovedGroup(group)) {
+        return reply
+          .code(403)
+          .send({ queued: false, error: 'That group has not been approved for sending in OpenMasjidOS.' });
+      }
+      const result = enqueueWhatsApp(
+        group ? { groupId: group, text, media, source: app.id } : { to, text, media, source: app.id },
+      );
+      // 202: accepted for later delivery, which is exactly what happened.
+      return reply.code(result.queued ? 202 : 400).send(result);
+    },
+  );
 
   // Fabric alert — an app raises an admin alert (a camera/reader offline, a failed
   // payment, …). Requires the `notify` capability AND the alert id must be one the

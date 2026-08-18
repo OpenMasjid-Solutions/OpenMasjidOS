@@ -16,8 +16,9 @@
  *     (registerFabricTunnelGuard) 404s tunnel-origin requests before it runs.
  *   - Authorize by STATIC manifest grants: caller.consumes must contain
  *     "<target>/<capability>" AND target.provides must contain the capability.
- *   - Target URL is built ONLY from the registry (127.0.0.1:<published port>) and
- *     validated path segments — never from request-controlled data. No SSRF.
+ *   - Target URL is built ONLY from the registry (the app's published host port, reached
+ *     via system/app-host.ts) and validated path segments — never from
+ *     request-controlled data. No SSRF.
  *   - Strip every caller-supplied identity/forwarding/hop-by-hop header; inject
  *     only the trusted X-OpenMasjid-App-Secret (target's) + X-OpenMasjid-Caller-App.
  *   - JSON only, bodies ≤256 KB each way, 10 s timeout, no redirects, per-caller
@@ -25,13 +26,20 @@
  *     consumer can tell "platform couldn't route this" from "the target said no".
  *   - Never log request/response bodies (they can carry minors' PII + payment data).
  */
-import http from 'node:http';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { findFabricApp, getFabricApp, getFabricSecret, getInstalled, type FabricApp } from '../apps/manager';
+import { appHost } from '../system/app-host';
 import { log } from '../logger';
+import {
+  CodedError,
+  FABRIC_DEFAULT_TIMEOUT_MS,
+  FABRIC_MAX_BODY,
+  proxyToTarget,
+  type BrokerCode,
+} from './proxy';
 
-const MAX_BODY = 256 * 1024; // 256 KB, each direction
-const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_BODY = FABRIC_MAX_BODY; // 256 KB, each direction
+const DEFAULT_TIMEOUT_MS = FABRIC_DEFAULT_TIMEOUT_MS;
 const DEFAULT_RATE_MAX = Number.parseInt(process.env.OPENMASJID_FABRIC_BROKER_RATE ?? '', 10) || 60;
 const RATE_WINDOW_MS = 60_000;
 const APP_ID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
@@ -55,93 +63,8 @@ function makeRateLimiter() {
   };
 }
 
-type BrokerCode =
-  | 'unauthorized'
-  | 'not_granted'
-  | 'bad_request'
-  | 'target_not_installed'
-  | 'target_unreachable'
-  | 'timeout'
-  | 'payload_too_large'
-  | 'response_too_large'
-  | 'rate_limited';
-
 function fabricError(reply: FastifyReply, status: number, code: BrokerCode, message: string) {
   return reply.code(status).send({ fabric_error: { code, message } });
-}
-
-class CodedError extends Error {
-  constructor(public code: BrokerCode) {
-    super(code);
-  }
-}
-
-interface ProxyResult {
-  status: number;
-  contentType?: string;
-  body: Buffer;
-}
-
-/** POST the JSON body to the target's loopback port and return its response,
- *  size-capped. Rejects with a CodedError on connect failure / timeout / oversize. */
-function proxyToTarget(opts: {
-  host: string;
-  port: number;
-  path: string;
-  body: Buffer;
-  targetSecret: string;
-  callerId: string;
-  timeoutMs: number;
-}): Promise<ProxyResult> {
-  return new Promise((resolve, reject) => {
-    const upstream = http.request(
-      {
-        host: opts.host,
-        port: opts.port,
-        method: 'POST',
-        path: opts.path,
-        headers: {
-          'content-type': 'application/json',
-          'content-length': String(opts.body.length),
-          accept: 'application/json',
-          // Trusted identity, set by the platform — the ONLY way the target learns
-          // the call is genuine + who the caller is. Caller-supplied copies were
-          // never forwarded (we build this header set from scratch).
-          'x-openmasjid-app-secret': opts.targetSecret,
-          'x-openmasjid-caller-app': opts.callerId,
-        },
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        let tooBig = false;
-        res.on('data', (c: Buffer) => {
-          size += c.length;
-          if (size > MAX_BODY) {
-            tooBig = true;
-            res.destroy();
-            return;
-          }
-          chunks.push(c);
-        });
-        res.on('end', () => {
-          if (tooBig) return reject(new CodedError('response_too_large'));
-          resolve({
-            status: res.statusCode ?? 502,
-            contentType: typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined,
-            body: Buffer.concat(chunks),
-          });
-        });
-        res.on('error', () => reject(new CodedError('target_unreachable')));
-      },
-    );
-    upstream.on('error', () => reject(new CodedError('target_unreachable')));
-    upstream.setTimeout(opts.timeoutMs, () => {
-      upstream.destroy();
-      reject(new CodedError('timeout'));
-    });
-    upstream.end(opts.body);
-  });
 }
 
 /** Injectable dependencies so the broker is testable without Docker. */
@@ -165,9 +88,9 @@ function defaultDeps(): AppLinkDeps {
       const a = await getInstalled(id);
       return a ? { running: a.running, port: a.ports[0] ?? null } : null;
     },
-    // How the core reaches an app's published host port (host-gateway mapping added
-    // by the installer; localhost in dev). Same target the reverse proxies use.
-    targetHost: process.env.OPENMASJID_APP_PROXY_TARGET ?? 'host.docker.internal',
+    // How the core reaches an app's published host port — one definition, shared with
+    // the reverse proxies and the WhatsApp gateway client (system/app-host.ts).
+    targetHost: appHost(),
     timeoutMs: DEFAULT_TIMEOUT_MS,
     rateMax: DEFAULT_RATE_MAX,
     now: () => Date.now(),

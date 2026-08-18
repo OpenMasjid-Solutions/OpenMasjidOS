@@ -77,12 +77,17 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
 
   const startUpdate = useCallback(() => {
     setUpdateInfo(null);
-    windows.open({
+    // Locked until the update finishes: closing this and pressing Update again started a
+    // second update over the first, and the app could stop coming back. `winId` is
+    // assigned before the stream can ever finish, so the closure always sees it.
+    let winId = -1;
+    winId = windows.open({
       title: t('appUpdate.title', { name: app.name }),
       dedupeKey: `update:${app.id}`,
       wide: true,
+      locked: true,
       icon: <RefreshCw size={15} />,
-      node: <AppUpdate id={app.id} name={app.name} />,
+      node: <AppUpdate id={app.id} name={app.name} onDone={() => windows.setLocked(winId, false)} />,
     });
   }, [app.id, app.name, t, windows]);
 

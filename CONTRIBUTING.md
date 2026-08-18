@@ -13,11 +13,27 @@ please read the licensing section before opening a pull request.
    can agree on the approach.
 2. Fork, branch, and keep commits small with [Conventional Commit](https://www.conventionalcommits.org/)
    messages (`feat:`, `fix:`, `docs:`, `chore:` …).
-3. Before pushing: `npm run build` must pass, `tsc` and ESLint must be clean, and
-   the change must work in **both** light/dark themes and **both** LTR/RTL. New
-   user-facing strings go through i18next. See `CLAUDE.md` for the full bar.
-4. Open a pull request. Every source file carries an SPDX header
-   (`// SPDX-License-Identifier: AGPL-3.0-only`) — keep it on new files.
+3. Before pushing, all three must pass:
+
+   ```bash
+   npm run lint    # tsc --noEmit in both workspaces — this is the typecheck
+   npm run test    # node:test suite in packages/core
+   npm run build   # vite (ui) + esbuild (core); note it does NOT typecheck
+   ```
+
+   `npm run lint` is the only typecheck — a type error passes `npm run build`, so a green
+   build alone is not enough. (There is no ESLint in this repo; `lint` is `tsc` and nothing
+   more.) If you add a test file, add it to the `test` script in
+   `packages/core/package.json` — it lists every file by name, so an unlisted test silently
+   never runs. The change must work in **both** light/dark themes and **both** LTR/RTL, and
+   new user-facing strings go through i18next. See `CLAUDE.md` for the full bar.
+4. **Open the pull request against `dev`, not `master`.** `master` is the release branch —
+   it is what masjids are running, and it only moves at release time. GitHub pre-selects the
+   default branch (`master`), so this has to be changed by hand in the PR form. Every source
+   file carries an SPDX header (`// SPDX-License-Identifier: AGPL-3.0-only`) — keep it on new
+   files, in the comment syntax of the file's language.
+5. On your first PR a bot will ask you to sign the CLA by posting a comment. That is normal —
+   see the licensing section below. The `cla` check goes green a moment after you comment.
 
 ## Licensing of your contributions (please read)
 

@@ -24,8 +24,15 @@ export function registerUpdate(server: FastifyInstance): void {
     try {
       await runUpdate(send);
     } catch (err) {
-      log.error('update failed', err);
-      send(`Update failed: ${(err as Error).message}`);
+      // "Already running" is not a failure — it is the safety net doing its job, and
+      // calling it a failure would push an admin into retrying, which is the very thing
+      // that breaks the box.
+      if ((err as Error).name === 'UpdateBusyError') {
+        send((err as Error).message);
+      } else {
+        log.error('update failed', err);
+        send(`Update failed: ${(err as Error).message}`);
+      }
     }
     try {
       socket.close();

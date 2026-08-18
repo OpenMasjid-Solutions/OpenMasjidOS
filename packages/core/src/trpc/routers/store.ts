@@ -11,12 +11,30 @@ import { router, protectedProcedure } from '../trpc';
 import { APP_ID_RE, isValidAppId } from '../../util/id';
 import { fetchCatalog, findCatalogApp } from '../../store/catalog';
 import { installCatalogApp } from '../../apps/manager';
+import { visibleCatalog } from '../../apps/managed';
+import { getWhatsAppConfig } from '../../store/whatsapp';
 import { checkCompose } from '../../apps/compose-validate';
 
-export const storeRouter = router({
-  catalog: protectedProcedure.query(() => fetchCatalog()),
+/**
+ * Hide platform-managed apps until the admin has opted into the feature that uses them.
+ *
+ * OpenWA is a WhatsApp engine the platform drives, not something a masjid installs and
+ * opens. Listing it unconditionally would let someone install a gateway, link a phone in
+ * its own UI and start sending — with none of the pacing that keeps the number unbanned,
+ * and no warning that WhatsApp does not permit this at all. So it appears only after
+ * Settings → WhatsApp is switched on, which is where the risk is explained and accepted.
+ *
+ * Filtering here rather than in the UI keeps it true for every surface at once — the
+ * grid, the search, and anything added later.
+ */
+function visibleToAdmin(apps: Awaited<ReturnType<typeof fetchCatalog>>) {
+  return visibleCatalog(apps, { whatsappEnabled: getWhatsAppConfig().provider !== 'none' });
+}
 
-  refresh: protectedProcedure.mutation(() => fetchCatalog(true)),
+export const storeRouter = router({
+  catalog: protectedProcedure.query(async () => visibleToAdmin(await fetchCatalog())),
+
+  refresh: protectedProcedure.mutation(async () => visibleToAdmin(await fetchCatalog(true))),
 
   install: protectedProcedure
     .input(

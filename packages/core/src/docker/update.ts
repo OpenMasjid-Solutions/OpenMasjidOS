@@ -20,6 +20,7 @@ import { getSettings } from '../settings/store';
 import { coreImageTag, coreTargetTag } from '../system/channel';
 import { checkForUpdate } from '../system/system';
 import { isPrerelease } from '../util/version';
+import { withUpdateLock } from '../system/update-lock';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
@@ -169,8 +170,18 @@ export async function recreateCore(onLine: (s: string) => void, tag?: string): P
 }
 
 /** Run the update, streaming progress through onLine. Resolves once the helper
- *  has been launched (the core will then be restarted under us). */
+ *  has been launched (the core will then be restarted under us).
+ *
+ *  Single-flight: a second call while one is in flight is REFUSED, not queued. Two
+ *  helpers each running `compose up --force-recreate` against the same container is how
+ *  a box ends up not coming back — see `system/update-lock.ts`. */
 export async function runUpdate(onLine: (s: string) => void): Promise<void> {
+  return withUpdateLock('core', 'An update is already running. It will finish on its own.', () =>
+    runUpdateInner(onLine),
+  );
+}
+
+async function runUpdateInner(onLine: (s: string) => void): Promise<void> {
   const channel = getSettings().updateChannel;
 
   onLine('Checking for the latest version…');

@@ -20,10 +20,18 @@ interface AuthFile {
   email?: string | null;
   /** Display name (shown in the dashboard header). */
   name?: string | null;
+  /**
+   * The admin's WhatsApp number, digits only in international format. Optional and
+   * never a login identifier — it is purely a destination, for OS alerts routed to
+   * the WhatsApp channel and for the "send test message" button, exactly as `email`
+   * is for mail. Stored here rather than in settings.json for the same reason the
+   * email is: it belongs to the person, not to the dashboard's appearance.
+   */
+  phone?: string | null;
 }
 
 const AUTH_PATH = path.join(CONFIG_DIR, 'auth.json');
-const DEFAULTS: AuthFile = { username: null, passwordHash: null, email: null, name: null };
+const DEFAULTS: AuthFile = { username: null, passwordHash: null, email: null, name: null, phone: null };
 
 /**
  * True when auth.json is PRESENT but could not be read or parsed.
@@ -104,6 +112,11 @@ export function getAdminEmail(): string | null {
   return cache.email ?? null;
 }
 
+/** The admin's WhatsApp number (alert destination), or null if not set. */
+export function getAdminPhone(): string | null {
+  return cache.phone ?? null;
+}
+
 /** The admin's display name, or null. */
 export function getAdminName(): string | null {
   return cache.name ?? null;
@@ -140,13 +153,14 @@ export function createAdminIfUnset(input: AdminInput): boolean {
   return true;
 }
 
-/** Update the admin's display name and/or email (Settings → Account). Pass a field
- *  to change it; omit to leave it as-is. */
-export function setProfile(patch: { name?: string; email?: string }): void {
+/** Update the admin's display name, email and/or WhatsApp number (Settings → Account).
+ *  Pass a field to change it; omit to leave it as-is. */
+export function setProfile(patch: { name?: string; email?: string; phone?: string }): void {
   cache = {
     ...cache,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.email !== undefined ? { email: patch.email } : {}),
+    ...(patch.phone !== undefined ? { phone: patch.phone } : {}),
   };
   writeJson(AUTH_PATH, cache);
 }

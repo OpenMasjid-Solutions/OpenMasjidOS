@@ -20,7 +20,9 @@ import { backupsRouter } from './routers/backups';
 import { stripeRouter } from './routers/stripe';
 import { cloudflareRouter } from './routers/cloudflare';
 import { emailRouter } from './routers/email';
+import { whatsappRouter } from './routers/whatsapp';
 import { alertsRouter } from './routers/alerts';
+import { commandsRouter } from './routers/commands';
 
 export const appRouter = router({
   auth: authRouter,
@@ -37,7 +39,9 @@ export const appRouter = router({
   stripe: stripeRouter,
   cloudflare: cloudflareRouter,
   email: emailRouter,
+  whatsapp: whatsappRouter,
   alerts: alertsRouter,
+  commands: commandsRouter,
 });
 
 export type AppRouter = typeof appRouter;

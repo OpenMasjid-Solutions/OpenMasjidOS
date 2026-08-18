@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
+import { MotionConfig } from 'motion/react';
 import { trpc } from './lib/trpc';
 import { makeTrpcClient } from './lib/trpcClient';
 import { clearCsrf } from './lib/session';
@@ -50,14 +51,31 @@ export function App() {
   return (
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
       <QueryClientProvider client={queryClient}>
-        <SceneBackground />
-        <ToastProvider>
-          <WindowsProvider>
-            <BrowserRouter>
-              <Root />
-            </BrowserRouter>
-          </WindowsProvider>
-        </ToastProvider>
+        {/*
+          Reduced motion is non-negotiable (CLAUDE.md §14), and tokens.css alone did not
+          deliver it. That stylesheet's `@media (prefers-reduced-motion: reduce)` block
+          collapses CSS animation and transition durations — but Motion animates by writing
+          inline styles from JavaScript, which no CSS duration override can reach. So every
+          spring in the app (modal scale + blur, the splash rotate, the staggered card
+          entrances in lib/motion.ts) kept running at full amplitude for someone who had
+          explicitly asked the OS for less.
+
+          Motion's own default is `reducedMotion: "never"` — it ignores the preference
+          unless told, and the omission is invisible to anyone who has not set it.
+          "user" honours the OS setting for transform and layout animations while still
+          allowing opacity, which is exactly the "instant or opacity-only" behaviour §14
+          asks for. One wrapper, at the top, so no component has to remember.
+        */}
+        <MotionConfig reducedMotion="user">
+          <SceneBackground />
+          <ToastProvider>
+            <WindowsProvider>
+              <BrowserRouter>
+                <Root />
+              </BrowserRouter>
+            </WindowsProvider>
+          </ToastProvider>
+        </MotionConfig>
       </QueryClientProvider>
     </trpc.Provider>
   );

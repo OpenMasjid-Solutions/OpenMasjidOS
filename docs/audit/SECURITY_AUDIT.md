@@ -3,6 +3,11 @@
 
 # OpenMasjidOS — security & code-health audit
 
+> **Historical record.** This is a point-in-time audit report, not a live to-do list. It describes
+> the tree as it was at the commit named below; do not read an item here as currently outstanding
+> without checking the code. Items still open are tracked in `ACTION_REQUIRED.md` and, where they
+> matter to how the platform is built, in `CLAUDE.md §15`.
+
 **Date:** 2026-07-30 · **Commit audited:** `cf32b878` (v0.47.1) · **Rollback tag:** `pre-audit-2026-07-30`
 **Method:** 10 parallel area audits, each output then re-checked by an independent adversarial
 verifier; every Critical re-proved by hand before any code changed.

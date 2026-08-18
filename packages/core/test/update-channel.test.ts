@@ -28,6 +28,7 @@ const req = createRequire(__filename);
 
 // Loaded once — pure functions with no data-dir dependency.
 const ch = req('../src/system/channel') as typeof import('../src/system/channel');
+const { isNewerVersion } = req('../src/util/version') as typeof import('../src/util/version');
 
 test('a channel maps to the right branch, image tag and catalog URL', () => {
   // Stable is `master` in THIS repo but `main` in the catalog repo. That asymmetry
@@ -329,6 +330,42 @@ test("VERSION matches the branch it's on: a prerelease on dev, a release on mast
   // Unknown branch (tag push / detached / worktree): the shape check above still ran.
 });
 
+test("dev's VERSION must be a prerelease of the NEXT release, not the current one", () => {
+  // THE BUG THIS EXISTS TO CATCH, which reached a masjid. After 0.50.4 was released,
+  // dev kept counting `0.50.4-dev.5`, `-dev.6`… — and by semver a prerelease sorts BELOW
+  // its release, so `0.50.4-dev.6 < 0.50.4`. A box on Stable 0.50.4 that switched to
+  // Development was therefore offered NOTHING: the channel's newest build was older than
+  // what it was already running. No banner, no alert, no error — the dashboard said
+  // Development and ran Stable for ever.
+  //
+  // The rule is CLAUDE.md §18: a dev VERSION names the release it is HEADING TOWARD.
+  // After releasing 0.50.4, dev goes to 0.50.5-dev.1, never 0.50.4-dev.N.
+  if (targetBranch() !== 'dev') return;
+  const root = path.join(__dirname, '..', '..', '..');
+  const v = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
+
+  // master's VERSION is the released number. If the ref isn't in this checkout (a shallow
+  // CI clone), the shape check above still ran — but locally, where the bump happens,
+  // this is exactly where the mistake gets made and caught.
+  let released = '';
+  for (const ref of ['master', 'origin/master']) {
+    try {
+      released = execFileSync('git', ['show', `${ref}:VERSION`], { cwd: root, encoding: 'utf8' }).trim();
+      break;
+    } catch {
+      /* try the next ref */
+    }
+  }
+  if (!released) return;
+
+  assert.ok(
+    isNewerVersion(released, v),
+    `dev's VERSION (${v}) must be NEWER than the released ${released}. ` +
+      `A prerelease sorts below its own release, so ${v} would offer a Development masjid ` +
+      `nothing at all — bump the base version, not just the -dev counter.`,
+  );
+});
+
 // ── the bug that made channel switching mean delete-and-reinstall ─────────────
 
 test('a pending channel switch is offered as an update, even at the same version', () => {
@@ -361,10 +398,20 @@ test('the Development channel reports updates exactly like Stable', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'system.ts'), 'utf8');
   assert.match(
     src,
-    /updateAvailable: latest != null && isNewerVersion\(VERSION, latest\),/,
+    /const newerAvailable = latest != null && isNewerVersion\(VERSION, latest\);/,
     'one semver comparison, both channels',
   );
   assert.doesNotMatch(src, /movingTag/, 'the moving-tag special case must stay deleted');
+  // The ONE thing besides the version comparison that may offer an update is a running
+  // build from the other channel, and it must be SYMMETRIC — a test written as
+  // "if channel is dev then…" is the old special-casing coming back in a new shape.
+  assert.match(
+    src,
+    /const channelMismatch = isPrerelease\(VERSION\) !== \(channel === 'dev'\);/,
+    'the channel check must be a symmetric comparison, not a per-channel branch',
+  );
+  // And it must never claim an update it cannot perform: a move needs a target version.
+  assert.match(src, /channelMismatch && latest != null/, 'a channel move still needs a version to move to');
   // A prerelease must survive the VERSION-file sanity check, or dev reads its own
   // version file as junk and goes quiet — silently, since the check fails soft.
   const re = /if \(\/(\^.*?)\/\.test\(raw\)\) latest = raw;/.exec(src);
@@ -406,4 +453,33 @@ test('returning to Stable moves apps back automatically; going to Development do
   );
   assert.match(src, /res\.channel === 'main' && res\.pending\.length > 0/, 'auto-revert only towards Stable');
   assert.doesNotMatch(src, /res\.channel === 'dev'[^\n]*onUpdateAll/, 'never auto-migrate towards Development');
+});
+
+test('a box running the OTHER channel is offered the way back, whatever the numbers say', () => {
+  // THE TRAP, reported from a real install. An interrupted update was repaired with the
+  // installer, the repair pulled `:latest`, and the box ended up running a Stable build
+  // while Settings still said Development. `runUpdate` knew how to fix that
+  // (`wrongChannel`) — but the DETECTOR only compared versions, so nothing ever told the
+  // masjid: no banner, no alert, no error. The dashboard said Development and ran Stable
+  // for ever, with no way out from the UI.
+  //
+  // Decided here at the expression level, because the detector and the executor
+  // disagreeing is exactly what produced a dead end.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'system.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('export async function checkForUpdate'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+
+  // The mismatch must feed updateAvailable, not merely be reported alongside it.
+  const availableLine = /updateAvailable: newerAvailable \|\| \(channelMismatch && latest != null\)/;
+  assert.match(body, availableLine, 'a channel mismatch must make an update available');
+
+  // And it must be distinguishable, because a channel move is not "a new version" — its
+  // target is often an OLDER number (going back to Stable always is), and calling that an
+  // upgrade in the UI reads as a mistake.
+  assert.match(body, /reason: newerAvailable \? 'version' :/, 'the reason must say which it is');
+  assert.match(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Dashboard.tsx'), 'utf8'),
+    /reason === 'channel'/,
+    'and the dashboard must word the two differently',
+  );
 });

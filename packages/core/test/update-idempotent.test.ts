@@ -86,7 +86,7 @@ test('the guard is wired into runUpdate BEFORE anything is pulled', () => {
   // Structural: a guard placed after the pull would still restart the core, which is
   // the step that signs everyone out and restarts the loop.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
-  const fn = src.slice(src.indexOf('export async function runUpdate'));
+  const fn = src.slice(src.indexOf('async function runUpdateInner'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   const guardAt = body.indexOf('already up to date');
   const pullAt = body.indexOf("streamSpawn('docker', ['pull'");

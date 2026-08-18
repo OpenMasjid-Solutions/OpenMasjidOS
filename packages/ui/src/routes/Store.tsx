@@ -5,7 +5,7 @@
  * "3rd Party App" entry only appears when custom apps are enabled (CLAUDE.md §11).
  */
 import { useMemo, useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Search, Plus, RefreshCw, Check } from 'lucide-react';
@@ -57,6 +57,21 @@ export function Store() {
 
   const installedIds = new Set((installed.data ?? []).map((a) => a.id));
   const apps = catalog.data ?? [];
+
+  // `?install=<id>` opens that app's install dialog on arrival. Settings sends the admin
+  // here after they switch WhatsApp on, so turning the feature on leads straight into
+  // installing its gateway — rather than leaving them in a store to hunt for an app they
+  // have never heard of. Fires once, and never for an app that is already installed.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const wanted = searchParams.get('install');
+  useEffect(() => {
+    if (!wanted || catalog.isLoading || installed.isLoading) return;
+    const app = apps.find((a) => a.id === wanted);
+    // Drop the parameter either way, so a refresh or a back-navigation doesn't reopen it.
+    setSearchParams({}, { replace: true });
+    if (app && !installedIds.has(app.id)) startInstall(app);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run on arrival, not on every render
+  }, [wanted, catalog.isLoading, installed.isLoading]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

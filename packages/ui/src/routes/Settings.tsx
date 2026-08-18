@@ -5,8 +5,9 @@
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -17,6 +18,9 @@ import { UpdateModal } from '../components/UpdateModal';
 import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PhoneField } from '../components/PhoneField';
+import { AppLogs } from '../components/AppLogs';
+import { openApp } from '../lib/apps';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { UpdateChannel } from '../components/UpdateChannel';
 import { ChannelMigrate } from '../components/ChannelMigrate';
@@ -34,11 +38,35 @@ const TIMEZONES: string[] = (() => {
   }
 })();
 
+/**
+ * How to word an available core update.
+ *
+ * "Version X is available" is wrong for a CHANNEL move: going back to Stable targets an
+ * OLDER number, so that sentence reads as an update to a lower version — the same mistake
+ * the app rows already fixed by branching on `reason`. The server tells us which it is.
+ */
+function updateSentence(
+  info: { updateAvailable: boolean; latest: string | null; reason: 'version' | 'channel' | null; channel: string },
+  t: (k: string, o?: Record<string, unknown>) => string,
+): string {
+  if (!info.updateAvailable) return t('settings.upToDate');
+  if (info.reason === 'channel') {
+    return info.channel === 'dev'
+      ? t('settings.updateChannelMoveToDev', { version: info.latest })
+      : t('settings.updateChannelMoveToStable', { version: info.latest });
+  }
+  return t('settings.updateAvailable', { version: info.latest });
+}
+
 /** A small red/green/grey status dot. `online` undefined = unknown (grey). */
-function StatusDot({ online }: { online: boolean | undefined }) {
+function StatusDot({ online, label: override }: { online: boolean | undefined; label?: string }) {
   const { t } = useTranslation();
   const color = online === undefined ? 'var(--color-ink-muted)' : online ? '#22c55e' : '#ef4444';
-  const label = online === undefined ? t('settings.statusChecking') : online ? t('settings.statusOnline') : t('settings.statusOffline');
+  // `override` exists for states that are not simply up or down. "Connected, but the
+  // gateway has sent nothing" is red because the feature does not work — but calling
+  // it "Offline" sends the admin to check a connection that is fine.
+  const label =
+    override ?? (online === undefined ? t('settings.statusChecking') : online ? t('settings.statusOnline') : t('settings.statusOffline'));
   return (
     <span
       title={label}
@@ -272,12 +300,7 @@ export function Settings() {
     if (updateInfo.isFetching) return; // don't stack checks/toasts during a spam burst
     const r = await updateInfo.refetch();
     if (r.data) {
-      toast(
-        r.data.updateAvailable
-          ? t('settings.updateAvailable', { version: r.data.latest })
-          : t('settings.upToDate'),
-        'success',
-      );
+      toast(updateSentence(r.data, t), 'success');
     } else {
       toast(t('errors.generic'), 'error');
     }
@@ -439,6 +462,11 @@ export function Settings() {
       {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
       <EmailPanel />
 
+      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Sits beside Email
+          because it is the same kind of thing — an outbound transport the platform owns
+          on every app's behalf. */}
+      <WhatsAppPanel />
+
       {/* Alerts — granular on/off per alert type (OS + apps) */}
       <AlertsPanel />
 
@@ -503,11 +531,7 @@ export function Settings() {
           <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.updates')}</div>
             <div className="setting-row__hint">
-              {updateInfo.data
-                ? updateInfo.data.updateAvailable
-                  ? t('settings.updateAvailable', { version: updateInfo.data.latest })
-                  : t('settings.upToDate')
-                : ''}
+              {updateInfo.data ? updateSentence(updateInfo.data, t) : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -828,16 +852,19 @@ function ChangePassword() {
   const [next, setNext] = useState('');
   const [error, setError] = useState('');
 
-  // Admin profile (name + email). Email is where OS alerts are sent; a pre-email
-  // install sets it here for the first time.
+  // Admin profile (name + email + WhatsApp number). Email is where OS alerts are sent;
+  // a pre-email install sets it here for the first time. The phone is the same idea for
+  // the WhatsApp channel — a destination, never a sign-in.
   const me = trpc.auth.me.useQuery();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const seeded = useRef(false);
   useEffect(() => {
     if (me.data && !seeded.current) {
       setName(me.data.name ?? '');
       setEmail(me.data.email ?? '');
+      setPhone(me.data.phone ?? '');
       seeded.current = true;
     }
   }, [me.data]);
@@ -873,11 +900,26 @@ function ChangePassword() {
         <input className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <span className="hint">{t('settings.accountEmailHint')}</span>
       </div>
+      <PhoneField
+        value={phone}
+        onChange={setPhone}
+        label={t('settings.accountPhone')}
+        hint={t('settings.accountPhoneHint')}
+      />
       <button
         className="btn"
         style={{ marginBlockEnd: '1rem' }}
-        disabled={saveProfile.isPending || (!name.trim() && !email.trim())}
-        onClick={() => saveProfile.mutate({ name: name.trim() || undefined, email: email.trim() || undefined })}
+        disabled={saveProfile.isPending || (!name.trim() && !email.trim() && !phone.trim())}
+        onClick={() =>
+          saveProfile.mutate({
+            name: name.trim() || undefined,
+            email: email.trim() || undefined,
+            // Sent even when blank, so clearing the box actually removes the number —
+            // `undefined` would mean "leave it alone" and the field would look cleared
+            // while alerts kept going to the old phone.
+            phone: phone.trim(),
+          })
+        }
       >
         <Check size={15} /> {t('settings.saveProfile')}
       </button>
@@ -1559,6 +1601,1022 @@ function EmailPanel() {
 
 /** Granular alert matrix (UniFi-style): OS built-ins + each app's declared alerts,
  *  each routable to Email and/or Webhook (both on by default; both off = muted). */
+/** WhatsApp gateway (OpenWA). The admin installs OpenWA from the App Store, pastes the
+ *  API key + session id it was configured with, links the phone with a pairing code, and
+ *  every alert/app message then flows through the platform's paced queue. The API key is
+ *  write-only here: the server returns an "is set" flag, never the value. */
+function WhatsAppPanel() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const windows = useWindows();
+  const cfg = trpc.whatsapp.get.useQuery();
+  const [pairing, setPairing] = useState<string | null>(null);
+  // While a pairing code is on screen the admin is standing at their phone typing it
+  // in, and the only thing they want to know is whether it worked. A one-minute poll
+  // meant reloading the page to find out. Fast only during that window — every poll is
+  // an HTTP call to the gateway.
+  const status = trpc.whatsapp.status.useQuery(undefined, {
+    refetchInterval: pairing ? 3_000 : 60_000,
+  });
+
+  const [provider, setProvider] = useState<'none' | 'openwa'>('none');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [sessionName, setSessionName] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [linkPhone, setLinkPhone] = useState('');
+  const [askEnable, setAskEnable] = useState(false);
+  /** The gateway's own last words when a start attempt did not stick. */
+  const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
+  // The pairing code stops being useful the instant the phone is linked, and leaving
+  // it on screen is what made "did that work?" a page reload.
+  useEffect(() => {
+    if (pairing && status.data?.state === 'ready') {
+      setPairing(null);
+      toast(t('settings.whatsappLinkedNow'), 'success');
+      void utils.whatsapp.get.invalidate();
+    }
+    // `toast`/`utils`/`t` are stable for the life of the panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairing, status.data?.state]);
+
+  const seededWa = useRef(false);
+  useEffect(() => {
+    if (cfg.data && !seededWa.current) {
+      setProvider(cfg.data.provider);
+      setBaseUrl(cfg.data.baseUrl);
+      setSessionName(cfg.data.sessionName);
+      seededWa.current = true;
+    }
+  }, [cfg.data]);
+
+  const save = trpc.whatsapp.save.useMutation({
+    onSuccess: () => {
+      setApiKey('');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+      // Turning the feature on or off changes whether the gateway app is listed at all,
+      // so the store's cached catalog is now stale.
+      utils.store.catalog.invalidate();
+      toast(t('settings.whatsappSaved'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const link = trpc.whatsapp.link.useMutation({
+    onSuccess: (r) => {
+      setPairing(r.code ?? null);
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const test = trpc.whatsapp.test.useMutation({
+    onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const restartGateway = trpc.whatsapp.restartGateway.useMutation({
+    onSuccess: (r) => {
+      // Only clear the previous failure when this attempt actually held — otherwise
+      // the panel would flash back to looking healthy while the container restarts.
+      setGatewayCrash(r.ok ? null : (r.output ?? null));
+      if (r.ok) toast(t('settings.whatsappGatewayStarted'), 'success');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+
+  if (!cfg.data) return null;
+  const s = status.data;
+  const gw = cfg.data.gateway;
+  const on = provider !== 'none';
+
+  /** Turning it ON is gated on the warning; turning it OFF is immediate and reversible. */
+  function setEnabled(next: boolean) {
+    if (next) return setAskEnable(true);
+    setProvider('none');
+    save.mutate({ provider: 'none' });
+  }
+
+  return (
+    <section className="glass-raised panel">
+      <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+        <StatusDot online={status.isLoading ? undefined : Boolean(s?.connected)} /> {t('settings.whatsapp')}
+      </h2>
+      <p className="setting-row__hint" style={{ marginBlockEnd: '0.6rem' }}>{t('settings.whatsappHint')}</p>
+
+      {/* One switch owns the whole feature. Off, the gateway app is not even listed in
+          the App Store — nobody can install a WhatsApp client from OpenMasjidOS without
+          first reading, here, what it risks. */}
+      <Toggle checked={on} onChange={setEnabled} label={t('settings.whatsappEnable')} />
+
+      {/* This dialog is the exception to "no confirmation on reversible switches"
+          (ConfirmDialog's own rule): what it risks is not a platform setting but the
+          masjid's phone number, and a banned number does not come back. */}
+      <ConfirmDialog
+        open={askEnable}
+        onClose={() => setAskEnable(false)}
+        onConfirm={() => {
+          setAskEnable(false);
+          setProvider('openwa');
+          save.mutate({ provider: 'openwa' });
+        }}
+        title={t('settings.whatsappRiskTitle')}
+        body={t('settings.whatsappRiskBody')}
+        cost={t('settings.whatsappRiskCost')}
+        confirmLabel={t('settings.whatsappRiskAccept')}
+        pending={save.isPending}
+      />
+
+      {on && (
+        <>
+          {/* Step one is the gateway app itself. It is hidden from the dashboard and the
+              store on purpose, so this is the only place it can be installed or opened. */}
+          <div
+            className="glass-inset panel"
+            style={{ marginBlock: '0.8rem', borderInlineStart: '3px solid var(--color-accent)' }}
+          >
+            <div className="setting-row__title">{t('settings.whatsappGatewayStep')}</div>
+            {!gw.installed ? (
+              <>
+                <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+                  {t('settings.whatsappGatewayInstallHint')}
+                </div>
+                <Link className="btn btn--primary" to={`/store?install=${gw.id}`}>
+                  <Download size={15} /> {t('settings.whatsappGatewayInstall')}
+                </Link>
+              </>
+            ) : (
+              <>
+                <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+                  {/* Said plainly, because doing it the other way silently breaks the
+                      platform's ownership of the session and its pacing. */}
+                  {t('settings.whatsappGatewayOpenHint')}
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {/* The gateway is hidden from the dashboard grid and the dock, which
+                      also took away the only Start button in the product — so a masjid
+                      whose gateway stopped had no way to start it again short of a root
+                      terminal, exactly when they can least afford one. */}
+                  <button
+                    className="btn"
+                    disabled={restartGateway.isPending}
+                    onClick={() => restartGateway.mutate()}
+                  >
+                    <RefreshCw size={15} />{' '}
+                    {restartGateway.isPending
+                      ? t('settings.whatsappGatewayStarting')
+                      : gw.running
+                        ? t('settings.whatsappGatewayRestart')
+                        : t('settings.whatsappGatewayStart')}
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={!gw.running || gw.openPort == null}
+                    onClick={() => openApp(gw)}
+                  >
+                    <ExternalLink size={15} /> {t('settings.whatsappGatewayOpen')}
+                  </button>
+                  {/* Hiding the app took its logs away with it, and the gateway's own log
+                      is the only place some failures are visible (an engine that won't
+                      start says nothing over the API). So the button comes here. */}
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      windows.open({
+                        title: `${t('appDetail.logs')} — OpenWA`,
+                        dedupeKey: `logs:${gw.id}`,
+                        wide: true,
+                        icon: <ScrollText size={15} />,
+                        node: <AppLogs id={gw.id} />,
+                      })
+                    }
+                  >
+                    <ScrollText size={15} /> {t('settings.whatsappLogs')}
+                  </button>
+                </div>
+                {!gw.running && !gatewayCrash && (
+                  <span className="hint" style={{ marginInlineStart: '0.5rem' }}>
+                    {t('settings.whatsappGatewayStopped')}
+                  </span>
+                )}
+                {/* When it starts and dies, the reason is already in hand — putting it
+                    on screen beats sending the admin to the logs button to find the one
+                    line that matters. */}
+                {gatewayCrash && (
+                  <div style={{ marginBlockStart: '0.6rem' }}>
+                    <div className="setting-row__hint" style={{ color: 'var(--color-danger)' }}>
+                      {t('settings.whatsappGatewayCrashed')}
+                    </div>
+                    <pre
+                      style={{
+                        marginBlockStart: '0.4rem',
+                        maxHeight: '11rem',
+                        overflow: 'auto',
+                        fontSize: '0.76rem',
+                        lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        padding: '0.6rem 0.75rem',
+                        borderRadius: '4px',
+                        background: 'var(--color-surface-sunken, rgba(0,0,0,0.25))',
+                      }}
+                    >
+                      {gatewayCrash}
+                    </pre>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {on && (
+        <>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappSession')}</label>
+            <input
+              className="input glass-inset"
+              value={sessionName}
+              onChange={(e) => setSessionName(e.target.value)}
+              placeholder="openmasjid"
+            />
+            <span className="hint">{t('settings.whatsappSessionHint')}</span>
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappKey')}</label>
+            <input
+              className="input glass-inset"
+              type="password"
+              autoComplete="off"
+              placeholder={cfg.data.hasApiKey ? t('settings.emailSecretKept') : ''}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+            <span className="hint">{t('settings.whatsappKeyHint')}</span>
+          </div>
+          <div className="field" style={{ maxWidth: '22rem' }}>
+            <label className="label">{t('settings.whatsappUrl')}</label>
+            <input
+              className="input glass-inset"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={t('settings.whatsappUrlAuto')}
+            />
+            <span className="hint">{t('settings.whatsappUrlHint')}</span>
+          </div>
+        </>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.3rem' }}>
+        <button
+          className="btn"
+          disabled={save.isPending}
+          onClick={() =>
+            save.mutate({
+              provider,
+              baseUrl: baseUrl.trim(),
+              sessionName: sessionName.trim() || undefined,
+              apiKey: apiKey.trim() || undefined,
+            })
+          }
+        >
+          <Check size={15} /> {t('common.save')}
+        </button>
+        {cfg.data.configured && (
+          <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>
+            {test.isPending ? t('settings.whatsappTesting') : t('settings.whatsappTest')}
+          </button>
+        )}
+      </div>
+
+      {/* Linking by pairing code, not QR: there is no screen on a headless box to
+          photograph, and the admin may be nowhere near the machine. */}
+      {cfg.data.configured && (
+        <div style={{ marginBlockStart: '0.9rem' }}>
+          <div className="setting-row__title">{t('settings.whatsappLink')}</div>
+          <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
+            {t('settings.whatsappLinkHint')}
+          </div>
+          {/* The button rides INSIDE the field's input row, so it lines up with the
+              number rather than with the bottom of the hint beneath it. */}
+          <PhoneField
+            value={linkPhone}
+            onChange={setLinkPhone}
+            hint={t('settings.whatsappLinkNumberHint')}
+            trailing={
+              <button
+                className="btn"
+                style={{ flex: '0 0 auto' }}
+                disabled={link.isPending || linkPhone.length < 8}
+                onClick={() => link.mutate({ phone: linkPhone })}
+              >
+                {link.isPending ? t('common.working') : t('settings.whatsappGetCode')}
+              </button>
+            }
+          />
+          {/* The code is typed into a phone held in the other hand, from a screen that
+              may be across the room — so it is the biggest thing on the panel, spaced
+              like a code rather than set as body text. */}
+          {pairing && (
+            <div
+              className="glass-inset panel"
+              style={{ marginBlockStart: '0.7rem', textAlign: 'center', padding: '1rem 1.2rem' }}
+            >
+              <div className="setting-row__hint" style={{ marginBlockEnd: '0.35rem' }}>
+                {t('settings.whatsappCode')}
+              </div>
+              <code
+                style={{
+                  fontSize: '2.1rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.35em',
+                  // The trailing letter-space would otherwise push the code off-centre.
+                  textIndent: '0.35em',
+                  lineHeight: 1.25,
+                  display: 'block',
+                  userSelect: 'all',
+                }}
+              >
+                {pairing}
+              </code>
+              <div className="setting-row__hint" style={{ marginBlockStart: '0.35rem' }}>
+                {t('settings.whatsappCodeExpires')}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Which phone is actually linked. Without it the panel says "connected" and the
+          admin has to take on trust that it is the number they meant — and on a masjid's
+          spare handset that is exactly the thing worth double-checking. */}
+      {s?.state === 'ready' && s.phone && (
+        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+          {t('settings.whatsappLinkedTo')} <strong>+{s.phone}</strong>
+        </p>
+      )}
+
+      {/* Groups. Only once a phone is actually linked — there is nothing to list before
+          that, and offering the section would just produce an error. */}
+      {s?.state === 'ready' && <WhatsAppGroups approved={cfg.data.groups} />}
+
+      {/* Commands. Same gate as Groups: there is nothing to configure before a phone
+          is linked, and offering it would only produce an error. */}
+      {s?.state === 'ready' && <WhatsAppCommands />}
+
+      {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
+          limited this number, so the admin hears it here rather than wondering why
+          messages stopped. */}
+      {s?.restriction && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.8rem', borderInlineStart: '3px solid var(--color-danger)' }}
+        >
+          <div className="setting-row__hint">
+            {t('settings.whatsappStateRestricted', { detail: s.restriction })}
+          </div>
+        </div>
+      )}
+
+      {/* Live state plus the queue depth, which is the honest answer to "why has my
+          message not arrived?" — it is paced, and may be waiting out quiet hours. */}
+      {s && (
+        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+          {/* One line per distinct state. "Gateway down", "nothing created yet" and
+              "created but not linked" have different fixes, so they must read differently. */}
+          {s.state === 'ready'
+            ? t('settings.whatsappStateReady', { queued: s.queued })
+            : s.state === 'pending'
+              ? t('settings.whatsappStateNotLinked')
+              : s.state === 'no-session'
+                ? t('settings.whatsappStateNoSession')
+                : s.state === 'problem'
+                  ? t('settings.whatsappStateProblem', { detail: s.detail })
+                  : s.state === 'bad-key'
+                    ? t('settings.whatsappStateBadKey')
+                    : s.state === 'unreachable'
+                      ? // The reason is the whole message here: "OpenWA is not installed"
+                        // and "nothing is listening at the gateway address" have different
+                        // fixes, and a single generic line gave the admin nothing to act on.
+                        t('settings.whatsappStateUnreachable', { detail: s.detail })
+                      : t('settings.whatsappStateOff')}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Approved WhatsApp groups.
+ *
+ * The approval step is the security model, not a convenience: OpenWA's group list holds
+ * EVERY group the linked phone is in — the imam's family chat included — so apps are
+ * never shown it. They see only what an admin deliberately approves here.
+ *
+ * The list is fetched on demand rather than polled: it is a handful of clicks a masjid
+ * makes once, and a background poll of someone's entire group membership every minute is
+ * both wasteful and slightly grim.
+ */
+function WhatsAppGroups({
+  approved,
+}: {
+  approved: { id: string; label: string; name?: string; participants?: number }[];
+}) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const [browsing, setBrowsing] = useState(false);
+  /** The group being renamed, and the text so far. */
+  const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
+  /** The group a test is pending for — a message to a whole group cannot be unsent. */
+  const [confirmTest, setConfirmTest] = useState<{ id: string; label: string } | null>(null);
+
+  // Fetched only while the picker is open. The error is rendered inline rather than
+  // toasted: "couldn't read your groups" is about the panel you are looking at, and a
+  // toast would vanish before you had finished reading the list it failed to fill.
+  const groups = trpc.whatsapp.groups.useQuery(undefined, { enabled: browsing, retry: false });
+
+  const refresh = () => {
+    utils.whatsapp.get.invalidate();
+    utils.whatsapp.groups.invalidate();
+  };
+  const approve = trpc.whatsapp.approveGroup.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const unapprove = trpc.whatsapp.unapproveGroup.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const rename = trpc.whatsapp.renameGroup.useMutation({
+    onSuccess: () => {
+      setRenaming(null);
+      refresh();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const testGroup = trpc.whatsapp.testGroup.useMutation({
+    onSuccess: () => {
+      setConfirmTest(null);
+      toast(t('settings.whatsappGroupTestSent'), 'success');
+    },
+    onError: (e) => {
+      setConfirmTest(null);
+      toast(e.message || t('errors.generic'), 'error');
+    },
+  });
+
+  const approvedIds = new Set(approved.map((g) => g.id));
+
+  return (
+    <div style={{ marginBlockStart: '1rem' }}>
+      <div className="setting-row__title">{t('settings.whatsappGroups')}</div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+        {t('settings.whatsappGroupsHint')}
+      </div>
+
+      {approved.length > 0 && (
+        <div className="glass-inset panel" style={{ marginBlockEnd: '0.6rem', padding: '0.6rem 0.9rem' }}>
+          {approved.map((g) => (
+            <div className="setting-row" key={g.id}>
+              <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                {renaming?.id === g.id ? (
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      className="input glass-inset"
+                      style={{ maxWidth: '16rem' }}
+                      autoFocus
+                      value={renaming.label}
+                      maxLength={80}
+                      onChange={(e) => setRenaming({ id: g.id, label: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && renaming.label.trim()) rename.mutate(renaming);
+                        if (e.key === 'Escape') setRenaming(null);
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      disabled={rename.isPending || !renaming.label.trim()}
+                      onClick={() => rename.mutate(renaming)}
+                    >
+                      <Check size={14} /> {t('common.save')}
+                    </button>
+                    <button className="btn btn--sm" onClick={() => setRenaming(null)}>
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    {g.label}
+                    <button
+                      className="icon-btn"
+                      aria-label={t('settings.whatsappGroupRename')}
+                      title={t('settings.whatsappGroupRename')}
+                      onClick={() => setRenaming({ id: g.id, label: g.label })}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
+                )}
+                {/* The group's real WhatsApp subject, when the nickname differs — so the
+                    admin can tell which group a nickname actually refers to. */}
+                {g.name && g.name !== g.label && (
+                  <div className="setting-row__hint">{t('settings.whatsappGroupRealName', { name: g.name })}</div>
+                )}
+                <div className="setting-row__hint">
+                  {g.participants != null && `${t('settings.whatsappGroupMembers', { count: g.participants })} · `}
+                  {/* The id apps send to. Shown because it is the value that appears in an
+                      app's own settings and its logs, and matching it up otherwise means
+                      guessing. Selectable in one click, and it is not a secret. */}
+                  <code style={{ userSelect: 'all', wordBreak: 'break-all' }}>{g.id}</code>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn--sm"
+                  disabled={testGroup.isPending}
+                  onClick={() => setConfirmTest({ id: g.id, label: g.label })}
+                >
+                  {t('settings.whatsappGroupTest')}
+                </button>
+                <button
+                  className="btn btn--sm"
+                  disabled={unapprove.isPending}
+                  onClick={() => unapprove.mutate({ id: g.id })}
+                >
+                  <Trash2 size={14} /> {t('settings.whatsappGroupRemove')}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Confirmed, unlike the test to your own number: everyone in the group receives
+          this, and a message cannot be unsent from two hundred phones. */}
+      <ConfirmDialog
+        open={confirmTest !== null}
+        onClose={() => setConfirmTest(null)}
+        onConfirm={() => confirmTest && testGroup.mutate({ id: confirmTest.id })}
+        title={t('settings.whatsappGroupTestTitle', { name: confirmTest?.label ?? '' })}
+        body={t('settings.whatsappGroupTestBody')}
+        confirmLabel={t('settings.whatsappGroupTestConfirm')}
+        pending={testGroup.isPending}
+      />
+
+      {!browsing ? (
+        <button className="btn" onClick={() => setBrowsing(true)}>
+          <RefreshCw size={15} /> {t('settings.whatsappGroupsFind')}
+        </button>
+      ) : (
+        <>
+          {/* Both warnings are real, non-obvious, and cheaper to read than to discover:
+              a WhatsApp group shows every member's number to every other member, and a
+              group that is not announcement-only lets 200 people reply to a notice. */}
+          <div
+            className="glass-inset panel"
+            style={{ marginBlockEnd: '0.6rem', borderInlineStart: '3px solid var(--color-warning)' }}
+          >
+            <div className="setting-row__hint">{t('settings.whatsappGroupsWarning')}</div>
+          </div>
+          {groups.isLoading ? (
+            <p className="setting-row__hint">{t('common.loading')}</p>
+          ) : groups.error ? (
+            <p className="setting-row__hint">{groups.error.message || t('errors.generic')}</p>
+          ) : (groups.data ?? []).length === 0 ? (
+            <p className="setting-row__hint">{t('settings.whatsappGroupsNone')}</p>
+          ) : (
+            <div className="glass-inset panel" style={{ padding: '0.6rem 0.9rem' }}>
+              {(groups.data ?? []).map((g) => (
+                <div className="setting-row" key={g.id}>
+                  <div className="setting-row__text" style={{ flex: 1 }}>
+                    <div className="setting-row__title">
+                      {g.name}
+                      {g.community && <span className="tag" style={{ marginInlineStart: '0.4rem' }}>{t('settings.whatsappGroupCommunity')}</span>}
+                    </div>
+                    <div className="setting-row__hint">
+                      {g.participants != null && t('settings.whatsappGroupMembers', { count: g.participants })}
+                      {/* Posting into an announcement-only group requires being an admin
+                          of it, and that is not something we can fix from here. */}
+                      {g.isAdmin === false && ` · ${t('settings.whatsappGroupNotAdmin')}`}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm"
+                    disabled={approve.isPending || approvedIds.has(g.id)}
+                    onClick={() =>
+                      approve.mutate({ id: g.id, label: g.name, participants: g.participants, name: g.name })
+                    }
+                  >
+                    {approvedIds.has(g.id) ? t('settings.whatsappGroupApproved') : t('settings.whatsappGroupApprove')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="btn btn--sm" style={{ marginBlockStart: '0.5rem' }} onClick={() => setBrowsing(false)}>
+            {t('common.close')}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Admin commands over WhatsApp.
+ *
+ * The matrix is TRANSPOSED relative to the alerts one: rows are scopes, columns are
+ * people. The person axis is the small stable one (a masjid trusts a handful of
+ * numbers); the scope axis grows with every app installed. Rows = people × columns =
+ * a dozen apps is unusable at panel width.
+ *
+ * Each row lists the commands it grants, because "allow Yusuf !notice-board" is not
+ * legible on its own — and an app can add a command in an update, so the admin should
+ * be able to see what a grant currently covers.
+ */
+function WhatsAppCommands() {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const cfg = trpc.commands.get.useQuery();
+  const status = trpc.commands.status.useQuery(undefined, { refetchInterval: 30_000 });
+
+  const [askEnable, setAskEnable] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<{ phone: string; label: string } | null>(null);
+  const [newPhone, setNewPhone] = useState('');
+  const [newName, setNewName] = useState('');
+
+  const refresh = () => {
+    void utils.commands.get.invalidate();
+    void utils.commands.status.invalidate();
+  };
+  const onError = (e: { message?: string }) => toast(e.message || t('errors.generic'), 'error');
+
+  const setEnabled = trpc.commands.setEnabled.useMutation({ onSuccess: refresh, onError });
+  const addPerson = trpc.commands.addPerson.useMutation({
+    onSuccess: () => {
+      setNewPhone('');
+      setNewName('');
+      refresh();
+    },
+    onError,
+  });
+  const removePerson = trpc.commands.removePerson.useMutation({
+    onSuccess: () => {
+      setConfirmRemove(null);
+      refresh();
+    },
+    onError,
+  });
+  const setScope = trpc.commands.setScope.useMutation({ onSuccess: refresh, onError });
+
+  // The probe's verdict, in words. The raw counts are the evidence; the sentence is
+  // what tells an admin whose problem it is.
+  const [probeResult, setProbeResult] = useState<string | null>(null);
+  const probe = trpc.commands.probe.useMutation({
+    onSuccess: (r) => {
+      const g = r.gateway;
+      // A dead page reads as "no activity" unless it is reported separately — and
+      // that is exactly the failure being looked for.
+      if (g.chatsError) {
+        setProbeResult(t('settings.commandsProbeFailed', { reason: g.chatsError }));
+        return;
+      }
+      if (!g.ok) {
+        setProbeResult(t('settings.commandsProbeFailed', { reason: g.error ?? '' }));
+        return;
+      }
+      const heard = g.incoming;
+      const when = g.newestIncomingAt ? new Date(g.newestIncomingAt).toLocaleString() : '';
+      const chatAt = g.newestChatActivityAt ? Date.parse(g.newestChatActivityAt) : 0;
+      const msgAt = g.newestIncomingAt ? Date.parse(g.newestIncomingAt) : 0;
+      // THE signature of an alive-but-deaf engine: WhatsApp shows a conversation more
+      // recent than anything the gateway managed to record. It can see the chat and
+      // cannot hear the message.
+      const deaf = g.chatsOk && chatAt > 0 && chatAt > msgAt + 60_000;
+
+      if (deaf) {
+        setProbeResult(
+          t('settings.commandsProbeBridgeDead', { when: new Date(chatAt).toLocaleString() }),
+        );
+      } else if (heard === 0) {
+        setProbeResult(t('settings.commandsProbeDeaf'));
+      } else if (r.inbound.counters.seen === 0 && Object.keys(r.inbound.dropped).length === 0) {
+        setProbeResult(t('settings.commandsProbeNotPassedOn', { count: heard, when }));
+      } else {
+        setProbeResult(t('settings.commandsProbeReaching', { count: heard, when }));
+      }
+    },
+    onError,
+  });
+
+  if (!cfg.data) return null;
+  const { enabled, people, grants, adminPhone, adminName } = cfg.data;
+  const s = status.data;
+
+  // Group the rows the way the alerts matrix does, so OpenMasjidOS's two halves sit
+  // under one heading.
+  const groups = new Map<string, typeof grants>();
+  for (const g of grants) groups.set(g.group, [...(groups.get(g.group) ?? []), g]);
+
+  const colHead = {
+    width: '5rem',
+    textAlign: 'center' as const,
+    color: 'var(--color-ink-muted)',
+    fontSize: '0.8rem',
+    paddingInlineStart: '0.4rem',
+  };
+  const cell = { width: '5rem', display: 'flex', justifyContent: 'center', paddingInlineStart: '0.4rem' };
+
+  const alreadyListed = people.some((p) => p.phone === adminPhone);
+
+  return (
+    <div style={{ marginBlockStart: '1rem' }}>
+      <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        {t('settings.commands')}
+        {enabled && (
+          <StatusDot
+            online={s?.state === 'connected'}
+            label={s?.state === 'silent' ? t('settings.commandsDotSilent') : undefined}
+          />
+        )}
+      </div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.commandsHint')}</div>
+
+      <div className="setting-row">
+        <div className="setting-row__text" style={{ flex: 1 }}>
+          <div className="setting-row__title">{t('settings.commandsEnable')}</div>
+          <div className="setting-row__hint">{t('settings.commandsEnableHint')}</div>
+        </div>
+        <Toggle
+          checked={enabled}
+          onChange={(v) => (v ? setAskEnable(true) : setEnabled.mutate({ enabled: false }))}
+          label={t('settings.commandsEnable')}
+        />
+      </div>
+
+      {enabled && (
+        <>
+          {/* People. Kept visible even with the switch off would be pointless here —
+              but turning it off never DELETES the list, which would be surprising loss. */}
+          <div className="setting-row__title" style={{ marginBlockStart: '0.8rem' }}>
+            {t('settings.commandsPeople')}
+          </div>
+          <div className="setting-row__hint">{t('settings.commandsPeopleHint')}</div>
+
+          {people.length > 0 && (
+            <div className="glass-inset panel" style={{ marginBlock: '0.6rem', padding: '0.6rem 0.9rem' }}>
+              {people.map((p) => (
+                <div className="setting-row" key={p.phone}>
+                  <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                    <div className="setting-row__title">{p.label}</div>
+                    <div className="setting-row__hint">
+                      +{p.phone}
+                      {p.scopes.length === 0 && ` · ${t('settings.commandsNoGrants')}`}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn--sm"
+                    disabled={removePerson.isPending}
+                    onClick={() => setConfirmRemove({ phone: p.phone, label: p.label })}
+                  >
+                    {t('actions.remove')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Aligned at the TOP, not the bottom. PhoneField carries its own hint under
+              the inputs, so bottom-aligning made every sibling hang two lines lower
+              than the number field it sits beside. Both blocks are label + control row,
+              so their labels and their inputs line up on their own. The Add button
+              lives INSIDE the name field's control row for the same reason — as a
+              third flex child it had no label above it and nothing to align to. */}
+          <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <PhoneField
+              id="cmd-phone"
+              label={t('settings.commandsPhone')}
+              value={newPhone}
+              onChange={setNewPhone}
+              disabled={addPerson.isPending}
+            />
+            <div className="field" style={{ flex: '1 1 16rem', minInlineSize: '13rem' }}>
+              <label className="label" htmlFor="cmd-name">{t('settings.commandsName')}</label>
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                <input
+                  id="cmd-name"
+                  className="input glass-inset"
+                  style={{ flex: '1 1 auto', minInlineSize: '8rem' }}
+                  value={newName}
+                  maxLength={60}
+                  placeholder={t('settings.commandsNamePlaceholder')}
+                  disabled={addPerson.isPending}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newPhone.trim() && newName.trim()) {
+                      addPerson.mutate({ phone: newPhone, label: newName });
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn--primary"
+                  style={{ flex: '0 0 auto' }}
+                  disabled={addPerson.isPending || !newPhone.trim() || !newName.trim()}
+                  onClick={() => addPerson.mutate({ phone: newPhone, label: newName })}
+                >
+                  {t('settings.commandsAdd')}
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Offered, never automatic: the admin's number was collected as a place to
+              send alerts, not as a way to authorise changes. No scopes are ticked.
+              On its own line so it cannot disturb the alignment above. */}
+          {adminPhone && !alreadyListed && (
+            <button
+              className="btn btn--sm"
+              style={{ marginBlockStart: '0.4rem' }}
+              onClick={() => addPerson.mutate({ phone: adminPhone, label: adminName || t('settings.commandsMe') })}
+            >
+              {t('settings.commandsAddMe')}
+            </button>
+          )}
+
+          {people.length > 0 && (
+            <>
+              <div className="setting-row__title" style={{ marginBlockStart: '1rem' }}>
+                {t('settings.commandsWhoCan')}
+              </div>
+              {/* Physical on purpose: `overflow-inline` is barely supported, and a
+                  horizontal scroller flips correctly in RTL on its own. */}
+              <div style={{ overflowX: 'auto' }}>
+                {[...groups.entries()].map(([group, rows]) => (
+                  <div key={group} style={{ marginBlockStart: '0.7rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'end', marginBlockEnd: '0.15rem' }}>
+                      <div className="setting-row__title" style={{ flex: 1, color: 'var(--color-ink-muted)' }}>
+                        {group}
+                      </div>
+                      {people.map((p) => (
+                        <div key={p.phone} style={colHead}>{p.label}</div>
+                      ))}
+                    </div>
+                    {rows.map((r) => (
+                      <div className="setting-row" key={r.key}>
+                        <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
+                          <div className="setting-row__title">{r.label || `!${r.word}`}</div>
+                          <div className="setting-row__hint">
+                            {r.available
+                              ? r.commands.map((c) => c.label).join(' · ')
+                              : t('settings.commandsAppNone')}
+                          </div>
+                        </div>
+                        {people.map((p) =>
+                          r.available ? (
+                            <div key={p.phone} style={cell}>
+                              <Toggle
+                                checked={p.scopes.includes(r.key)}
+                                onChange={(v) => setScope.mutate({ phone: p.phone, scope: r.key, allowed: v })}
+                                label={`${p.label} — ${r.group} ${r.label}`}
+                              />
+                            </div>
+                          ) : (
+                            // A third state, not a dead switch: there is nothing to grant.
+                            <div key={p.phone} style={{ ...cell, alignItems: 'center' }}>
+                              <span className="hint">—</span>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {s && (
+            <>
+              <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
+                {s.state === 'connected'
+                  ? t('settings.commandsStateConnected')
+                  : s.state === 'silent'
+                    ? s.detail
+                    : s.state === 'no-senders'
+                      ? t('settings.commandsStateNoSenders')
+                      : s.state === 'not-linked'
+                        ? t('settings.commandsStateNotLinked')
+                        : s.state === 'off'
+                          ? t('settings.commandsStateOff')
+                          : t('settings.commandsStateProblem', { detail: s.detail })}
+              </p>
+              {/* ALWAYS shown, not just when the platform thinks something is wrong.
+                  The case that matters most is precisely the one where it thinks all is
+                  well — connected, subscribed, acked — and no message ever arrives. On
+                  the first real install this box was hidden behind a 'silent' state
+                  that the ack fix had just stopped it from reaching, so the admin was
+                  left staring at "Listening for commands." with no way to look further.
+
+                  It is the difference between "it doesn't work" and a fact somebody can
+                  act on: an empty list means the gateway has said nothing at all to us,
+                  a non-empty one names exactly what it did say. Event names only —
+                  never a payload, never a body. */}
+              {(
+                <div className="glass-inset panel" style={{ marginBlockStart: '0.5rem', padding: '0.6rem 0.9rem' }}>
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagHeard')}{' '}
+                    {s.eventNames.length === 0 ? (
+                      <strong>{t('settings.commandsDiagNothing')}</strong>
+                    ) : (
+                      <code style={{ userSelect: 'all' }}>{s.eventNames.join(', ')}</code>
+                    )}
+                  </div>
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagCounts', {
+                      seen: s.counters.seen,
+                      ignored: s.counters.ignoredUnknown,
+                      unreadable: s.counters.unparseable,
+                    })}
+                  </div>
+                  {/* The reason a message that DID arrive was thrown away. Without
+                      this, "it arrived and we discarded it" and "nothing arrived" look
+                      identical from here — which is exactly the ambiguity that cost a
+                      round trip. Reason words and counts; no content. */}
+                  {Object.keys(s.dropped).length > 0 && (
+                    <div className="setting-row__hint">
+                      {t('settings.commandsDiagDropped')}{' '}
+                      <code style={{ userSelect: 'all' }}>
+                        {Object.entries(s.dropped)
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([reason, n]) => `${reason} ×${n}`)
+                          .join(', ')}
+                      </code>
+                    </div>
+                  )}
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagAck', {
+                      ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
+                    })}
+                  </div>
+                  {/* Raw transport activity vs application events. Traffic with no
+                      events means the gateway is not emitting to us; no traffic at all
+                      means the socket is not really carrying anything despite saying
+                      connected. Opposite fixes, identical symptoms without this. */}
+                  <div className="setting-row__hint">
+                    {t('settings.commandsDiagWire', {
+                      packet: s.lastPacketAt ? new Date(s.lastPacketAt).toLocaleTimeString() : '—',
+                      event: s.lastEventAt ? new Date(s.lastEventAt).toLocaleTimeString() : '—',
+                    })}
+                  </div>
+                  {/* The one question that splits the problem in half: has the GATEWAY
+                      itself heard anything from WhatsApp? If not, nothing on our side
+                      matters. Read-only, and it reads counts and times — never a body. */}
+                  <div style={{ marginBlockStart: '0.6rem' }}>
+                    <button className="btn btn--sm" disabled={probe.isPending} onClick={() => probe.mutate()}>
+                      {probe.isPending ? t('common.working') : t('settings.commandsProbe')}
+                    </button>
+                    {probeResult && (
+                      <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>
+                        {probeResult}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      <ConfirmDialog
+        open={askEnable}
+        onClose={() => setAskEnable(false)}
+        onConfirm={() => {
+          setAskEnable(false);
+          setEnabled.mutate({ enabled: true });
+        }}
+        title={t('settings.commandsRiskTitle')}
+        body={t('settings.commandsRiskBody')}
+        cost={t('settings.commandsRiskCost')}
+        confirmLabel={t('settings.commandsRiskAccept')}
+        pending={setEnabled.isPending}
+      />
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        onClose={() => setConfirmRemove(null)}
+        onConfirm={() => confirmRemove && removePerson.mutate({ phone: confirmRemove.phone })}
+        title={t('settings.commandsRemoveTitle', { name: confirmRemove?.label ?? '' })}
+        body={t('settings.commandsRemoveBody')}
+        confirmLabel={t('actions.remove')}
+        pending={removePerson.isPending}
+      />
+    </div>
+  );
+}
+
 function AlertsPanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -1591,6 +2649,7 @@ function AlertsPanel() {
             <div className="setting-row__title" style={{ flex: 1, color: 'var(--color-ink-muted)' }}>{g.label}</div>
             <div style={colHead}>{t('settings.alertsEmail')}</div>
             <div style={colHead}>{t('settings.alertsWebhook')}</div>
+            <div style={colHead}>{t('settings.alertsWhatsapp')}</div>
           </div>
           {g.items.map((r) => (
             <div className="setting-row" key={`${r.source}:${r.id}`}>
@@ -1611,6 +2670,32 @@ function AlertsPanel() {
                   onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'webhook', enabled: v })}
                   label={`${r.label} — ${t('settings.alertsWebhook')}`}
                 />
+              </div>
+              {/* WhatsApp is only for the platform's own alerts. An app that messages
+                  people over WhatsApp is reaching a parent or a donor, not the admin's
+                  phone — so who it messages, and what it says, belongs in that app's own
+                  settings. A toggle here would have implied the platform could route an
+                  app's messages to the right people, when it only knows one number. */}
+              <div
+                style={{
+                  width: '4.5rem',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  paddingInlineStart: '0.4rem',
+                }}
+              >
+                {r.whatsappAvailable ? (
+                  <Toggle
+                    checked={r.channels.whatsapp}
+                    onChange={(v) => setChannel.mutate({ source: r.source, id: r.id, channel: 'whatsapp', enabled: v })}
+                    label={`${r.label} — ${t('settings.alertsWhatsapp')}`}
+                  />
+                ) : (
+                  <span className="hint" style={{ textAlign: 'center', lineHeight: 1.2 }}>
+                    {t('settings.alertsWhatsappInApp')}
+                  </span>
+                )}
               </div>
             </div>
           ))}

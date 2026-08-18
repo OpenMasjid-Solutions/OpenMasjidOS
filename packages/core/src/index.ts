@@ -27,12 +27,14 @@ import { backupStream, backupFilename, BackupBusyError } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
-import { registerFabricTunnelGuard } from './system/via-tunnel';
+import { registerFabricTunnelGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI } from './api/static-ui';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
 import { startStripeMonitor } from './system/stripe-monitor';
+import { setInboundHandler, startWhatsAppInbound } from './notify/whatsapp-inbound';
+import { handleInboundCommand } from './commands/execute';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
 import { registerUpdate } from './api/update';
@@ -144,8 +146,14 @@ async function main() {
   // effect, and same-site apps on another port share the cookie). WebSocket
   // upgrades are exempt here (they're origin-checked in createContext), and dev /
   // absent-Origin (non-browser) requests are allowed by isAllowedOrigin.
+  // `urlHasPrefix` (not `req.url.startsWith`) because Fastify dispatches on the
+  // percent-DECODED path: `/%74rpc/auth.setup` does not start with `/trpc` as raw
+  // text, but the router still routes it to the tRPC handler — so a raw-text
+  // comparison here skipped the origin check entirely for any encoded spelling.
+  // Same class as the `/api/%66abric/...` walk-past fixed in v0.46.0; CLAUDE.md §15
+  // forbids a raw-string startsWith in a security check by name.
   server.addHook('onRequest', async (req, reply) => {
-    if (req.url.startsWith('/trpc') && !isWebSocketUpgrade(req) && !isAllowedOrigin(req)) {
+    if (urlHasPrefix(req.url, '/trpc') && !isWebSocketUpgrade(req) && !isAllowedOrigin(req)) {
       return reply.code(403).send({ error: 'This request came from an unexpected place.' });
     }
   });
@@ -237,15 +245,34 @@ async function main() {
     // so this guard blocks tunnel-origin requests before they match. One shared
     // implementation (system/via-tunnel.ts) so the broker + ingress agree.
     registerFabricTunnelGuard(front);
-    front.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
-    front.get('/api/ready', async () => ({ ready: await dockerReachable() }));
+    // Health and readiness are for the container healthcheck and the installer, both
+    // of which reach us over loopback on the LAN. They are REGISTERED routes, so they
+    // skip the notFoundHandler below that 404s tunnel traffic — which left
+    // `{"status":"ok","version":"0.51.0"}` readable by anyone on the internet who
+    // found the tunnel hostname. That is a free "which build is this masjid running,
+    // and which advisories apply to it" lookup, so it gets the same LAN-only
+    // treatment as the secret routes. Nothing real breaks: the Docker healthcheck
+    // and `install.sh` both call loopback and send no `cf-ray`.
+    front.get('/api/health', async (req, reply) => {
+      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      return { status: 'ok', version: VERSION };
+    });
+    front.get('/api/ready', async (req, reply) => {
+      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      return { ready: await dockerReachable() };
+    });
     registerFabric(front);
     front.setNotFoundHandler((req, reply) => {
       // Traffic that arrived through the Cloudflare tunnel for a non-app path: don't
       // 308-redirect (it would loop the tunnel) and don't expose the dashboard —
       // just 404. The admin UI stays LAN-only; only app paths are public.
-      const viaTunnel = Boolean(req.headers['cf-ray']) || req.headers['x-forwarded-proto'] === 'https';
-      if (viaTunnel) return reply.code(404).send({ error: 'Not found.' });
+      //
+      // Uses the SHARED detector, not a hand-rolled one. This line used to be its own
+      // `x-forwarded-proto === 'https'` comparison, so the same listener classified
+      // the same request two different ways — the Fabric guard robustly, this one
+      // naively, missing `"HTTPS"`, `"https,http"` and a duplicated header (the exact
+      // spellings `forwardedProtoIsHttps` exists to catch).
+      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
       const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
       if (!host) return reply.code(400).send({ error: 'Bad request.' });
       const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
@@ -288,6 +315,13 @@ async function main() {
   // to a new subnet used to leave every app calling the old IP forever, because
   // OPENMASJID_BASE_URL was resolved once at install and never revisited.
   startAddressMonitor();
+
+  // Listen for admin commands sent to the masjid's WhatsApp number. No-op — it does
+  // not even open a socket — until the feature is switched on AND someone is on the
+  // authorised list AND a phone is linked. Outbound is untouched: replies go through
+  // the one queue in notify/whatsapp.ts.
+  setInboundHandler(handleInboundCommand);
+  startWhatsAppInbound();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

@@ -93,9 +93,15 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
       <div className={`win glass-raised win-enter${win.wide ? ' win--wide' : ''}`} style={win.fullscreen ? { width: '100%', height: '100%', maxHeight: 'none' } : undefined}>
         <header className="win-head" onPointerDown={startDrag} onDoubleClick={() => toggleFullscreen(win.id)}>
           <div className="traffic" role="group" aria-label="Window controls">
-            <button className="tl tl-close" aria-label={t('common.close')} onClick={() => close(win.id)}>
-              <X size={9} strokeWidth={3.5} />
-            </button>
+            {/* No close control while the window is locked (an update in progress). The
+                manager's close() refuses it anyway; hiding the button stops it being an
+                invitation. Minimize stays — the work is unaffected and the dock brings it
+                back, so it is not a way out of it. */}
+            {!win.locked && (
+              <button className="tl tl-close" aria-label={t('common.close')} onClick={() => close(win.id)}>
+                <X size={9} strokeWidth={3.5} />
+              </button>
+            )}
             <button className="tl tl-min" aria-label="Minimize" onClick={() => minimize(win.id)}>
               <Minus size={9} strokeWidth={3.5} />
             </button>

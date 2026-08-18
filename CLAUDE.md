@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # CLAUDE.md — OpenMasjidOS
 
 > This file is the single source of truth for the OpenMasjidOS project. Read it fully before writing any code. When in doubt, follow this document over your own assumptions. If something here is ambiguous, ask before guessing.
@@ -84,8 +87,8 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 ### ✅ In scope (v1.0)
 - **A full-lifecycle one-line `curl | bash` installer.** On a fresh machine it runs a complete guided **install**. On a machine that already has OpenMasjidOS, the same command opens a **management menu**: Update / Repair / Reconfigure network / Uninstall. Works on common Linux (Debian/Ubuntu, Raspberry Pi OS, Fedora), architecture-aware (amd64 + arm64).
 - Installer auto-installs Docker + the Docker Compose plugin if missing, sets up OpenMasjidOS as a managed service, and during install also:
-  - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §8).
-  - **Sets a hostname and mDNS** so the dashboard is reachable at **`http://openmasjidos.local`** (plus the raw IP as a fallback).
+  - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §8). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped.
+  - **Sets a hostname and mDNS** so the dashboard is reachable at **`openmasjidos.local`** (plus the raw IP as a fallback). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped. Today the dashboard is reached at `https://<server-ip>`, and the `.local` name only appears as a certificate SAN so it will work if mDNS is ever added.
 - **Web UI authentication.** The dashboard is always behind a login. The **first time** the dashboard is opened, the user creates the **admin account**. Sessions use secure, HTTP-only cookies. No part of the UI is reachable unauthenticated except the login/first-run screen.
 - **Core backend (daemon):** a type-safe **tRPC** API (over HTTP, with WebSocket subscriptions for live data). Manages container lifecycle via the Docker Engine API.
 - **Dashboard home with live system stats:** CPU %, RAM used/total, disk used/total, CPU temperature (where available), uptime, and count of running apps — updated live — alongside the grid of installed apps.
@@ -197,53 +200,77 @@ OpenMasjidOS/
 ├── Dockerfile                 # multi-stage: build ui + core → one runtime image
 ├── docker-compose.yml         # how the core runs itself
 │
+├── assets/                    # brand/readme images
+├── signatures/                # CLA signatures land on the cla-signatures branch, not here
+│
 ├── packages/
 │   ├── core/                  # Node + TypeScript daemon (the "umbreld" equivalent)
 │   │   ├── src/
-│   │   │   ├── index.ts                # boot: Fastify + tRPC + WS + static UI
+│   │   │   ├── index.ts                # boot: TLS dashboard + HTTP front door, tRPC, WS, static UI
+│   │   │   ├── config.ts  logger.ts  version.ts
+│   │   │   ├── reset-password.ts  reset-auth.ts   # installer "Reset sign-in" entry points
 │   │   │   ├── trpc/
 │   │   │   │   ├── router.ts            # root AppRouter (exported type → UI)
-│   │   │   │   ├── auth.ts              # first-run, login, sessions
-│   │   │   │   ├── apps.ts              # catalog app lifecycle
-│   │   │   │   ├── custom.ts            # 3rd-party pasted-compose install
-│   │   │   │   ├── store.ts             # App Store catalog client + cache
-│   │   │   │   ├── settings.ts          # platform settings (NO masjid data)
-│   │   │   │   ├── stats.ts             # live system stats subscription
-│   │   │   │   └── system.ts            # updates, backup/restore, network info
-│   │   │   ├── auth/                    # argon2, session helpers
-│   │   │   ├── docker/                  # dockerode + compose wrappers (single entry point)
-│   │   │   ├── apps/                    # manifest parsing + lifecycle logic
-│   │   │   ├── store/                   # catalog fetch + cache
-│   │   │   └── stats/                   # systeminformation host metrics
-│   │   ├── package.json
-│   │   └── tsconfig.json
+│   │   │   │   ├── context.ts  trpc.ts  # session/CSRF context, procedure builders
+│   │   │   │   └── routers/             # one file per area: auth, apps, store, community,
+│   │   │   │                            #   custom, settings, stats, system, files, backups,
+│   │   │   │                            #   alerts, notifications, email, whatsapp, commands,
+│   │   │   │                            #   stripe, cloudflare
+│   │   │   ├── api/                     # plain HTTP/WS routes: fabric, files, terminals,
+│   │   │   │                            #   update, app-update, restore, branding,
+│   │   │   │                            #   static-ui, ws-auth
+│   │   │   ├── auth/                    # argon2 (@node-rs/argon2), sessions, admin store
+│   │   │   ├── docker/                  # dockerode + the one `docker compose` wrapper
+│   │   │   ├── apps/                    # manifest parsing, lifecycle, compose-validate (the gate)
+│   │   │   ├── commands/                # WhatsApp admin commands: normalise → gate → parse →
+│   │   │   │                            #   registry → execute, + reply/conversation/os
+│   │   │   ├── fabric/                  # app↔app broker (appLink), proxy, appCommands
+│   │   │   ├── files/                   # File Explorer sandbox (protectedReason)
+│   │   │   ├── notify/                  # email, webhook, alerts, whatsapp, whatsapp-inbound
+│   │   │   ├── settings/                # platform settings store (NO masjid data)
+│   │   │   ├── stats/                   # systeminformation host metrics
+│   │   │   ├── store/                   # catalog/casaos/changelog + config stores
+│   │   │   │                            #   (email, whatsapp, stripe, commands, branding)
+│   │   │   ├── stripe/                  # dispute (chargeback) polling
+│   │   │   ├── system/                  # channel, tls, ingress, app-proxy, app-host, backup,
+│   │   │   │                            #   restore, cloudflared, update-lock, monitors, …
+│   │   │   └── util/                    # phone, version, origin, id, json-store, image-size
+│   │   ├── test/              # node:test. EVERY file must be listed in package.json's
+│   │   │                      #   `test` script — an unlisted test never runs (§17).
+│   │   ├── package.json  tsconfig.json  tsconfig.test.json
 │   │
-│   └── ui/                    # React + Vite + Tailwind v4 + shadcn
+│   └── ui/                    # React + Vite + Tailwind v4
 │       ├── src/
-│       │   ├── main.tsx
-│       │   ├── routes/
-│       │   │   ├── login/              # login + first-run admin creation
-│       │   │   ├── dashboard/          # home: system stats + installed apps grid
-│       │   │   ├── store/              # App Store (+ "3rd Party App" entry when enabled)
-│       │   │   ├── store/custom/       # paste-a-compose install UI
-│       │   │   ├── apps/$id/           # app detail: status, logs, controls
-│       │   │   └── settings/           # customize + account + advanced
-│       │   ├── components/             # shadcn-based + masjid components, stat gauges
+│       │   ├── main.tsx  App.tsx  Root.tsx
+│       │   ├── routes/                 # flat .tsx files: Dashboard, Store, StoreCustom,
+│       │   │                           #   AppDetail, Files, Settings, NotFound
+│       │   │                           #   (login/first-run is components/AuthScreen.tsx)
+│       │   ├── components/             # AppCard, Dock, Modal, PhoneField, Terminal,
+│       │   │                           #   SceneBackground, Windows, Glyphs, …
 │       │   ├── lib/
-│       │   │   ├── trpc.ts             # typed client (imports AppRouter type from core)
-│       │   │   ├── theme/              # tokens.css, theme provider, RTL handling
-│       │   │   ├── motion/             # shared Motion presets (springs, transitions)
-│       │   │   └── i18n/               # locales + helpers (RTL aware)
-│       │   └── index.css               # Tailwind v4 @import + @theme tokens
+│       │   │   ├── trpc.ts             # typed client (imports AppRouter TYPE from core)
+│       │   │   ├── prefs.ts            # theme/accent/wallpaper applied pre-paint
+│       │   │   ├── motion.ts           # shared Motion presets
+│       │   │   ├── version.ts          # deliberate copy of core's util/version.ts (§13.4)
+│       │   │   └── i18n/               # en.json + helpers (RTL aware)
+│       │   ├── styles/                 # tokens.css (theme tokens), app.css, glass.css
+│       │   └── index.css               # Tailwind v4 @import
 │       └── package.json
 │
-├── scripts/                   # dev helpers used by package.json/install.sh
 └── docs/
     ├── ARCHITECTURE.md
-    ├── APP_MANIFEST_SPEC.md   # catalog contract + the OpenMasjidOS Fabric (app integration: appearance + SSO)
-    ├── NETWORKING.md          # static IP + mDNS behaviour and safety notes
-    └── THEMING.md
+    ├── APP_MANIFEST_SPEC.md   # catalog contract + the Fabric (appearance, SSO, email, whatsapp, commands)
+    ├── FABRIC_APP_LINK_AND_TUNNEL.md  # app↔app broker + per-app tunnel exposure
+    ├── WHATSAPP.md            # gateway, pacing, groups, admin commands
+    ├── SECURITY.md            # the security model, as told to an operator
+    ├── NETWORKING.md          # how the dashboard is reached on the LAN
+    ├── THEMING.md
+    └── audit/                 # point-in-time audit records (dated; not a live to-do list)
 ```
+
+> There is no `scripts/` directory. This tree listed one for a long time; dev helpers live in
+> the root `package.json` scripts instead. Keep this tree honest — it is the map a new session
+> reads before touching anything, and every wrong entry here costs someone a search.
 
 **Type-only import rule:** `packages/ui` may import **types** from `packages/core` (e.g. `import type { AppRouter } from "@openmasjid/core"`), never runtime code. The browser bundle must not contain server code.
 
@@ -254,63 +281,78 @@ OpenMasjidOS/
 **Goal:** a non-technical masjid volunteer copies one line, pastes it into their server's terminal, answers a couple of friendly prompts, and a minute later gets a URL to open. Running the *same* line again later gives them safe maintenance options — they never need to remember any other command.
 
 ```bash
-bash -c "$(curl -fsSL https://get.openmasjid.org || wget -qO- https://get.openmasjid.org)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)"
 ```
 (The curl-or-wget form means it still works on minimal systems that ship without curl — the
-installer then installs curl itself for the steps that need it. Before a domain exists, swap the
-domain for the raw GitHub URL: `https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh`.)
+installer then installs curl itself for the steps that need it.)
+
+> **`get.openmasjid.org` does not exist yet, so the raw GitHub URL above is the real command.**
+> This section used to lead with the short domain and mention the raw URL as a fallback, which is
+> backwards while the domain does not resolve — and the README, which masjids actually copy from,
+> has always used the raw URL. **The two must not drift** (§19 requires the README one-liner be
+> accurate at all times); when the domain goes live, change both together.
 
 ### 8.1 Behaviour: detect state, then branch
 On start the script detects whether OpenMasjidOS is already installed (presence of `/opt/openmasjid` and/or the core container).
 
 **A) Fresh machine → guided INSTALL** (see 8.2).
-**B) Already installed → MANAGEMENT MENU:**
+**B) Already installed → MANAGEMENT MENU** (`menu_existing`, as shipped):
 ```
-OpenMasjidOS is already installed (vX.Y.Z).
+OpenMasjidOS is already installed
 What would you like to do?
-  1) Update            — get the latest version (keeps all data & apps)
-  2) Repair            — re-apply config, re-pull, restart, fix permissions
-  3) Reconfigure network — change static IP / hostname (.local)
-  4) Uninstall         — remove OpenMasjidOS
-  5) Quit
+  1) Update        — get the latest version (keeps your apps & data)
+  2) Repair        — fix a broken install and restart
+  3) Reset sign-in — new password + re-link apps (keeps all data)
+  4) Remove        — uninstall (your apps & data stay safe)
+  5) Quit          — do nothing
 ```
-- **Update:** pull latest `openmasjid/core`, recreate the core container, keep data and all installed apps untouched.
-- **Repair:** rewrite the core `docker-compose.yml`, re-pull, restart, re-ensure avahi + hostname, fix `/opt/openmasjid` permissions. Non-destructive.
-- **Reconfigure network:** re-run the static-IP and hostname steps from install.
-- **Uninstall:** stop & remove the core. Then ask, separately and explicitly: *"Also remove all installed apps and their data? This cannot be undone."* Removing data requires the user to type `DELETE` to confirm. Default is to keep app data.
+- **Update:** resolve the channel's newest build (`resolve_image`), recreate the core container, keep data and all installed apps untouched.
+- **Repair:** rewrite the core `docker-compose.yml`, re-pull **the exact reference already there**, restart, fix `/opt/openmasjid` permissions. Non-destructive, and deliberately never moves the machine to another version or channel.
+- **Reset sign-in:** run the core's `reset-auth` / `reset-password` entry points — a new admin password and re-issued per-app secrets, keeping all data. This is the way back in when nobody knows the password.
+- **Remove:** stop & remove the core. Then ask, separately and explicitly: *"Also remove all installed apps and their data? This cannot be undone."* Removing data requires the user to type `DELETE` to confirm. Default is to keep app data.
+
+> **There is no "Reconfigure network" entry, and no mDNS or static-IP code in `install.sh` at all.**
+> §4 still lists both as v1.0 scope and they remain wanted — but they are **not implemented**, so
+> nothing in this file, the README or `docs/NETWORKING.md` may describe them as things the installer
+> does. Today the dashboard is reached by IP over HTTPS; a masjid wanting a fixed address adds a DHCP
+> reservation on their router. If you implement it, this menu and §8.2 steps 4–5 are the spec.
 
 ### 8.2 Guided INSTALL steps
 The script must:
 1. Be **POSIX-ish bash**, fail fast (`set -euo pipefail`), and be idempotent (re-running is always safe).
 2. Detect OS + architecture; refuse clearly on unsupported platforms with a friendly message.
 3. Ensure `curl` is present (many minimal systems/LXC templates ship without it) — install it via the system package manager if missing. Then ensure Docker is present; if missing, install via the official convenience method, then ensure the `docker compose` plugin exists.
-4. **Networking — static IP (optional, guided, safe):**
-   - Detect the active network stack (netplan / NetworkManager-`nmcli` / systemd-networkd / dhcpcd) and the current interface, IP, and gateway.
-   - **If a cloud/VPS environment is detected, default to SKIP** and say so (the provider manages addressing; changing it can lock the user out).
-   - Otherwise *offer* to pin the current IP as a static address. Show the exact proposed config and require a yes/no confirmation. Warn that changing the IP on a remote box can drop the SSH session.
-   - Apply via the detected tool only after confirmation. If anything looks risky/unknown, skip and tell the user how to do it manually (link `docs/NETWORKING.md`).
-5. **Networking — hostname + mDNS:**
-   - Set the system hostname (default `openmasjidos`, prompt to accept/change).
-   - Install and enable `avahi-daemon` so the box answers at `openmasjidos.local` on the LAN.
+4. **NOT IMPLEMENTED — static IP.** Spec, for whoever builds it: detect the active network stack (netplan / NetworkManager-`nmcli` / systemd-networkd / dhcpcd) and the current interface, IP and gateway; **default to SKIP on a detected cloud/VPS** (the provider manages addressing and changing it can lock the user out); otherwise *offer* to pin the current IP, showing the exact proposed config and requiring a yes/no confirmation, warning that changing the IP on a remote box can drop the SSH session; apply via the detected tool only after confirmation, and skip with a pointer to `docs/NETWORKING.md` if anything looks unknown.
+5. **NOT IMPLEMENTED — hostname + mDNS.** Spec: set the system hostname (default `openmasjidos`, prompt to accept/change) and install/enable `avahi-daemon` so the box answers at `openmasjidos.local` on the LAN.
 6. Create the data directory at `/opt/openmasjid` (config, volumes, app state).
-7. Write/refresh the core `docker-compose.yml` (mounts `/var/run/docker.sock`, host `/proc` & `/sys` read-only, and `/opt/openmasjid`), and pull `openmasjid/core:latest`.
+7. Write/refresh the core `docker-compose.yml` (mounts `/var/run/docker.sock`, host `/proc` & `/sys` read-only, and `/opt/openmasjid`), and pull the reference `resolve_image` decided.
 8. Start the core as a `restart: unless-stopped` service so it survives reboots; wait for health.
-9. **Print a clear success box**, e.g.:
+9. **Print a clear success box.** As shipped it names one HTTPS address, the machine's IP — because that is the only address that actually works today — and warns about the self-signed certificate, since every device on the LAN meets that warning once:
    ```
-   ✅ OpenMasjidOS is ready!
-
-   Open it in your browser:
-     →  http://openmasjidos.local      (easiest)
-     →  http://192.168.1.50             (works everywhere on your network)
-
-   First time? You'll be asked to create your admin account.
-   Need help? https://openmasjid.org/help
+   ╔══════════════════════════════════════════════════════════╗
+   ║  [=]  OpenMasjidOS is ready!                             ║
+   ║  Open your browser and go to:                            ║
+   ║  https://192.168.1.50                                    ║
+   ╠══════════════════════════════════════════════════════════╣
+   ║  First time?                                             ║
+   ║  The setup wizard will guide you through creating         ║
+   ║  your admin account to sign in.                          ║
+   ╠══════════════════════════════════════════════════════════╣
+   ║  Need help or want to report an issue?                   ║
+   ║  https://github.com/OpenMasjid-Solutions/OpenMasjidOS    ║
+   ╚══════════════════════════════════════════════════════════╝
    ```
+   Point at the GitHub repo, **not** `openmasjid.org/help` — that domain does not resolve, and a
+   dead link in the one message every masjid reads is worse than no link.
 
 ### 8.3 Flags (for advanced/automated use; interactive is the default)
-Support non-interactive overrides: `--yes` (accept defaults), `--hostname <name>`, `--static-ip <cidr> --gateway <ip> --iface <name>`, `--no-network` (skip static IP **and** hostname changes), `--port <n>` (default `80`).
+As shipped, `main()` parses exactly: `--install`, `--update`, `--repair`, `--reset-signin`, `--uninstall` / `--remove`, `--channel=main|dev`, and `--dev` (shorthand for `--channel=dev`). An unrecognised channel is a hard error rather than a guess.
 
-**Default port:** `80` (so the dashboard URL needs no port suffix). **Data dir:** `/opt/openmasjid`.
+> **`--yes`, `--hostname`, `--static-ip`, `--gateway`, `--iface`, `--no-network` and `--port` are NOT implemented.** This section listed them for a long time; the arg loop ignores them, so passing one is silently a no-op — the worst kind of documented flag. `PORT=80` / `TLS_PORT=443` are constants at the top of the script. Add the flag *and* the doc line together, or neither.
+
+**The installer must never move a machine between update channels by accident.** `write_compose_file` wrote `image: …:latest` unconditionally and both Update and Repair call it, so a Development box that ran the one-liner to repair a broken update was silently put back on Stable — which also meant a broken dev box could not be repaired from the installer at all. `resolve_image` now decides: an explicit `--channel` wins; otherwise the tag already in `${DATA_DIR}/docker-compose.yml` is authoritative (the dashboard's `alignComposeImage` writes that same line, so it reflects a switch made in Settings). **Repair keeps the exact reference** — repair means "make this work again", never "move it to another version" — while **Update resolves to the channel alias**, because keeping the exact pinned version would make Update a no-op. A digest pin survives both. `is_installed` is deliberately generous (compose file *or* `config/` *or* `apps/` *or* the container): offering a fresh install to a masjid that has one reads as "your server is empty", and a damaged compose file is the likeliest casualty of a half-finished update.
+
+**Ports:** the dashboard is served over **HTTPS on 443** (`TLS_PORT`), with **80** (`PORT`) as an HTTP front door that 308-redirects browsers to HTTPS and carries the LAN-only Fabric routes for app backends (which cannot trust a self-signed cert server-to-server). So the dashboard URL needs no port suffix, but it is `https://`. **Data dir:** `/opt/openmasjid`.
 
 > The installer is piped to bash, so it must stay **readable and commented** — we are asking people to trust it. No obfuscation, ever. Keep it auditable and minimal in privilege.
 
@@ -391,6 +433,7 @@ fabric:                           # OPTIONAL — app-to-app broker (v0.40.0); ca
     - students/billing
 tunnel: true                      # OPTIONAL — REQUEST internet exposure (admin confirms in Settings)
 email: true                       # OPTIONAL (v0.41.0) — may POST /api/fabric/email to send mail
+whatsapp: true                    # OPTIONAL (v0.51.0) — may POST /api/fabric/whatsapp (QUEUES, never sends)
 alerts:                           # OPTIONAL (v0.41.0) — admin gets a granular on/off per alert
   - id: reader-offline            #   kebab id passed to POST /api/fabric/alert
     label: Card reader offline
@@ -461,6 +504,37 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 
 ### 13.2b Email (SMTP / Resend)
 - Configure ONE email provider — **SMTP** (host/port/TLS/user/pass) or **Resend** (API key) — plus a From address/name. The secret (SMTP password / Resend key) is stored in `config/email.json` (chmod 600) and never returned to the UI (only "is set" flags). A **"Send test email"** button verifies it, and a green/red status dot shows configured/not. Apps send mail through this over the Fabric (`POST /api/fabric/email`, `email` capability) — no app ever handles the credentials or the From address.
+
+### 13.2b-ii WhatsApp (OpenWA)
+
+- A second outbound transport beside email, through **OpenWA** — a self-hosted, MIT-licensed WhatsApp gateway the masjid installs **from the App Store** (the catalogue entry lives in OpenMasjidAPPS; the platform never runs it). The API key lives in `config/whatsapp.json` (chmod 600) and never returns to the UI (only an "is set" flag). The gateway is resolved automatically from the app registry at its published host port — via `system/app-host.ts`, the same no-SSRF rule the Fabric broker follows — with a typed `baseUrl` as the override for a gateway on another machine.
+- **The admin phone number lives on the admin record** (`auth/store.ts` `phone`, `getAdminPhone()`), exactly as the email does: a destination for OS alerts and the test message, **never a login identifier**. Stored as digits, so one number has one representation. Every phone input in the UI is `components/PhoneField.tsx` — a country picker plus the national number, never a free-text box asking for "international format", because `+1 555…` / `001555…` / `555…` all look reasonable and three of them are wrong. No phone library (libphonenumber is ~150 KB gzipped); the server's `toDigits` stays the authority and **never guesses a missing country code**.
+- **The whole feature is behind ONE switch that is off by default, and the gateway app is hidden until it is on.** `apps/managed.ts` marks OpenWA platform-managed: `visibleCatalog` keeps it out of the App Store unless `provider !== 'none'` (fail-closed — a managed id with no gate stays hidden), and `InstalledApp.managed` keeps it off the dashboard grid and out of the dock. Turning the switch on requires accepting the ban-risk warning, and then leads straight into installing it (`/store?install=<id>`). The reason is not tidiness: the platform **owns the session** — it creates, starts, pairs and paces — and every one of those guarantees breaks if an admin links a second phone in OpenWA's own UI or sends from there, bypassing the one queue. Opening OpenWA to *read or reply to chats* is fine and is the only thing the Settings button is for.
+- **This is an UNOFFICIAL client and the linked number can be restricted or banned.** That is stated in the UI *before* linking, not as a footnote, and in `docs/WHATSAPP.md`. Email remains the fallback, and nothing auth-critical (a login code, a password reset) may ever depend on WhatsApp.
+- **OpenWA's lifecycle is create → START → pair, and skipping the start is why linking returned a bare 400.** A created session has no engine, so every engine route answers `400 Session is not started`; the status panel meanwhile said "gateway running, no phone linked yet", which was true and pointed nowhere. `ensureStarted` reads the session first (`ready` = already linked, `engineLoaded` = already running, and `start` itself refuses a live engine with a 400 that must be read as success), and the pairing request retries a `409` because the engine takes a moment to come up after starting. The pump waits on the same check rather than spending a message's retry budget on "not linked yet". `restriction` from the session row is surfaced to the admin — it is the ban risk actually materialising, and swallowing it would leave a masjid wondering why messages stopped.
+- **ONE serialised queue owns all sending — never add a second path.** Ban risk attaches to the NUMBER, not to a caller, so two apps each sending "politely" at once still produce a burst. Every message — OS alerts and every app's Fabric call — goes through `notify/whatsapp.ts`. OpenWA's `send-bulk` is deliberately unused: it paces *within one request*, which does nothing about two requests overlapping.
+- Human sending behaviour, all of it load-bearing: randomised 6–20s gaps (a fixed interval is itself a fingerprint), a typing indicator scaled to message length then `paused`, presence online-while-working, a per-recipient cooldown, rolling hour/day caps, a warm-up ramp for a freshly linked number, quiet hours that **queue rather than drop**, and `contacts/check` before first contact (messaging a number that is not on WhatsApp is a documented ban signal). The policy is pure and unit-tested (`blockedReason`, `warmupFactor`, `inQuietHours`), and `clampLimits` means an admin can only make it **stricter** — a config copied from a bulk-sending tutorial cannot turn this into a blaster.
+- **Group posts go only to groups the ADMIN approved** (`store/whatsapp.ts` `isApprovedGroup` — the single authorisation check; `apps/` never see anything else). One message reaches everyone, which is exactly why the approval step is the security model and not a convenience: OpenWA's group list is the masjid's **entire** group membership, personal chats included, so `listGatewayGroups()` is admin-only (tRPC) and `GET /api/fabric/whatsapp/groups` returns the approved list alone — never a proxy of the gateway's. An unapproved id is a **403**, checked before anything is queued. Group JIDs are shape-validated (`isGroupJid`, `@g.us` only) before reaching a URL, and a `@c.us` address must never pass — it would silently turn "post to the parents group" into "message one person". **The platform never touches membership**: no add, remove, promote, demote or leave. Bulk-adding is both a top-tier ban signal and a consent failure, so people join by a link the masjid shares. Groups carry their own **tighter** budget (`groupPerHour`/`groupPerDay`/`perGroupCooldownSeconds`, default 4/hour, 10/day, 30 min) tracked separately in both directions — an announcement must not eat the allowance fee reminders need, nor the reverse — while quiet hours, the warm-up ramp and the ONE serialised queue apply unchanged. **WhatsApp Channels cannot be posted to at all** (OpenWA has no send endpoint for them); a Community's announcement group is just a group and works normally.
+- **An optional `media` sends an IMAGE** (`{data: base64, mimeType, filename?}`, `text` becomes the caption) through OpenWA's `send-image`, which takes base64 directly — verified against its `SendMediaRequest`; note it spells the field `mimetype` while our API uses `mimeType`, so neither side should be "fixed" to match the other. Images only (`png`/`jpeg`/`webp`) because documents/video/audio are separate gateway routes with their own rules. **Same queue, same pacing** — an image is a *more* conspicuous event than a sentence, with a composing-time floor so a half-megabyte upload isn't preceded by a two-second flicker. **A failed image is NEVER downgraded to its caption**: an app would report that a poster went out when only a sentence did. Caps: 2 MB decoded, 1024-char caption (the gateway's own limit, enforced at the door so it fails while the caller is listening), and **4 queued images max** — queued bytes are in memory and quiet hours hold them for hours, which on a Pi is an OOM kill that takes the dashboard with it. The route sets its **own `bodyLimit`** because `registerFabric` runs on BOTH servers and they disagreed: the dashboard allows 25 MB while the HTTP front door — the one apps actually reach over `OPENMASJID_BASE_URL` — was on Fastify's 1 MB default. `GET /api/fabric/whatsapp` advertises `media` + `maxMediaBytes`, and an absent field must read as false.
+- `POST /api/fabric/whatsapp` (capability `whatsapp`) returns **202 `{queued}`**, never "sent" — pacing puts delivery seconds to hours away. **One recipient per call**, because the API shape is the first place to discourage a cold blast. LAN-only under `/api/fabric`, rate-limited, and bodies are never logged (they routinely carry a child's name and a family's fees).
+- The alerts matrix gains a **WhatsApp** column that defaults **OFF** for every alert, unlike email/webhook. An `alerts.json` written before this existed has no `whatsapp` key, so absence reads as off and an upgrade can never silently start messaging a phone.
+- **The WhatsApp column is for OS alerts ONLY; an app's rows read "Set up in the app"** (`whatsappAllowed`, enforced in `getAlertChannels` on READ and refused in `setAlertChannel`, not merely hidden in the UI). The matrix routes to the ADMIN, and the platform knows exactly one number — so a toggle on an app's alert promised routing it cannot do. An app that messages over WhatsApp is reaching a parent about fees or a donor about a receipt, and those recipients, the wording and the timing are the app's own settings. **What does not change: apps still send through the platform** — `POST /api/fabric/whatsapp`, same gateway, same credentials they never see, same single paced queue. Only the *choice* moved. Email and the webhook stay available to apps, because those genuinely are "tell the admin something happened".
+
+### 13.2b-iii Admin commands over WhatsApp (v0.51.0)
+
+- An authorised phone can run things by message: `!os stats`, `!os restart 2`, `!display 1`. **This is a real escalation of the threat model** — a WhatsApp message becomes an action on a daemon running as root with the Docker socket, authenticated by possession of a phone. Off by default; most of the design is containment, and several capabilities are refused outright rather than confirmed.
+- **Transport is a Socket.IO client, core → gateway** (`notify/whatsapp-inbound.ts`), the SAME direction the send path already runs via `appOrigin(port)`. So it adds **no inbound route and no new attack surface**, and works on an install predating the feature. A webhook was the alternative and is worse *here*: it needs the core's LAN address baked into the gateway, raw-body HMAC handling, a new route, and OpenWA's SSRF guard relaxed in the masjid's compose. **OpenWA does not document its wire protocol**, so it was read from its source: namespace `/events`, a single Socket.IO channel `'message'` carrying every frame, the WhatsApp event name in `payload.event`, and delivery only to a room you subscribe to (`{type:'subscribe', sessionId, events}`, whose ack is *returned* from the handler and so must be read with `.timeout().emit(ch, payload, cb)` — a plain `emit` discards it). So reception is `s.on('message')` filtering on `payload.event`, **not** `onAny()`: `onAny` is kept purely as a diagnostic, listing what the gateway has actually sent, because "connected and hearing nothing" is the failure this undocumented surface makes likely. The event filter rejects `ack|status|reaction|receipt|…` FIRST — reading a `message.ack` as a message would re-execute a command on every delivery receipt of our own reply — and matches the whole name as well as its last dotted segment (matching only the tail missed `message.received` itself).
+- **The gate order is the security property** (`commands/gate.ts`): `fromMe` (absent ⇒ ours, or replies loop back in) → **a positively matched PERSONAL chat** → text only → 3s post-connect quiet window → age → **the whitelist** → duplicate LRU → the `!` prefix → rate limit.
+  - "Personal" is an **allow-list of address spaces, never a `!== '@g.us'` test** — WhatsApp has more than two: `@lid` (a privacy id, now common), `@newsletter` (Channels), `@broadcast` and `status@broadcast`. `isPersonalChatJid` admits `c.us` and `lid` only. And in a group the sender is `author`, not `chatId`, so a whitelist check on the wrong field reads the group's id as a person. Where the gateway supplies its own `isGroup` flag that flag is authoritative for **group-ness** — but "not a group" is not "a person", so the allow-list still has to pass: trusting the flag alone (which is how `@lid` support first landed) let a `@newsletter` or `@broadcast` chat through as direct, with its author then treated as a whitelist-checkable identity.
+  - A `@lid` sender carries **no phone number**, so it is not an identity on its own. `resolveLidPhone` asks the gateway; a FAILED resolution drops the message rather than guessing. Two orderings are load-bearing: **dedupe AFTER the whitelist** (else a stranger's flood evicts the entries preventing a double-execution) and **the prefix BEFORE the rate limit** (else ordinary conversation drains an admin's own bucket and is then refused as "too many commands").
+- **An unlisted sender gets SILENCE** — no reply, no log line. A refusal confirms to a stranger that this number runs a masjid's server, spends the budget fee reminders need, and is the strongest ban signal the account can emit. Only a prefixed attempt from an unlisted number is logged, rate-limited.
+- **Every command starts with `!`, with ONE exemption: while the platform is holding a question for that sender.** A menu number still needs its prefix (`!display 2`), and a bare word still does nothing at any other moment — but `commands/gate.ts` step 12 skips the prefix rule when `awaitingReply(digits, now)` is true, i.e. an app is mid-question (`AppSession`) or a confirmation is being held. That is what makes a multi-step flow usable ("Which prayer?" → `Maghrib`), and inside a live exchange a bare message is unambiguously an answer rather than possibly-conversation, which is the only condition under which the prefix earns nothing. `!yes CODE` still works and is the only path available with no exchange open; while one IS open, a plain `yes`/`no` is accepted (`takeConfirmed`). The confirmation code is not authentication (the sender is already authorised) — it stops the WRONG message running: a typo, a stale menu number, a forwarded screenshot. Single-use, 90s, one pending per sender.
+  - **The exemption's bounds ARE the security property, so all three must hold.** `AppSession` expires on idle (3 min), absolute age (15 min) and turn count (12); a held confirmation expires at `CONFIRM_TTL_MS` — and `hasPending` must apply that TTL, not merely test for presence. It didn't until v0.51.0, so an *ignored* prompt (which the prompt itself invites: "Ignore this to cancel") left the exemption open for ever, and every ordinary message that person sent afterwards spent a rate-limit token and drew an automated reply. `sweep` did not save it either: `touch` refreshes the idle timer on every inbound, so chatting kept the stale pending alive. `hasPending` is deliberately a PURE predicate — the gate evaluates it per message, and a security step must not mutate per-sender state as a side effect.
+- **A menu number resolves against the menu that sender was SHOWN**, not a positional index into the current list, which moves when an app update inserts a command.
+- **Replies reuse the ONE non-queued path** (`sendImmediate`, generalised from the test-send; `replyTo` takes **digits**, never a JID, so it cannot post to a group). Bypasses the queue, cooldown and quiet hours; **still spends the hour/day budget**, or "message yourself in a loop" becomes the one unmetered path out of the platform. A solicited reply to a known contact is the lowest-risk traffic the number emits — that stays true only because **no command may take a phone number as an argument**, pinned structurally in `test/command-execute.test.ts`.
+- **There is deliberately NO sending-allowance check on a mutating command, and nothing should add one back.** An earlier version refused to run one when the hour/day allowance was spent, reasoning that "it restarted but you will never know" is the worst outcome. The premise was false: a reply goes out via `replyTo` → `sendImmediate`, which calls `sendOne` directly and never consults the caps — so the check protected nothing while blocking real work, and it bit hardest on a freshly linked number, whose warm-up ramp quarters the hourly cap to ~3, locking an admin out of the very commands they were testing. It surfaced as `!os update` always answering *"I've hit today's WhatsApp limit"*. What bounds commands is the **inbound** rate limit in `commands/gate.ts` (5, refill 1/15s), which is tighter anyway. **Every mutating command still raises the `command-run` OS alert**: with one admin account there is no second pair of eyes, and a stolen phone does not have the inbox.
+- **Refused, with the reasons written into `commands/os.ts`:** rebooting the host, app logs (secrets + PII, and a chat keeps a copy forever), OS self-update (it replaces the process holding the conversation), removing an app. **`!os update <app>` IS offered** — it recreates only that app's container, so the core survives to report back — but is refused for any `isPlatformManaged` app, because updating the gateway would sever the connection carrying the command.
+- Apps declare `commands:` like `alerts:` (`parseCommands`); the platform authorises and renders, the app only executes at `POST /fabric/commands/run`. **`commands` is a reserved Fabric capability** — allowing it in `fabric.provides` would let another app reach that handler through the broker. The platform identifies itself as **`omos:platform`**, unforgeable *by construction* because the colon is outside `APP_ID_RE`'s charset; words like `os` are refused at install via `RESERVED_ID_WORDS`, deliberately **not** `RESERVED_APP_IDS`, which `rmSync`s the directory of anything in it.
 
 ### 13.2c Alerts (granular per-alert × per-channel matrix, UniFi-style)
 - A list of every alert type — OS built-ins (an app going offline, a **core update available**, an **app update available**, a **card payment disputed** — see 13.2d) **plus each installed app's declared `alerts:`** — each with a **per-channel matrix**: route it to the admin **Email**, the **Webhook**, both, or neither. **Both channels on by default**; the platform persists only non-default choices (`config/alerts.json` → `channels`, with a legacy `disabled`-set migrated on load). When an alert fires, `deliverAlert` sends it to exactly the channels the admin chose (each fail-soft). Apps raise their declared alerts via `POST /api/fabric/alert`; the webhook (`/api/fabric/notify`) stays available on its own. The OS built-in update alerts are fired by a background monitor (`system/update-monitor.ts`) that polls for a new core version + newer versions of installed catalog apps and raises `core-update` / `app-update` the moment one is detected (once per version, not every cycle). **These alerts go to the ADMIN only** — an app emailing an end user (donor/parent/teacher) does that itself via `POST /api/fabric/email`, outside this matrix.
@@ -583,14 +657,20 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 
 **Security invariants — DO NOT REGRESS** (established by the v0.39.0 sweep; the core runs as **root with the Docker socket**, so an app-isolation gap = host root):
 - **`apps/compose-validate.ts` is the SOLE install-time risk gate** for catalog, community, AND custom (paste-a-compose) apps. It must keep flagging: `volumes_from` (a `container:openmasjid-core` entry inherits the mounted docker.sock + `/data`), `env_file` with an absolute or `..` path (reads other apps'/platform secrets), top-level `secrets:`/`configs:` with a `file:` source (host-file read), and **truthy** boolean flags via `isTruthyFlag` (`privileged: yes|on|1|"true"`, not just `=== true`), plus the existing namespace/mount/cap checks. Any new check here **must be mirrored in `OpenMasjidAPPS/scripts/validate-compose.mjs`** so "passes the catalog build == safe to install".
-- **The gate runs on EVERY path that starts a compose** (v0.45.0): install (catalog/community/custom), **update** (`updateCatalogApp` — previously the one path that skipped it), and post-restore `reupAllApps`. A refreshed catalog entry is fresh external data; never write + `up` one unchecked.
+- **The gate runs on every path that introduces or refreshes a compose** (v0.45.0): install (catalog/community/custom), **update** (`updateCatalogApp` — previously the one path that skipped it), and post-restore `reupAllApps`. A refreshed catalog entry is fresh external data; never write + `up` one unchecked.
+  - **Known exception, stated honestly: `startApp` is NOT gated.** It runs `docker compose up` on whatever `apps/<id>/compose.yml` is on disk. This bullet claimed "EVERY path that starts a compose" until v0.51.0 and that was simply false — worth knowing, because a false invariant is worse than a documented gap. What makes it acceptable today is that every *write* vector into that file is closed: install/update/restore all pass the gate, and `files/manager.ts` refuses `compose.yml` outright (`OPENMASJIDOS-004`), which is exactly why that File Explorer fix mattered. What it costs is defence in depth. **If you gate it, refuse only on `refusals`** — a `danger` that a currently-running app was installed with would make the app unstartable with no way out, whereas a refusal (attaching to another app's `omos-*` volume) can never have passed install legitimately.
 - **`checkCompose` returns `dangers` AND `refusals`** (v0.45.0). `refusals` are NEVER acknowledgeable — no "I understand the risk" path, on any router. Currently: a top-level volume that uses `external:` (short or long form) or `name:` to attach to an `omos-*` volume, i.e. another app's data or platform infra. Neither form names a host path, so `bindSource`/`checkHostPath` return early and saw nothing. Keep `refusals` refused everywhere; keep the non-`omos-` external/renamed case an ordinary `danger`.
 - **Every listener that serves `/api/fabric` must carry `registerFabricTunnelGuard`** (v0.45.0) — the TLS dashboard server as well as the HTTP front door. `test/fabric-lan-only.test.ts` pins this structurally.
 - **Every path comparison against a request URL matches the DECODED path, not the raw text** (v0.46.0). The router dispatches on the percent-decoded path, so a guard that compared `req.url` verbatim was walked past with `/api/%66abric/app/…` — raw text that doesn't start with `/api/fabric` but still reached the app-to-app broker. `matchesSecretRoute` and `isFabricSubpath` now test the raw **and** `decodedPath()` spellings and fail closed; `decodedPath` resolves escape-by-escape so one malformed `%zz` can't throw the comparison away. `isViaTunnel` likewise compares the first `x-forwarded-proto` hop trimmed + lowercased (`"HTTPS"`, `"https,http"`, and a duplicated header all count). Never reintroduce a raw-string `startsWith` on a URL in a security check.
 - **A backup must never report success it can't back** (v0.45.0). `backupStream()` returns `{ stream, done }`; a volume that fails to archive fails the whole backup (its partial file is deleted), the outer tar's exit code flows through `done`, and a failure destroys the stream. `runBackup` requires `upload.ok && archive.ok` **before** recording success and **before** `pruneOld` — pruning on an unverified result is how repeated silent failures evict every good archive. One backup at a time (`BackupBusyError` → 409); manual download and scheduler share one staging path. Restore stops apps before refilling volumes and reports per-volume failures. In `tarVolume`, a staging **write** failure is tracked separately from the container's exit code (`writeFailed`, v0.46.0) — the two are independent, and folding it in with `code ??= -1` silently reported success whenever `docker run` had already exited 0 (i.e. ENOSPC on the final flush, the likeliest real failure). **Known-open, and NOT covered by `ok`:** volumes are tarred live, and a torn SQLite/WAL capture still exits tar 0 — so `ok: true` is not proof the databases inside will open. That fix is app-side (`VACUUM INTO` snapshots in each app); don't add a platform-side check that only looks like it covers it. The archive is also unencrypted (`rclone crypt` is the real fix).
 - **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance` and `/api/public/logo` (low-sensitivity presentation assets — the latter is the masjid logo, raster-only so no SVG-script vector, served for webhook avatars + apps' public pages). Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
 - **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. Don't relay request headers verbatim to app containers.
-- **The Fabric app-to-app broker (`fabric/appLink.ts`, `POST /api/fabric/app/:target/:capability/:method`) is LAN-only and least-privilege** (v0.40.0). It inherits the `/api/fabric` viaTunnel guard (`registerFabricTunnelGuard`, `system/via-tunnel.ts` — the single shared implementation), authorizes by **static manifest grants** (caller `consumes` ∧ target `provides`), builds the target URL ONLY from the registry (`127.0.0.1:<published port>` — no request-controlled host/path, no SSRF), injects the **target's own** secret + a trusted `X-OpenMasjid-Caller-App` while stripping caller-supplied identity/forwarding/hop-by-hop headers, caps JSON at 256 KB each way with a 10 s timeout + per-caller rate limit, returns `{ fabric_error }` on platform failures, and **never logs bodies**. Don't weaken any of these.
+- **`checkForUpdate` must offer an update when the RUNNING BUILD is from the other channel, not only when a version is newer** (v0.50.5-dev.1). `runUpdate` had always acted on this (`wrongChannel`), but the detector compared versions alone — so a box running a Stable image while set to Development was never told: no banner, no alert, no error, no way out of the dashboard. It happens for real (an interrupted update repaired with the installer, which pulled `:latest`). `channelMismatch` is symmetric (`isPrerelease(VERSION) !== (channel === 'dev')`) — a per-channel branch here is the old Development special-casing returning — and feeds `updateAvailable`, but only when `latest != null`, because a move needs a target. `reason: 'version' | 'channel'` exists so the UI does not call a channel move "a new version": going back to Stable targets an OLDER number. **This also means a numbering mistake cannot strand a masjid again** — the mismatch alone offers the way back even when the channel's VERSION is below the running one.
+- **An update runs ONCE at a time, enforced on the SERVER** (`system/update-lock.ts`, v0.50.4-dev.6). Nothing prevented two updates of the same thing: every WebSocket connection to `/api/update` started a fresh core update and every one to `/api/apps/update?id=…` a fresh app update, so closing the progress window and pressing the button again ran a second over the first — two `compose up --force-recreate` racing for one container, two writers on one compose file. A masjid's box stopped coming back. The dialog/window is also locked while running (`Modal locked`, `OpenWindowOptions.locked`, and `close()` itself refuses a locked window so the Escape handler is covered by the same rule), but **the client lock is the second line of defence, never the first** — a browser can be closed, a laptop can sleep. A refused second run is reported as information, never as "Update failed", because calling it a failure pushes an admin into retrying. A client going away must never abort an update in flight; the work continues and the progress lines are dropped.
+- **Stats must agree with `free`, `htop` and the provider's console** (v0.50.4-dev.6), because that is what a masjid checks them against and a number that disagrees reads as the dashboard lying — which costs trust in every other figure on the page. Three fixed: (a) memory used is computed exactly as `free` does (`MemTotal − MemFree − Buffers − (Cached + SReclaimable)`) — it counted the page cache as used, so a mostly-idle box showed as nearly full; the LXC/Proxmox path (`readHostCgroupMemory`) is tried first and is unaffected. (b) The CPU sampler's baseline is module-level while its callers are not — `stats.get` plus one `stats.stream` loop **per open tab** — so whoever called last moved the baseline and the next reading averaged a few milliseconds of jiffies, i.e. noise; a sample is now only taken after `MIN_CPU_SAMPLE_MS` and callers in between get the last real value **without the baseline moving**. (c) Storage reserves `HOST_OS_RESERVE_BYTES` (16 GB) for the host OS: a disk at a true 100% cannot write logs or update itself and needs someone at a terminal in the masjid, so the card counts down to "full" early. `used` stays the real figure (the UI clamps the percentage), and the mount match is a path-boundary test picking the *most specific* mount — `/` contains everything, so a plain prefix test reported the wrong disk.
+- **Reaching an app's published port goes through `system/app-host.ts` — never a hardcoded loopback address** (v0.50.4-dev.3). The core is a bridge-network container, so `127.0.0.1` inside it is *the core*; an app's published port is on the **host**, reachable only via the installer's `host.docker.internal:host-gateway` mapping. Three callers had this right and the expression was pasted into each; the WhatsApp gateway client was then written from memory with `127.0.0.1` and **could not reach OpenWA on any install**. The symptoms ("cannot reach the gateway", `fetch failed`) both pointed at the masjid's setup rather than at the platform, and this file's own §13.2b-ii and Fabric bullets described the address as `127.0.0.1` too — a wrong spec produced a wrong implementation. It is one exported helper now, `test/app-host.test.ts` fails any source file that builds `http://127.0.0.1:${…}`, and a transport failure must name a reason an admin can act on rather than surfacing undici's bare `fetch failed` (the real cause hides in `err.cause.code`).
+- **The Fabric app-to-app broker (`fabric/appLink.ts`, `POST /api/fabric/app/:target/:capability/:method`) is LAN-only and least-privilege** (v0.40.0). It inherits the `/api/fabric` viaTunnel guard (`registerFabricTunnelGuard`, `system/via-tunnel.ts` — the single shared implementation), authorizes by **static manifest grants** (caller `consumes` ∧ target `provides`), builds the target URL ONLY from the registry (the app's published host port via `system/app-host.ts` — no request-controlled host/path, no SSRF), injects the **target's own** secret + a trusted `X-OpenMasjid-Caller-App` while stripping caller-supplied identity/forwarding/hop-by-hop headers, caps JSON at 256 KB each way with a 10 s timeout + per-caller rate limit, returns `{ fabric_error }` on platform failures, and **never logs bodies**. Don't weaken any of these.
+- **OPEN GAP — the Fabric's least-privilege rule does NOT hold for Stripe.** `GET /api/fabric/stripe?account=<id>` (`api/fabric.ts`) takes the account id straight from the query string and returns that account's `secretKey` and `webhookSecret`; the only check is that the caller holds the `stripe` capability. Nothing binds an app to a particular account, and `/api/fabric/stripe/accounts` hands the caller the ids to ask for. **So any stripe-capable app can read every configured account's live keys** — a masjid running one Stripe account for donations and another for school fees has no separation between the two apps. It is LAN-only and capability-gated, so this is an app-vs-app boundary rather than an internet-facing hole, but it is the one place the "least privilege" claim above is not true, and it must not be written as though it were. The fix is a per-app account binding recorded at install and enforced here, which **changes the app-facing Fabric contract** — so it is its own coordinated change across `OpenMasjidAPPS` and the app repos, with the grant model decided first. Do not "improve" it unilaterally: silently narrowing this breaks a masjid's live donations page.
 - **Tunnel exposure is per-app opt-in** (v0.40.0). `ingress.rebuild()` routes an app only when `meta.exposed !== false` (grandfathered `undefined` = exposed, so pre-0.40 installs don't go dark); the admin toggles it in Settings (default from the manifest `tunnel:true` request). An app's own **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths (`isFabricSubpath`) — those routes are LAN-only. `OPENMASJID_PUBLIC_URL` is injected empty unless exposed; `/api/fabric/site` stays the live source of truth.
 - **Email + alerts over the Fabric are LAN-only + least-privilege** (v0.41.0). The SMTP password / Resend API key live in `config/email.json` (chmod 600) and never leave `store/email.ts` except to the sender (`notify/email.ts`); the admin API returns only "is set" flags. `POST /api/fabric/email` (capability `email`) and `POST /api/fabric/alert` (gated on the app having declared the alert in its manifest) are under `/api/fabric`, so they inherit the viaTunnel LAN-only guard; both are rate-limited and never log bodies. Alerts are gated by the admin's granular per-type toggle (`notify/alerts.ts`, disabled-set in `config/alerts.json`) before any email/webhook is sent. The admin email (`auth/store.ts` `getAdminEmail`) is the only alert recipient.
 - **The File Explorer's sandbox is NOT just "inside the data dir"** (v0.47.3) [OPENMASJIDOS-004]. The data dir is also where the platform keeps its control plane, so confinement to `/data` still exposed two things to any authenticated session: (a) **every platform secret** — `config/` holds the admin password hash, the SMTP password / Resend key, the Stripe keys, the tunnel token and the TLS private key, all of which every other surface deliberately refuses to return to the client; and (b) **host root** — start/update run `docker compose -f apps/<id>/compose.yml up`, reading that file *from disk*, so rewriting it and pressing Start launches a `privileged: true` / docker.sock-mounted container **without passing `apps/compose-validate.ts`**, the sole install-time gate. `apps/<id>/meta.json` is the same class (it carries `ssoSecret` and the Fabric capability grants). `files/manager.ts` now has ONE decider, `protectedReason()`, and **every entry point asks it** — `resolve()` is the choke point, and constructed targets (rename destination, upload destination, the `writeTextFile` leaf) each call `assertAllowed` because they don't pass through `resolve()`. Protected: `config/**`, `.backup-staging/**`, and exactly `compose.yml` / `.env` / `meta.json` directly inside `apps/<id>/` (matched case-insensitively; deeper paths are the app's own data and stay browsable). The guard checks the **realpath as well as the requested path** — a symlink at `apps/x/data/link` → `config/stripe.json` is legitimately *inside* the sandbox, so checking one spelling isn't enough (same lesson as the raw-vs-decoded guards). **Backup and restore must stay independent of this module**: they archive `config/` and `apps/` directly and import nothing from `files/manager.ts` — `test/files-guard.test.ts` pins that structurally, because a guard that reached the backup path would silently produce backups missing every setting.
@@ -605,19 +685,31 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 ```bash
 npm install         # install all workspaces
 npm run dev         # run core + ui together with hot reload
-npm run build       # typecheck + build ui and core
-npm run lint        # eslint + tsc --noEmit across workspaces
-npm run test        # tests across workspaces
+npm run build       # bundle ui (vite) + core (esbuild) — does NOT typecheck
+npm run lint        # tsc --noEmit across both workspaces — this IS the typecheck
+npm run test        # tests across workspaces (node:test, in packages/core)
 npm run image       # build & tag the runtime Docker image openmasjid/core:dev
 ```
 
-The production image is built from the multi-stage `Dockerfile`: stage 1 builds the UI (Vite), stage 2 builds the core (tsc), final stage runs Node and serves the built UI + API as `openmasjid/core`.
+**`npm run lint` is the only typecheck.** Neither build step typechecks — Vite and esbuild
+both strip types without checking them — so a type error passes `npm run build` and fails only
+under `npm run lint`. Run lint before trusting a green build.
+
+**There is no ESLint in this repo.** `lint` is `tsc --noEmit` and nothing else. Earlier revisions
+of this file and of `CONTRIBUTING.md` promised "eslint + tsc", which made the documented
+definition of done unachievable as written. If a linter is wanted, adding one is a deliberate
+change with its own diff — don't paper over its absence by describing it as present.
+
+The production image is built from the two-stage `Dockerfile`: the `build` stage installs
+workspaces and runs `npm run build` (Vite for the UI, esbuild bundling the core into
+`packages/core/dist`), then prunes dev dependencies; the `runtime` stage copies that output and
+runs the Node daemon, which serves the built UI + API as `openmasjid/core`.
 
 ---
 
 ## 17. Definition of done (for any feature)
 
-A change is "done" only when: it builds via `npm run build`; `tsc` and `eslint` are clean; it's covered by at least a basic test where logic is non-trivial; it works in **both** light and dark themes; it works in **both** LTR and RTL; it honors `prefers-reduced-motion`; authenticated areas stay behind login; client/server types are shared (no hand-duplicated types); all new strings are in i18next; user-facing wording is plain and friendly; and no raw technical error can reach the user un-prettified.
+A change is "done" only when: it builds via `npm run build`; `npm run lint` (the `tsc --noEmit` typecheck — there is no eslint, see §16) is clean; `npm run test` passes and any new test file is listed in `packages/core/package.json`'s `test` script, which names every file explicitly — an unlisted test never runs and nothing tells you; it's covered by at least a basic test where logic is non-trivial; it works in **both** light and dark themes; it works in **both** LTR and RTL; it honors `prefers-reduced-motion`; authenticated areas stay behind login; client/server types are shared (no hand-duplicated types); all new strings are in i18next; user-facing wording is plain and friendly; and no raw technical error can reach the user un-prettified.
 
 ---
 
@@ -633,7 +725,9 @@ The canonical version lives in the **`VERSION`** file at the repository root. It
 | **MINOR** (2nd) | A meaningful new feature or a significant change to existing behaviour — new page, new tRPC procedure, new installer capability. | `0.1.x` → `0.2.0` |
 | **MAJOR** (1st) | **Reserved for the official public launch.** `1.0.0` signals production-ready, fully stable software. Do not bump to `1.x` before that milestone. | — |
 
-**Development builds are semver PRERELEASES** — `dev/VERSION` holds `0.50.4-dev.1`, naming the release it is heading toward. See §13.4: the bump *is* the publish, and the ordering `0.50.3 < 0.50.4-dev.1 < 0.50.4` is what makes the Development channel detectable at all.
+**Development builds are semver PRERELEASES** — `dev/VERSION` holds `0.50.5-dev.1`, naming the release it is heading toward. See §13.4: the bump *is* the publish, and the ordering `0.50.4 < 0.50.5-dev.1 < 0.50.5` is what makes the Development channel detectable at all.
+
+> **After a release, bump the BASE version, not just the `-dev` counter.** Once `0.50.4` is on master, dev must go to `0.50.5-dev.1` — never `0.50.4-dev.N`, because a prerelease sorts **below** its own release, so `0.50.4-dev.6 < 0.50.4`. This reached a masjid: a box on Stable `0.50.4` that switched to Development was offered nothing at all, since the channel's newest build was older than what it was already running — no banner, no alert, no error, the dashboard saying Development and running Stable indefinitely. `test/update-channel.test.ts` now compares dev's `VERSION` against `master:VERSION` and fails with that explanation.
 
 ### Where the version lives per branch
 

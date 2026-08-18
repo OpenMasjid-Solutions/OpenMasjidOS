@@ -163,7 +163,7 @@ test('an update resolves the target version, then pulls and recreates on THAT', 
   // is the whole class of bug this area keeps producing. Pinned as an order:
   // resolve the version → pull it → recreate on the same tag.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
-  const fn = src.slice(src.indexOf('export async function runUpdate'));
+  const fn = src.slice(src.indexOf('async function runUpdateInner'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
 
   const resolveAt = body.indexOf('coreTargetTag(');

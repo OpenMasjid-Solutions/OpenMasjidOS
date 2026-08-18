@@ -6,6 +6,7 @@
  * shows a tidy message instead of taking down the whole dashboard.
  */
 import { Component, type ReactNode } from 'react';
+import i18n from '../lib/i18n';
 
 interface Props {
   children: ReactNode;
@@ -23,7 +24,7 @@ export class ErrorBoundary extends Component<Props, { failed: boolean }> {
     if (this.state.failed) {
       return (
         this.props.fallback ?? (
-          <div className="hint" style={{ padding: '1rem' }}>Something went wrong here. Try closing and reopening this window.</div>
+          <div className="hint" style={{ padding: '1rem' }}>{i18n.t('errors.boundary')}</div>
         )
       );
     }

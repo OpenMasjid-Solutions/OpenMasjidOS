@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # App catalog contract (platform side)
 
 > **Where to build an app:** the authoritative, hands-on guide lives in the **OpenMasjidAPPS** repo
@@ -52,6 +55,8 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `tunnel` | – | `true` = the app **requests** to be reachable from the internet through the OS's Cloudflare tunnel (below). It's only a request — the admin confirms exposure in Settings → Remote access. Off ⇒ the app stays on the LAN. |
 | `email` | – | `true` to opt into Fabric email (below) — the app may `POST /api/fabric/email` to send mail (receipts, parent notices) via the admin's SMTP/Resend provider. Issues the per-app secret; the app never sees the credentials or the From address. |
 | `alerts` | – | A list of alert types this app can raise, `{ id, label, description? }[]` (below). Each gets a granular on/off in Settings → Alerts (all on by default). The app fires one with `POST /api/fabric/alert`. Declaring alerts issues the per-app secret. |
+| `whatsapp` | – | `true` to opt into Fabric WhatsApp — the app may `POST /api/fabric/whatsapp` to send through the masjid's own gateway, and never sees the gateway credentials. It **queues** (`202 {queued}`), never sends synchronously, and takes **one recipient per call**. `GET` the same path first to learn whether this masjid can send at all, and read an absent field as `false`. **Which events go out and to whom is YOUR setting** — the platform's alerts matrix has no WhatsApp column for apps, because it routes to the admin's one number. For announcements, `GET /api/fabric/whatsapp/groups` (only the groups the **admin** approved) and send `group` instead of `to`. An optional `media` sends an **image** (png/jpeg/webp, 2 MB decoded) with `text` as its caption — check `media` on the `GET` first. Never use it for anything auth-critical: it is an unofficial client and the number can be restricted. See [`WHATSAPP.md`](WHATSAPP.md). Issues the per-app secret. |
+| `commands` | – | A list of commands an admin can run against this app over WhatsApp, `{ id, label, description?, argument?: { label }, confirm? }[]` (below). The platform authorises, renders the menu and asks for confirmation; the app only executes, at `POST /fabric/commands/run`. Max 12; `id` must be kebab-case, not all digits, and not `help`/`yes`/`no`/`cancel`/`stop`. `argument` must be an **object** — `argument: true` is refused rather than coerced. Declaring commands issues the per-app secret (required: the platform authenticates to you with *your* secret). **`commands` is a reserved Fabric capability** — you cannot expose this handler to other apps via `fabric.provides`. |
 
 ### `settings` fields (`SettingField`)
 
@@ -317,3 +322,110 @@ POST ${OPENMASJID_BASE_URL}/api/fabric/alert
   alert off — not an error. Declaring `alerts:` alone issues your secret (no other capability needed).
 - Alerts go to the ADMIN (email + webhook). To email an arbitrary recipient (a donor/parent), use
   `POST /api/fabric/email` above instead.
+
+---
+
+## Admin commands (`commands:` — things an admin can run from WhatsApp)
+
+Declare commands an authorised admin can run against your app by sending a WhatsApp message to
+the masjid's number (`!<your-app-id>`). **The platform owns everything except the doing:** it
+decides who may run what, renders the numbered menu, asks for confirmation, and formats the
+reply. You are asked only to execute one command you declared.
+
+```yaml
+commands:
+  - id: whats-on                    # kebab-case, stable — this is what we send you
+    label: What's on the screen now # shown in the menu and in Settings
+    description: Reads back the current notice.
+  - id: post-notice
+    label: Put a message on the screen
+    argument:                       # OMIT if the command takes no text
+      label: message                # one or two words: "add your message after the number"
+      required: false               # default true
+    confirm: true                   # ask the sender to confirm first
+```
+
+Rules the catalog build enforces, so an install can never surprise you:
+
+- At most **12** commands. A numbered menu longer than that does not fit in one message.
+- `id` must be kebab-case, **not all digits** (`!display 2` must only ever mean "the second
+  option"), and not one of `help`, `yes`, `no`, `cancel`, `stop`.
+- `argument` must be an **object with a `label`**. `argument: true` is rejected rather than
+  coerced — it reads like "takes an argument" but carries no label, and accepting it would mean
+  silently discarding whatever a volunteer typed while telling them it worked.
+- Set `confirm: true` for anything people will see or that cannot be undone. It also puts the
+  command in the admin's audit alert.
+
+### Serving it
+
+```
+POST /fabric/commands/run          ← on your app's own web port, like every /fabric/* route
+  X-OpenMasjid-App-Secret: <your OWN OPENMASJID_APP_SECRET>
+  X-OpenMasjid-Caller-App: omos:platform
+  { "command": "post-notice", "text": "Jumu'ah is at 1:30", "requestId": "…", "locale": "en" }
+```
+
+Answer with HTTP 200 and JSON:
+
+| Meaning | Body |
+|---|---|
+| Done | `{ "ok": true, "text": "The notice is on the screen now." }` |
+| Failed, and you can say why | `{ "ok": false, "error": "The screen is switched off at the wall." }` |
+| Not a command you know (HTTP 404) | `{ "ok": false, "code": "unknown_command" }` |
+| Still starting up (HTTP 503) | `{ "ok": false, "code": "not_ready", "error": "…" }` |
+
+- **Verify BOTH headers.** `X-OpenMasjid-App-Secret` must equal your own `OPENMASJID_APP_SECRET`,
+  and `X-OpenMasjid-Caller-App` must be exactly `omos:platform`. That value can never be an app
+  id — the colon is outside the charset every app id is validated against — so it is the platform
+  and only the platform.
+- Declaring `commands:` alone issues your secret; no other capability is needed.
+- **`commands` is a RESERVED Fabric capability.** Putting it in `fabric.provides` is refused at
+  install and by the catalog build: it would let another app reach this same handler through the
+  app-to-app broker, which is a different trust boundary sharing a path prefix.
+- Your `text` and `error` are plain text, ≤1000 characters. The platform strips control
+  characters, collapses blank lines and trims to the message cap — you cannot make one answer
+  look like three messages.
+- Reply promptly: **10 second timeout**, 16 KB response cap. A command a volunteer is waiting on
+  is not the place for a long job; kick it off and say you have.
+- `/fabric/*` is LAN-only and never served over the tunnel, exactly as for every other Fabric
+  route.
+
+### Asking a follow-up question
+
+A command can hold a short conversation. Return a `followUp.token` alongside your text
+and the platform will treat the sender's **next message as an answer** — no `!` prefix
+needed — and POST it straight back to you with that token:
+
+```jsonc
+// your reply to `!notice-board schedule`
+{ "ok": true, "text": "Which prayer?", "followUp": { "token": "sched-881" } }
+
+// the platform then sends you their answer
+{ "command": "schedule", "text": "Maghrib", "followUpToken": "sched-881",
+  "requestId": "…", "locale": "en" }
+
+// keep going, or finish by simply omitting followUp
+{ "ok": true, "text": "What time?", "followUp": { "token": "sched-881" } }
+{ "ok": true, "text": "Done. Maghrib iqamah is 7:15pm from Friday." }
+```
+
+- **The token is yours.** The platform stores it against that one sender and hands it
+  back; it holds no other state about your flow. Put whatever you need in it (a row
+  id, a step name), keep it to `A-Za-z0-9._:-` and ≤128 characters — it is validated
+  before being echoed, because it ends up in a later request body.
+- **The exchange is bounded, and can end without you.** Three minutes idle, fifteen
+  minutes total, twelve turns, the sender typing `exit` / `cancel` / `done`, or the
+  sender starting any new `!` command. You will simply stop receiving answers — so
+  never leave a half-applied change waiting on a reply that may not come. Apply on the
+  last answer, or keep your own draft and expire it.
+- **Any `ok:false` ends it**, so a failure cannot leave the sender's ordinary
+  conversation being captured as input.
+- **The sender is re-authorised on every turn.** A grant removed mid-conversation
+  takes effect at once.
+- **Ask one thing at a time.** These are WhatsApp messages, not a form.
+
+### What the platform will never ask you to do
+
+Commands are an ADMIN channel. There is no way for a command to name a phone number, and there
+never will be — that is the line between an admin channel and a spam gateway. To message a
+parent or a donor, use `POST /api/fabric/whatsapp` with your own app's settings, as before.

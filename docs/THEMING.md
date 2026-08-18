@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # OpenMasjidOS Theming Guide
 
 This document is the authoritative reference for all theming decisions in OpenMasjidOS. Every contributor working on the frontend must read this before touching styles, tokens, or motion.
@@ -24,232 +27,156 @@ The OpenMasjidOS interface should feel **calm, dignified, and modern** — a too
 
 ## 2. The Token System
 
-All visual values — colors, typography sizes, spacing, border radii, shadows, motion durations — are defined as **CSS custom properties** in `frontend/src/lib/theme/tokens.css`. Components must reference these variables exclusively. No hardcoded hex values, no magic pixel numbers where a token exists.
+All colour, glass, glow, shadow, radius and scene values are **CSS custom properties**
+defined in **`packages/ui/src/styles/tokens.css`**. Components reference the variables and
+never a literal — no hardcoded hex, no magic pixel where a token exists.
 
-Theme switching works by toggling `data-theme="dark"` or `data-theme="light"` on the root `<html>` element. The `:root` block defines dark-mode defaults (dark is the default theme). A `[data-theme="light"]` block overrides the same variable names for light mode.
+Theme switching is one attribute: `data-theme="dark"` or `data-theme="light"` on `<html>`.
+The first block defines the **dark** theme (dark is the default) under a combined
+`:root, [data-theme="dark"]` selector, so an un-set attribute and an explicit `dark` resolve
+identically. A `[data-theme="light"]` block then overrides the same names.
 
 ```css
 /* tokens.css structure */
-
-:root {
-  /* dark theme — the default */
-  --color-bg-base: #0E1814;
-  /* ... all tokens ... */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-surface: #030D1A;
+  /* … */
 }
 
 [data-theme="light"] {
-  --color-bg-base: #F5F0E8;
-  /* ... overrides only ... */
+  color-scheme: light;
+  --color-surface: #F7FAFC;
+  /* overrides only — same names */
 }
 ```
 
-Svelte components consume tokens like this:
+React components consume tokens through ordinary CSS (`packages/ui/src/styles/app.css`,
+`glass.css`) or inline style where a value is dynamic:
 
-```svelte
-<style>
-  .card {
-    background-color: var(--color-surface-raised);
-    border-color: var(--color-border-subtle);
-    color: var(--color-text-primary);
-  }
-</style>
+```tsx
+<div className="app-card" style={{ borderColor: 'var(--color-border)' }} />
 ```
+
+```css
+.app-card {
+  background: var(--glass-bg-raised);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--glass-shadow-raised);
+  color: var(--color-ink);
+}
+```
+
+### The wallpaper axis, and the trap in it
+
+There is a **second** attribute: `data-wallpaper`, one of nine scenes the admin picks in
+Settings. Each `[data-wallpaper="…"]` block sets the scene tokens (`--scene-*`,
+`--aurora-*`) that `SceneBackground` paints behind the frosted panels.
+
+**`data-wallpaper` is always set** — `lib/prefs.ts` defaults it to `aurora` — and every
+wallpaper block has the *same specificity* as `[data-theme="light"]` while appearing later
+in the file. So for a long time light mode never got a light scene: white glass at 55%
+alpha composited over a near-black gradient came out mid-grey, and then dark-blue ink went
+on top of it. Nothing in the light palette was wrong; the cascade simply overrode it.
+
+The fix, and the rule now: **every wallpaper must have a
+`[data-theme="light"][data-wallpaper="…"]` counterpart**, which wins on specificity rather
+than on file order. Each counterpart keeps the wallpaper's hue and inverts its lightness,
+so Ocean is still blue and Forest still green — the picker means the same thing in both
+themes. `packages/core/test/theme-tokens.test.ts` fails the build if a wallpaper is added
+without its light counterpart, if the picker list and the stylesheet drift apart, or if a
+"light" scene is not actually light (Rec. 601 luma > 0.85).
 
 ---
 
-## 3. Complete Token Reference
+## 3. Token Reference
 
-### 3.1 Color Tokens
+53 tokens in the base block, in ten groups. This is the real list; check
+`tokens.css` if you need current values, and add a token there rather than inventing one
+at a call site.
 
-All tokens listed with their dark-theme value first, then the light-theme override.
+### 3.1 Colour (22)
 
-#### Background & Surface
+| Token | Role |
+|---|---|
+| `--color-surface` | The base surface behind everything. |
+| `--color-surface-raised` | A panel or card lifted off the base. |
+| `--color-surface-overlay` | Modals, popovers, menus. |
+| `--color-surface-hover` | Hover wash over a surface (an alpha, not a solid). |
+| `--color-surface-shimmer` | The lighter band in a skeleton loader. |
+| `--color-primary` | Primary accent. Interactive, focused, active. |
+| `--color-primary-hover` | Primary, hovered. |
+| `--color-primary-muted` | A dimmed primary for less-loud states. |
+| `--color-primary-subtle` | Low-alpha primary for fills and rings. |
+| `--color-accent` / `--color-gold` | The warm accent, used sparingly. |
+| `--color-gold-subtle` | Low-alpha gold, for a highlight wash. |
+| `--color-ink` | Body text. |
+| `--color-ink-muted` | Secondary text, hints, captions. |
+| `--color-ink-faint` | Disabled and least-emphasis text. |
+| `--color-border` | Default border. |
+| `--color-success` / `--color-warning` / `--color-danger` | Semantic status. Never the accent. |
+| `--color-btn` / `--color-btn-hover` | Neutral button surface. |
+| `--color-on-primary` | Text/icon **on** a primary fill — never assume white. |
 
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-bg-base` | `#0E1814` | `#F5F0E8` | Page background, the lowest layer |
-| `--color-bg-subtle` | `#111F18` | `#EDE8DE` | Slightly lifted areas (sidebar, nav) |
-| `--color-surface-base` | `#162219` | `#FFFFFF` | Default card/panel surface |
-| `--color-surface-raised` | `#1C2B22` | `#F9F6F0` | Elevated cards, modals |
-| `--color-surface-overlay` | `#223320` | `#F0EBE2` | Tooltip backgrounds, popovers |
-| `--color-surface-sunken` | `#0A1210` | `#E8E3D9` | Input backgrounds, code blocks |
+### 3.2 Glass (14)
 
-#### Border
+The dashboard's panels are frosted, so the glass tokens carry the whole look:
+`--glass-blur`, `--glass-blur-inset`, `--glass-blur-strong`, `--glass-saturate`,
+`--glass-saturate-strong`, `--glass-bg`, `--glass-bg-raised`, `--glass-bg-inset`,
+`--glass-tint`, `--glass-highlight`, `--glass-border`, `--glass-glow`, `--glass-shadow`,
+`--glass-shadow-raised`.
 
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-border-subtle` | `rgba(255,255,255,0.07)` | `rgba(0,0,0,0.08)` | Dividers, card outlines (low emphasis) |
-| `--color-border-default` | `rgba(255,255,255,0.13)` | `rgba(0,0,0,0.15)` | Input borders, section dividers |
-| `--color-border-strong` | `rgba(255,255,255,0.25)` | `rgba(0,0,0,0.28)` | Focus rings before primary color is applied |
+Two things to keep in mind: the `-bg-*` values are **alphas** and only read correctly over
+a scene, which is why the wallpaper counterparts above matter; and `backdrop-filter` is
+expensive on a Raspberry Pi, so don't add new blurring layers casually.
 
-#### Primary (Emerald/Teal)
+### 3.3 Scene and pattern (9)
 
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-primary-900` | `#0A3D2B` | `#0A3D2B` | Darkest — pressed states |
-| `--color-primary-800` | `#0E5238` | `#0E5238` | Active/selected backgrounds |
-| `--color-primary-700` | `#137047` | `#137047` | Hover backgrounds on primary elements |
-| `--color-primary-600` | `#1A8F5C` | `#1A8F5C` | Default primary button background |
-| `--color-primary-500` | `#1FA37A` | `#198A68` | Brand color; links, icons, focus rings |
-| `--color-primary-400` | `#2DBF93` | `#1FA37A` | Hover for text links |
-| `--color-primary-300` | `#52D4A9` | `#2DBF93` | Active/checked indicators |
-| `--color-primary-200` | `#96E8CC` | `#52D4A9` | Light fills, chips, badge backgrounds |
-| `--color-primary-100` | `#D2F5EA` | `#D2F5EA` | Faintest tint; success backgrounds |
+`--scene-base`, `--scene-gradient`, `--scene-vignette`; `--aurora-cyan`, `--aurora-navy`,
+`--aurora-gold`, `--aurora-blur`; `--pattern-opacity`, `--geometric-pattern`.
 
-The light-theme primary-500 is shifted slightly darker (`#198A68`) to maintain WCAG AA contrast on light backgrounds. All other steps are shared.
+Set per wallpaper (and per wallpaper **per theme**). `--geometric-pattern` is the tessellating
+motif; `--pattern-opacity` keeps it a texture rather than a decoration.
 
-#### Accent (Gold)
+### 3.4 Everything else (8)
 
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-accent-800` | `#7A6000` | `#7A6000` | Pressed gold elements |
-| `--color-accent-700` | `#A07C00` | `#A07C00` | Hover on gold elements |
-| `--color-accent-600` | `#C4980A` | `#B08800` | Active gold highlight |
-| `--color-accent-500` | `#D4AF37` | `#B8941E` | The gold — active states, key highlights |
-| `--color-accent-400` | `#E3C45A` | `#D4AF37` | Gold on hover |
-| `--color-accent-300` | `#EDD98A` | `#E3C45A` | Light gold tint |
-| `--color-accent-100` | `#FBF4D6` | `#FBF4D6` | Faintest gold tint |
+`--shadow-card`, `--shadow-modal`; `--radius-card`, `--radius-button`; `--glint`,
+`--glint-strong`; `--glow-primary`, `--glow-strength`.
 
-**Gold is an accent, not a primary color.** Use it for: active sidebar item indicators, star ratings, premium badge borders, highlighted metric values, and nothing else. If gold appears more than a few times per screen, there is too much of it.
-
-#### Text
-
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-text-primary` | `#E8F0EC` | `#12201A` | Body text, headings |
-| `--color-text-secondary` | `#9DB5A6` | `#3D5C4A` | Supporting text, captions, labels |
-| `--color-text-tertiary` | `#627D6E` | `#627D6E` | Placeholders, very soft labels |
-| `--color-text-disabled` | `#3D5247` | `#AABFB3` | Disabled form elements |
-| `--color-text-inverse` | `#0E1814` | `#F5F0E8` | Text on primary-colored backgrounds |
-| `--color-text-link` | `#2DBF93` | `#198A68` | Hyperlinks |
-| `--color-text-link-hover` | `#52D4A9` | `#1FA37A` | Link hover state |
-
-#### Semantic / Status
-
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-success-bg` | `#0D2E1F` | `#EBF9F3` | Success alert/toast background |
-| `--color-success-border` | `#1A6645` | `#52D4A9` | Success border |
-| `--color-success-text` | `#52D4A9` | `#0E5238` | Success text |
-| `--color-warning-bg` | `#2A1F00` | `#FEF9E7` | Warning alert background |
-| `--color-warning-border` | `#8A6000` | `#E3C45A` | Warning border |
-| `--color-warning-text` | `#E3C45A` | `#7A5500` | Warning text |
-| `--color-error-bg` | `#2A0F0F` | `#FEF2F2` | Error alert background |
-| `--color-error-border` | `#8A2020` | `#F87171` | Error border |
-| `--color-error-text` | `#F87171` | `#991B1B` | Error text |
-| `--color-info-bg` | `#0F1F2A` | `#EFF6FF` | Info alert background |
-| `--color-info-border` | `#204A6A` | `#93C5FD` | Info border |
-| `--color-info-text` | `#93C5FD` | `#1E40AF` | Info text |
-
-#### App Status Colors
-
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-status-running` | `#1FA37A` | `#198A68` | "This app is running" dot/label |
-| `--color-status-stopped` | `#627D6E` | `#627D6E` | "Turned off" indicator |
-| `--color-status-updating` | `#D4AF37` | `#B8941E` | Update in progress |
-| `--color-status-error` | `#F87171` | `#DC2626` | Something went wrong |
-| `--color-status-installing` | `#2DBF93` | `#1FA37A` | Install in progress (animated) |
-
-#### Overlay & Scrim
-
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--color-scrim` | `rgba(5,10,8,0.72)` | `rgba(10,20,15,0.55)` | Modal backdrop |
-| `--color-geometric-pattern` | `rgba(31,163,122,0.04)` | `rgba(31,163,122,0.06)` | Background geometric texture tint |
-
-### 3.2 Non-Color Tokens
-
-#### Border Radius
-
-| Token | Value | Usage |
-|---|---|---|
-| `--radius-sm` | `0.25rem` | Chips, badges, small buttons |
-| `--radius-md` | `0.5rem` | Input fields, secondary cards |
-| `--radius-lg` | `0.875rem` | Primary cards, panels |
-| `--radius-xl` | `1.25rem` | Feature cards, large modals |
-| `--radius-2xl` | `2rem` | Full-rounded pill buttons, avatar chips |
-| `--radius-arch` | `50% 50% 0 0 / 30% 30% 0 0` | The mihrab/arch shape — use `border-radius` shorthand on top of a card for the arch-top motif |
-| `--radius-full` | `9999px` | Circles, toggle tracks |
-
-#### Shadow
-
-| Token | Dark value | Light value | Usage |
-|---|---|---|---|
-| `--shadow-sm` | `0 1px 3px rgba(0,0,0,0.4)` | `0 1px 3px rgba(0,0,0,0.08)` | Subtle card lift |
-| `--shadow-md` | `0 4px 12px rgba(0,0,0,0.5)` | `0 4px 12px rgba(0,0,0,0.12)` | Default card shadow |
-| `--shadow-lg` | `0 8px 32px rgba(0,0,0,0.6)` | `0 8px 32px rgba(0,0,0,0.18)` | Raised modals, dropdowns |
-| `--shadow-glow-primary` | `0 0 20px rgba(31,163,122,0.25)` | `0 0 16px rgba(31,163,122,0.18)` | Primary button hover glow |
-| `--shadow-glow-accent` | `0 0 16px rgba(212,175,55,0.30)` | `0 0 12px rgba(184,148,30,0.22)` | Accent/gold hover glow |
-
-#### Spacing Scale
-
-Use Tailwind's spacing scale for most layout needs. The tokens below exist for values that must be consistent across components and cannot be expressed as Tailwind utilities.
-
-| Token | Value | Usage |
-|---|---|---|
-| `--space-page-gutter` | `clamp(1rem, 4vw, 2.5rem)` | Horizontal page margin |
-| `--space-card-padding` | `1.25rem` | Default card inner padding |
-| `--space-section-gap` | `2rem` | Gap between major sections |
-
-#### Motion Tokens
-
-See Section 7 for full motion guidelines. Tokens:
-
-| Token | Value | Usage |
-|---|---|---|
-| `--duration-instant` | `0ms` | Used when `prefers-reduced-motion: reduce` is active |
-| `--duration-fast` | `120ms` | Button press, toggle flick |
-| `--duration-normal` | `220ms` | Card enter, modal open |
-| `--duration-slow` | `380ms` | Page transition, splash assembly |
-| `--duration-deliberate` | `600ms` | Multi-step progress animations |
-| `--easing-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Spring-like overshoot for lifts and pops |
-| `--easing-smooth` | `cubic-bezier(0.4, 0, 0.2, 1)` | Standard material-style smooth |
-| `--easing-in` | `cubic-bezier(0.4, 0, 1, 1)` | Elements leaving the screen |
-| `--easing-out` | `cubic-bezier(0, 0, 0.2, 1)` | Elements entering the screen |
+> Type scale, spacing and motion durations are **not** tokens here — type and spacing come
+> from Tailwind v4's own scale, and motion values live in `packages/ui/src/lib/motion.ts` as
+> shared Motion presets. Don't add a parallel set.
 
 ---
 
 ## 4. Switching Themes
 
-The theme is controlled exclusively by the `data-theme` attribute on `<html>`. The Svelte theme store manages this:
+The theme, accent, wallpaper and language are all applied by **`packages/ui/src/lib/prefs.ts`**,
+which owns the attributes on `<html>`:
 
-```typescript
-// frontend/src/lib/theme/themeStore.ts
-import { browser } from '$app/environment';
-import { writable } from 'svelte/store';
-
-type Theme = 'dark' | 'light';
-
-const stored = browser
-  ? (localStorage.getItem('omos-theme') as Theme | null)
-  : null;
-
-// Dark is the default. Only use light if explicitly chosen.
-export const theme = writable<Theme>(stored ?? 'dark');
-
-theme.subscribe((value) => {
-  if (!browser) return;
-  document.documentElement.setAttribute('data-theme', value);
-  localStorage.setItem('omos-theme', value);
-});
+```ts
+// packages/ui/src/lib/prefs.ts — the only place these attributes are written
+export function applyTheme(theme: Theme): void {
+  document.documentElement.setAttribute('data-theme', theme);
+}
 ```
 
-Apply the attribute server-side (in `app.html`) to prevent a flash of wrong theme:
+`prefsStore.hydrate()` is called once from `main.tsx` **before the first paint**, so there is
+no flash of the wrong theme and no inline script in `index.html` to keep in step.
 
-```html
-<!-- app.html -->
-<script>
-  // Inline script — runs before paint
-  const t = localStorage.getItem('omos-theme') || 'dark';
-  document.documentElement.setAttribute('data-theme', t);
-</script>
-```
+**Rules:**
 
-**Rule:** Never read `data-theme` in component logic. Import and subscribe to the `theme` store if you need to react to theme changes. Never apply theme classes to individual components — the token system handles everything at the `:root` level.
+- Never read `data-theme` in component logic to branch on it. Style through tokens and let
+  the cascade resolve; a component that knows which theme it is in will be wrong in the
+  other one.
+- Never set `data-theme` anywhere but `prefs.ts`.
+- Never apply theme classes to individual components. Theme is a `:root` concern.
+- "Follow system" resolves to a concrete `dark`/`light` value in `prefs.ts` — the stylesheet
+  only ever sees the two real themes.
 
 ---
-
 ## 5. Typography
 
 ### Font Choices
@@ -299,7 +226,7 @@ The low-opacity geometric tessellation that underlies the dashboard is generated
 - The pattern must be the same tile in both themes; only opacity changes.
 - Never animate the background pattern itself (it would be distracting and expensive).
 - The SVG tile is a girih-style star polygon — 8-point or 10-point. Avoid the 5-point star (it carries unintended nationalist connotations in some contexts).
-- File lives at `frontend/src/lib/theme/geometric-pattern.svg` and is inlined at build time.
+- File lives at `packages/ui/src/styles/tokens.css` as the `--geometric-pattern` token (an inline SVG data URI), painted by `components/SceneBackground.tsx`.
 
 ### Where Motifs Appear
 
@@ -323,7 +250,7 @@ The low-opacity geometric tessellation that underlies the dashboard is generated
 
 ## 7. Custom Icon / Glyph Set
 
-OpenMasjidOS ships a small set of custom masjid glyphs alongside `lucide-svelte`. These are SVG components, not an icon font. Each glyph is designed on a 24×24 viewBox with a 1.5px stroke, matching the Lucide visual style.
+OpenMasjidOS ships a small set of custom masjid glyphs alongside `lucide-react`. These are SVG components, not an icon font. Each glyph is designed on a 24×24 viewBox with a 1.5px stroke, matching the Lucide visual style.
 
 ### The Glyph Set
 
@@ -334,7 +261,7 @@ OpenMasjidOS ships a small set of custom masjid glyphs alongside `lucide-svelte`
 | Crescent + star | `<IconCrescent />` | Quran/Islamic resources category, brand mark |
 | Mihrab arch | `<IconMihrab />` | Empty states for app listings, prayer category |
 
-All four glyphs live in `frontend/src/lib/components/icons/`. They accept `size`, `color`, and `aria-label` props. Always provide `aria-label` or pair with a visible label — do not use these as purely decorative elements without an `aria-hidden="true"`.
+All four glyphs live in `packages/ui/src/components/Glyphs.tsx`. They take `size` and `className`, and inherit colour via `currentColor`. Always provide `aria-label` or pair with a visible label — do not use these as purely decorative elements without an `aria-hidden="true"`.
 
 ### Using Lucide vs Custom Glyphs
 
@@ -372,24 +299,30 @@ The guiding aesthetic is **settled spring physics**: elements feel like they hav
 }
 ```
 
-This rule goes into `tokens.css` and overrides everything. When building a Svelte transition, also check the motion preference in the transition function and return `{ duration: 0 }` when reduced motion is requested:
+That rule lives in `tokens.css` and covers everything driven by CSS.
 
-```typescript
-// frontend/src/lib/animations/index.ts
-import { prefersReducedMotion } from '$lib/animations/reducedMotion';
+**It does not cover Motion, and that is the part people miss.** Motion animates via inline
+styles from JavaScript, so a CSS `animation-duration: 0.01ms` override cannot touch a spring
+on `y` or `scale`. Motion has to be told separately, once, at the top of the tree:
 
-export function cardEnter(node: Element, params = {}) {
-  if (prefersReducedMotion()) return { duration: 0 };
-  return {
-    duration: 220,
-    easing: cubicOut,
-    css: (t: number) => `
-      opacity: ${t};
-      transform: translateY(${(1 - t) * 8}px);
-    `
-  };
-}
+```tsx
+// packages/ui/src/App.tsx — one MotionConfig, wrapping everything
+import { MotionConfig } from 'motion/react';
+
+<MotionConfig reducedMotion="user">
+  {/* the whole app */}
+</MotionConfig>
 ```
+
+`reducedMotion="user"` makes Motion honour the OS setting for transform and layout
+animations while still allowing opacity — which is exactly the "collapse to instant or
+opacity-only" behaviour CLAUDE.md §14 requires. **Motion's default is `"never"`**, i.e. it
+ignores the preference entirely unless you say otherwise, so the absence of this wrapper is
+silent: everything looks right on the machine of anyone who has not asked for reduced
+motion.
+
+Prefer the shared presets in `lib/motion.ts` over hand-written transitions, so this stays a
+single decision rather than one per component.
 
 ### Animation Catalogue
 
@@ -421,7 +354,7 @@ export function cardEnter(node: Element, params = {}) {
 
 ### Shared Presets
 
-All transition and spring presets live in `frontend/src/lib/animations/`. Do not define `cubic-bezier` values or duration numbers ad hoc in component `<style>` blocks — import a preset. This ensures global consistency and makes reduced-motion overrides maintainable in one place.
+All transition and spring presets live in `packages/ui/src/lib/motion.ts`. Do not define `cubic-bezier` values or duration numbers ad hoc in a component — import a preset. This ensures global consistency and makes reduced-motion overrides maintainable in one place.
 
 ---
 
@@ -431,16 +364,27 @@ OpenMasjidOS targets Arabic and Urdu as first-tier RTL locales. RTL support is n
 
 ### The `dir` Attribute
 
-The root layout sets `dir` based on the active locale:
+`lang` and `dir` are set on `<html>` from the active locale by `applyLanguage` in
+`packages/ui/src/lib/prefs.ts` — the same file that owns `data-theme`, so all root attributes
+have one writer:
 
-```svelte
-<!-- +layout.svelte -->
-<svelte:head>
-  <html lang={$locale} dir={$isRTL ? 'rtl' : 'ltr'} />
-</svelte:head>
+```ts
+// packages/ui/src/lib/prefs.ts
+export function applyLanguage(lang: string): void {
+  const el = document.documentElement;
+  el.setAttribute('lang', lang);
+  el.setAttribute('dir', RTL_LANGS.has(lang) ? 'rtl' : 'ltr');
+}
 ```
 
-The `isRTL` store derives from the locale store and is the single source of truth. Never check locale strings directly in components to decide direction.
+Never check a locale string in a component to decide direction — style against `dir` with
+logical properties and let the document tell you.
+
+> **Status:** the plumbing is in place and the CSS below is followed, but there is **no
+> language picker in Settings yet**, so `applyLanguage` only ever runs with `en` in practice
+> and the RTL path is untested against real Arabic/Urdu copy. Treat the rules here as the
+> standard to build to, not as a shipped, exercised feature. `en.json` is the only locale
+> file.
 
 ### CSS Logical Properties
 
@@ -496,7 +440,7 @@ During development, check contrast with one of these methods:
 
 1. **Browser DevTools**: Chrome and Firefox both show contrast ratios in the color picker when inspecting text elements.
 2. **Colour Contrast Analyser** (free desktop app): paste hex values from your computed tokens.
-3. **Automated**: `make lint` runs `@accessibility/color-contrast` checks as part of `svelte-check`. Any failure blocks the build.
+3. **Not automated.** There is no contrast check in CI — `npm run lint` is `tsc --noEmit` only. Changing a token value is therefore a manual re-verification, which is exactly why the pairs below are written down.
 
 ### Pre-verified Critical Pairs
 
@@ -557,19 +501,21 @@ If a token does not exist for a value you need, add the token to `tokens.css` fi
 
 ### Never show raw technical error messages to users
 
-```svelte
-<!-- WRONG -->
-<p>{error.message}</p>  <!-- "ECONNREFUSED 127.0.0.1:2375" -->
+```tsx
+{/* WRONG */}
+<p>{error.message}</p>  {/* "ECONNREFUSED /var/run/docker.sock" */}
 
-<!-- RIGHT -->
-<ErrorMessage
-  friendly="We could not reach the app right now."
-  action="Try refreshing, or check that Docker is running."
+{/* RIGHT — a plain sentence, a next step, and the detail folded away */}
+<ErrorNote
+  friendly={t('errors.appUnreachable')}
+  action={t('errors.appUnreachableAction')}
   technical={error.message}
 />
 ```
 
-The `<ErrorMessage>` component shows only the friendly message by default and hides the technical detail behind a "View details" toggle (collapsed by default).
+Show only the friendly message by default and hide the technical detail behind a collapsed
+"View details" toggle. Note the strings go through `t()` — a hardcoded English sentence is the
+same defect in a different coat.
 
 ### Never use spinners as the only loading state
 

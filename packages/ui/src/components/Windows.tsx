@@ -19,6 +19,15 @@ export interface OpenWindowOptions {
   icon?: ReactNode;
   /** Reopening with the same key focuses the existing window instead of duplicating it. */
   dedupeKey?: string;
+  /**
+   * Hide the close control: the window cannot be dismissed until `setLocked(id, false)`.
+   *
+   * ONLY for work that must not be interrupted or repeated — an update in progress.
+   * Closing an update window and pressing the button again used to start a second update
+   * over the first, which is how an app stopped coming back. Minimizing is still allowed:
+   * the work is unaffected and the dock brings it back, so it is not a way "out".
+   */
+  locked?: boolean;
 }
 
 export interface WindowState {
@@ -28,6 +37,7 @@ export interface WindowState {
   wide: boolean;
   icon?: ReactNode;
   dedupeKey?: string;
+  locked: boolean;
   minimized: boolean;
   fullscreen: boolean;
   /** Monotonic focus order — higher is more recently focused (front). */
@@ -42,6 +52,8 @@ interface WindowsApi {
   restore: (id: number) => void;
   focus: (id: number) => void;
   toggleFullscreen: (id: number) => void;
+  /** Release a locked window once its work is finished. */
+  setLocked: (id: number, locked: boolean) => void;
 }
 
 const noop = () => {};
@@ -53,6 +65,7 @@ const WindowsCtx = createContext<WindowsApi>({
   restore: noop,
   focus: noop,
   toggleFullscreen: noop,
+  setLocked: noop,
 });
 
 export function useWindows(): WindowsApi {
@@ -102,6 +115,7 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
           wide: opts.wide ?? false,
           icon: opts.icon,
           dedupeKey: opts.dedupeKey,
+          locked: opts.locked ?? false,
           minimized: false,
           fullscreen: false,
           z,
@@ -112,7 +126,17 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
     [focus, setWins],
   );
 
-  const close = useCallback((id: number) => setWins((list) => list.filter((w) => w.id !== id)), [setWins]);
+  // A locked window ignores close() entirely, wherever it is called from — the frame's
+  // control, the Escape handler, or any future caller. Enforcing it here rather than only
+  // hiding the button means there is one rule, not one per entry point.
+  const close = useCallback(
+    (id: number) => setWins((list) => (list.find((w) => w.id === id)?.locked ? list : list.filter((w) => w.id !== id))),
+    [setWins],
+  );
+  const setLocked = useCallback(
+    (id: number, locked: boolean) => setWins((list) => list.map((w) => (w.id === id ? { ...w, locked } : w))),
+    [setWins],
+  );
   const minimize = useCallback(
     (id: number) => setWins((list) => list.map((w) => (w.id === id ? { ...w, minimized: true } : w))),
     [setWins],
@@ -125,8 +149,8 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
   // Stable context value: the callbacks are useCallback-stable, so this only
   // changes when the window list does — consumers don't re-render every render.
   const value = useMemo(
-    () => ({ windows, open, close, minimize, restore: focus, focus, toggleFullscreen }),
-    [windows, open, close, minimize, focus, toggleFullscreen],
+    () => ({ windows, open, close, minimize, restore: focus, focus, toggleFullscreen, setLocked }),
+    [windows, open, close, minimize, focus, toggleFullscreen, setLocked],
   );
 
   return <WindowsCtx.Provider value={value}>{children}</WindowsCtx.Provider>;

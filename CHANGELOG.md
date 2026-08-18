@@ -7,6 +7,76 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.51.0
+
+**Run your masjid's server from WhatsApp**
+
+- **An authorised phone can now do things by sending a message.** `!os stats` for how the
+  server is doing, `!os apps` for what is running, `!os restart 2` to bring a stuck display
+  back, `!os update 3` to update one app — and each app can offer its own commands under
+  `!<app>`. This is for the box in the cupboard: fixing a wedged screen no longer means being
+  at the masjid with a laptop.
+- **Off until you turn it on, and nobody can use it until you add them.** Settings → WhatsApp →
+  Commands. The warning there says it plainly: whoever holds one of those phones can start,
+  stop and update your apps, with no password step. Each person gets a tick per app, plus a
+  separate "view" and "control" for the server itself.
+- **A number that is not on your list gets no reply at all** — not even a refusal. Answering
+  would confirm to a stranger that this number runs your server.
+- **Ordinary conversation is untouched.** Every command starts with `!`; anything else is not
+  read as a command, not logged and not replied to. Commands sent in a group do nothing.
+- **An app can ask you a question and you just reply.** `!display schedule-iqamah` → "Which
+  prayer?" → `Maghrib` → "What time?". Send `exit` to leave it, or ignore it and it lapses on
+  its own. Every mutating command also emails you, so you find out even if it wasn't you.
+
+**Fixed — light mode is readable again**
+
+- **Light mode was putting dark text on a dark background, whichever wallpaper you picked.**
+  The light theme had its own pale backdrop all along, but every wallpaper was defined as a
+  dark one and quietly overrode it. Each wallpaper now has a light version that keeps its
+  colour — Ocean is still blue, Forest still green — so the picker means the same thing in
+  either theme.
+
+**Fixed — being told the truth about updates**
+
+- **Updating an app said "Done" even when the new version could not start.** Docker counts an
+  app as started the moment its container is created, so an app that boots, fails, and
+  restarts for ever looked like a clean update. It now waits to see whether the app stayed
+  running, and if it didn't, says so and shows the last thing the app printed.
+- **Returning to Stable no longer says your apps are "moving to the Development version"** —
+  the exact opposite of what it was about to do.
+- **`!os update` no longer refuses with "I've hit today's WhatsApp limit".** It was checking a
+  sending allowance that replies never use, which blocked real work for no benefit. Asking to
+  update an app that is already current now simply says so.
+- **After typing a pairing code, the page tells you the moment your phone links** — with a
+  confirmation, instead of leaving you to reload and guess.
+
+**Fixed — accessibility**
+
+- **"Reduce motion" is now honoured everywhere.** Panels, dialogs and the opening animation
+  respected the setting in some places and ignored it in others; if you have asked your phone
+  or computer for less movement, the dashboard now listens throughout.
+
+**Security**
+
+- A full audit of the whole project. Nothing here was known to have been used against a
+  masjid, and none of it was reachable from the internet without remote access switched on —
+  but four ways of slipping past a check have been closed, including one that let a specially
+  written web address skip the dashboard's protection against requests from other sites, and
+  one that let anything on your network choose the visitor address your apps recorded.
+- **Worth knowing if you use more than one Stripe account:** an app you install can currently
+  read the keys for *all* of them, not only its own. Everything involved stays on your local
+  network, but if you keep separate accounts for, say, school fees and general donations,
+  treat each Stripe app as having access to both. Fixing it properly needs the apps updated at
+  the same time, so it is deliberately not in this release.
+
+**Documentation**
+
+- A sweep of every page. Several described things that were never built — the setup guide
+  promised an `openmasjidos.local` address and an installer that configures a fixed IP, and
+  the networking page gave the wrong address for the dashboard entirely. All corrected to what
+  actually ships, and the 0.50.4 release notes, which were missing from the Development
+  channel, are back.
+
 ## 0.50.4
 
 - **Coming back to Stable now finishes.** Returning from Development builds could get stuck in a loop: your apps and OpenMasjidOS would update, the dashboard would restart, and after signing in the whole thing would start over. It now runs once and stops.

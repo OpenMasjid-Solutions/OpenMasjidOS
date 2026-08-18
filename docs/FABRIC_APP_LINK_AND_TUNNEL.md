@@ -24,7 +24,12 @@ registered inside `registerFabric`). Order of operations:
    AND target `provides` the capability → else `403 not_granted`.
 6. **Resolve the target** from the app registry: installed (`503 target_not_installed`),
    running with a published port (`503 target_unreachable`), and holding a secret.
-7. **Proxy** to `http://127.0.0.1:<published port>/fabric/<capability>/<method>` — URL built ONLY
+7. **Proxy** to `http://<appHost()>:<published port>/fabric/<capability>/<method>` — where
+   `appHost()` is `system/app-host.ts` (`host.docker.internal`), **never loopback**: the core is a
+   bridge-network container, so `127.0.0.1` inside it is *the core*, and an app's published port is
+   on the **host**. This line said `127.0.0.1` until v0.51.0, and that exact wrong spec is what
+   produced a wrong implementation once already — the WhatsApp gateway client was written from it and
+   could not reach OpenWA on any install. URL built ONLY
    from the registry + validated segments (no SSRF). Injects the **target's own** secret as
    `X-OpenMasjid-App-Secret` + trusted `X-OpenMasjid-Caller-App`; strips every caller-supplied
    identity/forwarding/hop-by-hop header. JSON only, ≤256 KB each way, 10 s timeout, no redirects.
