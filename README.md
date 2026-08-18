@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 <p align="center">
   <a href="https://openmasjidsolutions.org">
     <img src="assets/OS - rounded corners.png" alt="OpenMasjidOS" width="280"/>
@@ -34,9 +37,9 @@ Leave a star if you like the project! ⭐️
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh || wget -qO- https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh)"
 ```
 
-(Works whether your system has `curl` or `wget` — no need to install one first; the installer sets up `curl` for you.) When it finishes, open **`http://<your-server-ip>`** on the same network and create your admin account.
+(Works whether your system has `curl` or `wget` — no need to install one first; the installer sets up `curl` for you.) When it finishes, open **`https://<your-server-ip>`** on the same network and create your admin account.
 
-Running the same command again later opens a menu — **Update**, **Repair**, **Reconfigure network** or **Uninstall** — so there is never a second command to remember. It keeps your machine on whatever update channel it is already using, so a Repair never moves you between Stable and Development.
+Running the same command again later opens a menu — **Update**, **Repair**, **Reset sign-in** or **Remove** — so there is never a second command to remember. It keeps your machine on whatever update channel it is already using, so a Repair never moves you between Stable and Development.
 
 <details>
 <summary>Installing the Development channel</summary>
@@ -181,7 +184,7 @@ Everything lives behind a login on a single, polished dashboard.
 ### Reaching it
 
 - **Forced HTTPS** — the dashboard is served over TLS with a self-signed certificate generated on first boot, or bring your own. A damaged certificate can't stop the box starting: it's replaced automatically and the dashboard stays reachable.
-- **`openmasjidos.local`** — mDNS so you don't need to remember an IP, plus an optional static IP set up by the installer.
+- **Reached by address** — open `https://<your-server-ip>` from any device on the same network. To stop that address changing, give the machine a DHCP reservation in your router's settings. (A `.local` name and installer-managed static IP are planned, not built.)
 - **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the admin dashboard itself is never exposed.
 - **Follows the box** — move the machine to a different network and your apps find the dashboard again by themselves.
 
@@ -294,7 +297,7 @@ sudo docker ps   # look for "openmasjid-core", status "Up ..."
 ## Day-to-day
 
 - **First run** — create an admin account: your name, an email, and a password (12+ chars). You sign in with the name; the email is only where OpenMasjidOS sends alerts. That is the whole setup — you go straight to the dashboard. Prayer times and location are collected by each app, never by the platform.
-- **Manage** — run the same install command again for a menu: **Update** (latest version, apps/data untouched), **Repair** (re-apply config and restart), **Reconfigure network**, or **Uninstall**. Update/Repair only ever touch the core, never your apps.
+- **Manage** — run the same install command again for a menu: **Update** (latest version, apps/data untouched), **Repair** (re-apply config and restart), **Reset sign-in** (a new admin password and re-linked apps, keeping all data — the way back in if nobody knows the password), or **Remove**. Update/Repair only ever touch the core, never your apps.
 - **Update from the dashboard** — Settings → Advanced → Check for updates → Update now, with live progress. No terminal needed.
 - **Choose your channel** — Settings → Advanced → Update channel. **Stable** is tested and is what you get by default; **Development** is what we are still building and can break your apps. It covers the platform and all your apps together.
 - **Reset the admin password** (from the machine's terminal — no data lost):
@@ -337,7 +340,7 @@ npm run test    # the test suite
 | **`master`** | Stable / release. What masjids run. Updated only at release time. |
 | **`dev`** | Active development. **Open pull requests against `dev`.** |
 
-`dev` is also the **Development** update channel: pushes there publish a `:dev` image that boxes on that channel pull. `master` publishes `:latest`. Full policy in [`CLAUDE.md`](CLAUDE.md#branching-policy).
+`dev` is also the **Development** update channel. A push to `dev` publishes both a `:dev` alias and an immutable version tag read from `VERSION` (e.g. `:0.51.0-dev.3`), and **that exact version tag is what a Development box pulls** — never the moving alias, so an update can't land on different bytes than the version it just announced. `:latest` is published **only** by a non-prerelease `v*` release tag, not by a push to `master`. So a release is: push `master`, then push the `v*` tag. Full policy in [`CLAUDE.md`](CLAUDE.md#branching-policy).
 
 ---
 

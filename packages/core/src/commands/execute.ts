@@ -160,7 +160,7 @@ async function handleBareReply(body: string, ctx: Ctx): Promise<void> {
   const word = body.toLowerCase().replace(/[.!?]+$/, '');
 
   if (EXIT_WORDS.has(word)) {
-    const had = convo.getSession(ctx.digits, ctx.now) !== null || convo.hasPending(ctx.digits);
+    const had = convo.getSession(ctx.digits, ctx.now) !== null || convo.hasPending(ctx.digits, ctx.now);
     convo.clearSession(ctx.digits);
     convo.clearPending(ctx.digits);
     return ctx.reply(had ? say.sessionEnded() : say.nothingToCancel());
@@ -169,7 +169,7 @@ async function handleBareReply(body: string, ctx: Ctx): Promise<void> {
   // A held confirmation takes precedence: it is the more consequential thing waiting,
   // and inside an exchange the platform has just asked THIS question, so a plain yes
   // is unambiguous — which was the only reason the code existed.
-  if (convo.hasPending(ctx.digits)) {
+  if (convo.hasPending(ctx.digits, ctx.now)) {
     if (YES_WORDS.has(word)) {
       const taken = convo.takeConfirmed(ctx.digits, ctx.now);
       if (!taken.ok) return ctx.reply(say.expiredConfirm());
@@ -236,7 +236,7 @@ async function dispatch(r: ReturnType<typeof parseCommand>, ctx: Ctx): Promise<v
       return ctx.reply(say.unwantedArgument(r.ns, r.command));
 
     case 'cancel': {
-      if (!convo.hasPending(ctx.digits)) return ctx.reply(say.nothingToCancel());
+      if (!convo.hasPending(ctx.digits, ctx.now)) return ctx.reply(say.nothingToCancel());
       convo.clearPending(ctx.digits);
       return ctx.reply(say.cancelled());
     }
@@ -557,7 +557,7 @@ export async function osUpdates(): Promise<string> {
     try {
       const u = await checkCatalogUpdate(a.id);
       if (u.updateAvailable && u.reason) {
-        rows.push({ id: a.id, name: a.name, from: u.current, to: u.latest ?? '?', reason: u.reason });
+        rows.push({ id: a.id, name: a.name, from: u.current, to: u.latest ?? '?', reason: u.reason, channel: u.channel });
       }
     } catch {
       /* one app that cannot be checked must not hide the rest */

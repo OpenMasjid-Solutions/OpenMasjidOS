@@ -153,26 +153,143 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 - `settings.reconnectDone` was referenced but missing from the locale file, so refreshing network settings showed a raw key instead of a message. It now also uses the count it was already being passed.
 - Every `t()` key in Settings is verified to resolve, after the WhatsApp strings were added and 10 orphans removed.
-- **Returning to Stable no longer loops for ever.** Updating the OS restarts the core, which drops every in-memory session; the dashboard falls back to the sign-in screen, unmounting `AppShell` — and the window layer renders inside the `Dock`, so the migration window's subtree unmounted while the window itself survived in `WindowsProvider` above the router. Signing back in remounted `ChannelMigrate` with `index` reset to 0 and its original prop list, so it re-updated every app and then the OS again, signing you out again. Escapable only by closing the window in the seconds before the restart landed. Two independent fixes:
-  - `runUpdate` refuses to "update" to the version already running — the guard `updateCatalogApp` has always had for apps, which the core's own update never got. A channel move still proceeds, decided by whether the running version is a prerelease (`isPrerelease`), because `main → dev` is release → prerelease and semver alone would call that a downgrade and refuse.
-  - `ChannelMigrate` reads what is still pending from `system.channel` and snapshots it once, instead of trusting a prop captured when the window opened. A remount after a completed migration now sees nothing pending. Snapshotting (rather than reading live every render) keeps an invalidation mid-run from shifting the list under the index.
+
+**Security — a repo-wide audit, and what it found**
+
+Ten independent audit lanes over docs, the security invariants, the new command surface, the
+outward perimeter, core and UI correctness, and dead code; every finding then re-checked by an
+adversarial verifier before anything was changed. Fixes, each with a regression test:
+
+- **A percent-encoded URL skipped the dashboard's cross-origin check.** Fastify routes on the
+  *decoded* path, but the tRPC origin guard compared the raw text — so `/%74rpc/…` reached the
+  API with the check bypassed entirely, while `/trpc/…` was guarded. This is the same class as
+  the `/api/%66abric/…` walk-past fixed in v0.46.0; there is now one shared predicate
+  (`urlHasPrefix`) and a structural test that fails any security check comparing a raw URL.
+- **An app's private routes could be reached through the public tunnel by adding a dot.**
+  `/donate/./fabric/billing` did not match the guard that keeps an app's own `/fabric` space
+  LAN-only, but still routed to the app with the path forwarded verbatim — so any app framework
+  that resolves dot segments served a LAN-only route publicly. Dot segments are now resolved
+  before the comparison, on both the HTTP and WebSocket paths.
+- **Anyone on the network could choose the IP address apps saw.** Both reverse proxies trusted
+  `CF-Connecting-IP` unconditionally, and neither stripped it — but only one of them ever sits
+  behind Cloudflare. So off-tunnel, and on the per-app HTTPS proxy which is never tunnel-facing
+  at all, a caller could set the address every app logged and rate-limited by. Now stripped
+  everywhere and re-set only from a request that genuinely arrived through the tunnel.
+- **The version was readable from the internet.** `/api/health` returns
+  `{status, version}` and, being a registered route, skipped the not-found handler that keeps
+  everything else off the tunnel — a free "which build is this masjid on, and which advisories
+  apply" lookup for anyone who found the hostname. Now LAN-only, like the other private routes.
+  The container healthcheck and the installer use loopback and are unaffected.
+- **The tunnel check was implemented twice on the same listener**, robustly for the Fabric
+  routes and naively for everything else, so the naive one missed `"HTTPS"`, `"https,http"`
+  and a duplicated header. Both now use the one shared detector.
+- **A privacy-id chat could be mistaken for a person.** The command gate trusted the gateway's
+  `isGroup: false` on its own — but "not a group" is not "a person": WhatsApp Channels,
+  broadcasts and status all report not-a-group, and each would then have had its author treated
+  as an identity to check against the authorised list. It now also requires a positively
+  matched personal address space, which still admits privacy ids so phone-number resolution
+  keeps working.
+- **An ignored confirmation left the `!` prefix optional for ever.** The prompt says "Ignore
+  this to cancel", so ignoring one is the normal path — but the check that relaxes the prefix
+  while a question is waiting never applied the 90-second timeout the consumers did. After one
+  un-answered prompt, every ordinary message that person sent was treated as a command attempt:
+  it spent their rate-limit allowance and drew an automated reply. Nothing cleared it, because
+  chatting kept the entry alive.
+
+**Fixed**
+
+- **The first WhatsApp message on a fresh install could never send.** Creating the session
+  replaces the cached config object, so the copy the send loop was holding still had an empty
+  session id — every request after that went to a malformed address. Re-read after creating.
+- **Being told an app was "moving to the Development version" when it was moving to Stable.**
+  The WhatsApp reply hardcoded one direction, so a masjid returning to Stable was told the exact
+  opposite of what the update would do. Both directions are now named, and asserted in tests.
+- **"Version X is available" no longer describes a channel move.** Returning to Stable targets an
+  *older* number, so that sentence read as an update to a lower version. Settings now words a
+  channel move as a move, matching what the app rows already did.
+- **Animations ignored "reduce motion".** The stylesheet honoured the setting, but Motion
+  animates from JavaScript and cannot be reached by a CSS override — so every spring (modals,
+  the splash, the staggered card entrances) ran at full amplitude for someone who had asked
+  their system for less. Motion's own default is to ignore the preference unless told, which is
+  why nothing looked wrong to anyone who had not set it. Now honoured app-wide.
+- Six pieces of the interface were hardcoded English and would not translate: the log window's
+  "Starting…", the terminal's loading and session-closed lines, the error-boundary message, and
+  the processor core count (which also said "1 cores").
 
 **Removed (dead code)**
 
-- Exports nothing referenced: `composeConfig` (`docker/compose.ts`), `appTlsPortRange` (`system/app-proxy.ts`), `ALLOWED_LOGO_MIME` (`store/branding.ts` — `isAllowedLogoMime` reads `MIME_EXT` directly), `parentPath` (`ui/lib/files.ts`), `springSnappy` (`ui/lib/motion.ts`).
-- Un-exported, used only inside their own module: `extractPublishedPorts` and `portsInUse` (`apps/ports.ts`, both called by `findPortConflicts`), `resolveUploadDir` (`files/manager.ts`), `appUrl` (`ui/lib/apps.ts`).
-- 10 orphaned translation strings: `auth.emailOrUsername`, `dashboard.statusError`, `custom.desc`, `custom.enableFirst`, `community.reposHint`, `settings.channelPullOs`, `settings.channelOn`, `settings.channelPendingTag`, `settings.backupDriveToken`, `errors.viewDetails`.
+- `authoriseCommand` (`store/commands.ts`) — never called in production. Worse than unused: the
+  test suite exercised it under the name "scope is checked separately from membership", so the
+  suite reported green over a boundary it never touched. The real check is `namespacesFor`,
+  which the test now targets.
+- `replyBudget` (`notify/whatsapp.ts`) and `budgetSpent` (`commands/reply.ts`) — the remains of
+  the allowance check removed earlier in this cycle, including the *"I've hit today's WhatsApp
+  limit"* sentence itself, so it cannot come back by accident.
 
-**Documentation**
+**Documentation — a full sweep, and it found more than expected**
 
-- CLAUDE.md §18 rewritten: it still said "Current version: `0.1.0`". Now records the per-branch `VERSION` rule and the two-audience CHANGELOG policy.
-- `docs/audit/ACTION_REQUIRED.md` carries a re-verified status block, so a July snapshot no longer reads as a live to-do list.
+Several documents described software that does not exist. Corrected against the code:
 
-**Security**
+- **The README promised `openmasjidos.local` and an installer-configured static IP.** The
+  installer does neither — there is no mDNS, no hostname change and no network configuration in
+  it at all. It also listed a "Reconfigure network" menu entry that does not exist while omitting
+  **Reset sign-in**, which does, and is the way back in when nobody knows the password.
+- **`docs/NETWORKING.md` gave the address as `http://…:8723`** in four places. It is HTTPS on
+  443. Rewritten around what actually ships, including the certificate warning every device
+  meets once, and how to keep the address stable with a DHCP reservation.
+- **`docs/THEMING.md` documented a Svelte and Go codebase.** Every path, the theme store, the
+  icon library and the entire token reference named things that do not exist — this project has
+  been React since v0.2.0. Re-pathed and rewritten against the real 53 tokens, including the
+  wallpaper/theme cascade rule that light mode depends on.
+- **`docs/FABRIC_APP_LINK_AND_TUNNEL.md` still told app authors to reach apps on `127.0.0.1`.**
+  That exact wrong sentence has already caused one real bug — a client written from it could not
+  reach its target on any install.
+- **The app manifest spec had an 11-line block pasted into the middle of another section**,
+  breaking it, and was the only mention anywhere of the `whatsapp` field. Both `whatsapp` and
+  `commands` now have proper entries in the contract table.
+- **`docs/SECURITY.md` claimed backups are never staged on local disk** and so cannot fill a
+  small machine. Each app's data *is* staged there first; the space requirement is now stated,
+  along with the fact that backups fail loudly rather than uploading something incomplete, that
+  the archive is not encrypted, and that a database being written to during a backup may not
+  restore cleanly.
+- **`CLAUDE.md` and `CONTRIBUTING.md` required ESLint to be clean.** There is no ESLint in this
+  repo. Both now say what the checks really are — and that neither build step typechecks, so a
+  successful build is not evidence the code compiles.
+- CLAUDE.md's repository map, installer section and command-system rules were corrected against
+  the code: the file tree had drifted a long way, seven documented installer flags do not exist,
+  and three stated invariants were no longer true — the `!`-prefix rule (which now has one
+  deliberate, bounded exemption), the allowance check on mutating commands (deleted, and the
+  reasoning behind it was wrong), and the claim that the compose risk gate runs on every path
+  that starts an app (it does not run on Start; that is now written down with its reasoning).
+- **A known-open security gap is now recorded where it will be seen.** Any app holding the
+  `stripe` capability can read *every* configured Stripe account's keys, not just its own —
+  so a masjid running separate accounts for donations and school fees has no separation between
+  the apps. It is LAN-only and capability-gated, so this is an app-vs-app boundary rather than an
+  internet-facing hole, but the fix changes the app-facing contract and needs the app repos
+  updated in step, so it is deliberately not in this release.
+- The two point-in-time audit reports are now labelled as historical records, so they stop
+  reading as live to-do lists.
+- The CLA's "contact the maintainers at the address in the README" pointed at an address the
+  README does not contain; it now points at the issue tracker.
+- **The 0.50.4 release notes were missing from this branch entirely**, so a masjid on
+  Development had no entry for it in What's new, and already-shipped work still showed as
+  unreleased.
 
-- Audit re-run. No `eval`, no `new Function`, no `shell: true`, no `innerHTML`; every `spawn` passes an argument array, so no shell interpolation; nothing logs a secret value. `dangerouslySetInnerHTML` appears twice — both in comments stating the repo does not use it.
-- **One finding confirmed still open**: `GET /api/fabric/stripe?account=` lets any stripe-capable app read *every* Stripe account's `secretKey`/`webhookSecret`, because the account id comes from the query string with nothing binding an app to an account. Recorded in `docs/audit/ACTION_REQUIRED.md`; the fix needs a per-app binding and a coordinated OpenMasjidAPPS change, so it is deliberately not in this release.
-- `npm audit` clean at the `high` gate. Two moderates remain and are deliberate: `esbuild` (dev-server advisory, devDependency, absent from the shipped image) and `uuid` via `dockerode` (needs dockerode 4 → 5, a major bump of the dependency that manages every container).
+**Internals**
+
+- New tests: URL-spelling guards, forwarded-header handling, confirmation expiry, and a check
+  that every `t()` key the interface uses actually exists — the failure mode that put
+  `common.remove` on a button in a shipped release.
+- `system/via-tunnel.ts` gained `urlHasPrefix` so raw-vs-decoded path comparison has one
+  implementation rather than three.
+- `docs/ARCHITECTURE.md` records the decisions behind the inbound Socket.IO client (and why not
+  a webhook), the `commands/` pipeline, the shared Fabric proxy, the app-host helper, the
+  server-side update lock, the path-spelling rule, and the light-mode wallpapers.
+
+## 0.50.4
+
+- **Coming back to Stable now finishes.** Returning from Development builds could get stuck in a loop: your apps and OpenMasjidOS would update, the dashboard would restart, and after signing in the whole thing would start over. It now runs once and stops.
+- **OpenMasjidOS no longer reinstalls the version it is already running.** Asking it to update when there is nothing new tells you so instead of restarting the dashboard for no reason.
 
 ## 0.50.3
 

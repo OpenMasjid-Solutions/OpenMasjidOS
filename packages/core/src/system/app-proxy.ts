@@ -40,6 +40,12 @@ const STRIP_HEADERS = [
   'x-forwarded-host',
   'x-forwarded-port',
   'forwarded',
+  // This listener is LAN-facing and never sits behind Cloudflare, so any
+  // cf-connecting-ip on it was typed by the caller. It used to be preferred over the
+  // socket peer, which let anyone on the network pick the IP the app logged and rate-
+  // limited by. Stripped, and deliberately not re-added: unlike the tunnel ingress,
+  // there is no case here where the header is genuine.
+  'cf-connecting-ip',
   'connection',
   'keep-alive',
   'transfer-encoding',
@@ -47,10 +53,10 @@ const STRIP_HEADERS = [
   'proxy-authorization',
 ];
 
-/** Real client IP: Cloudflare's CF-Connecting-IP if present, else the TLS peer. */
+/** Real client IP: the TLS peer. Nothing on this path may override it — see the
+ *  cf-connecting-ip note in STRIP_HEADERS. */
 function clientIp(req: import('node:http').IncomingMessage): string {
-  const cf = req.headers['cf-connecting-ip'];
-  return (typeof cf === 'string' && cf) || req.socket?.remoteAddress || '';
+  return req.socket?.remoteAddress || '';
 }
 
 /** Strip spoofable forwarding headers and set trusted ones. TLS is terminated

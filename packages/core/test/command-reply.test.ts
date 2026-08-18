@@ -134,12 +134,32 @@ test('a channel move never renders as a version downgrade', () => {
   // Going back to Stable targets an OLDER number, so "1.4.0 to 1.3.9" would read as a
   // mistake. The dashboard already learned this one.
   const out = updatesText([
-    { id: 'madrasah', name: 'Madrasah', from: '1.4.0', to: '1.3.9', reason: 'channel' },
+    { id: 'madrasah', name: 'Madrasah', from: '1.4.0', to: '1.3.9', reason: 'channel', channel: 'dev' },
     { id: 'donations', name: 'Donations', from: '0.9.1', to: '0.10.0', reason: 'version' },
   ]);
   assert.match(out, /Madrasah - moving to the Development version/);
   assert.ok(!/1\.4\.0 to 1\.3\.9/.test(out));
   assert.match(out, /Donations - 0\.9\.1 to 0\.10\.0/);
+});
+
+test('a channel move names the direction it is actually going', () => {
+  // The wording used to be hardcoded to "Development", so a masjid returning to Stable
+  // was told the opposite of what pressing update would do. Both directions, asserted,
+  // because only one of them was ever wrong and it was the less-travelled one.
+  const toStable = updatesText([
+    { id: 'madrasah', name: 'Madrasah', from: '1.4.0-dev.2', to: '1.3.9', reason: 'channel', channel: 'main' },
+  ]);
+  assert.match(toStable, /Madrasah - moving to the Stable version/);
+  assert.ok(!/Development/.test(toStable), 'must not name the channel it is leaving');
+
+  const toDev = updatesText([
+    { id: 'madrasah', name: 'Madrasah', from: '1.3.9', to: '1.4.0-dev.2', reason: 'channel', channel: 'dev' },
+  ]);
+  assert.match(toDev, /Madrasah - moving to the Development version/);
+
+  // No channel: say something true rather than guessing a direction.
+  const unknown = updatesText([{ id: 'madrasah', name: 'Madrasah', to: '1.3.9', reason: 'channel' }]);
+  assert.ok(!/Development|Stable/.test(unknown));
 });
 
 test('nothing to update says so, rather than showing an empty list', () => {
@@ -228,7 +248,6 @@ test('EVERY reply is plain text: no markdown, no links, no emoji, within the cap
     say.cancelled(),
     say.nothingToCancel(),
     say.managedApp('WhatsApp Gateway'),
-    say.budgetSpent(),
     ...['target_not_installed', 'target_unreachable', 'timeout', 'response_too_large', 'unknown_command', 'not_ready', 'payload_too_large', 'no_secret', 'anything-else'].map(
       (c) => appFailureText('Notice Board', c, 'notice-board'),
     ),

@@ -38,6 +38,26 @@ const TIMEZONES: string[] = (() => {
   }
 })();
 
+/**
+ * How to word an available core update.
+ *
+ * "Version X is available" is wrong for a CHANNEL move: going back to Stable targets an
+ * OLDER number, so that sentence reads as an update to a lower version — the same mistake
+ * the app rows already fixed by branching on `reason`. The server tells us which it is.
+ */
+function updateSentence(
+  info: { updateAvailable: boolean; latest: string | null; reason: 'version' | 'channel' | null; channel: string },
+  t: (k: string, o?: Record<string, unknown>) => string,
+): string {
+  if (!info.updateAvailable) return t('settings.upToDate');
+  if (info.reason === 'channel') {
+    return info.channel === 'dev'
+      ? t('settings.updateChannelMoveToDev', { version: info.latest })
+      : t('settings.updateChannelMoveToStable', { version: info.latest });
+  }
+  return t('settings.updateAvailable', { version: info.latest });
+}
+
 /** A small red/green/grey status dot. `online` undefined = unknown (grey). */
 function StatusDot({ online, label: override }: { online: boolean | undefined; label?: string }) {
   const { t } = useTranslation();
@@ -280,12 +300,7 @@ export function Settings() {
     if (updateInfo.isFetching) return; // don't stack checks/toasts during a spam burst
     const r = await updateInfo.refetch();
     if (r.data) {
-      toast(
-        r.data.updateAvailable
-          ? t('settings.updateAvailable', { version: r.data.latest })
-          : t('settings.upToDate'),
-        'success',
-      );
+      toast(updateSentence(r.data, t), 'success');
     } else {
       toast(t('errors.generic'), 'error');
     }
@@ -516,11 +531,7 @@ export function Settings() {
           <div className="setting-row__text">
             <div className="setting-row__title">{t('settings.updates')}</div>
             <div className="setting-row__hint">
-              {updateInfo.data
-                ? updateInfo.data.updateAvailable
-                  ? t('settings.updateAvailable', { version: updateInfo.data.latest })
-                  : t('settings.upToDate')
-                : ''}
+              {updateInfo.data ? updateSentence(updateInfo.data, t) : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

@@ -5,6 +5,12 @@
 
 From the 2026-07-30 audit of `cf32b878`. Ordered by urgency.
 
+> **Re-checked 2026-08-18 for the v0.51.0 release sweep.** Item **1's Stripe finding is STILL
+> OPEN** and is now recorded as a known gap in `CLAUDE.md §15` and `docs/SECURITY.md` so it is
+> visible outside this file. **All of §6's doc corrections have been made** (see the notes
+> against each). Items 2–5 are unchanged historical record. Nothing else in this file became
+> true or untrue since 2026-08-14.
+
 ---
 
 ## 1. Credentials to rotate
@@ -124,12 +130,24 @@ grant model first**, then change platform and apps together.
 
 ## 6. Doc corrections you should make (I did not, to keep the diff reviewable)
 
-- `CLAUDE.md:537` — "The gate runs on EVERY path that starts a compose" is still **not true**:
-  `startApp` (`apps/manager.ts:880`) runs `docker compose up` on the on-disk compose with no gate.
-  Either narrow the sentence or gate `startApp`.
-- `CLAUDE.md §16/§17` — describe `npm run lint` as "eslint + tsc". **There is no eslint in this
-  repo**, so the documented definition of done is unachievable as written.
-- `CLAUDE.md §18` — "Current version: 0.1.0" while `VERSION` says 0.47.1.
-- `docs/SECURITY.md:86` — claims the backup "is not staged on local disk"; per-volume tars are staged
-  at `DATA_DIR/.backup-staging`. Also still describes the compose gate as one acknowledgeable list,
-  with no mention of `refusals`.
+**All four were made in v0.51.0.** Kept here as the record of what was wrong and for how long —
+each had survived several releases, which is the actual lesson.
+
+- ~~`CLAUDE.md:537` — "The gate runs on EVERY path that starts a compose" is still **not true**:
+  `startApp` runs `docker compose up` on the on-disk compose with no gate.~~ **DONE** — the
+  sentence now says "every path that introduces or refreshes a compose" and names `startApp` as
+  an explicit, reasoned exception (every *write* vector into that file is gated, and
+  `files/manager.ts` refuses `compose.yml`, so the gap costs defence in depth rather than a
+  supported attack path). It also records that gating it should refuse only on `refusals`, or a
+  running app could become unstartable.
+- ~~`CLAUDE.md §16/§17` — describe `npm run lint` as "eslint + tsc". **There is no eslint in this
+  repo**~~ **DONE** — §16, §17 and `CONTRIBUTING.md` now state that `npm run lint` is
+  `tsc --noEmit` and that there is no ESLint, plus the fact that neither build step typechecks at
+  all, so a green `npm run build` is not evidence.
+- ~~`CLAUDE.md §18` — "Current version: 0.1.0" while `VERSION` says 0.47.1.~~ **DONE** — §18 no
+  longer restates the version; `VERSION` is the single source of truth, as it always claimed.
+- ~~`docs/SECURITY.md:86` — claims the backup "is not staged on local disk" … Also still describes
+  the compose gate as one acknowledgeable list, with no mention of `refusals`.~~ **DONE** — both.
+  The backup section now says the outer archive is streamed but each volume **is** staged under the
+  data dir, and states the free-space requirement; the gate section now describes **dangers** vs
+  **refusals** and says plainly that refusals are never acknowledgeable.

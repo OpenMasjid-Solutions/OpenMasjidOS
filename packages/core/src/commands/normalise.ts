@@ -28,7 +28,7 @@
  *
  * A partially parseable message is dropped, never guessed at.
  */
-import { jidDigits, isDirectJid, toDigits } from '../util/phone';
+import { jidDigits, isDirectJid, isPersonalChatJid, toDigits } from '../util/phone';
 
 export interface InboundMessage {
   /** '' when the gateway sent none — the gate then derives a dedupe key. */
@@ -156,7 +156,13 @@ export function normaliseInbound(args: unknown[]): NormaliseResult {
   const isDirect = isStatusBroadcast
     ? false
     : isGroupFlag !== null
-      ? !isGroupFlag
+      ? // The flag settles GROUP-ness, but "not a group" is not "a person": @newsletter
+        // (Channels), @broadcast and status@broadcast are all not-groups too, and
+        // trusting the flag alone let one of those become a direct chat whose author
+        // was then matched against the whitelist. Still require the chat to be a
+        // personal address space — which allows @lid, so the privacy-id fix that made
+        // this branch necessary keeps working.
+        !isGroupFlag && isPersonalChatJid(chatId)
       : // No flag: fall back to positive proof, and keep the old belt-and-braces that
         // any author present names the same person as the chat. A gateway that put the
         // group in `author` and the sender in `chatId` would otherwise look direct.

@@ -583,6 +583,38 @@ test('awaitingReply is the only thing that relaxes the prefix', () => {
   assert.equal(convo.awaitingReply(ALICE, NOW), true, 'a held confirmation counts too');
 });
 
+test('an ignored confirmation stops relaxing the prefix once it expires', () => {
+  // The prompt itself says "Ignore this to cancel", so ignoring one is the NORMAL path —
+  // and `hasPending` had no clock while both consumers expired at CONFIRM_TTL_MS. That
+  // left `awaitingReply` true for ever, so every ordinary message that person sent
+  // afterwards was treated as a command attempt: it spent a rate-limit token and drew an
+  // automated reply. Nothing swept it either, because `touch` refreshes the idle timer on
+  // every inbound, so chatting kept it alive indefinitely.
+  convo.resetConversations();
+  const action = { kind: 'os', command: { id: 'stop' }, appId: 'a', appName: 'A' } as never;
+  convo.setPending(ALICE, action, NOW);
+
+  assert.equal(convo.awaitingReply(ALICE, NOW + 1_000), true, 'still live a second later');
+  assert.equal(convo.awaitingReply(ALICE, NOW + convo.CONFIRM_TTL_MS), true, 'live right up to the TTL');
+  assert.equal(
+    convo.awaitingReply(ALICE, NOW + convo.CONFIRM_TTL_MS + 1),
+    false,
+    'past the TTL the prefix is required again — ordinary conversation is untouched',
+  );
+  // And an hour later, which is what actually happened on a real install.
+  assert.equal(convo.awaitingReply(ALICE, NOW + 60 * 60_000), false);
+
+  // The predicate must be PURE: the gate calls it for every bare message from an
+  // authorised sender, so it must not quietly mutate per-sender state. Asking about an
+  // expired confirmation must not consume it — `!yes CODE` still has to report "expired"
+  // rather than "nothing to confirm", because a silent stale code is its own bug.
+  const stale = convo.takePending(ALICE, 'ZZZZ', NOW + convo.CONFIRM_TTL_MS + 2);
+  assert.ok(
+    !stale.ok && stale.why === 'expired',
+    'an expired code must still report expiry, not "there is nothing to confirm"',
+  );
+});
+
 test('a follow-up token is validated before it is ever echoed back', () => {
   // It becomes part of a later request body, so an app must not be able to smuggle
   // anything through it.

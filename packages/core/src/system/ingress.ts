@@ -38,6 +38,12 @@ const STRIP_HEADERS = [
   'x-forwarded-host',
   'x-forwarded-port',
   'forwarded',
+  // Cloudflare's real-client-IP header. Stripped like the rest and re-set below ONLY
+  // when the request actually came through the tunnel: on the LAN anyone can send it,
+  // and it was previously honoured unconditionally — so a caller on the masjid's
+  // network chose the IP every app saw in X-Forwarded-For, which is what apps rate-
+  // limit and log by. Exactly the poisoning this list exists to prevent.
+  'cf-connecting-ip',
   'connection',
   'keep-alive',
   'transfer-encoding',
@@ -51,10 +57,15 @@ function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
   const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
   for (const h of STRIP_HEADERS) delete headers[h];
   const tunnel = isViaTunnelHeaders(req.headers);
-  // Real client IP: Cloudflare's CF-Connecting-IP over the tunnel, else the peer.
-  const cfIp = req.headers['cf-connecting-ip'];
-  headers['x-forwarded-for'] =
-    (typeof cfIp === 'string' && cfIp) || req.socket?.remoteAddress || '';
+  // Real client IP: Cloudflare's CF-Connecting-IP, but ONLY when the request really
+  // arrived through the tunnel — off-tunnel that header is just something the caller
+  // typed. Off-tunnel we use the socket peer, which cannot be forged.
+  const cfIp = tunnel ? req.headers['cf-connecting-ip'] : undefined;
+  const trustedCfIp = typeof cfIp === 'string' && cfIp ? cfIp : '';
+  headers['x-forwarded-for'] = trustedCfIp || req.socket?.remoteAddress || '';
+  // Put Cloudflare's own header back for apps that read it directly, but only with
+  // the value we just decided to trust.
+  if (trustedCfIp) headers['cf-connecting-ip'] = trustedCfIp;
   headers['x-forwarded-proto'] = tunnel ? 'https' : 'http';
   if (req.headers.host) headers['x-forwarded-host'] = String(req.headers.host);
   return headers;
@@ -120,7 +131,34 @@ export function isFabricSubpath(url: string, seg: string): boolean {
     return parts[parts[0] === seg ? 1 : 0] === 'fabric';
   };
   const raw = url.split('?')[0]!.split('#')[0]!;
-  return targetsFabric(raw) || targetsFabric(decodedPath(url));
+  // Dot segments have to be resolved before comparing, and this is the third
+  // spelling-of-the-same-path bug in this codebase (raw-vs-decoded was the first two).
+  // `/donate/./fabric/billing` split to ['donate','.','fabric',…], so parts[1] was '.'
+  // and the guard said "not fabric" — while `firstSegment` still returned `donate`, so
+  // the request was proxied on with its URL forwarded verbatim, and any app framework
+  // that normalises dot segments then served its own LAN-only /fabric handler to the
+  // public tunnel. Test every spelling the far end might resolve to.
+  return [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))].some(
+    targetsFabric,
+  );
+}
+
+/**
+ * Collapse `.` and `..` in a path, the way an HTTP server or URL parser would before
+ * routing. Only used to make security comparisons see what the far end will see —
+ * never to build a URL we then request.
+ */
+function resolveDotSegments(path: string): string {
+  const out: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return `/${out.join('/')}`;
 }
 
 function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {
@@ -174,15 +212,27 @@ export function attachIngress(front: FastifyInstance): void {
       // Relay the handshake headers (incl. Connection/Upgrade, which WS needs) but
       // drop client-supplied forwarding headers, then inject trusted ones — same
       // hostile-boundary reasoning as the HTTP path.
-      const drop = new Set(['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'forwarded']);
+      // Same drop-list as the HTTP path, including cf-connecting-ip — it is only
+      // trustworthy when Cloudflare set it, and it is re-added below if so.
+      const drop = new Set([
+        'x-forwarded-for',
+        'x-forwarded-proto',
+        'x-forwarded-host',
+        'x-forwarded-port',
+        'forwarded',
+        'cf-connecting-ip',
+      ]);
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         if (drop.has(req.rawHeaders[i].toLowerCase())) continue;
         up.write(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`);
       }
-      const cfIp = req.headers['cf-connecting-ip'];
-      const fwdFor = (typeof cfIp === 'string' && cfIp) || req.socket?.remoteAddress || '';
+      const tunnel = isViaTunnelHeaders(req.headers);
+      const cfIp = tunnel ? req.headers['cf-connecting-ip'] : undefined;
+      const trustedCfIp = typeof cfIp === 'string' && cfIp ? cfIp : '';
+      const fwdFor = trustedCfIp || req.socket?.remoteAddress || '';
+      if (trustedCfIp) up.write(`CF-Connecting-IP: ${trustedCfIp}\r\n`);
       up.write(`X-Forwarded-For: ${fwdFor}\r\n`);
-      up.write(`X-Forwarded-Proto: ${isViaTunnelHeaders(req.headers) ? 'https' : 'http'}\r\n`);
+      up.write(`X-Forwarded-Proto: ${tunnel ? 'https' : 'http'}\r\n`);
       if (req.headers.host) up.write(`X-Forwarded-Host: ${req.headers.host}\r\n`);
       up.write('\r\n');
       if (head && head.length) up.write(head);

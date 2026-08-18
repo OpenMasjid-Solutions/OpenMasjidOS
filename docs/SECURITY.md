@@ -65,8 +65,41 @@ Before any app's `docker-compose.yml` runs, it is parsed and risk-checked
 `..` escapes and `local`-driver named-volume binds), `cap_add`, `devices`,
 `security_opt: …unconfined`, `group_add` of root/docker, `extends`/`include`, and
 `build:` contexts. Variables (`${VAR}`) in security-sensitive fields fail closed.
-Catalog installs are hard-blocked on any danger; the opt-in 3rd-party (custom)
-installer requires an explicit "I understand the risk" acknowledgement.
+The check also flags `volumes_from` (which can inherit the core's own mounts),
+`env_file` pointing outside the app's own directory, and top-level
+`secrets:`/`configs:` with a host `file:` source.
+
+The result has **two** classes, and the difference matters:
+
+- **Dangers** — catalog and community installs are hard-blocked on any of them; the
+  opt-in 3rd-party (custom) installer allows one through only with an explicit
+  "I understand the risk" acknowledgement.
+- **Refusals** — **never acknowledgeable, on any path.** Currently: a top-level volume
+  that uses `external:` or `name:` to attach to an `omos-*` volume, i.e. **another app's
+  data or the platform's own**. There is no "I understand the risk" for these, because
+  there is no legitimate reason for one app to mount another's database.
+
+The gate runs on install (catalog, community and custom), on **update** — a refreshed
+catalog entry is fresh external data — and after a **restore**, since a backup file is
+externally craftable. One known gap: pressing **Start** on an already-installed app runs
+the compose that is on disk without re-checking it. Every path that *writes* that file is
+gated, and the File Explorer refuses to edit `compose.yml` at all, so there is no
+supported way to get an unchecked compose onto disk — but the start path itself is not a
+second wall.
+
+## Reaching the platform from an app
+
+Apps talk to the platform over `/api/fabric/*` on the LAN only; those routes are refused
+if the request arrived through the Cloudflare tunnel. Each app is issued its own secret
+and is authorised by what its manifest declares.
+
+**One exception you should know about if you run more than one Stripe account.** An app
+holding the `stripe` capability can read **any** configured Stripe account's keys, not
+only the one it was set up with — accounts are not yet bound to apps. So if you keep a
+separate Stripe account for, say, school fees and general donations, treat every
+Stripe-capable app you install as having access to both. This is being fixed, and the fix
+changes the app-facing contract, so it needs the apps updated in step.
+
 
 ## Off-site backups (scheduled)
 
@@ -83,12 +116,32 @@ before starting the apps.
   rclone's obscured form, not plaintext. `settings.json` and the `backups.status`
   API hold only non-secret metadata (kind, label, remote path, schedule, last-run
   status) — a secret is never returned to the browser, even to the admin.
-- The backup tar is **streamed** straight to the remote (`rclone rcat`) — it is
-  not staged on local disk, so a small box won't fill up.
+- The **outer archive is streamed** straight to the remote (`rclone rcat`) and is
+  never written to local disk.
+- Each app's Docker volume **is** staged first, though, as
+  `.backup-staging/volumes/<name>.tar.gz` under the data dir: a volume's contents
+  have to be pulled out through a throwaway `tar` container before they can be
+  folded into the archive. So a backup needs free space of roughly the size of your
+  largest app's data, not zero. (This page said backups were never staged on disk
+  and so could not fill a small box — that was wrong, and running out of space
+  here is a real failure mode the code explicitly handles.)
+- A backup that cannot capture everything **fails** rather than uploading a
+  silently incomplete archive: a volume that won't archive fails the whole run, its
+  partial file is deleted, and nothing is recorded as successful or pruned until
+  both the archive and the upload have succeeded. Old backups are never pruned on
+  the strength of a run that didn't verify.
+- **Known limitation:** volumes are archived while the apps are running, so a
+  database being written to at that moment can be captured mid-write. The archive
+  will restore, but such a database may not open. The real fix is app-side
+  (snapshotting before the backup); don't read `ok: true` as proof every database
+  inside will open.
+- **The archive is not encrypted.** It contains every platform secret — including
+  the credential for the backup destination itself — so the destination must be
+  treated as trusted. Prefer one that encrypts at rest.
 - Retention prunes the remote to the newest N backups (default 7).
 - Backups capture data **as-is**; if an app stores its own secrets (e.g. Stripe
-  keys) in its data dir, those travel inside the tar — so treat the destination as
-  trusted and prefer one that encrypts at rest.
+  keys) in its data dir, those travel inside the tar too — one more reason the
+  destination has to be a trusted one (see the encryption note above).
 
 ## Reporting
 

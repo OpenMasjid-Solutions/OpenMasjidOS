@@ -13,7 +13,9 @@
     "close": "Close",
     "back": "Back",
     "retry": "Try again",
-    "working": "Just a moment…"
+    "working": "Just a moment…",
+    "starting": "Starting…",
+    "sessionClosed": "Session closed"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -147,7 +149,10 @@
       "disk": "Storage",
       "temp": "Temperature",
       "uptime": "Uptime",
-      "apps": "Apps running"
+      "apps": "Apps running",
+      "cores_one": "{{count}} core",
+      "cores_other": "{{count}} cores",
+      "coresSpeed": "{{cores}} · {{speed}} GHz"
     },
     "installedApps": "Your apps",
     "noAppsTitle": "No apps installed yet",
@@ -724,7 +729,9 @@
     "whatsappStateOff": "WhatsApp is off.",
     "alertsWhatsapp": "WhatsApp",
     "whatsappStateNoSession": "Gateway found, no connection created yet. Use “Link your phone” below and OpenMasjidOS will set it up.",
-    "whatsappStateProblem": "The phone connection needs attention (“{{detail}}”). Try linking it again."
+    "whatsappStateProblem": "The phone connection needs attention (“{{detail}}”). Try linking it again.",
+    "updateChannelMoveToDev": "A Development build (v{{version}}) is available for this channel.",
+    "updateChannelMoveToStable": "Returning to Stable will move you to v{{version}}."
   },
   "update": {
     "title": "Updating OpenMasjidOS",
@@ -765,6 +772,7 @@
     "network": "Cannot reach the server. Check your connection and try again.",
     "notFound": "Page not found",
     "notFoundHint": "The page you're looking for doesn't exist.",
-    "goHome": "Go to Dashboard"
+    "goHome": "Go to Dashboard",
+    "boundary": "Something went wrong here. Try closing and reopening this window."
   }
 }

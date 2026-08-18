@@ -103,10 +103,16 @@ export function Dashboard() {
   }
 
   const name = prefs.dashboardName.trim() || me.data?.username || t('dashboard.yourMasjid');
-  const cpuSub =
-    stats && stats.cpuCores
-      ? `${stats.cpuCores} cores${stats.cpuSpeedGHz ? ` · ${stats.cpuSpeedGHz.toFixed(1)} GHz` : ''}`
-      : undefined;
+  // Pluralised and translated: "1 core" is not "1 cores", and a Pi is a single-core-visible
+  // box often enough for that to show. The speed variant is a separate key so a translator
+  // can reorder the two halves.
+  const cpuSub = (() => {
+    if (!stats || !stats.cpuCores) return undefined;
+    const cores = t('dashboard.stats.cores', { count: stats.cpuCores });
+    return stats.cpuSpeedGHz
+      ? t('dashboard.stats.coresSpeed', { cores, speed: stats.cpuSpeedGHz.toFixed(1) })
+      : cores;
+  })();
 
   const diskPct = percent(stats?.diskUsed ?? 0, stats?.diskTotal ?? 0);
   const diskLow = (stats?.diskTotal ?? 0) > 0 && diskPct >= 80;

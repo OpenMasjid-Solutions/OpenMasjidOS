@@ -867,7 +867,7 @@ async function pump(): Promise<void> {
   running = true;
   try {
     while (queue.length > 0) {
-      const cfg = getWhatsAppConfig();
+      let cfg = getWhatsAppConfig();
       if (!isWhatsAppConfigured()) {
         // Configuration was removed under us; drop the backlog rather than spin.
         log.warn(`WhatsApp: gateway unconfigured, discarding ${queue.length} queued message(s).`);
@@ -899,6 +899,14 @@ async function pump(): Promise<void> {
           await sleep(60_000);
           continue;
         }
+        // Re-read, or nothing below can send. `getWhatsAppConfig()` returns the cached
+        // object BY REFERENCE, and `recordSessionId` REPLACES that object rather than
+        // mutating it — so the `cfg` captured at the top of this iteration still holds
+        // the default `sessionId: ''`. Every URL built from it then came out as
+        // `/api/sessions//messages/send-text`, i.e. the first message after a session
+        // was created on a fresh install could never go out. `requestPairingCode` has
+        // carried this same re-read, with the same reason, since it was written.
+        cfg = getWhatsAppConfig();
       }
 
       // Wait for a session that can actually send. A gateway restart leaves the session
@@ -1290,20 +1298,14 @@ export async function replyTo(digits: string, text: string): Promise<SendOutcome
   return sendImmediate({ kind: 'person', digits }, text, 'os:command');
 }
 
-/**
- * Has the number's allowance run out? Hour/day caps only — see `replyTo` for why
- * quiet hours and the cooldown are excluded by design.
- */
-export function replyBudget(): { ok: true } | { ok: false; reason: 'hour' | 'day' } {
-  const cfg = getWhatsAppConfig();
-  const now = Date.now();
-  prune(now);
-  const reason = capExceeded(now, { kind: 'person', digits: '' }, cfg.limits, cfg.linkedAt, {
-    sends: sentAt,
-    groupSends: groupSentAt,
-  });
-  return reason ? { ok: false, reason } : { ok: true };
-}
+// `replyBudget()` used to live here and is deliberately gone. It backed a check in
+// commands/execute.ts that refused a mutating command once the day's allowance was
+// spent, on the reasoning that there would otherwise be no way to report the result.
+// That reasoning was wrong: a reply goes out through `sendImmediate`, which calls
+// `sendOne` directly and never consults the caps — so the check protected nothing and
+// only locked an admin out of the commands they were testing (worst on a freshly linked
+// number, whose warm-up ramp quarters the hourly cap). What bounds commands is the
+// INBOUND rate limit in commands/gate.ts. Don't reintroduce either half.
 
 /** Test seam: forget pacing history so a test starts from a known state. */
 export function __resetPacingForTests(): void {

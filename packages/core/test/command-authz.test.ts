@@ -22,6 +22,10 @@ process.env.OPENMASJID_DATA_DIR = dataDir;
 
 const req = createRequire(__filename);
 const store = req('../src/store/commands') as typeof import('../src/store/commands');
+// Required AFTER the data dir is set, like `store` above — the registry reads installed
+// apps off disk, so it must not be loaded before OPENMASJID_DATA_DIR points at the temp
+// dir.
+const registry = req('../src/commands/registry') as typeof import('../src/commands/registry');
 
 const ALICE = '15550101234';
 const BOB = '447700900123';
@@ -60,14 +64,44 @@ test('an unknown number is never authorised', () => {
   assert.equal(store.authoriseSender('12345'), null, 'too short to be a real number');
 });
 
-test('scope is checked separately from membership', () => {
+test('scope is checked separately from membership, on the path dispatch uses', () => {
   reset();
   store.setCommandsEnabled(true);
   store.addCommandPerson(ALICE, 'Alice', [store.OS_READ]);
-  assert.ok(store.authoriseCommand(ALICE, store.OS_READ));
-  assert.equal(store.authoriseCommand(ALICE, store.OS_CONTROL), null, 'read does not imply control');
-  assert.equal(store.authoriseCommand(ALICE, 'display'), null);
-  assert.equal(store.authoriseCommand(BOB, store.OS_READ), null, 'not a member at all');
+
+  // Asserted against `namespacesFor`, which is what the dispatcher actually calls.
+  // This test used to exercise a `store.authoriseCommand` that nothing in production
+  // ever called, so it reported green over an unexercised boundary. Only the OS
+  // namespace is used here: app namespaces come from installed apps on disk, and this
+  // temp data dir has none — so an app-scope assertion would pass or fail for reasons
+  // that have nothing to do with authorisation.
+  const forAlice = registry.namespacesFor(ALICE);
+  const osNs = forAlice.find((n) => n.word === 'os');
+  assert.ok(osNs, 'a person with os:read can see the os namespace');
+  assert.ok(
+    osNs.commands.every((c) => c.scope === store.OS_READ),
+    'read does not imply control — no os:control command may appear',
+  );
+  assert.ok(
+    osNs.commands.some((c) => c.id === 'stats'),
+    'and the read commands they do hold are present',
+  );
+
+  assert.deepEqual(registry.namespacesFor(BOB), [], 'not a member at all — silence, not a refusal');
+});
+
+test('a granted scope with nothing behind it grants nothing', () => {
+  reset();
+  store.setCommandsEnabled(true);
+  // 'display' is a real scope key, but no such app is installed in this temp dir. A
+  // grant must not conjure a namespace: read-time resolution is what makes an
+  // uninstalled or withdrawn app's grant inert.
+  store.addCommandPerson(ALICE, 'Alice', ['display']);
+  assert.deepEqual(
+    registry.namespacesFor(ALICE).map((n) => n.word),
+    [],
+    'no os grant and no such app => nothing at all',
+  );
 });
 
 test('one number has one representation', () => {
@@ -101,11 +135,15 @@ test('setCommandScope grants and revokes exactly one scope', () => {
   reset();
   store.setCommandsEnabled(true);
   store.addCommandPerson(ALICE, 'Alice', [store.OS_READ]);
+  // Asserted on the stored grant list, because this test is about setCommandScope's
+  // bookkeeping, not about resolution — and 'display' has no installed app here, so
+  // resolving it would legitimately yield nothing either way.
+  const scopes = (): string[] => store.listCommandPeople()[0]!.scopes;
   store.setCommandScope(ALICE, 'display', true);
-  assert.ok(store.authoriseCommand(ALICE, 'display'));
-  assert.ok(store.authoriseCommand(ALICE, store.OS_READ), 'the other grant is untouched');
+  assert.ok(scopes().includes('display'));
+  assert.ok(scopes().includes(store.OS_READ), 'the other grant is untouched');
   store.setCommandScope(ALICE, 'display', false);
-  assert.equal(store.authoriseCommand(ALICE, 'display'), null);
+  assert.ok(!scopes().includes('display'));
   // Granting twice must not produce a duplicate entry.
   store.setCommandScope(ALICE, 'display', true);
   store.setCommandScope(ALICE, 'display', true);

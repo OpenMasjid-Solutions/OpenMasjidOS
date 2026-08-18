@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # App catalog contract (platform side)
 
 > **Where to build an app:** the authoritative, hands-on guide lives in the **OpenMasjidAPPS** repo
@@ -52,6 +55,8 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `tunnel` | – | `true` = the app **requests** to be reachable from the internet through the OS's Cloudflare tunnel (below). It's only a request — the admin confirms exposure in Settings → Remote access. Off ⇒ the app stays on the LAN. |
 | `email` | – | `true` to opt into Fabric email (below) — the app may `POST /api/fabric/email` to send mail (receipts, parent notices) via the admin's SMTP/Resend provider. Issues the per-app secret; the app never sees the credentials or the From address. |
 | `alerts` | – | A list of alert types this app can raise, `{ id, label, description? }[]` (below). Each gets a granular on/off in Settings → Alerts (all on by default). The app fires one with `POST /api/fabric/alert`. Declaring alerts issues the per-app secret. |
+| `whatsapp` | – | `true` to opt into Fabric WhatsApp — the app may `POST /api/fabric/whatsapp` to send through the masjid's own gateway, and never sees the gateway credentials. It **queues** (`202 {queued}`), never sends synchronously, and takes **one recipient per call**. `GET` the same path first to learn whether this masjid can send at all, and read an absent field as `false`. **Which events go out and to whom is YOUR setting** — the platform's alerts matrix has no WhatsApp column for apps, because it routes to the admin's one number. For announcements, `GET /api/fabric/whatsapp/groups` (only the groups the **admin** approved) and send `group` instead of `to`. An optional `media` sends an **image** (png/jpeg/webp, 2 MB decoded) with `text` as its caption — check `media` on the `GET` first. Never use it for anything auth-critical: it is an unofficial client and the number can be restricted. See [`WHATSAPP.md`](WHATSAPP.md). Issues the per-app secret. |
+| `commands` | – | A list of commands an admin can run against this app over WhatsApp, `{ id, label, description?, argument?: { label }, confirm? }[]` (below). The platform authorises, renders the menu and asks for confirmation; the app only executes, at `POST /fabric/commands/run`. Max 12; `id` must be kebab-case, not all digits, and not `help`/`yes`/`no`/`cancel`/`stop`. `argument` must be an **object** — `argument: true` is refused rather than coerced. Declaring commands issues the per-app secret (required: the platform authenticates to you with *your* secret). **`commands` is a reserved Fabric capability** — you cannot expose this handler to other apps via `fabric.provides`. |
 
 ### `settings` fields (`SettingField`)
 
@@ -269,17 +274,6 @@ enforced, and you should enforce it too). Build your app to be base-path aware (
 `/<path>`); `GET /api/fabric/site` returns the `basePath` to mount under.
 
 ## Fabric email (`email: true` — sending mail)
-whatsapp: true                    # OPTIONAL - may POST /api/fabric/whatsapp. QUEUES (202), never
-                                  # sends synchronously; one recipient per call; never use for
-                                  # anything auth-critical. GET the same path first to learn
-                                  # whether this masjid can send at all. Which events go out and
-                                  # to whom is YOUR setting - the platform's alerts matrix has no
-                                  # WhatsApp column for apps. For announcements, GET
-                                  # /api/fabric/whatsapp/groups (only the groups the ADMIN
-                                  # approved) and send `group` instead of `to`. An optional
-                                  # `media` sends an IMAGE (png/jpeg/webp, 2 MB decoded) with
-                                  # `text` as its caption; check `media` on the GET first, and
-                                  # read an absent field as false. See docs/WHATSAPP.md.
 
 The admin configures ONE email provider (SMTP or Resend) in Settings → Email. Set `email: true`
 to opt in; the platform issues your per-app secret, and your **backend** can then send mail through

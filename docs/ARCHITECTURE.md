@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 OpenMasjid-Solutions -->
+
 # Architecture & decisions — OpenMasjidOS
 
 This records non-trivial architectural and naming decisions (per CLAUDE.md §19).
@@ -273,3 +276,105 @@ bytes reached the disk — a full disk gives you a clean exit and an empty file.
 `VERSION` at the repo root is the single source of truth. The Docker build copies
 it to `/app/VERSION`; the daemon reads it (`OPENMASJID_VERSION_FILE`). Shown in
 Settings → Advanced.
+
+---
+
+## WhatsApp inbound: a Socket.IO client, not a webhook (v0.51.0)
+
+Reading messages needs a connection to the gateway. We open one **outbound**, core →
+OpenWA (`notify/whatsapp-inbound.ts`), in the same direction the send path already
+runs. So the feature adds **no inbound route and no new attack surface**, and it works
+on an install that predates it.
+
+A webhook was the alternative and is worse *here*: it needs the core's LAN address baked
+into the gateway's config, raw-body HMAC handling, a new public-ish route, and OpenWA's
+own SSRF guard relaxed inside the masjid's compose file — four moving parts, each of
+which a volunteer would have to get right.
+
+**New dependency:** `socket.io-client` (MIT, AGPL-compatible). It is loaded with a
+dynamic `import()` so a masjid with commands switched off pays nothing at boot.
+
+The wire protocol is not in OpenWA's public docs, so it was read from its source:
+namespace `/events`, one Socket.IO channel `'message'` carrying every frame, the
+WhatsApp event name inside `payload.event`, and room-scoped delivery — you receive
+nothing until you send `{type:'subscribe', sessionId, events}`. That frame's
+acknowledgement is *returned* from the handler, which means a plain `emit` silently
+discards it; it has to be read with `.timeout().emit(channel, payload, cb)`. Getting
+any of that wrong looks identical to "connected and idle", which is why `onAny()` is
+kept purely as a diagnostic listing what the gateway has actually sent.
+
+## commands/: one direction of flow, each stage pure where it can be (v0.51.0)
+
+The inbound path is deliberately a pipeline of small modules rather than one handler:
+
+```
+normalise → gate → parse → registry → execute → reply
+```
+
+`normalise` reads an unknown payload shape defensively and fails closed. `gate` is the
+security boundary and is an ordered list of checks with `now` injected, so every step is
+testable without a clock. `parse` returns intent and touches no I/O. `registry` answers
+"what may this sender run". `execute` is the only stage with side effects, and `reply` is
+pure string-building.
+
+The split exists because the security properties live in the *order* of the gate and in
+the purity of what surrounds it — both of which are easy to erode inside one large
+function, and both of which are cheap to pin with tests when they are separate.
+
+## fabric/proxy.ts: one HTTP client to apps (v0.51.0)
+
+`proxyToTarget` was extracted from the app-to-app broker so the broker and the new
+command dispatcher share a single outbound implementation — one place that sets
+`X-OpenMasjid-App-Secret`, strips caller-supplied identity headers, caps the body, sets
+the timeout, and refuses redirects. Two clients would eventually disagree about one of
+those, and the disagreement would be a security bug rather than an inconsistency.
+
+`PLATFORM_CALLER_ID = 'omos:platform'` lives here and is unforgeable **by construction**:
+every app id is validated against `APP_ID_RE`, whose charset contains no colon, so no app
+can ever present this value.
+
+## system/app-host.ts: never loopback (v0.50.4-dev.3)
+
+The core is a bridge-network container, so `127.0.0.1` inside it is *the core*. An app's
+published port is on the **host**, reachable only through the installer's
+`host.docker.internal:host-gateway` mapping. Three callers had this right and the
+expression had been pasted into each; a fourth was later written from memory with
+`127.0.0.1` and could not reach its target on any install. It is one exported helper now,
+and `test/app-host.test.ts` fails any source file that builds a loopback URL to an app.
+
+## system/update-lock.ts: one update at a time, enforced server-side (v0.50.4-dev.6)
+
+Every WebSocket connection to the update endpoints used to start a *fresh* update, so
+closing the progress window and pressing the button again ran a second update over the
+first — two `compose up --force-recreate` racing for one container, two writers on one
+compose file. The lock is on the server because the client-side guard (a locked dialog)
+cannot survive a closed browser or a sleeping laptop. A refused second run is reported as
+information, never as "Update failed": calling it a failure is what pushes an admin into
+retrying.
+
+## Path comparisons in security checks (v0.46.0, v0.51.0)
+
+Fastify dispatches on the percent-**decoded** path, so any guard that compares `req.url`
+verbatim can be walked past with an escaped spelling. This has now happened twice —
+`/api/%66abric/…` past the Fabric LAN-only guard, and `/%74rpc/…` past the tRPC
+cross-origin check — and a third variant needed dot segments resolved
+(`/donate/./fabric/x` past the ingress refusal that keeps an app's own `/fabric` routes
+off the public tunnel).
+
+The rule: **compare every spelling the far end might resolve to, and fail closed.**
+`system/via-tunnel.ts` owns `decodedPath`, `matchesSecretRoute` and `urlHasPrefix` so
+there is one implementation; `test/path-spelling.test.ts` fails any source file that
+calls `req.url.startsWith(` in a check.
+
+## Light mode needs its own wallpapers (v0.51.0)
+
+Nine `[data-wallpaper="…"]` blocks each set a dark scene, they sit after
+`[data-theme="light"]` with equal specificity, and `data-wallpaper` is always set
+(`prefs.ts` defaults it to `aurora`). So light mode never received a light scene: white
+glass at 55% alpha over a near-black gradient composited to grey, with dark ink on top.
+Nothing in the light palette was wrong — the cascade simply overrode it.
+
+Each wallpaper now has a `[data-theme="light"][data-wallpaper="…"]` counterpart that wins
+on **specificity rather than file order**, keeping the wallpaper's hue and inverting its
+lightness so the picker means the same thing in both themes.
+`test/theme-tokens.test.ts` fails if a wallpaper is added without one.

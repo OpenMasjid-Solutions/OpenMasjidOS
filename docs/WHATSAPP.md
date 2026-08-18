@@ -135,10 +135,16 @@ Reply  !yes K7QM  to go ahead.
 Ignore this to cancel. It expires in 90 seconds.
 ```
 
-The code is deliberately not the word "yes". You already had to be on the list to get here, so
-the code is not about proving who you are — it is about making sure the *right* message runs.
-A code has to be read off that exact prompt, where "yes" gets typed reflexively at a stale
-question, a forwarded screenshot, or the wrong one of two prompts.
+The code is not about proving who you are — you already had to be on the list to get here. It
+is about making sure the *right* message runs: a code has to be read off that exact prompt,
+where "yes" gets typed reflexively at a stale question, a forwarded screenshot, or the wrong
+one of two prompts.
+
+That is why `!yes CODE` is always accepted, and is the only thing that works when nothing
+else is going on. **While the platform is actually waiting on you**, a plain `yes` or `no` is
+enough as well — at that moment there is exactly one question open and you were just asked
+it, so the ambiguity the code guards against cannot arise. If you ignore a prompt it lapses
+after 90 seconds and your ordinary messages go back to being ordinary messages.
 
 Some commands ask you a question or two. While one is waiting, just reply normally —
 no `!` needed — and send `exit` if you change your mind:
@@ -202,9 +208,12 @@ request*, which does nothing about two requests overlapping.
 | Quiet hours | 21:00–07:00 | Queued, never dropped. Also: a fee reminder at 03:00 is a complaint |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
 
-Limits are editable in Settings, and **clamped** so they can only be made stricter — a
-config pasted from a bulk-sending tutorial cannot turn this into a blaster. The floor is a
-3-second gap and some jitter, always.
+Limits are editable in Settings, within **hard bounds** the platform enforces — so a config
+pasted from a bulk-sending tutorial cannot turn this into a blaster. The bounds are a range,
+not a one-way ratchet: you can raise the caps as well as lower them (up to 60/hour and
+500/day), but never past those ceilings, and the gap can never go below **3 seconds**, with
+jitter always applied. The defaults above are deliberately well inside the bounds, and there
+is no good reason for a masjid to approach them.
 
 ## For app authors
 
@@ -370,7 +379,7 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 | What you see | What it means |
 |---|---|
 | *Cannot reach the gateway — OpenWA is not installed* | Install it from the App Store |
-| *Cannot reach the gateway — OpenWA is installed but not running* | Start it from the dashboard |
+| *Cannot reach the gateway — OpenWA is installed but not running* | Press **Start it** in Settings → WhatsApp. The gateway is deliberately kept off your dashboard and out of the dock, so that is the only Start button for it |
 | *Cannot reach the gateway — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
 | *Cannot reach the gateway — the gateway address could not be found* | Only possible with a typed-in *Gateway address*; check the hostname |
 | *The gateway rejected the API key* | Re-paste the key you set when installing OpenWA. Remember it is only read on OpenWA's **first** boot — if you changed it in Settings, reinstall OpenWA instead |

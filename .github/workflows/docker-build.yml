@@ -4,9 +4,15 @@ name: Build & Push Docker Image
 
 on:
   push:
-    # master = Stable (publishes :latest), dev = Development (publishes :dev via
-    # type=ref,event=branch). Without dev here the Development channel would have no
-    # image to pull and the channel toggle would be inert.
+    # master = Stable, dev = Development. Both publish their branch alias via
+    # type=ref,event=branch (`:master` / `:dev`); without dev here the Development
+    # channel would have no image to pull and the channel toggle would be inert.
+    #
+    # NOTE: a push to master does NOT publish `:latest` — that is gated on a
+    # non-prerelease `v*` TAG push (see the `latest` line in the metadata step). This
+    # comment used to say master published it, which is the exact confusion that let
+    # `:latest` be written twice per release and end up holding the branch build
+    # rather than the release build.
     branches: [master, dev]
     tags: ["v*"]
   pull_request:

@@ -19,6 +19,7 @@
  * paper over it with a hand-rolled string table here.
  */
 import type { CommandEntry, CommandNamespace } from './types';
+import { channelLabel, type Channel } from '../system/channel';
 
 export const MAX_REPLY_CHARS = 900;
 
@@ -37,6 +38,14 @@ export interface UpdateRow {
   /** A channel move can target an OLDER number, so it must never render as
    *  "1.4.0 to 1.3.9". The dashboard already learned this. */
   reason: 'version' | 'channel';
+  /**
+   * WHICH channel the app would move TO. Required when `reason` is 'channel', because
+   * the move runs in both directions and the wording used to be hardcoded to
+   * "Development" — so a masjid switching back to Stable was told its apps were moving
+   * to Development, the exact opposite of what pressing update would do. The dashboard
+   * words both directions; this is the same information reaching the WhatsApp reply.
+   */
+  channel?: Channel;
 }
 
 export interface StatsRow {
@@ -160,7 +169,10 @@ export function updatesText(rows: UpdateRow[]): string {
   if (rows.length === 0) return 'Everything is up to date.';
   const lines = rows.map((r, i) =>
     r.reason === 'channel'
-      ? `${i + 1}. ${r.name} - moving to the Development version`
+      ? // Name the direction. `channelLabel` is the same "Stable"/"Development" wording
+        // the dashboard and Settings use, so the three agree. An absent channel falls
+        // back to the direction-free phrasing rather than guessing one.
+        `${i + 1}. ${r.name} - ${r.channel ? `moving to the ${channelLabel(r.channel)} version` : 'moving to your selected version'}`
       : `${i + 1}. ${r.name} - ${r.from ?? '?'} to ${r.to}`,
   );
   const intro = rows.length === 1 ? 'One app has an update waiting:' : `${rows.length} apps have an update waiting:`;
@@ -208,8 +220,12 @@ export const say = {
   busy: (message: string) => message,
   managedApp: (name: string) =>
     `${name} is managed from Settings, because changing it here would disconnect WhatsApp.`,
-  budgetSpent: () =>
-    "I've hit today's WhatsApp limit, so I've not run that — there'd be no way to tell you how it went.",
+  // There is no `budgetSpent` message any more. It said "I've hit today's WhatsApp
+  // limit, so I've not run that" and was shown for every mutating command — including
+  // `!os update`, which is how it was found — because the allowance it reported on is
+  // one that replies never spend. The check is gone (see notify/whatsapp.ts), so the
+  // sentence must go with it: a reply that explains a rule the code no longer applies is
+  // worse than no reply.
 };
 
 /** What the admin sees when an app cannot be asked, or answers badly. Plain language,

@@ -48,6 +48,30 @@ export function isDirectJid(jid: unknown): jid is string {
   return typeof jid === 'string' && DIRECT_JID_RE.test(stripDevice(jid));
 }
 
+/**
+ * A chat that addresses ONE PERSON — `@c.us` or `@lid` — as an allow-list.
+ *
+ * Separate from `isDirectJid` because a `@lid` chat is a person but carries no phone
+ * number, so it can be a legitimate 1:1 chat while being useless as an identity. The
+ * caller still has to obtain the number some other way (the gateway's resolved
+ * `senderPhone`, or `contacts/:id/phone`).
+ *
+ * This exists because `commands/normalise.ts` trusted the gateway's `isGroup: false`
+ * on its own once the `@lid` support landed, and "not a group" is not the same claim as
+ * "a person": `@newsletter` (Channels), `@broadcast` and `status@broadcast` are all
+ * not-groups, and each would then have been treated as a direct chat whose author
+ * became a whitelist-checkable identity. Same negative-test mistake this file's own
+ * header warns about, reintroduced one level up.
+ */
+const PERSONAL_JID_DOMAINS = new Set(['c.us', 'lid']);
+
+export function isPersonalChatJid(jid: unknown): jid is string {
+  if (typeof jid !== 'string') return false;
+  const at = jid.lastIndexOf('@');
+  if (at < 0) return false;
+  return PERSONAL_JID_DOMAINS.has(jid.slice(at + 1).toLowerCase());
+}
+
 function stripDevice(jid: string): string {
   const at = jid.indexOf('@');
   if (at < 0) return jid;

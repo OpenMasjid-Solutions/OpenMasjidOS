@@ -5,6 +5,7 @@
  * Used by the live updater (and reusable for other long-running actions).
  */
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { withKey } from '../lib/session';
 
 // Keep the buffer bounded so a chatty, long-running stream can't grow the DOM
@@ -27,6 +28,7 @@ function trimBuffer(s: string): string {
 }
 
 export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () => void }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLPreElement>(null);
   const [text, setText] = useState('');
 
@@ -68,7 +70,7 @@ export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () 
 
   return (
     <pre ref={ref} className="logs glass-inset" style={{ minHeight: '14rem' }}>
-      {text || 'Starting…'}
+      {text || t('common.starting')}
     </pre>
   );
 }

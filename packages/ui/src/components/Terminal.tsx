@@ -11,6 +11,7 @@ import { FitAddon } from '@xterm/addon-fit';
 // loaded on demand, so its stylesheet should ride along with it.
 import '@xterm/xterm/css/xterm.css';
 import { withKey } from '../lib/session';
+import i18n from '../lib/i18n';
 
 export function Terminal({ wsPath }: { wsPath: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -49,7 +50,10 @@ export function Terminal({ wsPath }: { wsPath: string }) {
       if (typeof ev.data === 'string') term.write(ev.data);
       else term.write(new Uint8Array(ev.data as ArrayBuffer));
     };
-    ws.onclose = () => term.write('\r\n\x1b[2m[session closed]\x1b[0m\r\n');
+    // Written into the xterm buffer rather than rendered by React, so it takes the i18n
+    // instance directly. Still has to be translated — it is the last thing an admin sees
+    // when a shell drops.
+    ws.onclose = () => term.write(`\r\n\x1b[2m[${i18n.t('common.sessionClosed')}]\x1b[0m\r\n`);
 
     const onData = term.onData((d) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(d);

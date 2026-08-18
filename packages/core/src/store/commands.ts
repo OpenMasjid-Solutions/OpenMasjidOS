@@ -185,17 +185,18 @@ export function authoriseSender(rawFrom: string | null | undefined): CommandPers
   return cache.people.find((p) => p.phone === digits) ?? null;
 }
 
-/**
- * Membership AND scope. Built on `authoriseSender` so the membership test exists once.
- *
- * Two functions rather than one with an optional `scope?`: an optional security
- * argument is a footgun — forget to pass it and the check silently does less.
- */
-export function authoriseCommand(rawFrom: string | null | undefined, scope: string): CommandPerson | null {
-  const person = authoriseSender(rawFrom);
-  if (!person) return null;
-  return person.scopes.includes(scope) ? person : null;
-}
+// There is deliberately no `authoriseCommand(from, scope)` here.
+//
+// One was written alongside this file and never called: dispatch authorises through
+// `commands/registry.ts` `namespacesFor`, which resolves membership AND filters each
+// namespace down to the commands that sender's scopes actually cover — so a command the
+// sender cannot run is never in the list to be picked in the first place. That is the
+// stronger shape, because it cannot be forgotten at a call site.
+//
+// It was worth deleting rather than leaving: the test suite exercised it under the name
+// "scope is checked separately from membership", which read as coverage of the security
+// boundary while the code that really runs had none. A dead function that tests point at
+// is worse than no function.
 
 export function setCommandsEnabled(on: boolean): CommandConfig {
   cache = { ...cache, enabled: on === true };

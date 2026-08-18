@@ -238,8 +238,26 @@ export function takeConfirmed(digits: string, now: number): TakePending {
   return { ok: true, action: p.action };
 }
 
-export function hasPending(digits: string): boolean {
-  return Boolean(state.get(digits)?.pending);
+/**
+ * Is a confirmation being held for this sender, and is it STILL LIVE?
+ *
+ * The TTL is load-bearing here, not just in the consumers. This used to be a bare
+ * `Boolean(pending)` with no clock, while `takePending` and `takeConfirmed` both
+ * expired at `CONFIRM_TTL_MS` — so an ignored prompt (which the prompt itself invites:
+ * "Ignore this to cancel") left `awaitingReply` true for ever, and `gate.ts` step 12
+ * reads exactly that to decide whether the `!` prefix is required. The result was that
+ * after one un-answered confirmation, every ordinary message that person ever sent was
+ * treated as a command attempt: it spent a rate-limit token and drew an automated
+ * reply. Nothing cleared it either — `sweep` only evicts a whole entry after 30 min
+ * idle, and `touch` refreshes that on every inbound, so chatting kept it alive.
+ *
+ * Deliberately a PURE predicate rather than expire-on-read: the gate evaluates this
+ * for every bare message from an authorised sender, and a security step should not
+ * mutate per-sender state as a side effect.
+ */
+export function hasPending(digits: string, now: number): boolean {
+  const p = state.get(digits)?.pending;
+  return Boolean(p && now - p.askedAt <= CONFIRM_TTL_MS);
 }
 
 // ── app sessions ─────────────────────────────────────────────────────────────────
@@ -288,7 +306,7 @@ export function clearSession(digits: string): void {
  * moment.
  */
 export function awaitingReply(digits: string, now: number): boolean {
-  return getSession(digits, now) !== null || hasPending(digits);
+  return getSession(digits, now) !== null || hasPending(digits, now);
 }
 
 export function clearPending(digits: string): void {

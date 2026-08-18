@@ -81,6 +81,22 @@ export function matchesSecretRoute(url: string): boolean {
   return [raw, decodedPath(url)].some((p) => p === '/api/auth/session' || p.startsWith('/api/fabric'));
 }
 
+/**
+ * Does this URL address something under `prefix`, under ANY spelling the router
+ * would accept? Tests the raw text AND the decoded path, so it fails CLOSED.
+ *
+ * This exists because the same mistake has now been made twice: a security hook
+ * that compares `req.url` verbatim while Fastify dispatches on the DECODED path,
+ * so `/api/%66abric/...` walked past the Fabric guard (fixed in v0.46.0) and
+ * `/%74rpc/...` walked past the tRPC origin check the same way. Both are one
+ * predicate now — a third caller should reuse it rather than write the
+ * comparison a third time.
+ */
+export function urlHasPrefix(url: string, prefix: string): boolean {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  return [raw, decodedPath(url)].some((p) => p.startsWith(prefix));
+}
+
 export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
