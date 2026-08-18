@@ -7,6 +7,14 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## Unreleased
+
+> This section exists only on `dev` and is the full working record — fixes, internals, CI,
+> docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
+> what a masjid would notice (CLAUDE.md §18).
+
+Nothing yet since v0.51.0.
+
 ## 0.51.0
 
 **Run your masjid's server from WhatsApp**
