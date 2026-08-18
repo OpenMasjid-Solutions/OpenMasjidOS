@@ -53,7 +53,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/Ope
 On a machine that is already installed, switch channels in **Settings → Advanced** instead — it checks the Development catalogue is reachable before moving you, which the installer cannot do.
 </details>
 
-**Think of it as umbrelOS, but built for masjids** — it runs on your own hardware (a Raspberry Pi, a mini-PC, or a Proxmox server), entirely under your control. No subscriptions, no cloud, no data sharing.
+**Think of it as umbrelOS, but built for masjids** — it runs on your own hardware (a mini-PC, a Proxmox server, or a Raspberry Pi), entirely under your control. No subscriptions, no cloud, no data sharing.
 
 ---
 
@@ -174,7 +174,39 @@ Everything lives behind a login on a single, polished dashboard.
 - **Live system status** — CPU, memory, storage, temperature, uptime and apps running, streaming in real time.
 - **Email** — configure SMTP or Resend once, send yourself a test, and apps can send mail through it without ever handling your credentials.
 - **Notifications** — one webhook for Slack, Discord or anything generic.
-- **A granular alert matrix** — every alert type, from the platform and from each app, routed per-channel: email, webhook, both or off. Built-in alerts cover an app going offline, updates being available, and **card payments being disputed** (chargebacks — the platform polls Stripe and tells you the amount, the reason and the deadline, because an unanswered dispute is lost by default).
+- **WhatsApp** — an optional third channel, through a gateway you install from the App Store and link to a phone the masjid owns. Apps can send through it too — a fee reminder to a parent, a receipt to a donor, an announcement to a group you've approved — with an image if they need one, and without ever seeing the credentials. **Off by default**, and worth reading the warning first: it's an unofficial WhatsApp client, so the linked number can be restricted or banned. Everything is sent through one carefully paced queue that behaves like a person rather than a bulk sender, and nothing you need to sign in with ever depends on it. Full details, including the pacing and the risks, in [`docs/WHATSAPP.md`](docs/WHATSAPP.md).
+- **A granular alert matrix** — every alert type, from the platform and from each app, routed per channel: **email**, **webhook**, **WhatsApp**, any combination, or off. Email and the webhook start on; WhatsApp starts off everywhere, so upgrading can never quietly begin messaging a phone. Built-in alerts cover an app going offline, updates being available, and **card payments being disputed** (chargebacks — the platform polls Stripe and tells you the amount, the reason and the deadline, because an unanswered dispute is lost by default).
+
+### Running it from your phone
+
+Once WhatsApp is set up, an authorised phone can look after the server by sending a message —
+which matters most when the machine is wall-mounted, in a cupboard, or in an office nobody is in.
+
+- **Ask it things** — `!os stats` for how the server is doing, `!os apps` for what's running,
+  `!os updates` for what's waiting.
+- **Fix things** — `!os restart 2` to bring a stuck display back, `!os start 3` / `!os stop 3`,
+  and `!os update 3` to update a single app. Send one without a number and it lists your apps so
+  you can pick. Anything that changes something asks you to confirm first, and raises an alert
+  afterwards through your usual channels, so you find out even if it wasn't you.
+- **Each app can add its own commands** under `!<app>` — send the app's name on its own to see
+  a numbered menu of what it offers. An app can also ask you a question and take a plain reply,
+  so a multi-step job (scheduling an iqamah change, say) is just a short conversation. Send
+  `exit` to leave one, or ignore it and it lapses on its own.
+- **Off until you turn it on, and nobody can use it until you add them.** Each person gets a
+  tick per app, plus a separate "view" and "control" for the server itself, so a volunteer can
+  be allowed to check on one screen and nothing else.
+- **A number that isn't on your list gets no reply at all** — not even a refusal, because
+  answering would confirm to a stranger that this number runs your server. Ordinary
+  conversation is untouched: every command starts with `!` — the one exception being a reply to
+  a question it has just asked you — and messages in group chats never do anything.
+- **Deliberately limited.** It won't reboot the machine, show you an app's logs, update
+  OpenMasjidOS itself, or remove an app — each of those either exposes private information in a
+  chat that keeps it forever, or cuts off the very connection carrying the command. Those stay
+  in the dashboard.
+
+> Read this before switching it on: whoever holds one of those phones can start, stop and update
+> your apps by sending a message, with no password step. If a phone is lost or a number changes
+> hands, remove it in Settings straight away.
 
 ### Money, safely
 
@@ -184,7 +216,7 @@ Everything lives behind a login on a single, polished dashboard.
 ### Reaching it
 
 - **Forced HTTPS** — the dashboard is served over TLS with a self-signed certificate generated on first boot, or bring your own. A damaged certificate can't stop the box starting: it's replaced automatically and the dashboard stays reachable.
-- **Reached by address** — open `https://<your-server-ip>` from any device on the same network. To stop that address changing, give the machine a DHCP reservation in your router's settings. (A `.local` name and installer-managed static IP are planned, not built.)
+- **Reached by address** — open `https://<your-server-ip>` from any device on the same network. To stop that address changing, give the machine a DHCP reservation in your router's settings. (A `.local` name and installer-managed static IP are planned, not built.) See [`docs/NETWORKING.md`](docs/NETWORKING.md).
 - **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the admin dashboard itself is never exposed.
 - **Follows the box** — move the machine to a different network and your apps find the dashboard again by themselves.
 
@@ -204,7 +236,11 @@ Everything lives behind a login on a single, polished dashboard.
 
 - Apps can inherit the dashboard's theme, wallpaper and logo, and — when they opt in — **share its login**, so opening one feels like part of the dashboard.
 - Apps can **securely ask each other** for information through a broker that only permits pairings both sides declared.
-- Apps can send email and raise alerts through the platform **without ever seeing a credential**.
+- Apps can send **email** and **WhatsApp** messages, and raise alerts, through the platform
+  **without ever seeing a credential** — and WhatsApp goes through the same single paced queue as
+  everything else, so two apps can't between them turn the masjid's number into a bulk sender.
+- Apps can offer their own **WhatsApp commands**; the platform decides who is allowed to run
+  them, and the app only ever does the work.
 - All of it is LAN-only, least-privilege, and authenticated with a per-app key. It never shares masjid data.
 
 ### Advanced (opt-in, off by default)
@@ -231,19 +267,13 @@ Docker is installed automatically if it isn't already present. The installer det
 On most Linux machines (Ubuntu 20.04+/Debian 11+/Raspberry Pi OS 64-bit/Fedora/Rocky/Alma), just SSH in and run the one-liner at the top. Detailed, copy-paste guides for specific setups:
 
 <details>
-<summary><b>Raspberry Pi (Ubuntu Server 22.04 LTS)</b></summary>
+<summary><b>Bare-metal Linux (mini-PC, old laptop, server)</b></summary>
 
-A Pi 4/5 runs OpenMasjidOS silently 24/7. Use **Raspberry Pi Imager** ([raspberrypi.com/software](https://www.raspberrypi.com/software/)) to flash **Ubuntu Server 22.04 LTS (64-bit)**. In the gear/Advanced settings before writing: set hostname `openmasjid`, enable SSH (password auth), set username/password, configure Wi-Fi only if you have no ethernet, and set your timezone.
-
-Boot the Pi (ethernet recommended), wait ~90 seconds, then:
+SSH in with a `sudo`-capable account (or as root) and run the one-liner at the top. Verify with:
 
 ```bash
-ssh openmasjid@openmasjid.local
-sudo apt update && sudo apt upgrade -y && sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
+sudo docker ps   # look for "openmasjid-core", status "Up ..."
 ```
-
-Open the Pi's IP. For a stable address, add a DHCP reservation in your router.
 </details>
 
 <details>
@@ -279,17 +309,23 @@ passwd
 
 Run the one-liner at the top.
 
-When installation completes, open: `http://<container-ip>`
+When installation completes, open: `https://<container-ip>`
 </details>
 
 <details>
-<summary><b>Bare-metal Linux (mini-PC, old laptop, server)</b></summary>
+<summary><b>Raspberry Pi (Ubuntu Server 22.04 LTS)</b></summary>
 
-SSH in with a `sudo`-capable account (or as root) and run the one-liner at the top. Verify with:
+A Pi 4/5 runs OpenMasjidOS silently 24/7. Use **Raspberry Pi Imager** ([raspberrypi.com/software](https://www.raspberrypi.com/software/)) to flash **Ubuntu Server 22.04 LTS (64-bit)**. In the gear/Advanced settings before writing: set hostname `openmasjid`, enable SSH (password auth), set username/password, configure Wi-Fi only if you have no ethernet, and set your timezone.
+
+Boot the Pi (ethernet recommended), wait ~90 seconds, then:
 
 ```bash
-sudo docker ps   # look for "openmasjid-core", status "Up ..."
+ssh openmasjid@openmasjid.local
+sudo apt update && sudo apt upgrade -y && sudo apt install -y curl
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
 ```
+
+Open the Pi's IP. For a stable address, add a DHCP reservation in your router.
 </details>
 
 ---
@@ -300,6 +336,8 @@ sudo docker ps   # look for "openmasjid-core", status "Up ..."
 - **Manage** — run the same install command again for a menu: **Update** (latest version, apps/data untouched), **Repair** (re-apply config and restart), **Reset sign-in** (a new admin password and re-linked apps, keeping all data — the way back in if nobody knows the password), or **Remove**. Update/Repair only ever touch the core, never your apps.
 - **Update from the dashboard** — Settings → Advanced → Check for updates → Update now, with live progress. No terminal needed.
 - **Choose your channel** — Settings → Advanced → Update channel. **Stable** is tested and is what you get by default; **Development** is what we are still building and can break your apps. It covers the platform and all your apps together.
+- **Set up WhatsApp** (optional) — Settings → WhatsApp. Turn it on, install the gateway app it offers you, then press **Get a code**: OpenMasjidOS shows you a pairing code, and you type it into WhatsApp on the masjid's phone under *Settings → Linked devices → Link with phone number*. Once it's linked you can add the numbers allowed to send commands, and choose which alerts go by message. Read [`docs/WHATSAPP.md`](docs/WHATSAPP.md) first — it's an unofficial client, so use a number the masjid can afford to lose.
+- **How it's kept secure** — what's exposed, what never leaves the server, and what to do if you think something's wrong: [`docs/SECURITY.md`](docs/SECURITY.md).
 - **Reset the admin password** (from the machine's terminal — no data lost):
   ```bash
   docker exec -it openmasjid-core node packages/core/dist/reset-password.js
