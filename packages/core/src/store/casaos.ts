@@ -24,6 +24,7 @@ import YAML from 'yaml';
 import { log } from '../logger';
 import { slugify } from '../util/slug';
 import type { CatalogApp } from '../apps/types';
+import { ipIsPrivate } from '../util/net';
 
 const MAX_APPS = 400;
 const APP_RE = /(?:^|\/)Apps\/([^/]+)\/docker-compose\.ya?ml$/i;
@@ -45,24 +46,12 @@ function archiveCandidates(repo: string): string[] {
 }
 
 // ── SSRF guard ───────────────────────────────────────────────────────────────
-function ipIsPrivate(ip: string): boolean {
-  const v4 = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    if (a === 0 || a === 127 || a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true; // link-local / cloud metadata
-    return false;
-  }
-  const lc = ip.toLowerCase();
-  if (lc === '::1' || lc === '::') return true;
-  if (lc.startsWith('fe80') || lc.startsWith('fc') || lc.startsWith('fd')) return true;
-  const mapped = lc.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return ipIsPrivate(mapped[1]);
-  return false;
-}
+// `ipIsPrivate` now lives in util/net.ts, shared and properly tested. The version that
+// used to be here knew only ONE spelling of an IPv4-mapped IPv6 address — the dotted
+// `::ffff:127.0.0.1` — so the equivalent hex form `::ffff:7f00:1` and the fully-expanded
+// `0:0:0:0:0:ffff:127.0.0.1` fell through and were classified as PUBLIC. A community app
+// store URL spelled that way therefore passed the guard and could reach loopback. It also
+// omitted CGNAT (100.64.0.0/10). Both are covered now; see test/ip-private.test.ts.
 
 /** Resolve a host to a single vetted PUBLIC address, or null if it's a literal
  *  private IP / resolves to any private/loopback/metadata address. */

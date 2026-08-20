@@ -48,31 +48,73 @@ import { getLogo, hasLogo } from '../store/branding';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
 import { appPublicUrl, appBasePath } from '../system/cloudflared';
 import { log } from '../logger';
+import { matchesSecretRoute } from '../system/via-tunnel';
 
 // Lightweight per-IP fixed-window limiter for the secret-gated Fabric routes,
 // which are reachable without a session. It runs BEFORE any lookup so a flood of
 // bad-secret requests can't tie up the event loop (security audit, defence-in-
 // depth on top of the in-memory secret index).
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 120; // requests per IP per minute across the Fabric routes
+/**
+ * Two tiers, because the source IP is nearly useless as an identity here.
+ *
+ * Every installed app reaches the core through Docker's published port, so they all present
+ * the SAME peer address (the bridge gateway, 172.17.0.1 — measured). A per-IP limiter is
+ * therefore effectively a single global bucket that every app shares: one chatty or hostile
+ * app could exhaust it and lock every other app out of email, WhatsApp and Stripe. That is a
+ * cross-app denial of service, which is exactly what the Fabric's isolation is meant to
+ * prevent.
+ *
+ * So: keep the coarse IP tier — it runs BEFORE any lookup, which is the property it was
+ * added for (a flood of bad-secret requests must not tie up the event loop) — and add a
+ * per-app tier once the caller is known, so one app's traffic cannot spend another's budget.
+ */
+const RATE_MAX = 600; // coarse per-IP ceiling: a shared bucket, so deliberately generous
+const RATE_MAX_APP = 120; // per identified app per minute — the meaningful limit
 const fabricHits = new Map<string, { count: number; resetAt: number }>();
 
-function fabricRateOk(ip: string): boolean {
+function hit(key: string, max: number): boolean {
   const now = Date.now();
   if (fabricHits.size > 5000) {
     for (const [k, w] of fabricHits) if (w.resetAt <= now) fabricHits.delete(k);
   }
-  const w = fabricHits.get(ip);
+  const w = fabricHits.get(key);
   if (!w || w.resetAt <= now) {
-    fabricHits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    fabricHits.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return true;
   }
-  if (w.count >= RATE_MAX) return false;
+  if (w.count >= max) return false;
   w.count += 1;
   return true;
 }
 
+function fabricRateOk(ip: string): boolean {
+  return hit(`ip:${ip}`, RATE_MAX);
+}
+
 export function registerFabric(server: FastifyInstance): void {
+  /**
+   * The per-app rate tier, applied centrally.
+   *
+   * One hook rather than a line in each of the twelve route handlers — same reasoning as
+   * `registerFabricTunnelGuard`: a limit that has to be remembered at every call site is a
+   * limit that will be missing from the thirteenth route. Resolving the caller here costs an
+   * in-memory index lookup, which the route then repeats; that is cheap and worth it.
+   *
+   * A request whose secret resolves to no app falls through to the coarse per-IP tier in the
+   * handler, which is the correct order: we must not spend an expensive lookup deciding
+   * whether to rate-limit an unauthenticated flood.
+   */
+  server.addHook('onRequest', (req, reply, done) => {
+    if (!matchesSecretRoute(req.url)) return done();
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (app && !hit(`app:${app.id}`, RATE_MAX_APP)) {
+      return reply.code(429).send({ error: 'Too many requests.' });
+    }
+    done();
+  });
+
   // B1 — single sign-on introspection. Returns whether the omos_session cookie
   // ON THIS REQUEST is valid. It is the trust anchor (an app mints a signed-in
   // session from a `true`), so it FAILS CLOSED and is bound to the calling app's

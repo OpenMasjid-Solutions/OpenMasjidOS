@@ -56,6 +56,57 @@ assumptions and the knobs for hardening a more exposed deployment.
   clients share one source IP, so a global lockout could let an attacker deny the
   real admin on a trusted LAN.
 
+## What "LAN-only" means, exactly
+
+Several routes are described in this project as LAN-only: everything under `/api/fabric/*`
+(the app-to-app broker, and the email / WhatsApp / Stripe / alert endpoints apps use) and
+`/api/auth/session`. It is worth being precise about how that is enforced, because the
+honest answer is narrower than the phrase suggests.
+
+**What it actually does.** Those routes are refused when a request *looks like it arrived
+through the Cloudflare tunnel* — Cloudflare adds a `cf-ray` header at its edge and terminates
+TLS, so tunnel traffic is recognisable. That check is sound in the direction that matters: a
+client whose only route in is the tunnel cannot strip those headers, so it genuinely cannot
+reach those routes.
+
+**What it does not do.** It is a deny-list, not an allow-list: "refuse anything that looks
+like the tunnel" is not the same as "allow only the local network". If the machine itself is
+reachable from the internet — a VPS with a public IP, or a home router forwarding ports 80
+and 443 — then requests arrive with no Cloudflare headers at all, and there is nothing in
+them that distinguishes an attacker from a laptop in the masjid office. On such a host these
+routes are internet-facing, and so is the dashboard's login page.
+
+**Why we do not check the source IP address instead.** That would be the obvious fix, and it
+does not work here. OpenMasjidOS runs in a container with published ports, and with Docker's
+default settings every inbound connection is re-originated by `docker-proxy` from the bridge
+gateway. Measured on a real host, an app container, the tunnel client, and a machine from
+outside the network all arrive as the same address — `172.17.0.1`. A source-address check
+would therefore classify the internet as "local", producing a guard that reads like an
+allow-list while admitting everyone. That is worse than none, so we deliberately do not have
+one. (The same fact is why the login lockout cannot be per-IP; see *Login throttle*.)
+
+**What protects you on a directly-reachable host**, in order of how much it matters:
+
+1. **A firewall.** Allow ports 80 and 443 only from your own network. On a VPS use the
+   provider's firewall or `ufw`; on a home network, simply do not forward those ports. This is
+   the control that makes "local only" true, and nothing inside the application can substitute
+   for it.
+2. **Your admin password.** No route grants a session, skips the password, or relaxes CSRF
+   because a request looks local — being "on the LAN" buys an attacker nothing by itself.
+   Passwords are argon2id-hashed with a 12-character minimum, and the verify is serialised so
+   a parallel flood cannot outrun it.
+3. **The per-app secret.** Every `/api/fabric/*` route independently requires a 256-bit
+   per-app secret *and* the specific capability the app declared. Reaching the route is not
+   the same as using it.
+4. **`OPENMASJID_LOGIN_LOCKOUT=1`** — worth enabling on an internet-facing instance. See
+   *Login throttle* for why it is off by default.
+
+**What an attacker gets if all of that holds and they simply reach the routes:** a 403 from
+every Fabric route, and a login page. `/api/auth/session` returns only
+`{authenticated, username}` and requires both a valid session cookie of its own *and* an app
+secret — no password hash, no session token, no CSRF key. There is no route that hands out
+credentials to a caller because of where they appear to be.
+
 ## App compose consent gate
 
 Before any app's `docker-compose.yml` runs, it is parsed and risk-checked

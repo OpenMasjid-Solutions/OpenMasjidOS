@@ -217,7 +217,8 @@ which matters most when the machine is wall-mounted, in a cupboard, or in an off
 
 - **Forced HTTPS** — the dashboard is served over TLS with a self-signed certificate generated on first boot, or bring your own. A damaged certificate can't stop the box starting: it's replaced automatically and the dashboard stays reachable.
 - **Reached by address** — open `https://<your-server-ip>` from any device on the same network. To stop that address changing, give the machine a DHCP reservation in your router's settings. (A `.local` name and installer-managed static IP are planned, not built.) See [`docs/NETWORKING.md`](docs/NETWORKING.md).
-- **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the admin dashboard itself is never exposed.
+- **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the tunnel never carries the admin dashboard.
+- **If your server has a public IP** (a VPS, or a router forwarding ports to it), put a firewall in front of it. OpenMasjidOS listens on ports 80 and 443 for everyone on the network it can see, and it cannot tell "my LAN" apart from "the internet" — so on a directly-reachable machine the dashboard's login page is reachable from outside, and a few internal routes with it. The dashboard is still behind your password, but a firewall allowing only your own network is the thing that makes "local only" actually local. See [`docs/SECURITY.md`](docs/SECURITY.md).
 - **Follows the box** — move the machine to a different network and your apps find the dashboard again by themselves.
 
 ### Files and the machine

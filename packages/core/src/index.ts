@@ -160,9 +160,21 @@ async function main() {
   });
 
   // Health — unauthenticated, used by the installer and the container healthcheck.
-  server.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
+  //
+  // The version is withheld from anything that looks like it came through the tunnel, exactly
+  // as on the front door. This copy was missed when the front-door pair was guarded, which is
+  // the usual shape of that mistake: two listeners, one fix. On a host that is directly
+  // reachable there is no header to detect and this still answers — mitigating THAT is a
+  // firewall and a bind address, not a route guard (see docs/SECURITY.md).
+  server.get('/api/health', async (req, reply) => {
+    if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+    return { status: 'ok', version: VERSION };
+  });
 
-  server.get('/api/ready', async () => ({ ready: await dockerReachable() }));
+  server.get('/api/ready', async (req, reply) => {
+    if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+    return { ready: await dockerReachable() };
+  });
 
   // Backup download — a gzipped tar of platform config + app data. Authenticated
   // by the session cookie directly (it's a browser download, not a tRPC call).

@@ -128,7 +128,19 @@ export function ensureProxy(id: string, httpsPort: number, targetPort: number): 
       upstream.write(`${req.method} ${req.url} HTTP/1.1\r\n`);
       // Keep the handshake headers (Connection/Upgrade) but drop client-supplied
       // forwarding headers, then inject trusted ones (TLS terminated here → https).
-      const drop = new Set(['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'forwarded']);
+      // `cf-connecting-ip` belongs here too, for the same reason it is in STRIP_HEADERS on
+      // the HTTP path above: this listener is never behind Cloudflare, so the header is
+      // always something the caller typed. It was added to the HTTP path and missed here —
+      // two paths in one file, one fix, which is how this class of gap keeps recurring.
+      // Nothing is re-added afterwards: on this listener it can never be genuine.
+      const drop = new Set([
+        'x-forwarded-for',
+        'x-forwarded-proto',
+        'x-forwarded-host',
+        'x-forwarded-port',
+        'forwarded',
+        'cf-connecting-ip',
+      ]);
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         if (drop.has(req.rawHeaders[i].toLowerCase())) continue;
         upstream.write(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`);
