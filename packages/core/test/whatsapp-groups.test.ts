@@ -177,12 +177,13 @@ test('the warm-up ramp applies to groups too, and no time-of-day hold does', () 
   assert.match(String(wa.blockedReason(now, group, L, justLinked, history({ groupSends: spent }))), /group/);
 });
 
-test('the per-group cooldown is keyed separately from a person', () => {
+test('a group budget is still tracked separately from an individual one', () => {
+  // The cooldowns are gone, but the two CAP budgets remain distinct: an announcement must
+  // not eat the allowance parents' reminders need, nor the reverse.
   const now = Date.now();
-  // A person and a group could otherwise collide in the same map; the key must not.
-  const last = new Map<string, number>([[`group:${GROUP}`, now - 1000]]);
-  assert.match(String(wa.blockedReason(now, group, L, null, history({ last }))), /recently/);
-  assert.equal(wa.blockedReason(now, person, L, null, history({ last })), null, 'the person is unaffected');
+  const spent = Array.from({ length: L.groupPerHour }, (_, k) => now - k * 60_000);
+  assert.match(String(wa.blockedReason(now, group, L, null, history({ groupSends: spent }))), /group/);
+  assert.equal(wa.blockedReason(now, person, L, null, history({ groupSends: spent })), null);
 });
 
 test('clampLimits only ever tightens the group limits', () => {

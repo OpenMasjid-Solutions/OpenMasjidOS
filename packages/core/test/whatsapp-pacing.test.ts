@@ -93,18 +93,30 @@ function codeOf(file: string): string {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-test('quiet hours DELAY, they never discard', () => {
-  // The queue must wait and re-evaluate, not drop the item: a fee reminder should
-  // arrive in the morning, not vanish overnight. Asserted POSITIONALLY — a fixed-size
-  // window around the branch ran past `continue` into the ordinary send path below it,
-  // so the test failed on code that was already correct.
+test('a message that cannot go yet is DELAYED, never discarded', () => {
+  // The queue must wait and reconsider, not drop the item: a fee reminder should arrive
+  // late, not vanish. Asserted structurally, against the code rather than the comments.
   const body = codeOf('notify/whatsapp.ts');
-  const at = body.indexOf('if (reason)');
-  assert.ok(at > 0, 'the pump must consult the policy');
+  const at = body.indexOf('if (index < 0)');
+  assert.ok(at > 0, 'the pump must decide whether anything is sendable');
   const continueAt = body.indexOf('continue;', at);
-  const shiftAt = body.indexOf('queue.shift()', at);
-  assert.ok(continueAt > at, 'a blocked send must be retried');
-  assert.ok(shiftAt > continueAt, 'and must NOT be removed from the queue before that retry');
+  const removeAt = body.indexOf('queue.splice(index, 1)', at);
+  assert.ok(continueAt > at, 'when nothing can go, the pump waits and reconsiders');
+  assert.ok(removeAt > continueAt, 'and nothing is removed from the queue before that');
+});
+
+test('one blocked message does not stall the rest of the queue', () => {
+  // The head-of-line bug: the pump read `queue[0]` and, if that item could not go, slept and
+  // re-read the SAME item — so one waiting message held up every other app's traffic for as
+  // long as its own wait. With the 30-minute group cooldown that was half an hour of total
+  // silence caused by one group post, which is exactly how "my image never arrives, but
+  // another app's later messages do" happens.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.ok(!code.includes('const item = queue[0]'), 'the pump must not fix on the head');
+  assert.ok(code.includes('const item = queue[index]'), 'it must send the first SENDABLE item');
+  // And a retry backoff must be per-item, not a sleep that holds the whole pump.
+  assert.ok(!code.includes('await sleep(backoff)'), 'backoff must not stall the queue');
+  assert.ok(code.includes('item.notBefore ='), 'a failing item reschedules itself instead');
 });
 
 // ── caps ─────────────────────────────────────────────────────────────────────────
@@ -146,18 +158,27 @@ function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: stri
 
 // ── per-recipient cooldown ───────────────────────────────────────────────────────
 
-test('one person is never hammered, even by different apps', () => {
-  // Two apps each having something to say to the same parent is exactly the case a
-  // per-app limiter cannot see.
+test('there is no per-recipient or per-group cooldown any more', () => {
+  // Removed at the maintainer's decision. The per-group one was 30 MINUTES, and together
+  // with the head-of-line bug in  it meant one group post stalled every other app's
+  // messages for that whole window — the reported "my image never arrives".
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  hist.lastPerRecipient.set('15550101234', now - 5_000);
-  assert.equal(blocked(now, hist), 'this recipient was messaged very recently');
-  // A different recipient is unaffected.
-  assert.equal(wa.blockedReason(now, who('447700900123'), L, null, hist), null);
-  // And once the cooldown expires, they can be messaged again.
-  hist.lastPerRecipient.set('15550101234', now - (L.perRecipientCooldownSeconds + 1) * 1000);
-  assert.equal(blocked(now, hist), null);
+  hist.lastPerRecipient.set('15550101234', now - 1); // messaged a millisecond ago
+  assert.equal(blocked(now, hist), null, 'a person can be messaged again immediately');
+  hist.lastPerRecipient.set('group:1@g.us', now - 1);
+  assert.equal(
+    wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist),
+    null,
+    'and so can a group',
+  );
+});
+
+test('the last-send map is still WRITTEN, though nothing reads it as a brake', () => {
+  // Kept deliberately: it costs nothing, sendImmediate documents relying on the write, and
+  // it is what any future per-recipient policy would need. Pinned so a tidy-up does not
+  // remove the data along with the rule.
+  assert.ok(codeOf('notify/whatsapp.ts').includes('lastToRecipient.set('), 'the write must remain');
 });
 
 // ── warm-up ──────────────────────────────────────────────────────────────────────
@@ -288,10 +309,10 @@ test('a transient failure keeps its place in the queue, a permanent one does not
   const pumpAt = code.indexOf('async function pump');
   const body = code.slice(pumpAt);
   const retryAt = body.indexOf('outcome.retryable');
-  const shiftAt = body.indexOf('queue.shift()');
+  const removeAt = body.indexOf('queue.splice(index, 1)');
   assert.ok(retryAt > 0, 'the pump must classify the failure');
-  assert.ok(retryAt < shiftAt, 'and must decide BEFORE removing the message from the queue');
-  assert.match(body.slice(retryAt, shiftAt), /continue/, 'a retryable failure keeps its place');
+  assert.ok(retryAt < removeAt, 'and must decide BEFORE removing the message from the queue');
+  assert.match(body.slice(retryAt, removeAt), /continue/, 'a retryable failure keeps its place');
   // And it must give up eventually rather than looping on a permanently broken gateway.
   assert.match(code, /MAX_ATTEMPTS/, 'retries must be bounded');
 });

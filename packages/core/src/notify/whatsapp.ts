@@ -153,6 +153,14 @@ interface QueueItem {
   enqueuedAt: number;
   /** Transient-failure retries so far. */
   attempts: number;
+  /**
+   * Earliest time this item may be tried again after a transient failure.
+   *
+   * Per-ITEM rather than a sleep in the pump loop, because sleeping the loop is a
+   * head-of-line block: one failing message would hold up every other app for its whole
+   * backoff. Now it steps aside and the rest of the queue keeps moving.
+   */
+  notBefore?: number;
 }
 
 /**
@@ -789,11 +797,15 @@ export function blockedReason(
   if (over === 'hour') return isGroup ? 'hourly group limit reached' : 'hourly limit reached';
   if (over === 'day') return isGroup ? 'daily group limit reached' : 'daily limit reached';
 
-  const cooldown = isGroup ? limits.perGroupCooldownSeconds : limits.perRecipientCooldownSeconds;
-  const last = history.lastPerRecipient.get(targetKey(target));
-  if (last !== undefined && now - last < cooldown * 1000) {
-    return isGroup ? 'this group was posted to very recently' : 'this recipient was messaged very recently';
-  }
+  // The per-recipient (60s) and per-group (30 MINUTE) cooldowns were removed at the
+  // maintainer's decision. They were the single largest cause of "my message never arrived":
+  // a group could not be posted to for half an hour after the previous post, and combined
+  // with the head-of-line bug that used to be in `pump` one group image could hold up every
+  // other app's messages for that entire window.
+  //
+  // `lastToRecipient` is still WRITTEN, deliberately. It costs nothing, `sendImmediate`
+  // documents relying on the write, and it is what any future per-recipient policy would
+  // need. Nothing READS it as a brake any more.
   return null;
 }
 
@@ -1029,20 +1041,54 @@ async function pump(): Promise<void> {
       }
       const now = Date.now();
       prune(now);
-      const item = queue[0]!;
-      const reason = blockedReason(now, item.target, cfg.limits, cfg.linkedAt, {
-        sends: sentAt,
-        groupSends: groupSentAt,
-        lastPerRecipient: lastToRecipient,
-      });
-      if (reason) {
-        // Wait and re-evaluate rather than dropping. A rate cap is a delay, not a
-        // failure — a fee reminder should arrive late, not never. The item stays on the
-        // persisted queue throughout, so a restart mid-hold no longer destroys it.
+
+      // Find the first SENDABLE item, rather than stalling on the head of the queue.
+      //
+      // This was a head-of-line block, and it is the mechanism behind "one app's message
+      // never arrives while another app's later messages do". The loop read `queue[0]`, and
+      // if that item could not go yet it slept and `continue`d — re-reading the SAME item.
+      // So one message that was waiting held up every message behind it, from every app, for
+      // as long as its own wait lasted. With the 30-minute per-group cooldown that meant a
+      // single group post stopped all WhatsApp traffic for half an hour.
+      //
+      // Skipping keeps the property that matters — a blocked message is DELAYED, never
+      // dropped; it stays on the persisted queue and is reconsidered every pass — and drops
+      // the one that never made sense: one target's limit applying to every other target.
+      let index = -1;
+      let firstReason: string | null = null;
+      let soonest = Infinity;
+      for (let i = 0; i < queue.length; i++) {
+        const waitUntil = queue[i]!.notBefore ?? 0;
+        if (waitUntil > now) {
+          soonest = Math.min(soonest, waitUntil);
+          firstReason ??= 'a previous attempt failed; backing off';
+          continue;
+        }
+        const reason = blockedReason(now, queue[i]!.target, cfg.limits, cfg.linkedAt, {
+          sends: sentAt,
+          groupSends: groupSentAt,
+          lastPerRecipient: lastToRecipient,
+        });
+        if (!reason) {
+          index = i;
+          break;
+        }
+        firstReason ??= reason;
+      }
+      if (index < 0) {
+        // Nothing can go right now. Sleep only until the soonest item is due, so a short
+        // backoff is not rounded up to a whole minute — with a floor so this can never
+        // become a busy loop.
+        const nap = Number.isFinite(soonest) ? Math.min(60_000, Math.max(1_000, soonest - now)) : 60_000;
+        log.info(
+          `WhatsApp: ${queue.length} message(s) waiting — ${firstReason ?? 'rate limited'}. ` +
+            `Retrying in ${Math.round(nap / 1000)}s.`,
+        );
         await setPresence(cfg, false);
-        await sleep(60_000);
+        await sleep(nap);
         continue;
       }
+      const item = queue[index]!;
 
       // A session may not exist yet (fresh install, or the gateway's volume was wiped).
       // Creating it is the platform's job, and failing is transient — wait, don't drop.
@@ -1093,14 +1139,18 @@ async function pump(): Promise<void> {
             `WhatsApp: send for ${item.source} failed (${outcome.error ?? 'unknown'}); ` +
               `retry ${item.attempts}/${MAX_ATTEMPTS} in ${Math.round(backoff / 1000)}s.`,
           );
-          persist(); // `attempts` is durable, so a restart does not reset the retry budget
-          await sleep(backoff);
-          continue; // keep it at the head of the queue
+          // Step this item aside instead of sleeping the pump. Sleeping here was the SECOND
+          // head-of-line block: one failing message stalled every other app's traffic for
+          // its whole backoff, and with five attempts that reached three quarters of an hour
+          // of total silence caused by a single bad send.
+          item.notBefore = Date.now() + backoff;
+          persist(); // attempts + notBefore are durable, so a restart keeps the schedule
+          continue;
         }
         log.error(`WhatsApp: giving up on a message for ${item.source} after ${MAX_ATTEMPTS} attempts.`);
       }
 
-      queue.shift();
+      queue.splice(index, 1);
       if (outcome.ok) {
         // Count against the budget the target actually spends.
         (item.target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
@@ -1113,7 +1163,13 @@ async function pump(): Promise<void> {
       // the caps real across a restart: without it a box in a restart loop would forget
       // every send it had made and could blow through its daily allowance repeatedly.
       persist();
-      if (queue.length > 0) await sleep(nextGapMs(cfg.limits));
+      // No inter-message gap. There was a randomised 6-20s sleep here; it is gone at the
+      // maintainer's decision. With several apps sharing one queue it made delivery
+      // unpredictable, and the typing indicator before each send (`composingMs`, scaled to
+      // the message with a 5s floor for an image) already provides spacing that is
+      // proportional AND visible to the recipient, which is what the sleep was standing in
+      // for. `nextGapMs` is kept and still tested — it is pure, and it is the thing to reach
+      // for if a gap is ever wanted again — but nothing calls it.
     }
     // Idle: stop looking permanently online.
     const cfg = getWhatsAppConfig();

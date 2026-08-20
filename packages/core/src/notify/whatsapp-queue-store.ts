@@ -86,6 +86,8 @@ export interface StoredItem {
   media?: { data: string; mimeType: string; filename?: string };
   enqueuedAt: number;
   attempts: number;
+  /** Earliest retry time after a transient failure; see QueueItem.notBefore. */
+  notBefore?: number;
 }
 
 interface PersistedState {
