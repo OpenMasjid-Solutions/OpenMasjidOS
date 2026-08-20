@@ -34,6 +34,7 @@ import path from 'node:path';
 import { CONFIG_DIR, PORT } from '../config';
 import { readJson, writeJson } from '../util/json-store';
 import { log } from '../logger';
+import { ipIsPrivate } from '../util/net';
 
 const STATE_FILE = path.join(CONFIG_DIR, 'platform-address.json');
 
@@ -57,7 +58,19 @@ function isUsableLanAddress(ip: string): boolean {
   if (ip.startsWith('127.')) return false; // loopback is the container itself
   if (ip.startsWith('169.254.')) return false; // link-local autoconf
   if (ip === '0.0.0.0') return false;
-  return true;
+  // It must be a PRIVATE address. This is the platform address handed to every app as
+  // `OPENMASJID_BASE_URL`, and one source of it is the browser's `Host` header
+  // (`observeDashboardHost`) — which is read in `createContext`, i.e. BEFORE
+  // `protectedProcedure` checks the dashboard key, so the session cookie alone is enough to
+  // influence it. A same-site app on another port is given that cookie by the browser, which
+  // is the threat the dashboard key exists for.
+  //
+  // Without this test any bare IPv4 was accepted, including a PUBLIC one — so a caller
+  // holding only the cookie could point every installed app's base URL at an address they
+  // control, and the apps would then send their Fabric secrets there. Restricting it to
+  // private space removes the exfiltration path; a public IP is never a useful answer to
+  // "which address should an app on this LAN use to reach the platform" anyway.
+  return ipIsPrivate(ip);
 }
 
 /**

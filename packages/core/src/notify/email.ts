@@ -140,6 +140,16 @@ async function sendViaSmtp(
     host: cfg.smtp.host,
     port: cfg.smtp.port,
     secure: cfg.smtp.secure, // true for 465; false uses STARTTLS on 587
+    // With `secure: false`, nodemailer upgrades via STARTTLS only if the server ADVERTISES
+    // it — and falls back to plaintext if it does not. An on-path attacker who strips the
+    // advertisement therefore harvests the masjid's mail password in the clear. `requireTLS`
+    // makes the send FAIL instead of silently downgrading.
+    //
+    // Conditioned on there being credentials to protect: a masjid relaying through an
+    // internal MTA on port 25 with no auth has nothing to steal, and hard-requiring TLS
+    // there would break a working setup for no gain. When a password IS being presented,
+    // it is never sent in plaintext.
+    requireTLS: Boolean(cfg.smtp.user),
     auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
     connectionTimeout: TIMEOUT_MS,
     greetingTimeout: TIMEOUT_MS,
