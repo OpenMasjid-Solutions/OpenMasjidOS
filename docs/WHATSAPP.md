@@ -204,9 +204,32 @@ request*, which does nothing about two requests overlapping.
 | Typing indicator | scaled to message length | People take longer over longer messages |
 | Presence | online while working, offline when idle | A permanently-online number that never reads anything looks like what it is |
 | Per-recipient cooldown | 60s | One person is never hammered, even by several apps |
-| Rate caps | 12/hour, 60/day | OpenWA calls "a few a minute" sustainable; a masjid needs far less |
-| Warm-up ramp | 7 days | A freshly linked number is watched hardest |
+| Rate caps (individuals) | **none** | Removed in v0.51.1 — see below |
+| Rate caps (groups) | 4/hour, 10/day | One post reaches everyone, so overuse costs the recipients, not the sender |
+| Warm-up ramp | 7 days | Applies to the GROUP caps. A freshly linked number is watched hardest |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
+
+### No rate cap on individual messages (removed in v0.51.1)
+
+There is **no hourly or daily ceiling** on messages to individuals. The brake is spacing: the
+randomised 6–20s gap between sends, plus the 60-second per-recipient cooldown.
+
+The caps were 12/hour and 60/day, but the warm-up ramp quartered them on a newly linked
+number — so a masjid that had just set WhatsApp up got **3 messages an hour**, and command
+replies spent the same allowance. That is not a safety margin, it is an outage: it blocked
+ordinary use and even blocked testing the feature. And the pattern it was aimed at — a
+masjid messaging parents one at a time — is not the pattern that gets a number banned.
+
+**The trade-off, stated plainly because it is not the admin's mistake if it bites.** The
+queue is shared by every app, so an app looping over 200 parents will now send all 200 —
+spaced out, but unbounded. Ban risk attaches to the **number**, and a ban is terminal: you
+do not get to be more careful afterwards. If a ceiling is ever needed again it belongs on
+this shared queue, not in each app, because a per-app limiter cannot see the number's total
+traffic.
+
+**Groups keep their caps** (4/hour, 10/day, 30-minute cooldown, warm-up ramp applied). One
+group message reaches every member, so overuse there costs two hundred people who did not
+choose it — which is a different thing from an over-eager fee run.
 
 ### No quiet hours (removed in v0.51.1)
 
@@ -258,12 +281,11 @@ restricted, and a day-old fee reminder is not the message anyone wanted), and it
 as `expired` so an app that asks gets a real answer. A damaged store file degrades to empty
 rather than stopping the daemon.
 
-Limits are editable in Settings, within **hard bounds** the platform enforces — so a config
-pasted from a bulk-sending tutorial cannot turn this into a blaster. The bounds are a range,
-not a one-way ratchet: you can raise the caps as well as lower them (up to 60/hour and
-500/day), but never past those ceilings, and the gap can never go below **3 seconds**, with
-jitter always applied. The defaults above are deliberately well inside the bounds, and there
-is no good reason for a masjid to approach them.
+The remaining limits are editable in Settings, within **hard bounds** the platform enforces.
+The bounds are a range, not a one-way ratchet — group caps can be raised as well as lowered
+(up to 20/hour and 50/day) but never past those ceilings; the gap can never go below
+**3 seconds**, with jitter always applied; and the per-recipient cooldown can be set to zero
+but the gap still separates every send. The defaults are deliberately well inside the bounds.
 
 ## For app authors
 

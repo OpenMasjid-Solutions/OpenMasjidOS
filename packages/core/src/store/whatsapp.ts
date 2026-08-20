@@ -38,10 +38,11 @@ export type WhatsAppProvider = 'none' | 'openwa';
  * will honour (`clampLimits`).
  */
 export interface WhatsAppLimits {
-  /** Hard ceiling per rolling hour, across every app and the OS together. */
-  perHour: number;
-  /** Hard ceiling per rolling 24h. */
-  perDay: number;
+  // There are deliberately no `perHour` / `perDay` ceilings for individual messages.
+  // Spacing is the brake: the randomised gap plus the per-recipient cooldown. The caps
+  // were removed because they blocked ordinary use (3/hour on a freshly linked number,
+  // once the warm-up ramp was applied) for a sending pattern — one parent at a time —
+  // that they were never aimed at. Group caps survive: see `groupPerHour` below.
   /** Minimum seconds between any two sends (a random extra gap is added on top). */
   minGapSeconds: number;
   /** Extra random seconds added to every gap, so the cadence is never a fixed beat. */
@@ -149,8 +150,6 @@ const WHATSAPP_PATH = path.join(CONFIG_DIR, 'whatsapp.json');
  * need throughput, it needs the number to still work next term.
  */
 export const DEFAULT_LIMITS: WhatsAppLimits = {
-  perHour: 12,
-  perDay: 60,
   minGapSeconds: 6,
   jitterSeconds: 14, // so the real gap is 6–20s, never a detectable fixed beat
   perRecipientCooldownSeconds: 60,
@@ -185,8 +184,6 @@ export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLim
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(v)));
   const d = DEFAULT_LIMITS;
   return {
-    perHour: clamp(n(l?.perHour, d.perHour), 1, 60),
-    perDay: clamp(n(l?.perDay, d.perDay), 1, 500),
     // Never below 3s between sends, whatever the config says.
     minGapSeconds: clamp(n(l?.minGapSeconds, d.minGapSeconds), 3, 600),
     jitterSeconds: clamp(n(l?.jitterSeconds, d.jitterSeconds), 1, 600),

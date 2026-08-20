@@ -13,6 +13,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Changed — no more hourly or daily message limit**
+
+- **The cap on how many messages you can send has been removed.** It was 12 an hour, but a newly linked number only got a quarter of that — three an hour — and replies to your own `!os` commands counted against the same allowance. In practice that meant setting WhatsApp up and then not being able to use or even test it. Messages are still spaced a random 6–20 seconds apart, and the same person is still never messaged twice within a minute, which is what makes the sending look human in the first place.
+- **Group announcements keep their limits** (four an hour, ten a day). One group message reaches every member, so overdoing it costs two hundred people who did not ask for it — which is not the same as sending too many fee reminders.
+- Worth knowing: nothing now stops an app sending to a very large number of people in one go, other than the spacing. WhatsApp does not officially allow this kind of connection and a blocked number cannot be recovered, so keep an eye on what your apps send.
+
 **Fixed — WhatsApp messages that were accepted and never arrived**
 
 - **The send queue is now saved to disk.** It only ever lived in memory, so any message the pacing held — for a rate cap, for the gentle ramp on a newly linked number, or for the old quiet-hours window — was thrown away when OpenMasjidOS restarted. Nothing said so: your app was told the message had been accepted, and there was no error anywhere to contradict it. On the Development channel, which restarts often, that is how a masjid went more than a day with every message accepted and none delivered. The pacing history is saved too, so the daily and hourly limits survive a restart instead of quietly resetting.

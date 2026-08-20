@@ -109,25 +109,35 @@ test('quiet hours DELAY, they never discard', () => {
 
 // ── caps ─────────────────────────────────────────────────────────────────────────
 
-test('the hourly cap counts only the last hour, and the daily cap the last day', () => {
+test('individual messages have no hourly or daily cap', () => {
+  // Removed at the maintainer's decision: with the warm-up ramp the caps came to 3/hour
+  // on a freshly linked number, which blocked ordinary use and even testing, for a sending
+  // pattern (one parent at a time) they were never aimed at. Spacing is the brake now —
+  // the randomised 6-20s gap plus the per-recipient cooldown.
+  //
+  // The trade-off is recorded rather than hidden: an app looping over 200 parents will send
+  // all 200, spaced but unbounded. If that ever needs a ceiling it belongs HERE, on the
+  // shared queue, not in each app — a per-app limiter cannot see the number's total traffic.
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  // 12 sends, all within the last hour → at the default cap of 12.
-  for (let i = 0; i < L.perHour; i++) hist.sends.push(now - i * 60_000);
-  assert.equal(blocked(now, hist), 'hourly limit reached');
-  // Move them to two hours ago: the hour cap frees up, the day cap still counts them.
-  const older = noHistory();
-  for (let i = 0; i < L.perHour; i++) older.sends.push(now - 2 * 3_600_000 - i * 60_000);
-  assert.equal(blocked(now, older), null, 'an hour later, sending resumes');
+  for (let i = 0; i < 500; i++) hist.sends.push(now - i * 1_000);
+  assert.equal(blocked(now, hist), null, '500 sends in the last few minutes is still allowed');
+  assert.ok(!('perHour' in L), 'perHour must not exist in WhatsAppLimits');
+  assert.ok(!('perDay' in L), 'perDay must not exist in WhatsAppLimits');
 });
 
-test('the daily cap holds even when the hour is quiet', () => {
+test('group posts DO still have caps, because the cost falls on the recipients', () => {
+  // One group message reaches every member, so overuse is not "the sender's own problem"
+  // in the way an over-eager fee run is. These caps stay.
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  // Spread the full day's allowance across the day, so no single hour is near its cap.
-  for (let i = 0; i < L.perDay; i++) hist.sends.push(now - (i + 1) * 20 * 60_000);
-  const reason = blocked(now, hist);
-  assert.equal(reason, 'daily limit reached');
+  for (let i = 0; i < L.groupPerHour; i++) hist.groupSends.push(now - i * 60_000);
+  assert.equal(
+    wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist),
+    'hourly group limit reached',
+  );
+  // And an individual message is unaffected by a spent group allowance.
+  assert.equal(blocked(now, hist), null);
 });
 
 function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: string | null = null): string | null {
@@ -173,13 +183,14 @@ test('an unknown or skewed link date never locks a working masjid out', () => {
   assert.equal(wa.warmupFactor('2026-03-10T12:00:00Z', { ...L, warmupDays: 0 }, now), 1, 'ramp disabled');
 });
 
-test('the warm-up ramp still allows at least one message', () => {
-  // `Math.floor(perHour * 0.25)` on a tightened config could reach 0, which would be a
-  // silent total outage rather than a slow start.
-  const tiny = { ...L, perHour: 1, perDay: 1 };
+test('the warm-up ramp still allows at least one group post', () => {
+  // `Math.floor(groupPerHour * 0.25)` on a tightened config could reach 0, which would be
+  // a silent total outage rather than a slow start. (The ramp no longer affects individual
+  // messages, since those have no cap for it to scale.)
+  const tiny = { ...L, groupPerHour: 1, groupPerDay: 1 };
   const linkedToday = new Date().toISOString();
-  const r = wa.blockedReason(Date.now(), who('15550101234'), tiny, linkedToday, noHistory());
-  assert.equal(r, null, 'a brand-new number on a tight cap can still send one message');
+  const r = wa.blockedReason(Date.now(), { kind: 'group', groupId: '1@g.us' }, tiny, linkedToday, noHistory());
+  assert.equal(r, null, 'a brand-new number on a tight cap can still post once');
 });
 
 // ── gap + typing ─────────────────────────────────────────────────────────────────
@@ -211,15 +222,11 @@ test('typing time grows with the message but stays bounded', () => {
 test('clampLimits only ever lets an admin be MORE careful', () => {
   // The UI is not the only writer, so the floor lives in the store.
   const wild = store.clampLimits({
-    perHour: 100_000,
-    perDay: 1_000_000,
     minGapSeconds: 0,
     jitterSeconds: 0,
     perRecipientCooldownSeconds: -5,
     warmupDays: 9999,
   });
-  assert.ok(wild.perHour <= 60, `perHour clamped, got ${wild.perHour}`);
-  assert.ok(wild.perDay <= 500, `perDay clamped, got ${wild.perDay}`);
   assert.ok(wild.minGapSeconds >= 3, 'never below a 3s gap');
   assert.ok(wild.jitterSeconds >= 1, 'always some jitter');
   assert.ok(wild.perRecipientCooldownSeconds >= 0);
@@ -231,14 +238,14 @@ test('clampLimits only ever lets an admin be MORE careful', () => {
   const empty = store.clampLimits(undefined);
   assert.deepEqual(empty, store.DEFAULT_LIMITS);
   // @ts-expect-error deliberately wrong types — this arrives from a JSON file
-  assert.equal(store.clampLimits({ perHour: 'lots', minGapSeconds: null }).perHour, store.DEFAULT_LIMITS.perHour);
+  assert.equal(store.clampLimits({ minGapSeconds: null }).minGapSeconds, store.DEFAULT_LIMITS.minGapSeconds);
 });
 
 test('the defaults are far below what OpenWA calls sustainable', () => {
   // Their guidance is "a few messages per minute is sustainable; thousands an hour is
   // not". A masjid needs neither — it needs the number to still work next term.
   const d = store.DEFAULT_LIMITS;
-  assert.ok(d.perHour <= 20, `default perHour should be modest, got ${d.perHour}`);
+  assert.ok(d.groupPerHour <= 8, `default groupPerHour should be modest, got ${d.groupPerHour}`);
   assert.ok(d.minGapSeconds >= 5, 'a human does not reply instantly');
   assert.ok(d.jitterSeconds >= 5, 'and not on a metronome');
   assert.ok(d.warmupDays >= 3, 'a new number must be eased in');

@@ -43,8 +43,6 @@ import { OPENWA_APP_ID } from '../../apps/managed';
  *  only so the UI gets a friendly error instead of a silent clamp. */
 const limitsInput = z
   .object({
-    perHour: z.number().int().min(1).max(60),
-    perDay: z.number().int().min(1).max(500),
     minGapSeconds: z.number().int().min(3).max(600),
     jitterSeconds: z.number().int().min(1).max(600),
     perRecipientCooldownSeconds: z.number().int().min(0).max(86_400),

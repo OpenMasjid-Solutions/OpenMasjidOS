@@ -130,19 +130,18 @@ const history = (over: Partial<{ sends: number[]; groupSends: number[]; last: Ma
   lastPerRecipient: over.last ?? new Map<string, number>(),
 });
 
-test('the two budgets are independent in BOTH directions', () => {
+test('the two budgets are independent: a spent group allowance never blocks a parent', () => {
   const now = Date.now();
   // Spread across the day, so it is the DAILY cap being exhausted and not the hourly one
   // — otherwise this passes for the wrong reason.
   const overADay = (n: number) => Array.from({ length: n }, (_, i) => now - Math.round((i * 86_400_000) / (n + 1)));
 
-  // A day of individual reminders must not silence an announcement…
-  const individualsSpent = overADay(L.perDay);
+  // A day of individual reminders must not silence an announcement. (Individuals are no
+  // longer capped at all, so the interesting half of this is that a large `sends` history
+  // still leaves the GROUP budget untouched — the two are tracked separately.)
+  const individualsSpent = overADay(200);
   assert.equal(wa.blockedReason(now, group, L, null, history({ sends: individualsSpent })), null);
-  assert.equal(
-    wa.blockedReason(now, person, L, null, history({ sends: individualsSpent })),
-    'daily limit reached',
-  );
+  assert.equal(wa.blockedReason(now, person, L, null, history({ sends: individualsSpent })), null);
 
   // …and a day of announcements must not stop a parent being told their fees are due.
   const groupsSpent = overADay(L.groupPerDay);
@@ -153,10 +152,12 @@ test('the two budgets are independent in BOTH directions', () => {
   );
 });
 
-test('the group cap is far tighter than the individual one', () => {
-  // The blast radius of one group message is the whole group, so the brake is stricter.
-  assert.ok(L.groupPerHour < L.perHour, 'hourly');
-  assert.ok(L.groupPerDay < L.perDay, 'daily');
+test('groups are the only thing still capped, and their cooldown is longer', () => {
+  // Individual messages lost their hourly/daily caps (see whatsapp-pacing.test.ts) because
+  // the cost of overuse falls on the sender. A group message reaches every member, so the
+  // cost falls on two hundred people who did not choose it — which is why these survive.
+  assert.ok(L.groupPerHour > 0, 'groups still have an hourly cap');
+  assert.ok(L.groupPerDay > 0, 'groups still have a daily cap');
   assert.ok(L.perGroupCooldownSeconds > L.perRecipientCooldownSeconds, 'cooldown');
 });
 

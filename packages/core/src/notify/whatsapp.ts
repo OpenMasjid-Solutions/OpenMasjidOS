@@ -741,14 +741,29 @@ export function capExceeded(
   linkedAt: string | null,
   history: { sends: number[]; groupSends: number[] },
 ): 'hour' | 'day' | null {
+  // INDIVIDUAL messages are deliberately uncapped. Spacing is the whole brake for them:
+  // the randomised 6-20s gap plus the per-recipient cooldown. Removed at the maintainer's
+  // decision after the caps repeatedly blocked ordinary use — with the warm-up ramp they
+  // came to 3/hour on a freshly linked number, which is unusable even for testing, and a
+  // masjid messaging parents one at a time is not the threat the caps were written for.
+  //
+  // Known trade-off, recorded because it is not the admin's mistake if it bites: the queue
+  // is shared, so an app looping over 200 parents will now send all 200, spaced but
+  // unbounded. Ban risk attaches to the NUMBER and a ban is terminal, so if this proves
+  // too loose the fix is a cap here, not a per-app one — a per-app limiter cannot see the
+  // number's total traffic.
+  if (target.kind !== 'group') return null;
+
+  // GROUPS keep their caps, and they are a genuinely different case: one message reaches
+  // every member, so the cost of overuse falls on two hundred recipients rather than on
+  // the sender. That is not "the user's own fault" in the way an over-eager fee run is.
   const factor = warmupFactor(linkedAt, limits, now);
-  const isGroup = target.kind === 'group';
-  // The warm-up ramp applies to groups too. A number linked yesterday posting to a
+  // The warm-up ramp still applies here. A number linked yesterday posting to a
   // 200-member group is a strong signal, not a gentle start.
-  // At least 1, so a warm-up ramp can never mean "send nothing at all".
-  const hourCap = Math.max(1, Math.floor((isGroup ? limits.groupPerHour : limits.perHour) * factor));
-  const dayCap = Math.max(1, Math.floor((isGroup ? limits.groupPerDay : limits.perDay) * factor));
-  const sends = isGroup ? history.groupSends : history.sends;
+  // At least 1, so a warm-up ramp can never mean "post nothing at all".
+  const hourCap = Math.max(1, Math.floor(limits.groupPerHour * factor));
+  const dayCap = Math.max(1, Math.floor(limits.groupPerDay * factor));
+  const sends = history.groupSends;
 
   if (sends.filter((t) => t > now - 3_600_000).length >= hourCap) return 'hour';
   if (sends.length >= dayCap) return 'day';
