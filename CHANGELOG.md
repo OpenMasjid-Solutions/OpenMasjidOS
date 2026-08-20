@@ -13,6 +13,13 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Security — a full audit, and one serious hole closed**
+
+- **An app could have been given complete control of the server, with no warning shown.** Before installing any app, OpenMasjidOS checks its configuration for dangerous settings — mounting the server’s own control socket, or the whole filesystem — and refuses. That check could be stepped around: writing one field as a variable instead of a fixed value made the checker skip the inspection entirely, while Docker still resolved it to the dangerous setting when the app started. An app published to the store, or added from a third-party store, could have taken over the machine on the ordinary one-click install with no risk dialog at all. Now caught, along with two related tricks — one that let an app open **another app’s database**, and one that let it join **another app’s private network** and reach services never meant to leave that app.
+- **A web address written in an unusual but valid way could point the community app-store fetcher back at the server itself.** The check that blocks private addresses only recognised one spelling of them.
+- Smaller fixes: the running version was readable from the internet on one of the two listeners; one app could use up the message-sending allowance belonging to all the others; and a header a caller can invent was still being trusted on one path.
+- **Written down honestly, not quietly.** “Local network only” means “not reachable through the remote-access tunnel” — it does **not** mean the server cannot be reached from the internet if it has a public address. If your server has one, put a firewall in front of it;  now explains exactly what is and is not protected, and the README no longer claims the dashboard is never exposed.
+
 **Changed — no more hourly or daily message limit**
 
 - **The cap on how many messages you can send has been removed.** It was 12 an hour, but a newly linked number only got a quarter of that — three an hour — and replies to your own `!os` commands counted against the same allowance. In practice that meant setting WhatsApp up and then not being able to use or even test it. Messages are still spaced a random 6–20 seconds apart, and the same person is still never messaged twice within a minute, which is what makes the sending look human in the first place.
