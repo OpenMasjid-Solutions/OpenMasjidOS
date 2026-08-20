@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * Durable storage for the WhatsApp send queue, its pacing history, and the outcome of
+ * recent messages.
+ *
+ * WHY THIS EXISTS. The queue was a module-level array and nothing else. That is fine
+ * until something holds a message — a cap, the warm-up ramp, or (until v0.51.1) a
+ * time-of-day window — because a held message lives only in the process. Restart the
+ * container and it is gone: the caller was told `202 {queued:true}`, the message was
+ * logged as queued, and then it simply never existed again. No error, no log line, no
+ * way for the app that sent it to ever learn otherwise.
+ *
+ * That is not a hypothetical. It is the reported failure on a live install: messages
+ * accepted for over 24 hours, none delivered, nothing in any log, while `!os` commands
+ * worked perfectly — because a command reply goes out through `sendImmediate`, which
+ * bypasses the queue entirely. "Commands work but messages do not" is exactly the
+ * signature of a broken queue and a working transport.
+ *
+ * The pacing HISTORY is persisted for a different and equally important reason: it is the
+ * ban-risk budget. If `sentAt` empties on every restart then the hourly and daily caps are
+ * not really caps, and a box in a restart loop could send its daily allowance many times
+ * over — the precise behaviour the whole pacer exists to prevent.
+ *
+ * WHERE. `config/whatsapp-queue.json`. Not because it is a credential, but because a
+ * queued message body routinely carries a child's name and a family's fees. `CONFIG_DIR`
+ * is 0700, `writeJson` makes the file 0600, and `files/manager.ts` refuses `config/**` to
+ * the File Explorer — so the same protection the secrets get, for the same reason.
+ *
+ * SIZE. Bounded by limits that already existed: at most `MAX_QUEUE` items, of which at
+ * most `MAX_QUEUED_MEDIA` (4) carry an image of at most 2 MB decoded. Base64 inflates by
+ * about a third, so the worst case is roughly 11 MB, written a few times per message
+ * rather than continuously. That is acceptable on an SD card at this frequency; a
+ * continuously-rewritten file of that size would not be.
+ */
+import path from 'node:path';
+import fs from 'node:fs';
+import { CONFIG_DIR } from '../config';
+import { readJson, writeJson } from '../util/json-store';
+import { log } from '../logger';
+
+const STORE_PATH = path.join(CONFIG_DIR, 'whatsapp-queue.json');
+
+/**
+ * A message held longer than this is dropped rather than sent on load.
+ *
+ * Two reasons. A fee reminder that has been waiting a day is no longer the message anyone
+ * wanted sent, and — more importantly — releasing a long backlog all at once is a burst,
+ * which is the single behaviour most likely to get the number restricted. The pacer would
+ * still space them out, but the intent here is to not have a day's worth to space out in
+ * the first place.
+ */
+export const MAX_HELD_MS = 24 * 60 * 60 * 1000;
+
+/** How many recent outcomes to remember, so an app can ask what happened after the 202. */
+export const MAX_OUTCOMES = 200;
+
+export type OutcomeState = 'queued' | 'sent' | 'failed' | 'expired';
+
+export interface OutcomeRecord {
+  /** Opaque id handed back to the caller at enqueue time. */
+  id: string;
+  /** The app id that sent it, or 'os'. Scopes who may read this record. */
+  source: string;
+  state: OutcomeState;
+  /** Plain-language reason, for `failed` / `expired`. Never a stack trace. */
+  reason?: string;
+  /** When the state was last set. */
+  at: number;
+  /** 'person' | 'group'. Deliberately NOT the number or the group id. */
+  targetKind: string;
+}
+
+/**
+ * A queue item as stored. Structurally the runtime `QueueItem` plus its id.
+ *
+ * Declared here rather than imported to keep the dependency one-way (whatsapp.ts imports
+ * this module, never the reverse) and to make it obvious that changing the runtime shape
+ * means thinking about what is already on disk.
+ */
+export interface StoredItem {
+  id: string;
+  text: string;
+  source: string;
+  target: { kind: 'person'; digits: string } | { kind: 'group'; groupId: string };
+  media?: { data: string; mimeType: string; filename?: string };
+  enqueuedAt: number;
+  attempts: number;
+}
+
+interface PersistedState {
+  queue: StoredItem[];
+  /** Individual send timestamps within the rolling day. */
+  sends: number[];
+  /** Group post timestamps within the rolling day. */
+  groupSends: number[];
+  /** `targetKey` → last send, as pairs because a Map is not JSON. */
+  lastPerRecipient: [string, number][];
+  outcomes: OutcomeRecord[];
+}
+
+const EMPTY: PersistedState = { queue: [], sends: [], groupSends: [], lastPerRecipient: [], outcomes: [] };
+
+/** Is this a plausible stored item? A hand-edited or truncated file must not crash boot. */
+function validItem(v: unknown): v is StoredItem {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.id !== 'string' || typeof o.source !== 'string') return false;
+  if (typeof o.text !== 'string') return false;
+  if (typeof o.enqueuedAt !== 'number' || !Number.isFinite(o.enqueuedAt)) return false;
+  const t = o.target as Record<string, unknown> | undefined;
+  if (!t || typeof t !== 'object') return false;
+  if (t.kind === 'person') return typeof t.digits === 'string' && t.digits.length > 0;
+  if (t.kind === 'group') return typeof t.groupId === 'string' && t.groupId.length > 0;
+  return false;
+}
+
+function numbers(v: unknown): number[] {
+  return Array.isArray(v) ? v.filter((n): n is number => typeof n === 'number' && Number.isFinite(n)) : [];
+}
+
+export interface LoadedState {
+  queue: StoredItem[];
+  sends: number[];
+  groupSends: number[];
+  lastPerRecipient: Map<string, number>;
+  outcomes: OutcomeRecord[];
+  /** Items dropped for being older than MAX_HELD_MS, so the caller can log it. */
+  expired: StoredItem[];
+}
+
+/**
+ * Read the persisted state. Never throws — a damaged file degrades to empty rather than
+ * stopping the daemon, the same rule the TLS cert follows (CLAUDE.md §15). A masjid whose
+ * queue file is corrupt loses queued messages, which is bad; a masjid whose dashboard will
+ * not boot has no way to fix anything at all, which is worse.
+ */
+export function loadQueueState(now: number): LoadedState {
+  let raw: PersistedState;
+  try {
+    raw = readJson<PersistedState>(STORE_PATH, EMPTY);
+  } catch (err) {
+    log.warn('WhatsApp: could not read the saved queue; starting empty.', err);
+    raw = EMPTY;
+  }
+
+  const all = Array.isArray(raw.queue) ? raw.queue.filter(validItem) : [];
+  const queue: StoredItem[] = [];
+  const expired: StoredItem[] = [];
+  for (const item of all) {
+    (now - item.enqueuedAt > MAX_HELD_MS ? expired : queue).push(item);
+  }
+
+  const pairs = Array.isArray(raw.lastPerRecipient) ? raw.lastPerRecipient : [];
+  const lastPerRecipient = new Map<string, number>();
+  for (const pair of pairs) {
+    if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'number') {
+      lastPerRecipient.set(pair[0], pair[1]);
+    }
+  }
+
+  const outcomes = (Array.isArray(raw.outcomes) ? (raw.outcomes as unknown[]) : [])
+    .filter((o): o is OutcomeRecord => {
+      if (typeof o !== 'object' || o === null) return false;
+      const r = o as Record<string, unknown>;
+      return typeof r.id === 'string' && typeof r.source === 'string' && typeof r.state === 'string';
+    })
+    .slice(-MAX_OUTCOMES);
+
+  return {
+    queue,
+    sends: numbers(raw.sends),
+    groupSends: numbers(raw.groupSends),
+    lastPerRecipient,
+    outcomes,
+    expired,
+  };
+}
+
+/**
+ * Write the state. Best-effort by design: failing to persist must not fail a send.
+ *
+ * A full disk is the realistic failure, and the right behaviour then is to carry on
+ * sending from memory (degrading to the old behaviour) rather than to refuse to send at
+ * all. It is logged once per failure so the cause is visible, not swallowed.
+ */
+export function saveQueueState(state: {
+  queue: StoredItem[];
+  sends: number[];
+  groupSends: number[];
+  lastPerRecipient: Map<string, number>;
+  outcomes: OutcomeRecord[];
+}): void {
+  try {
+    const out: PersistedState = {
+      queue: state.queue,
+      sends: state.sends,
+      groupSends: state.groupSends,
+      lastPerRecipient: [...state.lastPerRecipient.entries()],
+      outcomes: state.outcomes.slice(-MAX_OUTCOMES),
+    };
+    writeJson(STORE_PATH, out);
+  } catch (err) {
+    log.warn('WhatsApp: could not save the queue; it will not survive a restart.', err);
+  }
+}
+
+/** Remove the store — used by the tests, and when WhatsApp is deconfigured. */
+export function clearQueueStore(): void {
+  try {
+    fs.rmSync(STORE_PATH, { force: true });
+  } catch {
+    /* best effort */
+  }
+}
+
+export { STORE_PATH as QUEUE_STORE_PATH };

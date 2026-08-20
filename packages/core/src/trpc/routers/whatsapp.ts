@@ -48,8 +48,6 @@ const limitsInput = z
     minGapSeconds: z.number().int().min(3).max(600),
     jitterSeconds: z.number().int().min(1).max(600),
     perRecipientCooldownSeconds: z.number().int().min(0).max(86_400),
-    quietStartHour: z.number().int().min(0).max(23),
-    quietEndHour: z.number().int().min(0).max(23),
     warmupDays: z.number().int().min(0).max(90),
     groupPerHour: z.number().int().min(1).max(20),
     groupPerDay: z.number().int().min(1).max(50),

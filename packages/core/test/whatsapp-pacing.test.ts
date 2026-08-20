@@ -31,7 +31,6 @@ const noHistory = () => ({
 /** A person target. `blockedReason` takes a Target now, so groups get their own budget
  *  without a second copy of the policy — see whatsapp-groups.test.ts. */
 const who = (digits: string) => ({ kind: 'person' as const, digits });
-const NOON = 12; // a safely non-quiet hour
 
 // ── phone numbers ────────────────────────────────────────────────────────────────
 
@@ -53,21 +52,31 @@ test('a number is never given a country code we guessed', () => {
 
 // ── quiet hours ──────────────────────────────────────────────────────────────────
 
-test('quiet hours hold overnight, across midnight', () => {
-  // Default window is 21:00–07:00, which wraps — the easy bug is treating start<end.
-  const q = (h: number) => wa.inQuietHours(h, L);
-  for (const h of [21, 22, 23, 0, 3, 6]) assert.equal(q(h), true, `${h}:00 is quiet`);
-  for (const h of [7, 9, 12, 17, 20]) assert.equal(q(h), false, `${h}:00 is not quiet`);
-});
+test('there is no time-of-day hold, at any hour', () => {
+  // Quiet hours were removed in v0.51.1 and must not come back in this shape. Two reasons,
+  // both load-bearing:
+  //
+  //   1. The queue is SHARED by the OS and every app, and there is no per-message urgency
+  //      flag — so a window that holds a parent's receipt (fine) also holds a staff alert
+  //      about a declined card (not fine, and the reason a treasurer carries a phone).
+  //   2. It was evaluated against the CONTAINER's clock, which is UTC because nothing sets
+  //      TZ. The "21:00-07:00" window therefore fell at 17:00-03:00 for a US Eastern
+  //      masjid and swallowed the whole evening.
+  assert.equal(
+    (wa as Record<string, unknown>).inQuietHours,
+    undefined,
+    'inQuietHours must stay deleted — see the note in notify/whatsapp.ts',
+  );
+  // And nothing else may sneak a local-hour test back in: the pacer must be clock-agnostic
+  // beyond `now` as an instant.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.ok(!/getHours()/.test(code), 'the pacer must not read the local hour');
 
-test('a non-wrapping window and an empty window both behave', () => {
-  const daytimeQuiet = { ...L, quietStartHour: 9, quietEndHour: 17 };
-  assert.equal(wa.inQuietHours(12, daytimeQuiet), true);
-  assert.equal(wa.inQuietHours(8, daytimeQuiet), false);
-  // start === end means "no quiet hours", not "quiet for 24 hours" — getting this
-  // backwards would silently stop every message for ever.
-  const none = { ...L, quietStartHour: 0, quietEndHour: 0 };
-  for (let h = 0; h < 24; h++) assert.equal(wa.inQuietHours(h, none), false, `${h}:00 must be allowed`);
+  // Behaviourally: with a clean history, every hour of the day is sendable.
+  for (let h = 0; h < 24; h++) {
+    const at = Date.UTC(2026, 0, 15, h, 30);
+    assert.equal(wa.blockedReason(at, who('15550101234'), L, null, noHistory()), null, `${h}:00 must send`);
+  }
 });
 
 /**
@@ -122,7 +131,7 @@ test('the daily cap holds even when the hour is quiet', () => {
 });
 
 function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: string | null = null): string | null {
-  return wa.blockedReason(now, NOON, who('15550101234'), L, linkedAt, hist);
+  return wa.blockedReason(now, who('15550101234'), L, linkedAt, hist);
 }
 
 // ── per-recipient cooldown ───────────────────────────────────────────────────────
@@ -135,7 +144,7 @@ test('one person is never hammered, even by different apps', () => {
   hist.lastPerRecipient.set('15550101234', now - 5_000);
   assert.equal(blocked(now, hist), 'this recipient was messaged very recently');
   // A different recipient is unaffected.
-  assert.equal(wa.blockedReason(now, NOON, who('447700900123'), L, null, hist), null);
+  assert.equal(wa.blockedReason(now, who('447700900123'), L, null, hist), null);
   // And once the cooldown expires, they can be messaged again.
   hist.lastPerRecipient.set('15550101234', now - (L.perRecipientCooldownSeconds + 1) * 1000);
   assert.equal(blocked(now, hist), null);
@@ -169,7 +178,7 @@ test('the warm-up ramp still allows at least one message', () => {
   // silent total outage rather than a slow start.
   const tiny = { ...L, perHour: 1, perDay: 1 };
   const linkedToday = new Date().toISOString();
-  const r = wa.blockedReason(Date.now(), NOON, who('15550101234'), tiny, linkedToday, noHistory());
+  const r = wa.blockedReason(Date.now(), who('15550101234'), tiny, linkedToday, noHistory());
   assert.equal(r, null, 'a brand-new number on a tight cap can still send one message');
 });
 
@@ -207,8 +216,6 @@ test('clampLimits only ever lets an admin be MORE careful', () => {
     minGapSeconds: 0,
     jitterSeconds: 0,
     perRecipientCooldownSeconds: -5,
-    quietStartHour: 99,
-    quietEndHour: -3,
     warmupDays: 9999,
   });
   assert.ok(wild.perHour <= 60, `perHour clamped, got ${wild.perHour}`);
@@ -216,9 +223,10 @@ test('clampLimits only ever lets an admin be MORE careful', () => {
   assert.ok(wild.minGapSeconds >= 3, 'never below a 3s gap');
   assert.ok(wild.jitterSeconds >= 1, 'always some jitter');
   assert.ok(wild.perRecipientCooldownSeconds >= 0);
-  assert.ok(wild.quietStartHour >= 0 && wild.quietStartHour <= 23);
-  assert.ok(wild.quietEndHour >= 0 && wild.quietEndHour <= 23);
   assert.ok(wild.warmupDays <= 90);
+  // The window is gone from the shape entirely, not merely unused.
+  assert.ok(!('quietStartHour' in wild), 'quietStartHour must not exist in WhatsAppLimits');
+  assert.ok(!('quietEndHour' in wild), 'quietEndHour must not exist in WhatsAppLimits');
   // Junk and omissions fall back to the conservative defaults rather than to zero.
   const empty = store.clampLimits(undefined);
   assert.deepEqual(empty, store.DEFAULT_LIMITS);
@@ -234,7 +242,6 @@ test('the defaults are far below what OpenWA calls sustainable', () => {
   assert.ok(d.minGapSeconds >= 5, 'a human does not reply instantly');
   assert.ok(d.jitterSeconds >= 5, 'and not on a metronome');
   assert.ok(d.warmupDays >= 3, 'a new number must be eased in');
-  assert.ok(d.quietStartHour !== d.quietEndHour, 'quiet hours are on by default');
 });
 
 // ── structural guarantees ────────────────────────────────────────────────────────

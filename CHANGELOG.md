@@ -13,7 +13,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-Nothing yet since v0.51.0.
+**Fixed — WhatsApp messages that were accepted and never arrived**
+
+- **The send queue is now saved to disk.** It only ever lived in memory, so any message the pacing held — for a rate cap, for the gentle ramp on a newly linked number, or for the old quiet-hours window — was thrown away when OpenMasjidOS restarted. Nothing said so: your app was told the message had been accepted, and there was no error anywhere to contradict it. On the Development channel, which restarts often, that is how a masjid went more than a day with every message accepted and none delivered. The pacing history is saved too, so the daily and hourly limits survive a restart instead of quietly resetting.
+- **Quiet hours are gone.** There is no longer a 21:00–07:00 window that holds messages until morning. It applied to everything on the one shared queue with no way for an app to mark a message urgent — so a staff alert about a declined card was held overnight exactly like a receipt, which removes the reason anyone carries a phone for alerts. It was also being worked out in the wrong timezone: the window was really 17:00–03:00 for a masjid on US Eastern time, so an evening message was held until three in the morning. Everything else that keeps the number safe is unchanged.
+- **An app can now ask what happened to a message it sent**, instead of only being told it was accepted. Anything still waiting after a day is dropped rather than released in a burst, and reported as such.
+- **Sending to the number WhatsApp itself is linked to is refused**, with an explanation. It would only have gone to that phone’s own notes, which is not somewhere anyone reads alerts — previously it was accepted and then silently went nowhere.
 
 ## 0.51.0
 

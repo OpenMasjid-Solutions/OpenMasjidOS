@@ -27,6 +27,7 @@ import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
 import {
   enqueue as enqueueWhatsApp,
+  whatsappOutcome,
   gatewayStatus as whatsappStatus,
   mediaProblem,
   MAX_MEDIA_BYTES,
@@ -271,7 +272,7 @@ export function registerFabric(server: FastifyInstance): void {
   // so it has to be enforced in one place for every caller at once.
   //
   // This QUEUES. It does not send. Human pacing puts delivery seconds to minutes away,
-  // and quiet hours can defer it for hours, so `{queued: true}` is the honest answer
+  // and a cap can defer it, so `{queued: true}` is the honest answer
   // and no app may treat it as delivery. Nothing auth-critical (a login code, a
   // one-time password) may depend on this — say so to app authors, loudly, in
   // docs/WHATSAPP.md.
@@ -312,7 +313,31 @@ export function registerFabric(server: FastifyInstance): void {
       reason,
       media: reason === 'ready',
       maxMediaBytes: MAX_MEDIA_BYTES,
+      // `outcomes` says this platform can tell you what became of a queued message
+      // (GET /api/fabric/whatsapp/status/:id). Absent means false, as with `media`.
+      outcomes: true,
     });
+  });
+
+  /**
+   * What became of a message this app queued.
+   *
+   * Exists because `202 {queued:true}` was the end of the story: an app recorded that it
+   * had handed a message over and there was nothing, anywhere, that could contradict it.
+   * That is what made a real 24-hour non-delivery undiagnosable from the app's side.
+   *
+   * Scoped to the CALLER's own messages — an id belonging to another app answers 404, the
+   * same as an unknown id, so this cannot be used to observe another app's traffic. Holds
+   * no message text and no recipient.
+   */
+  server.get<{ Params: { id: string } }>('/api/fabric/whatsapp/status/:id', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
+    const rec = whatsappOutcome(String(req.params.id ?? ''), app.id);
+    if (!rec) return reply.code(404).send({ error: 'No such message.' });
+    return reply.send({ id: rec.id, state: rec.state, reason: rec.reason, at: rec.at, target: rec.targetKind });
   });
 
   /**
@@ -419,7 +444,8 @@ export function registerFabric(server: FastifyInstance): void {
       const result = enqueueWhatsApp(
         group ? { groupId: group, text, media, source: app.id } : { to, text, media, source: app.id },
       );
-      // 202: accepted for later delivery, which is exactly what happened.
+      // 202: accepted for later delivery, which is exactly what happened. The body now
+      // also carries an `id` the app can poll — see /api/fabric/whatsapp/status/:id.
       return reply.code(result.queued ? 202 : 400).send(result);
     },
   );

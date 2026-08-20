@@ -38,8 +38,9 @@
  *     is the whole group, so it needs a stricter brake of its own.
  *  7. **Warm-up ramp.** A freshly linked number gets a fraction of the caps for
  *     `warmupDays` — the period WhatsApp watches hardest, per OpenWA's guidance.
- *  8. **Quiet hours.** Queued, never dropped. Also simply correct for a masjid: a fee
- *     reminder at 03:00 is a complaint waiting to happen.
+ *  8. **No time-of-day hold.** There was one (quiet hours) and it was removed — see the
+ *     note where `inQuietHours` used to be. Nothing in the pacer may depend on the local
+ *     hour, because the container's local hour is UTC.
  *  9. **Validate before first contact.** `contacts/check` confirms the number is on
  *     WhatsApp. Sending to numbers that aren't is a documented ban signal.
  * 10. **Never auth-critical.** This queues; it does not deliver. Callers are told so.
@@ -47,7 +48,17 @@
  * None of this makes a ban impossible, and the module must not pretend otherwise —
  * `docs/WHATSAPP.md` states the residual risk plainly for the admin.
  */
+import crypto from 'node:crypto';
 import { log } from '../logger';
+import {
+  loadQueueState,
+  saveQueueState,
+  MAX_OUTCOMES,
+  MAX_HELD_MS,
+  type OutcomeRecord,
+  type OutcomeState,
+  type StoredItem,
+} from './whatsapp-queue-store';
 import { getInstalled } from '../apps/manager';
 import { OPENWA_APP_ID } from '../apps/managed';
 import { appOrigin } from '../system/app-host';
@@ -56,6 +67,7 @@ import {
   getWhatsAppConfig,
   isWhatsAppConfigured,
   recordSessionId,
+  recordLinkedPhone,
   isApprovedGroup,
   type WhatsAppConfig,
   type WhatsAppLimits,
@@ -110,7 +122,7 @@ export const MAX_CAPTION = 1024;
 /**
  * How many image messages may sit in the queue at once.
  *
- * Queued items live in memory, and quiet hours can hold them for hours — on a Raspberry
+ * Queued items are persisted, and a cap or the warm-up ramp can hold them — on a Raspberry
  * Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3 the
  * bytes). Beyond that an app is REFUSED with a clear message rather than the platform
  * quietly growing; a refusal it can retry is better than an out-of-memory kill that takes
@@ -132,6 +144,8 @@ export interface SendRequest {
 }
 
 interface QueueItem {
+  /** Opaque handle returned to the caller, so it can ask what happened later. */
+  id: string;
   text: string;
   source: string;
   target: Target;
@@ -434,6 +448,9 @@ export async function gatewayStatus(): Promise<GatewayStatus> {
     restriction: typeof s?.restriction?.kind === 'string' ? s.restriction.kind : null,
     phone: typeof s?.phone === 'string' ? s.phone : null,
   };
+  // Remember which number we are linked to, so `enqueue` can refuse a message addressed
+  // to ourselves without making a network call.
+  if (extra.phone) recordLinkedPhone(extra.phone);
   if (word === READY) return { state: 'ready', reachable: true, connected: true, detail: word, ...extra };
   if (PENDING_STATUSES.has(word)) {
     return { state: 'pending', reachable: true, connected: false, detail: word, ...extra };
@@ -694,17 +711,27 @@ export function warmupFactor(linkedAt: string | null, limits: WhatsAppLimits, no
   return 0.75;
 }
 
-/** Are we inside the admin's quiet hours? Handles a window that wraps midnight. */
-export function inQuietHours(hour: number, limits: WhatsAppLimits): boolean {
-  const { quietStartHour: s, quietEndHour: e } = limits;
-  if (s === e) return false; // an empty window means "no quiet hours"
-  return s < e ? hour >= s && hour < e : hour >= s || hour < e;
-}
+// `inQuietHours` used to live here and is deliberately gone. Two independent reasons, and
+// the second one is why it was actively harmful rather than merely debatable:
+//
+//   1. It applied to EVERY message on the queue, and the queue is shared by the OS and
+//      every installed app. There is no per-message urgency flag, so an app had no way to
+//      say "this one must not wait". A parent's receipt held until morning is fine; a
+//      staff alert about a declined card or an autopay that switched itself off, held
+//      until morning, removes the whole reason a treasurer carries a phone.
+//   2. It was evaluated against `new Date().getHours()` — the CONTAINER's clock. Nothing
+//      sets `TZ` (not the compose file, not the Dockerfile, not the installer), so that is
+//      UTC. The documented "21:00-07:00" window therefore landed at 17:00-03:00 for a US
+//      Eastern masjid, swallowing the entire evening: a test sent at 6pm local was held.
+//
+// Per-recipient quiet time is a real want, but it belongs with the SENDER, which knows
+// whether it is messaging a parent or a treasurer. This pacer deliberately knows nothing
+// about who a recipient is, so it is the wrong place to make that judgement.
 
 /**
  * The hour/day caps alone, warm-up applied. Split out of `blockedReason` so the cap
  * arithmetic exists in ONE place and the reply lane can ask the cap question without
- * also asking about quiet hours and the per-recipient cooldown, neither of which
+ * also asking about the per-recipient cooldown, which does not
  * applies to answering someone who just messaged us (see `replyTo`).
  */
 export function capExceeded(
@@ -734,16 +761,14 @@ export function capExceeded(
  */
 export function blockedReason(
   now: number,
-  hour: number,
   target: Target,
   limits: WhatsAppLimits,
   linkedAt: string | null,
   history: { sends: number[]; groupSends: number[]; lastPerRecipient: Map<string, number> },
 ): string | null {
-  // Quiet hours apply to BOTH, and more so to a group: a 03:00 fee reminder annoys one
-  // person, a 03:00 group post wakes two hundred.
-  if (inQuietHours(hour, limits)) return 'quiet hours';
-
+  // NOTE: no time-of-day term. This function is deliberately clock-agnostic beyond `now`
+  // as an instant — see the note where `inQuietHours` used to be. Nothing here may depend
+  // on the local hour, because "local" is the container's timezone and that is UTC.
   const isGroup = target.kind === 'group';
   const over = capExceeded(now, target, limits, linkedAt, history);
   if (over === 'hour') return isGroup ? 'hourly group limit reached' : 'hourly limit reached';
@@ -792,16 +817,100 @@ const queue: QueueItem[] = [];
 let running = false;
 let presenceOn = false;
 
+/**
+ * Recent per-message outcomes, so an app can find out what became of a `202`.
+ *
+ * Bounded and persisted alongside the queue. Deliberately holds NO message text and no
+ * recipient — an app polls by the id it was given, and `whatsappOutcome` refuses a record
+ * belonging to another app, so this cannot become a way to read someone else's traffic.
+ */
+const outcomes: OutcomeRecord[] = [];
+
+/** Persist queue + pacing history + outcomes. Called after every mutation. */
+function persist(): void {
+  saveQueueState({ queue, sends: sentAt, groupSends: groupSentAt, lastPerRecipient: lastToRecipient, outcomes });
+}
+
+function noteOutcome(item: QueueItem, state: OutcomeState, reason?: string): void {
+  const existing = outcomes.find((o) => o.id === item.id);
+  if (existing) {
+    existing.state = state;
+    existing.reason = reason;
+    existing.at = Date.now();
+  } else {
+    outcomes.push({
+      id: item.id,
+      source: item.source,
+      state,
+      reason,
+      at: Date.now(),
+      targetKind: item.target.kind,
+    });
+    while (outcomes.length > MAX_OUTCOMES) outcomes.shift();
+  }
+}
+
+/**
+ * What happened to a message, for the app that sent it.
+ *
+ * Scoped to the caller's own `source`: without that check an app could enumerate ids and
+ * learn when another app messaged someone, which is the sort of cross-app leak the Fabric
+ * exists to prevent. An unknown id and someone else's id are the same answer, on purpose.
+ */
+export function whatsappOutcome(id: string, source: string): OutcomeRecord | null {
+  const rec = outcomes.find((o) => o.id === id);
+  return rec && rec.source === source ? rec : null;
+}
+
+/**
+ * Restore the queue written by the previous run.
+ *
+ * Called once at boot. Without it, anything the pacer was holding when the container
+ * stopped is silently destroyed — which is exactly the bug this whole store exists to fix,
+ * and it presented as "accepted, never delivered, no error, for over 24 hours".
+ */
+export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expired: number } {
+  const state = loadQueueState(now);
+  queue.length = 0;
+  for (const item of state.queue) queue.push(item as QueueItem);
+  sentAt.length = 0;
+  sentAt.push(...state.sends);
+  groupSentAt.length = 0;
+  groupSentAt.push(...state.groupSends);
+  lastToRecipient.clear();
+  for (const [k, v] of state.lastPerRecipient) lastToRecipient.set(k, v);
+  outcomes.length = 0;
+  outcomes.push(...state.outcomes);
+
+  // Anything held longer than a day is not sent. Recorded as an outcome rather than
+  // vanishing, so an app that asks gets a real answer instead of silence.
+  for (const stale of state.expired) {
+    noteOutcome(stale as QueueItem, 'expired', 'It waited more than 24 hours, so it was not sent.');
+  }
+  if (state.expired.length > 0) {
+    log.warn(
+      `WhatsApp: dropped ${state.expired.length} message(s) held longer than ` +
+        `${Math.round(MAX_HELD_MS / 3_600_000)}h — releasing a backlog at once is what gets a number restricted.`,
+    );
+  }
+  if (queue.length > 0) {
+    log.info(`WhatsApp: restored ${queue.length} queued message(s) from the previous run.`);
+    void pump();
+  }
+  if (state.expired.length > 0 || queue.length > 0) persist();
+  return { restored: queue.length, expired: state.expired.length };
+}
+
 export function queueDepth(): number {
   return queue.length;
 }
 
 /**
  * Enqueue a message. Returns immediately — this is a QUEUE, not a send. Human pacing
- * means delivery is seconds to hours away (quiet hours), so nothing auth-critical may
+ * means delivery is seconds to hours away (a cap, the warm-up ramp), so nothing auth-critical may
  * depend on it. That contract is stated to apps in `docs/WHATSAPP.md`.
  */
-export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
+export function enqueue(req: SendRequest): { queued: boolean; error?: string; id?: string } {
   if (!isWhatsAppConfigured()) return { queued: false, error: 'WhatsApp is not set up.' };
 
   const wantsGroup = Boolean(req.groupId);
@@ -822,6 +931,22 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
   } else {
     const digits = toDigits(req.to!);
     if (!digits) return { queued: false, error: 'That phone number needs a country code.' };
+    // Messaging the gateway's OWN number is "message yourself" in WhatsApp. Whether the
+    // gateway delivers it is not something we can verify, and an alert that lands in the
+    // masjid phone's self-chat is not an alert anyone reads — so it is refused at the door
+    // with something actionable, rather than accepted and then never seen. This was a real
+    // candidate for the "queued but never arrives" reports: an admin testing against the
+    // masjid's own number gets no message and no error.
+    const linked = getWhatsAppConfig().linkedPhone;
+    if (linked && digits === linked) {
+      return {
+        queued: false,
+        error:
+          'That is the number WhatsApp is linked to, so the message would only go to that ' +
+          'phone’s own notes. Use a different number — an alert has to arrive somewhere ' +
+          'someone reads.',
+      };
+    }
     target = { kind: 'person', digits };
   }
 
@@ -853,9 +978,18 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string } {
 
   if (queue.length >= MAX_QUEUE) return { queued: false, error: 'The WhatsApp queue is full. Try again later.' };
 
-  queue.push({ text, source: req.source, target, media, enqueuedAt: Date.now(), attempts: 0 });
+  // An id the caller can ask about later. Random rather than sequential so one app cannot
+  // guess another's — though `whatsappOutcome` scopes by source regardless.
+  const id = crypto.randomUUID();
+  const item: QueueItem = { id, text, source: req.source, target, media, enqueuedAt: Date.now(), attempts: 0 };
+  queue.push(item);
+  noteOutcome(item, 'queued');
+  // Persist BEFORE pumping. If the process dies between accepting a message and sending
+  // it, the message must already be on disk — persisting afterwards would leave exactly
+  // the window this store exists to close.
+  persist();
   void pump();
-  return { queued: true };
+  return { queued: true, id };
 }
 
 /**
@@ -871,20 +1005,25 @@ async function pump(): Promise<void> {
       if (!isWhatsAppConfigured()) {
         // Configuration was removed under us; drop the backlog rather than spin.
         log.warn(`WhatsApp: gateway unconfigured, discarding ${queue.length} queued message(s).`);
+        for (const dropped of queue) {
+          noteOutcome(dropped, 'failed', 'WhatsApp was switched off before this could be sent.');
+        }
         queue.length = 0;
+        persist();
         break;
       }
       const now = Date.now();
       prune(now);
       const item = queue[0]!;
-      const reason = blockedReason(now, new Date(now).getHours(), item.target, cfg.limits, cfg.linkedAt, {
+      const reason = blockedReason(now, item.target, cfg.limits, cfg.linkedAt, {
         sends: sentAt,
         groupSends: groupSentAt,
         lastPerRecipient: lastToRecipient,
       });
       if (reason) {
-        // Wait and re-evaluate rather than dropping. Quiet hours and rate caps are
-        // delays, not failures — a fee reminder should arrive in the morning, not never.
+        // Wait and re-evaluate rather than dropping. A rate cap is a delay, not a
+        // failure — a fee reminder should arrive late, not never. The item stays on the
+        // persisted queue throughout, so a restart mid-hold no longer destroys it.
         await setPresence(cfg, false);
         await sleep(60_000);
         continue;
@@ -939,6 +1078,7 @@ async function pump(): Promise<void> {
             `WhatsApp: send for ${item.source} failed (${outcome.error ?? 'unknown'}); ` +
               `retry ${item.attempts}/${MAX_ATTEMPTS} in ${Math.round(backoff / 1000)}s.`,
           );
+          persist(); // `attempts` is durable, so a restart does not reset the retry budget
           await sleep(backoff);
           continue; // keep it at the head of the queue
         }
@@ -950,7 +1090,14 @@ async function pump(): Promise<void> {
         // Count against the budget the target actually spends.
         (item.target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
         lastToRecipient.set(targetKey(item.target), Date.now());
+        noteOutcome(item, 'sent');
+      } else {
+        noteOutcome(item, 'failed', outcome.error ?? 'The gateway would not accept it.');
       }
+      // The queue and the pacing history both just changed. Persisting here is what makes
+      // the caps real across a restart: without it a box in a restart loop would forget
+      // every send it had made and could blow through its daily allowance repeatedly.
+      persist();
       if (queue.length > 0) await sleep(nextGapMs(cfg.limits));
     }
     // Idle: stop looking permanently online.
@@ -1041,7 +1188,7 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
  * Send one message and WAIT for the outcome — used only by the admin's "send test
  * message" button, which needs a real answer on screen. It still goes through the same
  * gateway calls, but bypasses the queue: a test the admin is watching should not sit
- * behind a backlog or wait out quiet hours.
+ * behind a backlog.
  */
 export async function sendTestMessage(to: string, text: string): Promise<SendOutcome> {
   const cfg = getWhatsAppConfig();
@@ -1264,10 +1411,22 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
  */
 export async function sendImmediate(target: Target, text: string, source: string): Promise<SendOutcome> {
   const cfg = getWhatsAppConfig();
-  const outcome = await sendOne(cfg, { text, source, target, enqueuedAt: Date.now(), attempts: 0 });
+  // A throwaway item: this path does not touch the queue, so the id is never handed out
+  // and no outcome record is kept. The caller is awaiting the real answer.
+  const outcome = await sendOne(cfg, {
+    id: `immediate:${crypto.randomUUID()}`,
+    text,
+    source,
+    target,
+    enqueuedAt: Date.now(),
+    attempts: 0,
+  });
   if (outcome.ok) {
     (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
+    // The budget it just spent IS durable — otherwise a restart would forget every
+    // command reply and the caps would not hold across one.
+    persist();
   }
   return outcome;
 }
@@ -1285,8 +1444,8 @@ async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
  * is the LOWEST-risk traffic this number can emit — it is the same shape WhatsApp's
  * own commercial API models as a customer-service window. What gets a number flagged
  * is unsolicited volume to non-contacts, which is the opposite. And a reply that
- * arrives forty minutes later, behind a backlog or after quiet hours, is not a reply;
- * it is a bug. Quiet hours protect a recipient from being woken by noise they did not
+ * arrives forty minutes later, behind a backlog, is not a reply;
+ * it is a bug. The cooldown protects a recipient from noise they did not
  * ask for — someone who typed a command at 23:00 is not being woken by the answer.
  *
  * The per-recipient cooldown is deliberately NOT consulted: it exists to stop three

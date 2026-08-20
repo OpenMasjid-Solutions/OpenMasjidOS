@@ -21,7 +21,8 @@ ever leaves the masjid's network to a third-party sending service.
 > - **Never make anything critical depend on it.** Email stays configured and stays the
 >   fallback. Nothing that gates access — a login code, a password reset — may go this way.
 > - **It is not instant.** Messages are paced to look human (below), so delivery is
->   seconds to minutes away, and inside quiet hours it is hours away.
+>   seconds to minutes away — and if the hourly or daily cap is already spent, longer.
+>   There is no time-of-day hold; see "No quiet hours" below.
 
 ## Setting it up
 
@@ -100,7 +101,7 @@ waiting to happen. Share a join link and let people join.
 
 Group posts have their own, tighter budget — **4 an hour, 10 a day** by default, separate from
 individual messages, so an announcement never eats the allowance fee reminders need, and neither
-starves the other. Quiet hours apply to groups too (more so: a 03:00 post wakes everyone).
+starves the other.
 
 ### WhatsApp Communities and Channels
 
@@ -205,8 +206,57 @@ request*, which does nothing about two requests overlapping.
 | Per-recipient cooldown | 60s | One person is never hammered, even by several apps |
 | Rate caps | 12/hour, 60/day | OpenWA calls "a few a minute" sustainable; a masjid needs far less |
 | Warm-up ramp | 7 days | A freshly linked number is watched hardest |
-| Quiet hours | 21:00–07:00 | Queued, never dropped. Also: a fee reminder at 03:00 is a complaint |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
+
+### No quiet hours (removed in v0.51.1)
+
+There used to be a 21:00–07:00 window in which the queue held everything. It is **gone**:
+no window, no setting, no held-until-morning state. A message handed to the queue is paced
+and sent, whatever the hour.
+
+Two reasons, and the second is why it was actively harmful rather than merely debatable.
+
+**It applied to every message, and the queue is shared.** The OS and every installed app
+send through one queue, and there is no per-message urgency flag — so a window that holds a
+parent's receipt until morning (fine) also holds a staff alert about a declined card, an
+autopay that switched itself off, or a lockout (not fine). Those reach a treasurer's phone
+at nine on a Sunday evening *precisely because* they will not reach their inbox. Holding
+them removes the reason staff carry a number at all.
+
+**It was evaluated in the wrong timezone.** The check used the container's local hour, and
+nothing sets `TZ` — not the compose file, not the Dockerfile, not the installer — so that
+hour is **UTC**. The documented "21:00–07:00" therefore fell at **17:00–03:00** for a US
+Eastern masjid: an afternoon test looked fine, an evening one was held until three in the
+morning. Anything else time-of-day dependent would have had the same bug, which is why the
+pacer is now clock-agnostic beyond "now" as an instant, and a test fails the build if
+`getHours()` reappears in it.
+
+Rejected alternatives, so they are not re-proposed: a per-message `urgent` flag (every app
+decides its own messages are urgent) and a per-recipient-kind window (the queue would have
+to know what a recipient *is*, which it deliberately does not). **Quiet time belongs to the
+sender**, which knows whether it is messaging a parent or a treasurer.
+
+### The queue is durable (v0.51.1)
+
+Queued messages, the pacing history and recent outcomes are written to
+`config/whatsapp-queue.json` (0600 — a message body routinely carries a child's name and a
+family's fees).
+
+Before this, the queue was memory only. Anything the pacer was holding — for a cap, for the
+warm-up ramp, or for the old quiet-hours window — was destroyed by a container restart,
+**silently**: the caller had been told `202 {queued:true}`, and there was nothing anywhere
+to contradict it. On a Development-channel box, which restarts often, that is how a masjid
+went more than 24 hours with every message accepted and none delivered, no error in any log.
+
+The pacing history is persisted for a second reason: it is the ban-risk budget. If the send
+history emptied on every boot then the hourly and daily caps were not really caps, and a box
+in a restart loop could send its daily allowance many times over.
+
+Two bounds worth knowing: a message held longer than **24 hours** is dropped rather than
+sent on load (releasing a day's backlog at once is the burst most likely to get a number
+restricted, and a day-old fee reminder is not the message anyone wanted), and it is recorded
+as `expired` so an app that asks gets a real answer. A damaged store file degrades to empty
+rather than stopping the daemon.
 
 Limits are editable in Settings, within **hard bounds** the platform enforces — so a config
 pasted from a bulk-sending tutorial cannot turn this into a blaster. The bounds are a range,
@@ -296,7 +346,7 @@ omitted — a poster can speak for itself.
 | **Size** | **2 MB decoded.** The whole request, base64 included, is capped at 4 MB. A 1080×1350 poster is typically 150–400 KB, so this is ample. |
 | **Caption** | **1024 characters** — a quarter of the plain-text limit, because that is the gateway's own cap. |
 | **`filename`** | Optional, max 255 characters. Some clients show it when the image is saved. |
-| **In flight** | At most **4 images may be queued at once.** The fifth is refused with a message saying so — retry once they have gone out. Queued bytes sit in memory and quiet hours can hold them for hours; on a Raspberry Pi an unbounded queue of posters is an out-of-memory kill that takes the whole dashboard with it. |
+| **In flight** | At most **4 images may be queued at once.** The fifth is refused with a message saying so — retry once they have gone out. Queued bytes sit in memory (and are persisted, so they also occupy the queue file); a cap can hold them for a while, and on a Raspberry Pi an unbounded queue of posters is an out-of-memory kill that takes the whole dashboard with it. |
 
 Failures, and what they mean:
 
@@ -342,8 +392,10 @@ Then send to one, using `group` in place of `to`:
 Rules that are not negotiable:
 
 - **`queued` is not `sent`.** You are told the message was accepted for later delivery.
-  There is no delivery receipt, and there may be hours of quiet hours in between. Never
-  build a flow that blocks on it.
+  There is no delivery receipt from WhatsApp. Never build a flow that blocks on it — but you
+  can now **ask what became of it**: the `202` carries an `id`, and
+  `GET /api/fabric/whatsapp/status/<id>` answers `queued` / `sent` / `failed` / `expired`
+  with a reason. Scoped to your own app’s messages.
 - **Never anything auth-critical.** No login codes, no password resets, no one-time
   passwords. Use email, which has a real provider behind it.
 - **One recipient per call.** The API shape is deliberate: think one parent at a time. The
@@ -390,7 +442,7 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 | *WhatsApp has placed a restriction on this number* | The risk materialised. `reachout_timelock` still allows existing chats; `tos_block` means that number is finished — link a different one and lean on email |
 | *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
 | *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |
-| Messages queue but never arrive | Check quiet hours and the caps in Settings; the panel shows how many are waiting |
+| Messages queue but never arrive | Check the caps in Settings — the panel shows how many are waiting. If the count sits still, poll `/api/fabric/whatsapp/status/<id>`: `failed` names the gateway’s reason. On anything before v0.51.1 this symptom was usually the platform’s fault, not yours — see “No quiet hours” and “The queue is durable” |
 | A message was delayed a long time, then arrived | The gateway rate-limited or restarted. A transient failure is retried with a widening backoff (up to 5 attempts) rather than dropped |
 | *That number is not on WhatsApp* | The recipient's number has no WhatsApp account — the platform refuses rather than sending, because that is a ban signal |
 | A test message works but alerts don't | The alert's WhatsApp column is off in Settings → Alerts, or your Account number is empty |

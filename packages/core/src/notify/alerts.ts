@@ -291,7 +291,7 @@ export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
   }
 
   // WhatsApp channel → the admin's own number, through the paced queue. `queued` is
-  // the honest word: human pacing means this can be minutes away, and quiet hours can
+  // the honest word: human pacing means this can be minutes away, and a rate cap can
   // make it hours. An alert is exactly the right shape for that (it is information,
   // not a login code) — but it is why email stays on by default and this does not.
   let whatsapp = false;

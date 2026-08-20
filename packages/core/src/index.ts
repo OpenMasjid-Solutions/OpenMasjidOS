@@ -34,6 +34,7 @@ import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
 import { startStripeMonitor } from './system/stripe-monitor';
 import { setInboundHandler, startWhatsAppInbound } from './notify/whatsapp-inbound';
+import { restoreWhatsAppQueue } from './notify/whatsapp';
 import { handleInboundCommand } from './commands/execute';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
@@ -322,6 +323,12 @@ async function main() {
   // the one queue in notify/whatsapp.ts.
   setInboundHandler(handleInboundCommand);
   startWhatsAppInbound();
+
+  // Bring back anything the send queue was holding when we last stopped. Without this a
+  // message held by a cap or the warm-up ramp is destroyed by a restart, silently: the
+  // caller was told 202 and there is nothing anywhere to contradict it. That was a real
+  // masjid, accepted-and-never-delivered for over 24 hours.
+  restoreWhatsAppQueue();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

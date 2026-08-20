@@ -122,7 +122,6 @@ test('a caller must choose exactly one target', () => {
 // ── pacing ───────────────────────────────────────────────────────────────────────
 
 const L = store.DEFAULT_LIMITS;
-const NOON = 12;
 const person = { kind: 'person' as const, digits: '15550101234' };
 const group = { kind: 'group' as const, groupId: GROUP };
 const history = (over: Partial<{ sends: number[]; groupSends: number[]; last: Map<string, number> }> = {}) => ({
@@ -139,17 +138,17 @@ test('the two budgets are independent in BOTH directions', () => {
 
   // A day of individual reminders must not silence an announcement…
   const individualsSpent = overADay(L.perDay);
-  assert.equal(wa.blockedReason(now, NOON, group, L, null, history({ sends: individualsSpent })), null);
+  assert.equal(wa.blockedReason(now, group, L, null, history({ sends: individualsSpent })), null);
   assert.equal(
-    wa.blockedReason(now, NOON, person, L, null, history({ sends: individualsSpent })),
+    wa.blockedReason(now, person, L, null, history({ sends: individualsSpent })),
     'daily limit reached',
   );
 
   // …and a day of announcements must not stop a parent being told their fees are due.
   const groupsSpent = overADay(L.groupPerDay);
-  assert.equal(wa.blockedReason(now, NOON, person, L, null, history({ groupSends: groupsSpent })), null);
+  assert.equal(wa.blockedReason(now, person, L, null, history({ groupSends: groupsSpent })), null);
   assert.equal(
-    wa.blockedReason(now, NOON, group, L, null, history({ groupSends: groupsSpent })),
+    wa.blockedReason(now, group, L, null, history({ groupSends: groupsSpent })),
     'daily group limit reached',
   );
 });
@@ -161,10 +160,12 @@ test('the group cap is far tighter than the individual one', () => {
   assert.ok(L.perGroupCooldownSeconds > L.perRecipientCooldownSeconds, 'cooldown');
 });
 
-test('quiet hours and the warm-up ramp apply to groups too', () => {
+test('the warm-up ramp applies to groups too, and no time-of-day hold does', () => {
   const now = Date.now();
-  // 03:00 — a fee reminder annoys one person; a group post wakes two hundred.
-  assert.equal(wa.blockedReason(now, 3, group, L, null, history()), 'quiet hours');
+  // There is deliberately no quiet-hours term any more (removed in v0.51.1 — it held
+  // staff alerts overnight and was evaluated in UTC). A group post with a clean history
+  // goes out whatever the hour, including at 03:00.
+  assert.equal(wa.blockedReason(Date.UTC(2026, 0, 15, 3, 0), group, L, null, history()), null);
 
   // Linked minutes ago: a brand-new number posting to a big group is a strong signal.
   const justLinked = new Date(now - 60_000).toISOString();
@@ -172,15 +173,15 @@ test('quiet hours and the warm-up ramp apply to groups too', () => {
   assert.ok(factor < 1, 'the ramp must actually reduce the allowance');
   const rampedCap = Math.max(1, Math.floor(L.groupPerDay * factor));
   const spent = Array.from({ length: rampedCap }, (_, i) => now - i * 1000);
-  assert.match(String(wa.blockedReason(now, NOON, group, L, justLinked, history({ groupSends: spent }))), /group/);
+  assert.match(String(wa.blockedReason(now, group, L, justLinked, history({ groupSends: spent }))), /group/);
 });
 
 test('the per-group cooldown is keyed separately from a person', () => {
   const now = Date.now();
   // A person and a group could otherwise collide in the same map; the key must not.
   const last = new Map<string, number>([[`group:${GROUP}`, now - 1000]]);
-  assert.match(String(wa.blockedReason(now, NOON, group, L, null, history({ last }))), /recently/);
-  assert.equal(wa.blockedReason(now, NOON, person, L, null, history({ last })), null, 'the person is unaffected');
+  assert.match(String(wa.blockedReason(now, group, L, null, history({ last }))), /recently/);
+  assert.equal(wa.blockedReason(now, person, L, null, history({ last })), null, 'the person is unaffected');
 });
 
 test('clampLimits only ever tightens the group limits', () => {

@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
+import { toDigits } from '../util/phone';
 
 export type WhatsAppProvider = 'none' | 'openwa';
 
@@ -47,10 +48,18 @@ export interface WhatsAppLimits {
   jitterSeconds: number;
   /** Minimum seconds before the same recipient may be messaged again. */
   perRecipientCooldownSeconds: number;
-  /** Local hour (0–23) when quiet hours begin; messages queue instead of sending. */
-  quietStartHour: number;
-  /** Local hour (0–23) when quiet hours end. */
-  quietEndHour: number;
+  // There is deliberately no quiet-hours window here any more, and nothing should add
+  // one back in this shape. It held EVERY message on the queue, and the queue is shared
+  // by the OS and every installed app — with no per-message urgency flag, so an app had
+  // no way to mark a message as one that must not wait. A parent's receipt waiting until
+  // morning is fine; a staff alert about a declined card waiting until morning removes
+  // the entire reason a treasurer carries a phone. It was also evaluated against the
+  // CONTAINER's clock, which is UTC, so for a US Eastern masjid the "21:00-07:00" window
+  // actually fell at 17:00-03:00 local and swallowed the whole evening.
+  //
+  // If per-recipient quiet time is ever wanted, it belongs with the SENDER who knows what
+  // the recipient is (an app deciding when to message parents), not in a shared pacer that
+  // deliberately knows nothing about them.
   /** Days after linking during which the caps are reduced (a new number is watched). */
   warmupDays: number;
   /**
@@ -110,6 +119,14 @@ export interface WhatsAppConfig {
    * sending a volunteer into another app's admin panel to copy a UUID back.
    */
   sessionId: string;
+  /**
+   * The number the gateway is linked to, in digits, as the gateway reports it.
+   *
+   * Recorded (not admin-entered) so `enqueue` can answer "is this a message to ourselves?"
+   * synchronously. Asking the gateway would mean a network call on a path that must return
+   * immediately, and getting it wrong means queueing into a void.
+   */
+  linkedPhone: string;
   /** The human label used when creating the session. Alphanumeric and hyphens only. */
   sessionName: string;
   /** When the session was first linked — the warm-up ramp counts from here. */
@@ -137,8 +154,6 @@ export const DEFAULT_LIMITS: WhatsAppLimits = {
   minGapSeconds: 6,
   jitterSeconds: 14, // so the real gap is 6–20s, never a detectable fixed beat
   perRecipientCooldownSeconds: 60,
-  quietStartHour: 21,
-  quietEndHour: 7,
   warmupDays: 7,
   // A masjid announcement is an occasional thing; four an hour is already generous,
   // and a group that hears from you ten times a day starts muting you.
@@ -152,6 +167,7 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
   baseUrl: '',
   apiKey: '',
   sessionId: '',
+  linkedPhone: '',
   sessionName: 'openmasjid',
   linkedAt: null,
   limits: { ...DEFAULT_LIMITS },
@@ -175,8 +191,6 @@ export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLim
     minGapSeconds: clamp(n(l?.minGapSeconds, d.minGapSeconds), 3, 600),
     jitterSeconds: clamp(n(l?.jitterSeconds, d.jitterSeconds), 1, 600),
     perRecipientCooldownSeconds: clamp(n(l?.perRecipientCooldownSeconds, d.perRecipientCooldownSeconds), 0, 86_400),
-    quietStartHour: clamp(n(l?.quietStartHour, d.quietStartHour), 0, 23),
-    quietEndHour: clamp(n(l?.quietEndHour, d.quietEndHour), 0, 23),
     warmupDays: clamp(n(l?.warmupDays, d.warmupDays), 0, 90),
     // Group ceilings are deliberately far tighter than the individual ones: the blast
     // radius of one message is the whole group, so "20 an hour" is already well past
@@ -357,6 +371,14 @@ export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic 
  */
 export function recordSessionId(id: string): void {
   cache = { ...cache, sessionId: id };
+  persist();
+}
+
+/** Remember the linked number, as digits. Platform-recorded, never an admin field. */
+export function recordLinkedPhone(raw: string): void {
+  const digits = toDigits(raw) ?? '';
+  if (digits === cache.linkedPhone) return; // avoid a write per status poll
+  cache = { ...cache, linkedPhone: digits };
   persist();
 }
 

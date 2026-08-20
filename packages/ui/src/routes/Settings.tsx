@@ -1981,7 +1981,7 @@ function WhatsAppPanel() {
       )}
 
       {/* Live state plus the queue depth, which is the honest answer to "why has my
-          message not arrived?" — it is paced, and may be waiting out quiet hours. */}
+          message not arrived?" — it is paced, so it may still be waiting its turn. */}
       {s && (
         <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
           {/* One line per distinct state. "Gateway down", "nothing created yet" and
