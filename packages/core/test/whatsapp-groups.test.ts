@@ -130,26 +130,17 @@ const history = (over: Partial<{ sends: number[]; groupSends: number[]; last: Ma
   lastPerRecipient: over.last ?? new Map<string, number>(),
 });
 
-test('the two budgets are independent: a spent group allowance never blocks a parent', () => {
+test('the send history is still recorded, even though nothing brakes on it', () => {
+  // The two arrays are still maintained by `pump` so the traffic record exists for
+  // anything that wants it later (an admin view, or a cap if one is ever reinstated).
+  // What must NOT come back is either of them blocking a send.
   const now = Date.now();
-  // Spread across the day, so it is the DAILY cap being exhausted and not the hourly one
-  // — otherwise this passes for the wrong reason.
-  const overADay = (n: number) => Array.from({ length: n }, (_, i) => now - Math.round((i * 86_400_000) / (n + 1)));
-
-  // A day of individual reminders must not silence an announcement. (Individuals are no
-  // longer capped at all, so the interesting half of this is that a large `sends` history
-  // still leaves the GROUP budget untouched — the two are tracked separately.)
-  const individualsSpent = overADay(200);
-  assert.equal(wa.blockedReason(now, group, L, null, history({ sends: individualsSpent })), null);
-  assert.equal(wa.blockedReason(now, person, L, null, history({ sends: individualsSpent })), null);
-
-  // …and a day of announcements must not stop a parent being told their fees are due.
-  const groupsSpent = overADay(L.groupPerDay);
-  assert.equal(wa.blockedReason(now, person, L, null, history({ groupSends: groupsSpent })), null);
-  assert.equal(
-    wa.blockedReason(now, group, L, null, history({ groupSends: groupsSpent })),
-    'daily group limit reached',
-  );
+  const many = Array.from({ length: 300 }, (_, i) => now - i * 1_000);
+  assert.equal(wa.blockedReason(now, group, L, null, history({ groupSends: many })), null);
+  assert.equal(wa.blockedReason(now, person, L, null, history({ sends: many })), null);
+  // NB this file's `codeOf` is repo-relative from `packages/`, unlike the one in
+  // whatsapp-pacing.test.ts which is relative to `src/`.
+  assert.ok(codeOf('core/src/notify/whatsapp.ts').includes('groupSentAt : sentAt'), 'the record is still written');
 });
 
 test('groups are the only thing still capped, and their cooldown is longer', () => {
@@ -161,30 +152,17 @@ test('groups are the only thing still capped, and their cooldown is longer', () 
   assert.ok(L.perGroupCooldownSeconds > L.perRecipientCooldownSeconds, 'cooldown');
 });
 
-test('the warm-up ramp applies to groups too, and no time-of-day hold does', () => {
+test('there is no warm-up ramp and no time-of-day hold', () => {
+  // The ramp only ever scaled the caps, so it went with them. It was also the sharpest
+  // edge: a number linked today got a QUARTER of the allowance, which is what made a fresh
+  // install feel broken while the admin was still testing it.
   const now = Date.now();
-  // There is deliberately no quiet-hours term any more (removed in v0.51.1 — it held
-  // staff alerts overnight and was evaluated in UTC). A group post with a clean history
-  // goes out whatever the hour, including at 03:00.
-  assert.equal(wa.blockedReason(Date.UTC(2026, 0, 15, 3, 0), group, L, null, history()), null);
-
-  // Linked minutes ago: a brand-new number posting to a big group is a strong signal.
   const justLinked = new Date(now - 60_000).toISOString();
-  const factor = wa.warmupFactor(justLinked, L, now);
-  assert.ok(factor < 1, 'the ramp must actually reduce the allowance');
-  const rampedCap = Math.max(1, Math.floor(L.groupPerDay * factor));
-  const spent = Array.from({ length: rampedCap }, (_, i) => now - i * 1000);
-  assert.match(String(wa.blockedReason(now, group, L, justLinked, history({ groupSends: spent }))), /group/);
+  assert.equal(wa.blockedReason(now, group, L, justLinked, history()), null, 'a new number can post');
+  assert.equal(wa.blockedReason(Date.UTC(2026, 0, 15, 3, 0), group, L, null, history()), null, '03:00 sends');
 });
 
-test('a group budget is still tracked separately from an individual one', () => {
-  // The cooldowns are gone, but the two CAP budgets remain distinct: an announcement must
-  // not eat the allowance parents' reminders need, nor the reverse.
-  const now = Date.now();
-  const spent = Array.from({ length: L.groupPerHour }, (_, k) => now - k * 60_000);
-  assert.match(String(wa.blockedReason(now, group, L, null, history({ groupSends: spent }))), /group/);
-  assert.equal(wa.blockedReason(now, person, L, null, history({ groupSends: spent })), null);
-});
+
 
 test('clampLimits only ever tightens the group limits', () => {
   const loosened = store.clampLimits({ groupPerHour: 9999, groupPerDay: 9999, perGroupCooldownSeconds: -5 });

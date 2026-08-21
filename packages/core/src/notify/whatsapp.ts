@@ -760,21 +760,24 @@ export function capExceeded(
   // unbounded. Ban risk attaches to the NUMBER and a ban is terminal, so if this proves
   // too loose the fix is a cap here, not a per-app one — a per-app limiter cannot see the
   // number's total traffic.
-  if (target.kind !== 'group') return null;
-
-  // GROUPS keep their caps, and they are a genuinely different case: one message reaches
-  // every member, so the cost of overuse falls on two hundred recipients rather than on
-  // the sender. That is not "the user's own fault" in the way an over-eager fee run is.
-  const factor = warmupFactor(linkedAt, limits, now);
-  // The warm-up ramp still applies here. A number linked yesterday posting to a
-  // 200-member group is a strong signal, not a gentle start.
-  // At least 1, so a warm-up ramp can never mean "post nothing at all".
-  const hourCap = Math.max(1, Math.floor(limits.groupPerHour * factor));
-  const dayCap = Math.max(1, Math.floor(limits.groupPerDay * factor));
-  const sends = history.groupSends;
-
-  if (sends.filter((t) => t > now - 3_600_000).length >= hourCap) return 'hour';
-  if (sends.length >= dayCap) return 'day';
+  // GROUP caps are gone too, at the maintainer's decision, and they were the LAST thing
+  // that could hold a message for an hour with nothing telling the sender why. 4/hour and
+  // 10/day, quartered by the warm-up ramp to as little as 1/hour on a recently linked
+  // number — and a group image was exactly the case that hit it.
+  //
+  // The argument for keeping them was real and is recorded here rather than lost: a group
+  // message reaches every member, so overuse costs two hundred recipients who did not
+  // choose it, which is not the same as an over-eager fee run costing the sender. That
+  // argument lost to a simpler one — an announcement that might arrive in an hour, or might
+  // not, is not usable, and unpredictability was doing more damage than the cap prevented.
+  //
+  // `history` and the two `sends` arrays are still MAINTAINED (see `pump`), so the traffic
+  // record exists for anything that wants it later. Nothing consults it as a brake.
+  void now;
+  void target;
+  void limits;
+  void linkedAt;
+  void history;
   return null;
 }
 

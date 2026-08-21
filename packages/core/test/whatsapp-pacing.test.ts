@@ -138,18 +138,22 @@ test('individual messages have no hourly or daily cap', () => {
   assert.ok(!('perDay' in L), 'perDay must not exist in WhatsAppLimits');
 });
 
-test('group posts DO still have caps, because the cost falls on the recipients', () => {
-  // One group message reaches every member, so overuse is not "the sender's own problem"
-  // in the way an over-eager fee run is. These caps stay.
+test('nothing delays a send any more — not a person, not a group', () => {
+  // Every rate cap is gone, group ones included. They were the last thing that could hold
+  // a message for an hour with nothing telling the sender why, and a group image was the
+  // case that hit it. What still shapes traffic is per-message and bounded: one serialised
+  // queue, a typing indicator, presence, and contacts/check before first contact.
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  for (let i = 0; i < L.groupPerHour; i++) hist.groupSends.push(now - i * 60_000);
-  assert.equal(
-    wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist),
-    'hourly group limit reached',
-  );
-  // And an individual message is unaffected by a spent group allowance.
-  assert.equal(blocked(now, hist), null);
+  for (let i = 0; i < 500; i++) {
+    hist.sends.push(now - i * 1_000);
+    hist.groupSends.push(now - i * 1_000);
+  }
+  assert.equal(blocked(now, hist), null, 'a person is never blocked');
+  assert.equal(wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist), null, 'nor a group');
+  // Including on a number linked seconds ago, which the warm-up ramp used to quarter.
+  const justLinked = new Date(now - 1000).toISOString();
+  assert.equal(wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, justLinked, hist), null);
 });
 
 function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: string | null = null): string | null {

@@ -20,9 +20,9 @@ ever leaves the masjid's network to a third-party sending service.
 >   to shrug and link another.
 > - **Never make anything critical depend on it.** Email stays configured and stays the
 >   fallback. Nothing that gates access — a login code, a password reset — may go this way.
-> - **It is not instant.** Messages are paced to look human (below), so delivery is
->   seconds to minutes away — and if the hourly or daily cap is already spent, longer.
->   There is no time-of-day hold; see "No quiet hours" below.
+> - **It is not instant, but it is prompt.** Each message is preceded by a typing
+>   indicator scaled to its length, so delivery is seconds away rather than immediate.
+>   There are no rate caps, cooldowns or quiet hours — see the pacing section below.
 
 ## Setting it up
 
@@ -99,9 +99,10 @@ Before you approve one, two things that are easy to discover the hard way:
 adding someone who did not ask is both the fastest route to a banned number and a complaint
 waiting to happen. Share a join link and let people join.
 
-Group posts have their own, tighter budget — **4 an hour, 10 a day** by default, separate from
-individual messages, so an announcement never eats the allowance fee reminders need, and neither
-starves the other.
+Group posts used to have their own tighter budget (4 an hour, 10 a day). That is gone — see
+*Why there is almost no pacing left* below. A group post now goes out as promptly as any other
+message, which also means nothing stops an app posting repeatedly: what a group receives is the
+app’s responsibility now, not the platform’s.
 
 ### WhatsApp Communities and Channels
 
@@ -200,64 +201,64 @@ request*, which does nothing about two requests overlapping.
 | Behaviour | Default | Why |
 |---|---|---|
 | Serialised sending | always | One message in flight, ever |
-| Gap between messages | 6–20s, randomised | A fixed interval is itself a fingerprint |
-| Typing indicator | scaled to message length | People take longer over longer messages |
+| Typing indicator | scaled to message length (5s floor for an image) | The only spacing between messages now — proportional, and visible to the recipient |
 | Presence | online while working, offline when idle | A permanently-online number that never reads anything looks like what it is |
-| Per-recipient cooldown | 60s | One person is never hammered, even by several apps |
-| Rate caps (individuals) | **none** | Removed in v0.51.1 — see below |
-| Rate caps (groups) | 4/hour, 10/day | One post reaches everyone, so overuse costs the recipients, not the sender |
-| Warm-up ramp | 7 days | Applies to the GROUP caps. A freshly linked number is watched hardest |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
+| Retry on a transient failure | up to 5 attempts, widening backoff | A 429 or a restarting gateway is a "not yet", not a "no" |
+| Rate caps | **none** | Removed — see below |
+| Cooldowns | **none** | Removed — see below |
+| Gap between messages | **none** | Removed — see below |
+| Quiet hours | **none** | Removed — see below |
+| Warm-up ramp | **none** | Removed — see below |
 
-### No rate cap on individual messages (removed in v0.51.1)
+### Why there is almost no pacing left
 
-There is **no hourly or daily ceiling** on messages to individuals. The brake is spacing: the
-randomised 6–20s gap between sends, plus the 60-second per-recipient cooldown.
+Every brake except the per-message ones above has been removed, in stages, because each one
+turned out to cost more than it bought. Written down because the trade-off is real and
+whoever reads this next deserves the reasoning rather than a shrug:
 
-The caps were 12/hour and 60/day, but the warm-up ramp quartered them on a newly linked
-number — so a masjid that had just set WhatsApp up got **3 messages an hour**, and command
-replies spent the same allowance. That is not a safety margin, it is an outage: it blocked
-ordinary use and even blocked testing the feature. And the pattern it was aimed at — a
-masjid messaging parents one at a time — is not the pattern that gets a number banned.
+- **Quiet hours** (21:00–07:00) held *every* message, and the queue is shared by the OS and
+  every app with no way to mark one urgent — so the window that reasonably delayed a
+  parent's receipt also delayed a staff alert about a declined card until morning. It was
+  also evaluated against the container's clock, which is UTC, so it really fell at
+  17:00–03:00 for a US Eastern masjid and swallowed the entire evening.
+- **The hour/day caps** (12 and 60) came to *3 per hour* on a freshly linked number once the
+  warm-up ramp was applied. That blocked ordinary use and even blocked testing the feature.
+- **The cooldowns** — 60 seconds per recipient, **30 minutes per group** — were the single
+  biggest cause of "my message never arrived". Combined with a head-of-line bug in the send
+  loop (one waiting message stalled the whole queue), a single group post stopped all
+  WhatsApp traffic for half an hour.
+- **The group caps** (4/hour, 10/day, quartered by the ramp) were the last thing that could
+  hold a message for an hour with nothing telling the sender why. A group image was exactly
+  the case that hit it.
+- **The 6–20 second gap** between sends made delivery unpredictable once several apps shared
+  one queue, and the typing indicator already spaces messages by an amount that is both
+  proportional to the message and visible to the person receiving it.
 
-**The trade-off, stated plainly because it is not the admin's mistake if it bites.** The
-queue is shared by every app, so an app looping over 200 parents will now send all 200 —
-spaced out, but unbounded. Ban risk attaches to the **number**, and a ban is terminal: you
-do not get to be more careful afterwards. If a ceiling is ever needed again it belongs on
-this shared queue, not in each app, because a per-app limiter cannot see the number's total
-traffic.
+**What this means for the risk, stated plainly.** This is an unofficial WhatsApp client, ban
+risk attaches to the **number**, and a ban is not something you can be more careful about
+afterwards — the number is gone. Nothing now prevents an app looping over hundreds of
+recipients as fast as the typing indicator allows. That is a deliberate choice by the
+maintainer, made because unpredictable delivery was doing more damage than the caps
+prevented. If a ceiling is ever needed again it belongs on the **shared queue**
+(`blockedReason` in `notify/whatsapp.ts`), never in an individual app — an app-level limiter
+cannot see the number's total traffic, which is the only number WhatsApp cares about.
 
-**Groups keep their caps** (4/hour, 10/day, 30-minute cooldown, warm-up ramp applied). One
-group message reaches every member, so overuse there costs two hundred people who did not
-choose it — which is a different thing from an over-eager fee run.
+### Delivery is now predictable, which matters more than it sounds
 
-### No quiet hours (removed in v0.51.1)
+Two head-of-line blocks used to make the queue behave inexplicably, and both are fixed:
 
-There used to be a 21:00–07:00 window in which the queue held everything. It is **gone**:
-no window, no setting, no held-until-morning state. A message handed to the queue is paced
-and sent, whatever the hour.
+- The send loop read the **first** item and, if it could not go yet, slept and re-read *the
+  same item* — so one waiting message held up every message behind it, from every app.
+- A transient failure slept the whole loop for its backoff — up to 15 minutes per attempt,
+  five attempts, so one bad send could mean three quarters of an hour of silence for
+  everything else.
 
-Two reasons, and the second is why it was actively harmful rather than merely debatable.
+The loop now sends the first *sendable* message, and a failing message reschedules itself
+without stopping the queue. Together with the removals above, a message you hand to the
+platform should now go out within seconds — and if it does not,
+`GET /api/fabric/whatsapp/status/<id>` will tell you why rather than leaving you guessing.
 
-**It applied to every message, and the queue is shared.** The OS and every installed app
-send through one queue, and there is no per-message urgency flag — so a window that holds a
-parent's receipt until morning (fine) also holds a staff alert about a declined card, an
-autopay that switched itself off, or a lockout (not fine). Those reach a treasurer's phone
-at nine on a Sunday evening *precisely because* they will not reach their inbox. Holding
-them removes the reason staff carry a number at all.
-
-**It was evaluated in the wrong timezone.** The check used the container's local hour, and
-nothing sets `TZ` — not the compose file, not the Dockerfile, not the installer — so that
-hour is **UTC**. The documented "21:00–07:00" therefore fell at **17:00–03:00** for a US
-Eastern masjid: an afternoon test looked fine, an evening one was held until three in the
-morning. Anything else time-of-day dependent would have had the same bug, which is why the
-pacer is now clock-agnostic beyond "now" as an instant, and a test fails the build if
-`getHours()` reappears in it.
-
-Rejected alternatives, so they are not re-proposed: a per-message `urgent` flag (every app
-decides its own messages are urgent) and a per-recipient-kind window (the queue would have
-to know what a recipient *is*, which it deliberately does not). **Quiet time belongs to the
-sender**, which knows whether it is messaging a parent or a treasurer.
 
 ### The queue is durable (v0.51.1)
 
@@ -464,7 +465,7 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 | *WhatsApp has placed a restriction on this number* | The risk materialised. `reachout_timelock` still allows existing chats; `tos_block` means that number is finished — link a different one and lean on email |
 | *No phone is linked yet* | The session exists and is waiting to be paired; finish step 3 |
 | *The phone connection needs attention* | OpenWA reports `disconnected`, `action_required` or `failed` — link it again |
-| Messages queue but never arrive | Check the caps in Settings — the panel shows how many are waiting. If the count sits still, poll `/api/fabric/whatsapp/status/<id>`: `failed` names the gateway’s reason. On anything before v0.51.1 this symptom was usually the platform’s fault, not yours — see “No quiet hours” and “The queue is durable” |
+| Messages queue but never arrive | Poll `GET /api/fabric/whatsapp/status/<id>` — it names the reason, and `failed` carries the gateway’s own message. Settings → WhatsApp shows the queue depth. Nothing in the platform delays a message any more, so a stuck one is a gateway or a recipient problem, not pacing. On anything before v0.51.1 this symptom was usually the platform’s fault — see *Why there is almost no pacing left* and *The queue is durable* |
 | A message was delayed a long time, then arrived | The gateway rate-limited or restarted. A transient failure is retried with a widening backoff (up to 5 attempts) rather than dropped |
 | *That number is not on WhatsApp* | The recipient's number has no WhatsApp account — the platform refuses rather than sending, because that is a ban signal |
 | A test message works but alerts don't | The alert's WhatsApp column is off in Settings → Alerts, or your Account number is empty |
