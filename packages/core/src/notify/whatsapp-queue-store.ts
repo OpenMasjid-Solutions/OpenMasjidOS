@@ -52,8 +52,37 @@ const STORE_PATH = path.join(CONFIG_DIR, 'whatsapp-queue.json');
  */
 export const MAX_HELD_MS = 24 * 60 * 60 * 1000;
 
-/** How many recent outcomes to remember, so an app can ask what happened after the 202. */
-export const MAX_OUTCOMES = 200;
+/**
+ * How many recent outcomes to remember PER SENDING APP, so an app can ask what happened
+ * after the 202.
+ *
+ * Per source, not one shared ring, and that is the whole point. A single global bound is a
+ * resource every app shares, so the app that sends most evicts everyone else's records —
+ * exactly the cross-app denial the per-app rate tier in `api/fabric.ts` exists to prevent,
+ * in a different resource. The case that proved it: a student-billing app messaging a
+ * 200-family roster filled a 200-record global ring by itself, wiping the reader-offline
+ * and refund outcomes of every other app on the box, and then its own earliest records —
+ * the ones most likely to have failed and be worth reporting.
+ *
+ * 500 is sized for the realistic worst case (a roster run on a large madrasah) with room
+ * over it. A source that exceeds it is evicting only its own history.
+ */
+export const MAX_OUTCOMES_PER_SOURCE = 500;
+
+/**
+ * Total backstop across all sources, so a pathological number of app ids cannot grow the
+ * store without bound. Reached only if many apps are each near their own cap.
+ */
+export const MAX_OUTCOMES_TOTAL = 5_000;
+
+/**
+ * Age at which an outcome is forgotten.
+ *
+ * Matches `MAX_HELD_MS`: a record must outlive the message it describes, and a message can
+ * be held for up to a day. Beyond that nobody is still asking — the apps that poll settle
+ * within minutes — and keeping it only grows the file that is rewritten on every send.
+ */
+export const OUTCOME_MAX_AGE_MS = MAX_HELD_MS;
 
 export type OutcomeState = 'queued' | 'sent' | 'failed' | 'expired';
 
@@ -102,6 +131,43 @@ interface PersistedState {
 }
 
 const EMPTY: PersistedState = { queue: [], sends: [], groupSends: [], lastPerRecipient: [], outcomes: [] };
+
+/**
+ * The COUNT bounds: newest N per source, then the global backstop. No clock involved.
+ *
+ * Per-source before global is what makes this isolation rather than mere size-limiting — the
+ * app that sends most can only evict its own history. Relative order is preserved so callers
+ * can keep treating the array as oldest-first.
+ */
+export function capOutcomes(all: OutcomeRecord[]): OutcomeRecord[] {
+  // Keep the newest N per source. Walk backwards so "newest" needs no sort.
+  const perSource = new Map<string, number>();
+  const keep = new Set<OutcomeRecord>();
+  for (let i = all.length - 1; i >= 0; i--) {
+    const rec = all[i]!;
+    const seen = perSource.get(rec.source) ?? 0;
+    if (seen >= MAX_OUTCOMES_PER_SOURCE) continue;
+    perSource.set(rec.source, seen + 1);
+    keep.add(rec);
+  }
+
+  const kept = all.filter((o) => keep.has(o));
+  return kept.length > MAX_OUTCOMES_TOTAL ? kept.slice(-MAX_OUTCOMES_TOTAL) : kept;
+}
+
+/**
+ * The age bound plus the count bounds. `now` is injected, never read from the clock here.
+ *
+ * Split from `capOutcomes` because the write path must NOT age-prune: `saveQueueState` is a
+ * serialiser, and giving it its own `Date.now()` made it silently discard any record whose
+ * timestamp was not close to the wall clock — which is every record in a test fixture, and
+ * would also be every record on a box whose clock had just been corrected by NTP. Age is a
+ * question for the reader (and for `noteOutcome`, which has a real `now`); the writer only
+ * enforces the count caps that stop the file growing.
+ */
+export function trimOutcomes(all: OutcomeRecord[], now: number): OutcomeRecord[] {
+  return capOutcomes(all.filter((o) => typeof o.at !== 'number' || now - o.at <= OUTCOME_MAX_AGE_MS));
+}
 
 /** Is this a plausible stored item? A hand-edited or truncated file must not crash boot. */
 function validItem(v: unknown): v is StoredItem {
@@ -166,15 +232,14 @@ export function loadQueueState(now: number): LoadedState {
       if (typeof o !== 'object' || o === null) return false;
       const r = o as Record<string, unknown>;
       return typeof r.id === 'string' && typeof r.source === 'string' && typeof r.state === 'string';
-    })
-    .slice(-MAX_OUTCOMES);
+    });
 
   return {
     queue,
     sends: numbers(raw.sends),
     groupSends: numbers(raw.groupSends),
     lastPerRecipient,
-    outcomes,
+    outcomes: trimOutcomes(outcomes, now),
     expired,
   };
 }
@@ -199,7 +264,7 @@ export function saveQueueState(state: {
       sends: state.sends,
       groupSends: state.groupSends,
       lastPerRecipient: [...state.lastPerRecipient.entries()],
-      outcomes: state.outcomes.slice(-MAX_OUTCOMES),
+      outcomes: capOutcomes(state.outcomes),
     };
     writeJson(STORE_PATH, out);
   } catch (err) {

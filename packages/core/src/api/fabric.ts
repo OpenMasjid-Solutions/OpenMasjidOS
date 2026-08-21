@@ -48,7 +48,7 @@ import { getLogo, hasLogo } from '../store/branding';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
 import { appPublicUrl, appBasePath } from '../system/cloudflared';
 import { log } from '../logger';
-import { matchesSecretRoute } from '../system/via-tunnel';
+import { matchesSecretRoute, decodedPath, resolveDotSegments } from '../system/via-tunnel';
 
 // Lightweight per-IP fixed-window limiter for the secret-gated Fabric routes,
 // which are reachable without a session. It runs BEFORE any lookup so a flood of
@@ -71,6 +71,41 @@ const RATE_WINDOW_MS = 60_000;
  */
 const RATE_MAX = 600; // coarse per-IP ceiling: a shared bucket, so deliberately generous
 const RATE_MAX_APP = 120; // per identified app per minute — the meaningful limit
+
+/**
+ * Read-only status polling gets its own, larger budget on its own counter.
+ *
+ * `GET /api/fabric/whatsapp/status/:id` is an in-memory array scan with no outbound effect;
+ * `POST /api/fabric/whatsapp` messages a real phone and carries the ban risk the tight limit
+ * exists for. Sharing one bucket priced them identically, so an app doing exactly what the
+ * platform asks — record the id, poll for the outcome — spent its send allowance on reads and
+ * was 429'd part-way through reconciling a roster run. Separate counter, so a polling burst
+ * can never refuse a send, or the reverse.
+ */
+const RATE_MAX_APP_READ = 600;
+
+/** Routes that only read bounded in-memory state. Kept explicit — an allow-list, not a verb test. */
+const READ_ONLY_ROUTES = ['/api/fabric/whatsapp/status/'];
+
+/**
+ * Does this request qualify for the larger read budget? Fails closed to the send budget.
+ *
+ * Two rules, because getting this wrong widens the limit that actually matters (§15: never a
+ * raw-string `startsWith` on a URL in a security decision):
+ *
+ * 1. **GET only.** Every sending route is a POST, so a method check alone makes it impossible
+ *    for a send to be priced as a read — this is the load-bearing half.
+ * 2. **The raw AND decoded-and-dot-resolved spellings must both match.** Fastify dispatches on
+ *    the resolved path, so `/api/fabric/whatsapp/status/..` resolves to the send route while
+ *    the raw text still carries the `status/` prefix. Requiring both spellings to agree means
+ *    a disagreement falls back to the tight budget rather than granting the loose one.
+ */
+function isReadOnlyFabricRoute(method: string, url: string): boolean {
+  if (method.toUpperCase() !== 'GET') return false;
+  const raw = (url.split('?')[0] ?? '').toLowerCase();
+  const resolved = resolveDotSegments(decodedPath(url)).toLowerCase();
+  return READ_ONLY_ROUTES.some((r) => raw.startsWith(r) && resolved.startsWith(r));
+}
 const fabricHits = new Map<string, { count: number; resetAt: number }>();
 
 function hit(key: string, max: number): boolean {
@@ -109,8 +144,14 @@ export function registerFabric(server: FastifyInstance): void {
     if (!matchesSecretRoute(req.url)) return done();
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
-    if (app && !hit(`app:${app.id}`, RATE_MAX_APP)) {
-      return reply.code(429).send({ error: 'Too many requests.' });
+    if (app) {
+      // Separate counter as well as a separate ceiling: sharing the key would let a
+      // polling burst refuse a send even under the larger limit.
+      const read = isReadOnlyFabricRoute(req.method, req.url);
+      const key = read ? `appread:${app.id}` : `app:${app.id}`;
+      if (!hit(key, read ? RATE_MAX_APP_READ : RATE_MAX_APP)) {
+        return reply.code(429).send({ error: 'Too many requests.' });
+      }
     }
     done();
   });

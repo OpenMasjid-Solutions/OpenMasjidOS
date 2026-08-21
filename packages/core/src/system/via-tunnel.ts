@@ -62,6 +62,29 @@ export function decodedPath(url: string): string {
 }
 
 /**
+ * Collapse `.` and `..` in a path, the way an HTTP server or URL parser would before
+ * routing. Only used to make security comparisons see what the far end will see —
+ * never to build a URL we then request.
+ *
+ * Lives here, beside `decodedPath`, because canonicalising a request path before comparing
+ * it is one job with one owner. It was private to `system/ingress.ts` and the second caller
+ * needed it, which is exactly how a codebase ends up with two subtly different resolvers and
+ * a guard that disagrees with the router.
+ */
+export function resolveDotSegments(path: string): string {
+  const out: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return `/${out.join('/')}`;
+}
+
+/**
  * Block the SECRET-GATED Fabric routes when a request arrived via the tunnel.
  * Covers `/api/auth/session` (exact) and everything under `/api/fabric` (prefix)
  * — which includes the app-to-app broker at `/api/fabric/app/*`. App backends

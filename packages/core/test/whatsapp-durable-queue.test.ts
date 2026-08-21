@@ -133,19 +133,75 @@ test('the store file is not world-readable', () => {
   assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
 });
 
-test('outcomes are bounded so the file cannot grow without limit', () => {
-  const many = Array.from({ length: store.MAX_OUTCOMES + 50 }, (_, i) => ({
-    id: `id-${i}`,
-    source: 'students',
-    state: 'sent' as const,
-    at: NOW,
-    targetKind: 'person',
-  }));
+const outcome = (id: string, source: string, at = NOW) => ({
+  id,
+  source,
+  state: 'sent' as const,
+  at,
+  targetKind: 'person',
+});
+
+test('outcomes are bounded per source so the file cannot grow without limit', () => {
+  const many = Array.from({ length: store.MAX_OUTCOMES_PER_SOURCE + 50 }, (_, i) =>
+    outcome(`id-${i}`, 'students'),
+  );
   write({ ...emptyState(), outcomes: many });
   const loaded = store.loadQueueState(NOW);
-  assert.equal(loaded.outcomes.length, store.MAX_OUTCOMES);
+  assert.equal(loaded.outcomes.length, store.MAX_OUTCOMES_PER_SOURCE);
   // The NEWEST are kept — the oldest are the ones nobody is still asking about.
-  assert.equal(loaded.outcomes[loaded.outcomes.length - 1]!.id, `id-${store.MAX_OUTCOMES + 49}`);
+  assert.equal(
+    loaded.outcomes[loaded.outcomes.length - 1]!.id,
+    `id-${store.MAX_OUTCOMES_PER_SOURCE + 49}`,
+  );
+});
+
+test('one app sending a lot cannot evict another app\'s outcomes', () => {
+  // The bug this replaced: the bound was GLOBAL, so a student-billing app messaging a
+  // 200-family roster filled the whole ring by itself and wiped the reader-offline and
+  // refund records of every other app on the box. An app polling for its own message then
+  // got 404 — indistinguishable from "never existed" — and the admin never learned which
+  // of their notifications had failed.
+  const flood = Array.from({ length: store.MAX_OUTCOMES_PER_SOURCE + 200 }, (_, i) =>
+    outcome(`bill-${i}`, 'students'),
+  );
+  write({
+    ...emptyState(),
+    // The quiet apps' records are the OLDEST, i.e. first to go under a global bound.
+    outcomes: [outcome('kiosk-1', 'kiosk'), outcome('display-1', 'display'), ...flood],
+  });
+  const loaded = store.loadQueueState(NOW);
+  const ids = loaded.outcomes.map((o) => o.id);
+  assert.ok(ids.includes('kiosk-1'), 'the kiosk outcome was evicted by another app');
+  assert.ok(ids.includes('display-1'), 'the display outcome was evicted by another app');
+  assert.equal(loaded.outcomes.filter((o) => o.source === 'students').length, store.MAX_OUTCOMES_PER_SOURCE);
+});
+
+test('an outcome older than the age bound is forgotten', () => {
+  // A record must outlive the message it describes (a message can be held for a day), and
+  // no longer — the file is rewritten on every send, so stale history costs write bandwidth
+  // on an SD card for records nobody is polling any more.
+  write({
+    ...emptyState(),
+    outcomes: [
+      outcome('ancient', 'students', NOW - store.OUTCOME_MAX_AGE_MS - 1),
+      outcome('recent', 'students', NOW - 1_000),
+    ],
+  });
+  const loaded = store.loadQueueState(NOW);
+  assert.deepEqual(
+    loaded.outcomes.map((o) => o.id),
+    ['recent'],
+  );
+});
+
+test('the global backstop caps the total across many sources', () => {
+  const sources = Math.ceil(store.MAX_OUTCOMES_TOTAL / store.MAX_OUTCOMES_PER_SOURCE) + 3;
+  const all = [];
+  for (let s = 0; s < sources; s++) {
+    for (let i = 0; i < store.MAX_OUTCOMES_PER_SOURCE; i++) all.push(outcome(`a${s}-${i}`, `app-${s}`));
+  }
+  write({ ...emptyState(), outcomes: all });
+  assert.equal(store.loadQueueState(NOW).outcomes.length, store.MAX_OUTCOMES_TOTAL);
 });
 
 test('an outcome record carries no message text and no recipient', () => {

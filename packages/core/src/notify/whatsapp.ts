@@ -53,7 +53,7 @@ import { log } from '../logger';
 import {
   loadQueueState,
   saveQueueState,
-  MAX_OUTCOMES,
+  trimOutcomes,
   MAX_HELD_MS,
   type OutcomeRecord,
   type OutcomeState,
@@ -876,7 +876,10 @@ function noteOutcome(item: QueueItem, state: OutcomeState, reason?: string): voi
       at: Date.now(),
       targetKind: item.target.kind,
     });
-    while (outcomes.length > MAX_OUTCOMES) outcomes.shift();
+    // Per-source + age bounded. NOT a global `shift()`: that let the app which sends most
+    // evict every other app's records — a 200-family billing run wiped the whole ring.
+    const trimmed = trimOutcomes(outcomes, Date.now());
+    if (trimmed.length !== outcomes.length) outcomes.splice(0, outcomes.length, ...trimmed);
   }
 }
 

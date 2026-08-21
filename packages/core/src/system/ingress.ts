@@ -18,7 +18,7 @@ import net from 'node:net';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { listInstalled, getAppPath } from '../apps/manager';
-import { isViaTunnelHeaders, decodedPath } from './via-tunnel';
+import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunnel';
 import { appHost } from './app-host';
 import { log } from '../logger';
 
@@ -141,24 +141,6 @@ export function isFabricSubpath(url: string, seg: string): boolean {
   return [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))].some(
     targetsFabric,
   );
-}
-
-/**
- * Collapse `.` and `..` in a path, the way an HTTP server or URL parser would before
- * routing. Only used to make security comparisons see what the far end will see —
- * never to build a URL we then request.
- */
-function resolveDotSegments(path: string): string {
-  const out: string[] = [];
-  for (const part of path.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      out.pop();
-      continue;
-    }
-    out.push(part);
-  }
-  return `/${out.join('/')}`;
 }
 
 function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {

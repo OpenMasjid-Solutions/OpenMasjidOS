@@ -419,6 +419,14 @@ Rules that are not negotiable:
   can now **ask what became of it**: the `202` carries an `id`, and
   `GET /api/fabric/whatsapp/status/<id>` answers `queued` / `sent` / `failed` / `expired`
   with a reason. Scoped to your own app’s messages.
+  - **The history is bounded per app, not globally: the most recent 500 of *your* messages,
+    for up to 24 hours.** Another app's traffic cannot evict your records — a shared 200-record
+    ring did allow exactly that until v0.51.1-dev.8, so one app messaging a large roster wiped
+    every other app's outcomes and a poll came back 404. If you sized a poll interval around
+    the old shared 200, you can relax it.
+  - **Polling has its own rate budget** (600/min per app), separate from sending, so
+    reconciling a few hundred ids can never cost you a send. A `404` still means "unknown" —
+    never read it as a delivery failure.
 - **Never anything auth-critical.** No login codes, no password resets, no one-time
   passwords. Use email, which has a real provider behind it.
 - **One recipient per call.** The API shape is deliberate: think one parent at a time. The

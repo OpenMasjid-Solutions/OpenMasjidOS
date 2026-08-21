@@ -20,6 +20,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - **What still happens before each message:** the typing indicator, sized to the length of what is being sent. That is the only pause now, it is a few seconds, and the person receiving it can see it.
 - **Worth knowing:** nothing in OpenMasjidOS now limits how much an app sends. WhatsApp does not officially allow this kind of connection and a blocked number cannot be recovered, so what your apps send is now their responsibility rather than the platform’s.
 
+**Fixed — one app's messages no longer hide another app's**
+
+- **Asking "what happened to my message?" now works even when another app is busy.** The platform remembers the outcome of recent messages so an app can check on one it sent. That memory was a single shared list of 200, so an app sending to a large family list filled it on its own and wiped every other app's records — a donation refund, a card-reader alert — and the app that asked got "no such message" back. Each app now has its own space for its most recent 500, kept for a day, so no app can push out another's.
+- **Checking on messages no longer uses up an app's sending allowance.** Looking up an outcome costs nothing to send, but it was counted against the same per-app limit as actually messaging a phone — so an app reconciling a few hundred fee reminders ran out part-way through and stopped being able to send. Lookups now have their own separate, larger allowance.
+
 **Security — a full audit, and one serious hole closed**
 
 - **An app could have been given complete control of the server, with no warning shown.** Before installing any app, OpenMasjidOS checks its configuration for dangerous settings — mounting the server’s own control socket, or the whole filesystem — and refuses. That check could be stepped around: writing one field as a variable instead of a fixed value made the checker skip the inspection entirely, while Docker still resolved it to the dangerous setting when the app started. An app published to the store, or added from a third-party store, could have taken over the machine on the ordinary one-click install with no risk dialog at all. Now caught, along with two related tricks — one that let an app open **another app’s database**, and one that let it join **another app’s private network** and reach services never meant to leave that app.
@@ -29,9 +34,8 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 **Changed — no more hourly or daily message limit**
 
-- **The cap on how many messages you can send has been removed.** It was 12 an hour, but a newly linked number only got a quarter of that — three an hour — and replies to your own `!os` commands counted against the same allowance. In practice that meant setting WhatsApp up and then not being able to use or even test it. Messages are still spaced a random 6–20 seconds apart, and the same person is still never messaged twice within a minute, which is what makes the sending look human in the first place.
-- **Group announcements keep their limits** (four an hour, ten a day). One group message reaches every member, so overdoing it costs two hundred people who did not ask for it — which is not the same as sending too many fee reminders.
-- Worth knowing: nothing now stops an app sending to a very large number of people in one go, other than the spacing. WhatsApp does not officially allow this kind of connection and a blocked number cannot be recovered, so keep an eye on what your apps send.
+- **The cap on how many messages you can send has been removed.** It was 12 an hour, but a newly linked number only got a quarter of that — three an hour — and replies to your own `!os` commands counted against the same allowance. In practice that meant setting WhatsApp up and then not being able to use or even test it.
+- *(Superseded later in this same cycle: the 6–20 second gap, the per-person wait and the group limits described here were removed too — see the top of this section. Kept as a record of the order things happened, not as a description of how it behaves now.)*
 
 **Fixed — WhatsApp messages that were accepted and never arrived**
 
