@@ -13,6 +13,17 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Changed — turning WhatsApp off, and the number you linked**
+
+- **Turning WhatsApp off now asks what you actually want.** Before, the switch just went off and quietly kept everything — your gateway key, the linked number, your approved groups and the list of people allowed to send commands all stayed on the server with nothing saying so. If you only wanted a pause, you had no way to know your setup was safe; if you thought you had removed WhatsApp, you hadn't. The switch now asks: turn it off and keep everything (so switching back on picks up exactly where you left off), or **remove the gateway and delete all of it**.
+- **Deleting really deletes.** It unlinks your phone from WhatsApp first — while the gateway is still there to do it — then removes the OpenWA app with its data and erases the gateway key, the session, your approved groups, the saved messages, the WhatsApp setting on every alert, and the list of people who could send commands. If WhatsApp can't confirm your phone was released, it says so and tells you to remove it on the phone, rather than showing a tick it can't stand behind.
+- **When a phone is linked, the panel now says so.** It used to keep showing an empty "Link your phone" box and a "Get a code" button even when a number was connected and working — which reads as though nothing happened, and invites linking a second phone over a working one. Now the linked number is shown clearly, with an **Unlink this number** button next to it for when the masjid changes handsets. Unlinking keeps your key and your groups, so linking a different phone is just one new code.
+
+**Fixed — phone numbers are readable now**
+
+- **The country list was cut off.** It showed full country names in a box too narrow for them, so anything longer than a few letters was clipped mid-word. It now shows a short country code with the dialling code — `US/CA (+1)`, `UK (+44)`, `PK (+92)` — and the full country name still appears if you hover over it.
+- **Numbers are written the way you'd write them.** A number now appears as `+1 (555) 010-1234` rather than a run of digits, everywhere the dashboard shows one back to you — the linked number, and the list of people who can send commands. Numbers outside North America keep sensible spacing rather than a made-up format, because guessing at each country's layout would make correct numbers look wrong.
+
 **Fixed — WhatsApp messages arrive promptly, and predictably**
 
 - **One message that could not go yet was stopping all the others.** The sending queue always looked at the first message in the line; if that one had to wait, it waited with it and looked again — at the same message. So a single message that was held up blocked everything behind it, from every app. Worse, a message that failed and needed retrying paused the whole queue for its retry delay — up to fifteen minutes at a time, five times over. This is why one app’s picture would never arrive while another app’s later messages did. The queue now sends the first message that *can* go, and a message that needs retrying steps aside instead of holding up the rest.

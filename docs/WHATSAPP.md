@@ -75,6 +75,35 @@ one paced queue — which is the entire defence against the number being banned.
 You never enter a session id anywhere. OpenWA mints one as a UUID and its API accepts only
 a name, so OpenMasjidOS creates and starts the session for you the first time you link.
 
+### Changing the number, and turning WhatsApp off
+
+Only one phone can be linked at a time. Once one is, Settings → WhatsApp shows that number
+rather than asking for another, with an **Unlink this number** button beside it.
+
+**Unlinking** tells WhatsApp to drop OpenMasjidOS from that phone's linked devices, and
+messages stop until you link again. Your gateway key and your approved groups are kept, so
+switching to a different handset is one new pairing code and nothing else.
+
+**Turning the switch off** asks which of two things you mean:
+
+- **Off, keep everything** (the default) — sending stops, and nothing else changes. The
+  gateway key, the linked number, your approved groups and your command list all stay, so
+  turning it back on later picks up exactly where you left off.
+- **Off, delete everything** — the phone is unlinked, the OpenWA app is removed along with
+  its data, and the gateway key, session, approved groups, saved messages, the WhatsApp
+  column on every alert and the list of people who can send commands are all erased. This
+  cannot be undone, and setting WhatsApp up again afterwards starts from scratch.
+
+> **Order matters, and OpenMasjidOS handles it for you.** The phone is unlinked *before*
+> the gateway is removed, because unlinking is something only the running gateway can ask
+> WhatsApp to do. Removing the app first would leave a dead "OpenMasjidOS" entry in your
+> phone's linked-devices list that nothing here could remove — you would have to delete it
+> on the phone yourself. If WhatsApp does not confirm the unlink, OpenMasjidOS tells you to
+> do exactly that rather than claiming it worked.
+
+Backups taken before a delete still contain these settings; deleting does not reach into
+archives you have already downloaded.
+
 ## Groups
 
 **One message to a group reaches everyone in it.** For an announcement — "madrasa is closed

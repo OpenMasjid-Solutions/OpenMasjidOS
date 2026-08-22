@@ -357,6 +357,28 @@ export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic 
 }
 
 /**
+ * Forget the gateway entirely — key, session, linked number, approved groups, the lot.
+ *
+ * This CANNOT be expressed as a `saveWhatsAppConfig` call, and that is deliberate rather
+ * than an oversight: `computeNext` ignores a blank `apiKey` on purpose (`:343`), so that
+ * changing one limit never makes an admin re-paste their secret. The same carve-out means
+ * no admin edit can ever blank the key. Erasing it has to be its own, explicitly-named
+ * operation — which is also the right shape for something this destructive.
+ *
+ * The file is removed rather than rewritten with defaults: a masjid asking to delete
+ * everything should not be left with a file on disk that still says what their session
+ * used to be called. The next read falls back to `DEFAULT_CONFIG` on its own.
+ */
+export function deleteWhatsAppConfig(): void {
+  cache = { ...DEFAULT_CONFIG, limits: { ...DEFAULT_LIMITS }, groups: [] };
+  try {
+    fs.rmSync(WHATSAPP_PATH, { force: true });
+  } catch {
+    /* best effort — the in-memory cache is already cleared, which is what sending reads */
+  }
+}
+
+/**
  * Record that the session was (re)linked, which restarts the warm-up ramp. Called
  * when a pairing code is issued: a freshly linked number is exactly the one WhatsApp
  * watches hardest, so it must not inherit an old number's earned allowance.

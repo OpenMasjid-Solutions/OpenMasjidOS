@@ -150,6 +150,33 @@ export function setAlertChannel(source: string, id: string, channel: keyof Alert
   persist();
 }
 
+/**
+ * Turn the WhatsApp column off on every alert row, everywhere.
+ *
+ * Needed because the matrix outlives the gateway. A row the admin switched on is written
+ * to disk (the default is off, so only the ON choices are stored), and deleting OpenWA
+ * does not touch this file. Without this, `deliverAlert` keeps entering the WhatsApp
+ * branch and silently getting `{queued:false}` back — no log, no error — and, far worse,
+ * the moment WhatsApp is ever set up again those alerts resume messaging the phone with
+ * no admin action at all. The whole reason this column defaults to off is that an upgrade
+ * must never silently start messaging someone; a delete-then-reinstall has to honour the
+ * same promise.
+ *
+ * Iterates the live map rather than a list of known ids, so a row for an app that is no
+ * longer installed is cleared too. Persists once at the end.
+ */
+export function clearWhatsAppChannels(): void {
+  let touched = false;
+  for (const [k, c] of [...channels]) {
+    if (!c.whatsapp) continue;
+    const next: AlertChannels = { ...c, whatsapp: false };
+    if (isDefault(next)) channels.delete(k);
+    else channels.set(k, next);
+    touched = true;
+  }
+  if (touched) persist();
+}
+
 export interface AlertTypeInfo {
   source: string; // 'os' or an app id
   sourceLabel: string; // display name of the source

@@ -250,6 +250,24 @@ export function removeCommandPerson(rawPhone: string): CommandPerson[] {
   return cache.people;
 }
 
+/**
+ * Remove EVERY authorised sender. For the "delete it all" path in Settings.
+ *
+ * This list is the whole authorisation model for admin commands — a phone on it can
+ * start, stop and update a masjid's apps with no password step. Leaving it behind after
+ * the masjid has deleted WhatsApp would mean that re-enabling the feature months later
+ * silently re-arms whichever numbers were trusted back then, including a volunteer's
+ * phone that has since changed hands. So it goes with everything else.
+ *
+ * One call to `changed()`, not one per person: the hook re-reconciles the inbound socket
+ * and resets conversations, and firing that per row would do the same work N times.
+ */
+export function clearCommandPeople(): CommandPerson[] {
+  cache = { ...cache, people: [] };
+  changed();
+  return cache.people;
+}
+
 /** Grant or revoke one scope for one person. Note this does NOT decide whether the
  *  scope is available — the caller (trpc/routers/commands.ts) refuses a grant for a
  *  scope that does not exist, and `commands/registry.ts` re-checks on READ anyway. */

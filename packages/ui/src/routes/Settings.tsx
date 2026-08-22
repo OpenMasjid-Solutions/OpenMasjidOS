@@ -19,6 +19,7 @@ import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PhoneField } from '../components/PhoneField';
+import { formatPhone } from '../lib/phone';
 import { AppLogs } from '../components/AppLogs';
 import { openApp } from '../lib/apps';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
@@ -1626,6 +1627,13 @@ function WhatsAppPanel() {
   const [apiKey, setApiKey] = useState('');
   const [linkPhone, setLinkPhone] = useState('');
   const [askEnable, setAskEnable] = useState(false);
+  // Turning it OFF now asks a question rather than acting, because there are two
+  // different "off"s and only the admin knows which they mean (see the dialog below).
+  const [askDisable, setAskDisable] = useState(false);
+  const [deleteAll, setDeleteAll] = useState(false);
+  const [askUnlink, setAskUnlink] = useState(false);
+  /** Set when the gateway could not confirm WhatsApp released the device. */
+  const [unlinkWarning, setUnlinkWarning] = useState(false);
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
   // The pairing code stops being useful the instant the phone is linked, and leaving
@@ -1674,6 +1682,49 @@ function WhatsAppPanel() {
     onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+  const disable = trpc.whatsapp.disable.useMutation({
+    onSuccess: (r) => {
+      setAskDisable(false);
+      setDeleteAll(false);
+      setProvider('none');
+      if (r.deleted) {
+        // The panel's inputs are seeded from the server ONCE and then owned locally, so
+        // after a delete they still hold the old address and session name — and one press
+        // of Save would write them straight back. Clearing them (and re-arming the seed)
+        // is what makes the delete actually stick.
+        seededWa.current = false;
+        setApiKey('');
+        setBaseUrl('');
+        setSessionName('');
+        setLinkPhone('');
+        setPairing(null);
+        setGatewayCrash(null);
+        // Said plainly rather than as a success tick: if we could not confirm WhatsApp
+        // released the device, the masjid has to go and remove it on the phone itself.
+        toast(r.stillLinked ? t('settings.whatsappDeletedStillLinked') : t('settings.whatsappDeleted'), r.stillLinked ? 'error' : 'success');
+      } else {
+        toast(t('settings.whatsappTurnedOff'), 'success');
+      }
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+      // The trustee list and the gateway's App Store visibility both change on a delete.
+      utils.commands.invalidate();
+      utils.store.catalog.invalidate();
+      utils.apps.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const unlink = trpc.whatsapp.unlink.useMutation({
+    onSuccess: (r) => {
+      setAskUnlink(false);
+      setUnlinkWarning(r.stillLinked);
+      setLinkPhone('');
+      if (!r.stillLinked) toast(t('settings.whatsappUnlinked'), 'success');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
   const restartGateway = trpc.whatsapp.restartGateway.useMutation({
     onSuccess: (r) => {
       // Only clear the previous failure when this attempt actually held — otherwise
@@ -1691,11 +1742,24 @@ function WhatsAppPanel() {
   const gw = cfg.data.gateway;
   const on = provider !== 'none';
 
-  /** Turning it ON is gated on the warning; turning it OFF is immediate and reversible. */
+  /** Which phone the gateway is actually attached to right now, if any. Deliberately
+   *  `state === 'ready'` AND a number: `pending` and `problem` can also carry a phone (a
+   *  linked-then-disconnected handset), and calling that "linked and sending" would be a
+   *  lie on the one panel an admin checks when messages stop. */
+  const linkedPhone = s?.state === 'ready' && s.phone ? s.phone : null;
+
+  /**
+   * Turning it ON is gated on the ban-risk warning; turning it OFF now asks WHICH off.
+   *
+   * It used to switch off silently, which was fine as far as it went — but it left the
+   * key, the session, the approved groups and the trustee phone list on disk with nothing
+   * saying so. An admin who believed they had removed WhatsApp had not, and an admin who
+   * only wanted a pause had no way to know their setup was safe. The dialog answers both.
+   */
   function setEnabled(next: boolean) {
     if (next) return setAskEnable(true);
-    setProvider('none');
-    save.mutate({ provider: 'none' });
+    setDeleteAll(false);
+    setAskDisable(true);
   }
 
   return (
@@ -1726,6 +1790,79 @@ function WhatsAppPanel() {
         cost={t('settings.whatsappRiskCost')}
         confirmLabel={t('settings.whatsappRiskAccept')}
         pending={save.isPending}
+      />
+
+      {/* Turning it off: a checkbox, not a second switch, because the two outcomes are a
+          choice made ONCE at the moment of turning it off — not an ongoing setting.
+          Modelled on the app-removal dialog, which asks the same question about data.
+          Closing must clear the tick: leaving it on from a previous visit would put
+          permanent destruction one click away in a dialog that looks freshly opened. */}
+      <Modal
+        open={askDisable}
+        onClose={() => {
+          setAskDisable(false);
+          setDeleteAll(false);
+        }}
+        title={t('settings.whatsappOffTitle')}
+      >
+        <p style={{ margin: 0 }}>{t('settings.whatsappOffBody')}</p>
+        <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', margin: '1rem 0' }}>
+          <input
+            type="checkbox"
+            style={{ marginBlockStart: '0.2rem' }}
+            checked={deleteAll}
+            onChange={(e) => setDeleteAll(e.target.checked)}
+          />
+          <span>
+            {t('settings.whatsappOffDelete')}
+            <span className="hint" style={{ display: 'block' }}>
+              {t('settings.whatsappOffDeleteHint')}
+            </span>
+          </span>
+        </label>
+        {/* Only when it is actually about to happen. A permanent warning next to an
+            unticked box is noise; next to a ticked one it is the last thing read. */}
+        {deleteAll && (
+          <p className="setting-row__hint" style={{ color: 'var(--color-gold, #F59E0B)' }}>
+            {t('settings.whatsappOffDeleteCost')}
+          </p>
+        )}
+        {disable.isPending ? (
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBlockStart: '1.2rem' }}>
+            <span className="spinner" /> {t('common.working')}
+          </p>
+        ) : (
+          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginBlockStart: '1.4rem' }}>
+            <button
+              className="btn"
+              onClick={() => {
+                setAskDisable(false);
+                setDeleteAll(false);
+              }}
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              className={cn('btn', deleteAll ? 'btn--danger' : undefined)}
+              onClick={() => disable.mutate({ deleteEverything: deleteAll })}
+            >
+              {deleteAll ? t('settings.whatsappOffDeleteConfirm') : t('settings.whatsappOffConfirm')}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* Unlinking is its own action, separate from turning the feature off: changing
+          handsets should not mean re-pasting a key and re-approving every group. */}
+      <ConfirmDialog
+        open={askUnlink}
+        onClose={() => setAskUnlink(false)}
+        onConfirm={() => unlink.mutate()}
+        title={t('settings.whatsappUnlinkTitle')}
+        body={t('settings.whatsappUnlinkBody')}
+        cost={t('settings.whatsappUnlinkCost')}
+        confirmLabel={t('settings.whatsappUnlinkConfirm')}
+        pending={unlink.isPending}
       />
 
       {on && (
@@ -1892,8 +2029,14 @@ function WhatsAppPanel() {
       </div>
 
       {/* Linking by pairing code, not QR: there is no screen on a headless box to
-          photograph, and the admin may be nowhere near the machine. */}
-      {cfg.data.configured && (
+          photograph, and the admin may be nowhere near the machine.
+
+          Hidden once a phone IS linked. It used to show regardless, so a masjid with a
+          working connection was still looking at an empty "Link your phone" box and a
+          "Get a code" button — which reads as "this didn't work", and invites linking a
+          second handset over a working one. Only one number can be attached, so when
+          there is one the panel states it instead of asking for it. */}
+      {cfg.data.configured && !linkedPhone && (
         <div style={{ marginBlockStart: '0.9rem' }}>
           <div className="setting-row__title">{t('settings.whatsappLink')}</div>
           <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
@@ -1949,13 +2092,43 @@ function WhatsAppPanel() {
         </div>
       )}
 
-      {/* Which phone is actually linked. Without it the panel says "connected" and the
-          admin has to take on trust that it is the number they meant — and on a masjid's
-          spare handset that is exactly the thing worth double-checking. */}
-      {s?.state === 'ready' && s.phone && (
-        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
-          {t('settings.whatsappLinkedTo')} <strong>+{s.phone}</strong>
-        </p>
+      {/* Which phone is actually linked — the answer to the question this whole panel
+          exists to answer, so it is stated, not tucked into a hint line. On a masjid's
+          spare handset "is that the right number?" is exactly the thing worth
+          double-checking, and a run of bare digits is not something anyone checks. */}
+      {linkedPhone && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.9rem', borderInlineStart: '3px solid var(--color-accent)' }}
+        >
+          <div className="setting-row" style={{ gap: '0.9rem', flexWrap: 'wrap' }}>
+            <div className="setting-row__text" style={{ flex: '1 1 14rem', minWidth: 0 }}>
+              <div className="setting-row__hint">{t('settings.whatsappLinkedTo')}</div>
+              <div
+                style={{
+                  fontSize: '1.45rem',
+                  fontWeight: 650,
+                  lineHeight: 1.3,
+                  marginBlockStart: '0.15rem',
+                  userSelect: 'all',
+                }}
+              >
+                {formatPhone(linkedPhone)}
+              </div>
+            </div>
+            <button className="btn" disabled={unlink.isPending} onClick={() => setAskUnlink(true)}>
+              {unlink.isPending ? t('common.working') : t('settings.whatsappUnlink')}
+            </button>
+          </div>
+          {/* A 200 from the gateway is an acknowledgement, not a look at the handset — so
+              when it could not confirm the release, the masjid is told to go and check
+              rather than being shown a tick that might be wrong. */}
+          {unlinkWarning && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.7rem', color: 'var(--color-danger)' }}>
+              {t('settings.whatsappUnlinkUnconfirmed')}
+            </p>
+          )}
+        </div>
       )}
 
       {/* Groups. Only once a phone is actually linked — there is nothing to list before
@@ -2374,7 +2547,7 @@ function WhatsAppCommands() {
                   <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
                     <div className="setting-row__title">{p.label}</div>
                     <div className="setting-row__hint">
-                      +{p.phone}
+                      {formatPhone(p.phone)}
                       {p.scopes.length === 0 && ` · ${t('settings.commandsNoGrants')}`}
                     </div>
                   </div>

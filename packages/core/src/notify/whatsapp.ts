@@ -317,7 +317,7 @@ function describeFetchError(err: unknown): string {
 
 async function call(
   cfg: WhatsAppConfig,
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; json: unknown; error?: string }> {
@@ -659,6 +659,80 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
       };
     }
     return { ok: false, error: r.error };
+  }
+}
+
+/**
+ * Unlink the phone: ask WhatsApp to remove this device from the account.
+ *
+ * `logout` is the ONLY route that does this. Verified against OpenWA's own source, whose
+ * comment on the method is explicit that `stop()` and `delete()` "only release things
+ * locally", so the device stays listed under Linked Devices on the handset until someone
+ * removes it there by hand. Deleting the session — or removing the whole container —
+ * without logging out first therefore strands a device entry the masjid can no longer
+ * revoke from anywhere in this dashboard. That is the trap this function exists to avoid.
+ *
+ * It is a live network round-trip to WhatsApp, so it needs a STARTED engine: without one
+ * the gateway answers the same 400 that `start` does. Hence `ensureStarted` first.
+ *
+ * Three outcomes worth telling apart, because they need different words on screen:
+ *   - `ok`                     — the gateway acknowledged the unlink
+ *   - `ok:false, stillLinked`  — 502 SESSION_LOGOUT_INCOMPLETE: stopped locally but the
+ *                                unlink did not complete, so the phone may STILL list it.
+ *                                Never report this as unlinked.
+ *   - `ok:false`               — could not reach it at all
+ *
+ * A 200 is an acknowledgement, not an observation of the handset. The wording the admin
+ * sees says the unlink was requested and accepted; it must not claim their phone's list
+ * is now clear, because nothing here can see that list.
+ */
+export async function unlinkSession(): Promise<{ ok: boolean; stillLinked?: boolean; error?: string }> {
+  const cfg = getWhatsAppConfig();
+  if (!cfg.sessionId) return { ok: true }; // nothing was ever linked
+  const started = await ensureStarted(cfg);
+  if (!started.ok) {
+    // A session the gateway no longer has is already as unlinked as we can make it.
+    if (started.error === 'stale-session') return { ok: true };
+    return { ok: false, error: started.error ?? 'could not start the session to unlink it' };
+  }
+  const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/logout`);
+  if (r.ok) {
+    // The gateway has cleared its own idea of the number; ours must not linger, or the
+    // panel keeps saying "sending from …" for a phone that is no longer attached.
+    recordLinkedPhone('');
+    return { ok: true };
+  }
+  if (r.status === 502) {
+    return {
+      ok: false,
+      stillLinked: true,
+      error: 'The gateway stopped the connection but could not confirm WhatsApp released it.',
+    };
+  }
+  if (r.status === 404) return { ok: true }; // no such session at the gateway
+  return { ok: false, error: r.error ?? 'the gateway would not unlink the number' };
+}
+
+/**
+ * Delete the session record and its stored credentials at the gateway.
+ *
+ * Only ever AFTER `unlinkSession` — on its own this purges local auth data while leaving
+ * the device linked on the phone (see above). OpenWA answers 204 with no body, which
+ * `call` already tolerates, and 409 `SESSION_NAME_TEARDOWN_PENDING` while the logout's
+ * own credential cleanup is still running. That 409 is the normal case in a
+ * logout-then-delete sequence, not a failure, so it is retried rather than surfaced.
+ */
+export async function deleteGatewaySession(): Promise<{ ok: boolean; error?: string }> {
+  const cfg = getWhatsAppConfig();
+  if (!cfg.sessionId) return { ok: true };
+  for (let attempt = 1; ; attempt += 1) {
+    const r = await call(cfg, 'DELETE', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+    if (r.ok || r.status === 404) return { ok: true };
+    if (r.status === 409 && attempt < 5) {
+      await sleep(1500);
+      continue;
+    }
+    return { ok: false, error: r.error ?? 'the gateway would not delete the session' };
   }
 }
 
@@ -1550,5 +1624,30 @@ export function __resetPacingForTests(): void {
   lastToRecipient.clear();
   onWhatsApp.clear();
   queue.length = 0;
+  presenceOn = false;
+}
+
+/**
+ * Forget everything this module holds in memory. For the "delete it all" path in
+ * Settings, which must leave nothing behind that a later re-enable could resurrect.
+ *
+ * Deliberately NOT `__resetPacingForTests`, which is a narrower thing that happens to
+ * look similar: it leaves `outcomes` (message bodies are not in there, but recipients'
+ * message ids and per-app history are) and `lidPhones` (a cache mapping WhatsApp privacy
+ * ids to real phone numbers) untouched. Both are personal data belonging to a masjid that
+ * has just asked for all of it to go, so the two must stay separate functions — merging
+ * them would silently widen what a test resets, or narrow what a delete clears.
+ *
+ * `running` is left alone: it belongs to the pump loop, and forcing it false while a send
+ * is in flight would let a second pump start alongside the first.
+ */
+export function clearWhatsAppRuntime(): void {
+  queue.length = 0;
+  sentAt.length = 0;
+  groupSentAt.length = 0;
+  outcomes.length = 0;
+  lastToRecipient.clear();
+  onWhatsApp.clear();
+  lidPhones.clear();
   presenceOn = false;
 }

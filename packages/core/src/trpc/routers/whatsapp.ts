@@ -19,6 +19,7 @@ import { router, protectedProcedure } from '../trpc';
 import {
   getWhatsAppConfigPublic,
   saveWhatsAppConfig,
+  deleteWhatsAppConfig,
   isWhatsAppConfigured,
   markLinked,
   approveGroup,
@@ -34,9 +35,16 @@ import {
   queueDepth,
   toDigits,
   listGatewayGroups,
+  unlinkSession,
+  deleteGatewaySession,
+  clearWhatsAppRuntime,
 } from '../../notify/whatsapp';
 import { getAdminPhone } from '../../auth/store';
-import { getInstalled, restartApp, startApp, verifyStayedUp } from '../../apps/manager';
+import { getInstalled, restartApp, startApp, verifyStayedUp, removeApp } from '../../apps/manager';
+import { clearQueueStore } from '../../notify/whatsapp-queue-store';
+import { clearWhatsAppChannels } from '../../notify/alerts';
+import { setCommandsEnabled, clearCommandPeople } from '../../store/commands';
+import { reconcileWhatsAppInbound } from '../../notify/whatsapp-inbound';
 import { OPENWA_APP_ID } from '../../apps/managed';
 
 /** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
@@ -185,6 +193,120 @@ export const whatsappRouter = router({
       }
       markLinked(new Date().toISOString());
       return { code: r.code ?? null };
+    }),
+
+  /**
+   * Unlink the phone, keeping everything else.
+   *
+   * The way back when a masjid changes handsets, or links the wrong number. It logs out
+   * at WhatsApp (the only operation that removes the entry from the phone's Linked
+   * Devices) but keeps the gateway, the key and the approved groups, so relinking is one
+   * pairing code away.
+   *
+   * `stillLinked` is reported honestly rather than folded into a generic failure: it is
+   * the one outcome where the device may remain attached to the account, and an admin who
+   * is told "unlinked" would never go and check their phone.
+   */
+  unlink: protectedProcedure.mutation(async () => {
+    const r = await unlinkSession();
+    if (!r.ok && !r.stillLinked) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: r.error ?? "Couldn't unlink the number." });
+    }
+    return { unlinked: r.ok, stillLinked: r.stillLinked ?? false };
+  }),
+
+  /**
+   * Turn WhatsApp off — and, if asked, erase every trace of it.
+   *
+   * Two very different actions behind one input flag, because they are two answers to the
+   * same question at the same switch:
+   *
+   *  - `deleteEverything: false` (the default) just sets `provider: 'none'`. Every setting
+   *    stays on disk, so switching back on restores the masjid's key, session, linked
+   *    number, approved groups and command list exactly as they were. Nothing to re-paste,
+   *    nothing to re-approve.
+   *  - `deleteEverything: true` removes the gateway app with its data and clears every
+   *    piece of state listed below.
+   *
+   * THE ORDER IS LOAD-BEARING and each step is commented with why. In particular the
+   * gateway is talked to FIRST, while it is still running: once the container is gone
+   * there is no way left to tell WhatsApp to release the device, and the masjid is left
+   * with a linked device on their phone that nothing in this dashboard can revoke.
+   *
+   * Deliberately NOT cleared: the admin's own phone number on their account (it is a
+   * destination for email-era alerts and a login-adjacent detail, not WhatsApp state), and
+   * other apps' manifest-derived `whatsapp` grants (they come back with the manifest, and
+   * removing them would misreport what those apps are allowed to do).
+   */
+  disable: protectedProcedure
+    .input(z.object({ deleteEverything: z.boolean().default(false) }))
+    .mutation(async ({ input }) => {
+      if (!input.deleteEverything) {
+        saveWhatsAppConfig({ provider: 'none' });
+        // The inbound socket checks `isWhatsAppConfigured()`; poke it so it drops now
+        // rather than up to 30s later on the next supervisor tick.
+        reconcileWhatsAppInbound();
+        return { deleted: false, unlinked: false, stillLinked: false, gatewayRemoved: false };
+      }
+
+      // 1. Unlink at WhatsApp while the gateway still exists and is reachable. Best
+      //    effort: a masjid deleting a BROKEN install must not be blocked by the very
+      //    thing that is broken, so a failure here is reported, never fatal.
+      let unlinked = false;
+      let stillLinked = false;
+      try {
+        const r = await unlinkSession();
+        unlinked = r.ok;
+        stillLinked = r.stillLinked ?? false;
+      } catch {
+        /* reported to the admin below as "couldn't unlink automatically" */
+      }
+      // 2. Delete the session record + stored credentials at the gateway. Only meaningful
+      //    after the logout above; on its own it would leave the device linked.
+      try {
+        await deleteGatewaySession();
+      } catch {
+        /* the container and its volumes go in step 8 regardless */
+      }
+
+      // 3. Stop accepting work BEFORE removing the app. `enqueue` refuses once
+      //    unconfigured, and the pump drains-and-drops instead of spinning against a
+      //    gateway that is about to disappear.
+      saveWhatsAppConfig({ provider: 'none' });
+      // 4. Erase the config file itself — the API key cannot be blanked through `save`.
+      deleteWhatsAppConfig();
+      // 5. The queued messages and their bodies, on disk and in memory.
+      clearQueueStore();
+      clearWhatsAppRuntime();
+      // 6. The alerts matrix keeps its own copy of "route this to WhatsApp", and it would
+      //    otherwise re-arm silently if WhatsApp were ever set up again.
+      clearWhatsAppChannels();
+      // 7. Admin commands: the authorised-sender list is an authorisation model in its
+      //    own right and must not outlive the transport it rides on.
+      setCommandsEnabled(false);
+      clearCommandPeople();
+      reconcileWhatsAppInbound();
+
+      // 8. Finally the app. `deleteData: true` is REQUIRED, not a nicety: it is what
+      //    removes the Docker volumes holding the linked-device credentials and
+      //    `apps/openwa/.env`, which is a second copy of the gateway API key.
+      let gatewayRemoved = false;
+      try {
+        if (await getInstalled(OPENWA_APP_ID)) {
+          await removeApp(OPENWA_APP_ID, true);
+        }
+        gatewayRemoved = true;
+      } catch (err) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          // Everything else is already gone, so say so — otherwise an admin retries a
+          // delete that has mostly happened and gets a confusing second failure.
+          message: `Your WhatsApp settings were deleted, but the gateway app could not be removed: ${
+            (err as Error).message
+          }`,
+        });
+      }
+      return { deleted: true, unlinked, stillLinked, gatewayRemoved };
     }),
 
   /**
