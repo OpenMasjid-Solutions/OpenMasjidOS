@@ -13,6 +13,16 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Changed — Settings is no longer one long page**
+
+- **Settings now has sections down the side** — Appearance, Account, Email, WhatsApp, Alerts, Payments, Remote access, Advanced — and shows one at a time instead of stacking all eleven panels on a single page you had to scroll through to find anything. Each section has its own address, so a link can now take you straight to the right place rather than to the top of the page. On a phone or a small screen the list becomes a strip across the top that you can swipe.
+- **WhatsApp is split into Setup, Groups and Commands**, since it had grown to about a third of the whole Settings page on its own. The tabs only appear once a phone is linked, because groups and commands do not exist before that.
+
+**Added — update all your apps at once**
+
+- **When more than one app has an update waiting, there is now an "Update all" button** on the dashboard. It updates them one after another in a single window, showing progress for each, rather than making you open and watch each one in turn. They are done one at a time on purpose: updating them all at once would take your prayer display, your donations page and your kiosk down in the same moment, and pulling several downloads over one connection is not faster anyway.
+- **It checks each app actually came back**, the same as a single update does — an app that starts and then stops again is reported with the reason, instead of being counted as updated.
+
 **Changed — turning WhatsApp off, and the number you linked**
 
 - **Turning WhatsApp off now asks what you actually want.** Before, the switch just went off and quietly kept everything — your gateway key, the linked number, your approved groups and the list of people allowed to send commands all stayed on the server with nothing saying so. If you only wanted a pause, you had no way to know your setup was safe; if you thought you had removed WhatsApp, you hadn't. The switch now asks: turn it off and keep everything (so switching back on picks up exactly where you left off), or **remove the gateway and delete all of it**.

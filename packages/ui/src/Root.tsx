@@ -47,6 +47,10 @@ export function Root() {
           <Route path="/apps/:id" element={<AppDetail />} />
           <Route path="/files" element={<Files />} />
           <Route path="/settings" element={<Settings />} />
+          {/* Each settings section has its own address, so the dashboard, an app's page
+              and an error message can all send someone straight to the right place
+              instead of to the top of a long page. */}
+          <Route path="/settings/:section" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

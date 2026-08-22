@@ -5,9 +5,9 @@
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText, MessageCircle, SlidersHorizontal } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -200,11 +200,94 @@ function BrandingPanel() {
   );
 }
 
+/**
+ * The sections of Settings, in nav order.
+ *
+ * Settings had grown to eleven stacked panels on one page — around three thousand lines
+ * of it — and finding anything meant scrolling past everything. Each entry here is now a
+ * pane of its own with its own address, so `/settings/whatsapp` can be linked to directly
+ * from an app's page, a toast, or the App Store, instead of dropping someone at the top
+ * of the page to hunt.
+ *
+ * Order is by how often a masjid touches it, not by how the code is organised: the things
+ * a volunteer changes (how it looks, who they are, how it reaches people) come first, and
+ * the machine-shaped settings sit at the bottom under Advanced.
+ */
+const SECTIONS = [
+  { id: 'appearance', icon: Sparkles },
+  { id: 'account', icon: KeyRound },
+  { id: 'email', icon: Bell },
+  { id: 'whatsapp', icon: MessageCircle },
+  { id: 'alerts', icon: AlertTriangle },
+  { id: 'payments', icon: CreditCard },
+  { id: 'remote', icon: Globe },
+  { id: 'advanced', icon: SlidersHorizontal },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]['id'];
+
+const DEFAULT_SECTION: SectionId = 'appearance';
+
+function isSectionId(v: string | undefined): v is SectionId {
+  return SECTIONS.some((s) => s.id === v);
+}
+
+/**
+ * The section list.
+ *
+ * `NavLink`s rather than buttons with state: the section IS the URL, so back and forward
+ * work, a section can be bookmarked, and refreshing the page keeps you where you were —
+ * none of which a state-only tab strip gives you.
+ *
+ * On a narrow screen the same list turns into a horizontal strip above the pane (see
+ * `.settings-nav` in app.css). A dropdown was the alternative and hides the choices;
+ * with only eight of them, a strip you can swipe shows what is there.
+ */
+function SettingsNav({ active }: { active: SectionId }) {
+  const { t } = useTranslation();
+  // Written out rather than built as `settings.nav.${id}`. A key assembled at runtime
+  // cannot be checked against en.json, and `i18n-keys.test.ts` exists precisely because
+  // a missing key ships as the raw key on screen — which it once did, in this panel.
+  const labels: Record<SectionId, string> = {
+    appearance: t('settings.nav.appearance'),
+    account: t('settings.nav.account'),
+    email: t('settings.nav.email'),
+    whatsapp: t('settings.nav.whatsapp'),
+    alerts: t('settings.nav.alerts'),
+    payments: t('settings.nav.payments'),
+    remote: t('settings.nav.remote'),
+    advanced: t('settings.nav.advanced'),
+  };
+  return (
+    <nav className="settings-nav" aria-label={t('settings.title')}>
+      {SECTIONS.map((s) => {
+        const Icon = s.icon;
+        return (
+          <NavLink
+            key={s.id}
+            to={`/settings/${s.id}`}
+            className={cn('settings-nav__item', s.id === active && 'is-active')}
+            aria-current={s.id === active ? 'page' : undefined}
+          >
+            <Icon size={16} aria-hidden />
+            <span>{labels[s.id]}</span>
+          </NavLink>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function Settings() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const prefs = usePrefs();
   const utils = trpc.useUtils();
+  // An unknown or missing section falls back rather than 404s: a stale bookmark from
+  // before a section was renamed should land somewhere useful, not on an error.
+  const { section: sectionParam } = useParams();
+  const section: SectionId = isSectionId(sectionParam) ? sectionParam : DEFAULT_SECTION;
+  const show = (id: SectionId) => section === id;
 
   const serverSettings = trpc.settings.get.useQuery();
   const sysInfo = trpc.system.info.useQuery();
@@ -329,6 +412,17 @@ export function Settings() {
         <p className="page-sub">{t('settings.subtitle')}</p>
       </header>
 
+      <div className="settings-layout">
+        <SettingsNav active={section} />
+
+        {/* Only the chosen section is mounted. That is the point of the split — a pane
+            no one is looking at should not be running its polling queries either (the
+            WhatsApp panel alone polls the gateway, and the stats and backup panels each
+            hold their own timers). */}
+        <div className="settings-pane">
+
+      {show('appearance') && (
+        <>
       {/* Appearance */}
       <section className="glass-raised panel">
         <h2 className="panel-title">{t('settings.appearance')}</h2>
@@ -451,32 +545,42 @@ export function Settings() {
         )}
       </section>
 
-      {/* Masjid logo (branding for emails + webhooks) */}
+      {/* Masjid logo (branding for emails + webhooks). Lives with Appearance because
+          that is what an admin is thinking about when they look for it. */}
       <BrandingPanel />
+        </>
+      )}
 
       {/* Account */}
-      <ChangePassword />
-
-      {/* Notifications */}
-      <NotificationsPanel />
+      {show('account') && <ChangePassword />}
 
       {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
-      <EmailPanel />
+      {show('email') && <EmailPanel />}
 
-      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Sits beside Email
-          because it is the same kind of thing — an outbound transport the platform owns
-          on every app's behalf. */}
-      <WhatsAppPanel />
+      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Its own section
+          rather than sitting beside Email: it is the same kind of thing — an outbound
+          transport the platform owns on every app's behalf — but it carries a gateway
+          app, groups and admin commands with it, and stacked below Email it was a third
+          of the whole page. */}
+      {show('whatsapp') && <WhatsAppPanel />}
 
-      {/* Alerts — granular on/off per alert type (OS + apps) */}
-      <AlertsPanel />
+      {show('alerts') && (
+        <>
+          {/* Where alerts GO (the webhook), then WHICH alerts go there. Together,
+              because choosing a channel and choosing what routes to it is one task. */}
+          <NotificationsPanel />
+          <AlertsPanel />
+        </>
+      )}
 
       {/* Payments (Stripe vault, shared with apps via the Fabric) */}
-      <StripePanel />
+      {show('payments') && <StripePanel />}
 
       {/* Remote access (Cloudflare tunnel + domain) */}
-      <CloudflarePanel />
+      {show('remote') && <CloudflarePanel />}
 
+      {show('advanced') && (
+        <>
       {/* Advanced */}
       <section className="glass-raised panel">
         <h2 className="panel-title">{t('settings.advanced')}</h2>
@@ -623,9 +727,19 @@ export function Settings() {
         </div>
       </section>
 
-      {/* Off-site backups (scheduled upload to Google Drive / NAS) */}
+      {/* Off-site backups (scheduled upload to Google Drive / NAS). Sits under Advanced
+          beside the manual download/restore rows above, so a masjid looking for "my
+          backups" finds both in one place rather than in two different sections. */}
       <ScheduledBackupPanel />
+        </>
+      )}
 
+        </div>
+      </div>
+
+      {/* The dialogs stay OUTSIDE the section panes. Several are opened from one section
+          and survive a navigation (the restore upload especially), and a modal unmounted
+          mid-flight by a nav click would abandon whatever it was doing. */}
       <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} currentVersion={sysInfo.data?.version ?? ''} />
 
       <Modal open={!!restoreFile} onClose={() => !restoreUploading && setRestoreFile(null)} title={t('settings.restoreConfirmTitle')}>
@@ -1634,6 +1748,10 @@ function WhatsAppPanel() {
   const [askUnlink, setAskUnlink] = useState(false);
   /** Set when the gateway could not confirm WhatsApp released the device. */
   const [unlinkWarning, setUnlinkWarning] = useState(false);
+  // Setup / Groups / Commands. Local state rather than the URL: these are three views of
+  // one connection, not three places — and the section itself is already addressable as
+  // /settings/whatsapp, which is the link anything outside this panel actually wants.
+  const [waTab, setWaTab] = useState<'setup' | 'groups' | 'commands'>('setup');
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
   // The pairing code stops being useful the instant the phone is linked, and leaving
@@ -1747,6 +1865,16 @@ function WhatsAppPanel() {
    *  linked-then-disconnected handset), and calling that "linked and sending" would be a
    *  lie on the one panel an admin checks when messages stop. */
   const linkedPhone = s?.state === 'ready' && s.phone ? s.phone : null;
+
+  /**
+   * Groups and Commands only exist once a phone is linked, so the tabs only appear then.
+   *
+   * Showing three tabs where two of them error is worse than showing none: it presents
+   * setup steps as though they were optional, when linking is the thing that has to
+   * happen first. Before that, this panel is just its setup, with no strip at all.
+   */
+  const waLinked = s?.state === 'ready';
+  const showSetup = !waLinked || waTab === 'setup';
 
   /**
    * Turning it ON is gated on the ban-risk warning; turning it OFF now asks WHICH off.
@@ -1865,7 +1993,32 @@ function WhatsAppPanel() {
         pending={unlink.isPending}
       />
 
-      {on && (
+      {/* Setup / Groups / Commands. Reuses the `segmented` control the theme picker
+          uses, so this reads as the same kind of choice rather than a new pattern. */}
+      {on && waLinked && (
+        <div className="segmented glass-inset" role="tablist" style={{ marginBlock: '0.9rem' }}>
+          {/* Literal keys, for the same reason as the section nav above. */}
+          {(
+            [
+              { id: 'setup', label: t('settings.whatsappTab.setup') },
+              { id: 'groups', label: t('settings.whatsappTab.groups') },
+              { id: 'commands', label: t('settings.whatsappTab.commands') },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={waTab === tab.id}
+              className={cn(waTab === tab.id && 'is-active')}
+              onClick={() => setWaTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {on && showSetup && (
         <>
           {/* Step one is the gateway app itself. It is hidden from the dashboard and the
               store on purpose, so this is the only place it can be installed or opened. */}
@@ -1969,7 +2122,7 @@ function WhatsAppPanel() {
         </>
       )}
 
-      {on && (
+      {on && showSetup && (
         <>
           <div className="field" style={{ maxWidth: '22rem' }}>
             <label className="label">{t('settings.whatsappSession')}</label>
@@ -2036,7 +2189,7 @@ function WhatsAppPanel() {
           "Get a code" button — which reads as "this didn't work", and invites linking a
           second handset over a working one. Only one number can be attached, so when
           there is one the panel states it instead of asking for it. */}
-      {cfg.data.configured && !linkedPhone && (
+      {cfg.data.configured && !linkedPhone && showSetup && (
         <div style={{ marginBlockStart: '0.9rem' }}>
           <div className="setting-row__title">{t('settings.whatsappLink')}</div>
           <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
@@ -2096,7 +2249,7 @@ function WhatsAppPanel() {
           exists to answer, so it is stated, not tucked into a hint line. On a masjid's
           spare handset "is that the right number?" is exactly the thing worth
           double-checking, and a run of bare digits is not something anyone checks. */}
-      {linkedPhone && (
+      {linkedPhone && showSetup && (
         <div
           className="glass-inset panel"
           style={{ marginBlockStart: '0.9rem', borderInlineStart: '3px solid var(--color-accent)' }}
@@ -2133,11 +2286,11 @@ function WhatsAppPanel() {
 
       {/* Groups. Only once a phone is actually linked — there is nothing to list before
           that, and offering the section would just produce an error. */}
-      {s?.state === 'ready' && <WhatsAppGroups approved={cfg.data.groups} />}
+      {waLinked && waTab === 'groups' && <WhatsAppGroups approved={cfg.data.groups} />}
 
       {/* Commands. Same gate as Groups: there is nothing to configure before a phone
           is linked, and offering it would only produce an error. */}
-      {s?.state === 'ready' && <WhatsAppCommands />}
+      {waLinked && waTab === 'commands' && <WhatsAppCommands />}
 
       {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
           limited this number, so the admin hears it here rather than wondering why

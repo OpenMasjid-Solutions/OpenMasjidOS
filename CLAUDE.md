@@ -252,6 +252,8 @@ OpenMasjidOS/
 │       │   │   ├── prefs.ts            # theme/accent/wallpaper applied pre-paint
 │       │   │   ├── motion.ts           # shared Motion presets
 │       │   │   ├── version.ts          # deliberate copy of core's util/version.ts (§13.4)
+│       │   │   ├── phone.ts            # country table + display formatting; React-free so
+│       │   │   │                       #   a core test can cover it (ui has no runner)
 │       │   │   └── i18n/               # en.json + helpers (RTL aware)
 │       │   ├── styles/                 # tokens.css (theme tokens), app.css, glass.css
 │       │   └── index.css               # Tailwind v4 @import
@@ -593,6 +595,48 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one.
 
 ---
+
+### 13.5 Settings is SECTIONED, and a section must never be orphaned
+
+Settings outgrew a single scrolling page — eleven stacked panels, ~3,000 lines, with the
+WhatsApp panel alone about a third of it. `SECTIONS` in `routes/Settings.tsx` is now the
+one list of panes (Appearance, Account, Email, WhatsApp, Alerts, Payments, Remote access,
+Advanced), each addressable as `/settings/<id>` via a `:section` route, so anything in the
+product can link straight to the setting it means instead of dropping someone at the top
+of the page. Only the chosen pane is mounted, which also stops the panes nobody is looking
+at from running their polling queries.
+
+- **The new failure mode is an ORPHANED section, and nothing else would catch it.** A pane
+  can be listed in the nav while nothing renders under its `show('<id>')` gate: `tsc` sees
+  a used component, the build is clean, the tests pass, and a masjid simply cannot find
+  their Stripe keys any more. `test/settings-nav.test.ts` reads the source and fails if any
+  section id has no `show()`, if a nav label is missing (the nav would render the raw key),
+  or if any of the thirteen panels stops being rendered anywhere. It is mutation-checked —
+  orphaning a section really does fail it.
+- **Adding a section is three things or none:** an entry in `SECTIONS`, a `show('<id>')`
+  gate, and a `settings.nav.<id>` string. The test enforces all three in both directions,
+  so a removed section cannot leave a dead label behind either.
+- **Dialogs render OUTSIDE the panes.** Several are opened from one section and must
+  survive navigating away — the restore upload especially, which would abandon a file
+  mid-flight if a nav click unmounted it.
+- **Nav labels are written out, not built as `settings.nav.${id}`.** A key assembled at
+  runtime cannot be checked against `en.json`, and `i18n-keys.test.ts` caps dynamic keys at
+  two precisely because a missing key ships as the raw key on screen — which it once did,
+  in the WhatsApp panel. Satisfy that guard rather than raising its bound.
+- **WhatsApp carries its own Setup / Groups / Commands strip**, local state rather than the
+  URL: they are three views of one connection, and `/settings/whatsapp` is already the link
+  anything outside the panel wants. The strip appears only once a phone is linked, because
+  Groups and Commands error before that — three tabs where two fail is worse than none.
+- **"Update all apps" reuses the per-app stream, one app at a time** (`UpdateAllApps`,
+  offered on the dashboard when more than one **version** update is waiting). Same
+  reasoning as `ChannelMigrate`: `/api/apps/update` already re-runs the compose risk gate,
+  preserves the volumes and `.env`, and **verifies the container stayed up** rather than
+  trusting `compose up` exiting 0 — a bulk endpoint would be a second implementation of all
+  of it, and the startup check is exactly what you would not notice was missing. Sequential
+  because simultaneous recreation takes the display, the donations page and the kiosk down
+  together. Channel moves are excluded: they are Settings → Updates' job, which also brings
+  the OS across, and doing half of that here leaves the mixed-channel state §13.4 exists to
+  prevent.
 
 ## 14. Design system & theming (this is a priority — make it feel premium)
 

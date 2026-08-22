@@ -80,12 +80,11 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
           // Sized to its own content, NOT to a number someone picked by eye. A fixed
           // width was wrong twice here — 9.5rem clipped the old full country names, and
           // the 7.5rem that replaced it still clipped `US/CA (+1)` once the dropdown
-          // arrow and the input's padding took their share. It would have gone wrong a
-          // third time regardless of the value chosen, because these labels are
-          // translated: "Other country" is longer in Arabic and Urdu, and a width that
-          // fits English is not a width that fits every locale the UI must render in.
-          // `auto` asks the browser to fit the widest option, which is the actual
-          // requirement; the floor just stops it collapsing to nothing.
+          // arrow and the input's padding took their share. Guessing a third number
+          // would only have moved the guess: the arrow's width and the input padding are
+          // the browser's business, not something this file can know. `auto` asks it to
+          // fit the widest option, which is the actual requirement; the floor stops the
+          // control collapsing if the list is ever trimmed to short labels.
           style={{ inlineSize: 'auto', minInlineSize: '9rem', flex: '0 0 auto' }}
           value={dial}
           disabled={disabled}

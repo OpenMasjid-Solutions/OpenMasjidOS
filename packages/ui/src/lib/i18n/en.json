@@ -748,7 +748,22 @@
     "whatsappUnlinkCost": "Your gateway key and approved groups are kept, so linking another number is just a new code — nothing else to set up.",
     "whatsappUnlinkConfirm": "Unlink it",
     "whatsappUnlinked": "That number has been unlinked.",
-    "whatsappUnlinkUnconfirmed": "The connection was stopped, but WhatsApp did not confirm the phone was unlinked. Open WhatsApp on that phone → Settings → Linked devices and remove it there."
+    "whatsappUnlinkUnconfirmed": "The connection was stopped, but WhatsApp did not confirm the phone was unlinked. Open WhatsApp on that phone → Settings → Linked devices and remove it there.",
+    "nav": {
+      "appearance": "Appearance",
+      "account": "Account",
+      "email": "Email",
+      "whatsapp": "WhatsApp",
+      "alerts": "Alerts",
+      "payments": "Payments",
+      "remote": "Remote access",
+      "advanced": "Advanced"
+    },
+    "whatsappTab": {
+      "setup": "Setup",
+      "groups": "Groups",
+      "commands": "Commands"
+    }
   },
   "update": {
     "title": "Updating OpenMasjidOS",
@@ -791,5 +806,15 @@
     "notFoundHint": "The page you're looking for doesn't exist.",
     "goHome": "Go to Dashboard",
     "boundary": "Something went wrong here. Try closing and reopening this window."
+  },
+  "updateAll": {
+    "title": "Updating your apps",
+    "button_one": "Update {{count}} app",
+    "button_other": "Update all {{count}} apps",
+    "progress": "Updating {{name}} — {{current}} of {{total}}…",
+    "done_one": "{{count}} app updated.",
+    "done_other": "All {{count}} apps updated.",
+    "nothing": "Everything is already up to date.",
+    "checkAbove": "If an app had trouble starting again, the reason is in the messages above."
   }
 }

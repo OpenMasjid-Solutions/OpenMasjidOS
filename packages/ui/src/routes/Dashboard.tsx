@@ -16,6 +16,7 @@ import { StatCard } from '../components/StatCard';
 import { AppCard } from '../components/AppCard';
 import { UpdateModal } from '../components/UpdateModal';
 import { AppUpdate } from '../components/AppUpdate';
+import { UpdateAllApps } from '../components/UpdateAllApps';
 import { useWindows } from '../components/Windows';
 import { Page } from '../components/Page';
 import { MasjidMark } from '../components/Glyphs';
@@ -87,6 +88,10 @@ export function Dashboard() {
   // App updates — same idea as the core check: surface them right on the dashboard.
   const appUpdatesQ = trpc.apps.updates.useQuery(undefined, { refetchInterval: 21_600_000 });
   const appUpdates = appUpdatesQ.data ?? [];
+  // Genuine version upgrades only — a channel move is a different operation with a
+  // different follow-up (the OS has to move too, which only Settings → Updates does),
+  // so it must not be swept into "Update all" from here.
+  const versionUpdates = appUpdates.filter((u) => u.reason === 'version');
   const windows = useWindows();
   function openAppUpdate(u: { id: string; name: string }) {
     // Locked until it finishes — same rule as the app card and the core updater: an
@@ -99,6 +104,28 @@ export function Dashboard() {
       locked: true,
       icon: <Download size={15} />,
       node: <AppUpdate id={u.id} name={u.name} onDone={() => windows.setLocked(winId, false)} />,
+    });
+  }
+
+  /**
+   * Update every app that has a genuine version update, in one window.
+   *
+   * Channel moves are deliberately EXCLUDED. They are already driven by "Update all" in
+   * Settings → Updates, which also brings the OS across afterwards; running them from
+   * here would do half that job and leave the platform on the other channel's image —
+   * the mixed state the channel feature exists to prevent.
+   */
+  function openUpdateAll(list: { id: string; name: string }[]) {
+    let winId = -1;
+    winId = windows.open({
+      title: t('updateAll.title'),
+      dedupeKey: 'update:all-apps',
+      wide: true,
+      // Locked while it runs, same rule as every other update path: a window that can be
+      // closed can be started again over the top of the run already going.
+      locked: true,
+      icon: <Download size={15} />,
+      node: <UpdateAllApps apps={list} onDone={() => windows.setLocked(winId, false)} />,
     });
   }
 
@@ -226,6 +253,17 @@ export function Dashboard() {
                 ? t('dashboard.appPendingTitle', { count: appUpdates.length })
                 : t('dashboard.appUpdateTitle', { count: appUpdates.length })}
             </div>
+            {/* Only once there is more than one to do — a single "Update all" sitting
+                above a single app's own button is two buttons for one action. */}
+            {versionUpdates.length > 1 && (
+              <button
+                className="btn btn--sm btn--primary"
+                style={{ marginBlockStart: '0.5rem' }}
+                onClick={() => openUpdateAll(versionUpdates)}
+              >
+                <Download size={14} /> {t('updateAll.button', { count: versionUpdates.length })}
+              </button>
+            )}
             <div className="warn-banner__body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.35rem' }}>
               {appUpdates.map((u) => (
                 <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
