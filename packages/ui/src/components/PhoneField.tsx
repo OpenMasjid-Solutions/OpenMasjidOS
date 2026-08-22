@@ -77,9 +77,16 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
       <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
         <select
           className="input glass-inset"
-          // Narrow, because it now holds `US/CA (+1)` rather than a full country name.
-          // The room this gives back goes to the number, which is the part being read.
-          style={{ inlineSize: '7.5rem', flex: '0 0 auto' }}
+          // Sized to its own content, NOT to a number someone picked by eye. A fixed
+          // width was wrong twice here — 9.5rem clipped the old full country names, and
+          // the 7.5rem that replaced it still clipped `US/CA (+1)` once the dropdown
+          // arrow and the input's padding took their share. It would have gone wrong a
+          // third time regardless of the value chosen, because these labels are
+          // translated: "Other country" is longer in Arabic and Urdu, and a width that
+          // fits English is not a width that fits every locale the UI must render in.
+          // `auto` asks the browser to fit the widest option, which is the actual
+          // requirement; the floor just stops it collapsing to nothing.
+          style={{ inlineSize: 'auto', minInlineSize: '9rem', flex: '0 0 auto' }}
           value={dial}
           disabled={disabled}
           onChange={(e) => setDial(e.target.value)}

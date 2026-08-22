@@ -93,11 +93,12 @@ test('an empty number renders as nothing, never a lone +', () => {
   assert.equal(formatPhone('abc'), '');
 });
 
-test('the country picker labels stay short enough for a fixed-width box', () => {
+test('the country picker labels stay short', () => {
   for (const c of COUNTRIES) {
     const shown = `${c.short ?? c.iso} (+${c.dial})`;
-    // The select is 7.5rem. Names like "United Arab Emirates +971" were being clipped
-    // mid-word, which reads as broken rather than as abbreviated.
+    // The select sizes itself to its widest option, so a long label no longer CLIPS —
+    // it pushes the number field along instead, which on a narrow screen is its own kind
+    // of broken. Keeping every label to an acronym is what keeps the row compact.
     assert.ok(shown.length <= 12, `"${shown}" is too long for the picker`);
     assert.match(shown, /^[A-Z/]{2,5} \(\+\d{1,4}\)$/, `"${shown}" is not "XX (+N)" shaped`);
   }
