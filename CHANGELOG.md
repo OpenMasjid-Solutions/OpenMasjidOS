@@ -13,6 +13,13 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — WhatsApp gap reporting, after feedback from the apps**
+
+- **The record of a gap now survives being fixed.** It could only be read while the connection was still down — and re-linking the phone cleared it — so an app looking for what it had missed found nothing, which is exactly when it would look. Gaps are now kept for a week after they end.
+- **A message held during an outage keeps its record.** Records were kept for a day counting from when a message was queued, so a message held longer than that lost its record while it was still waiting to be sent, and an app asking about it was told the message was unknown. Records for messages still waiting are now kept for as long as they wait.
+- **Apps can now see exactly which messages were affected**, not only how many, so an app that keeps its own log can match them up precisely instead of guessing from a time range. The reason for the outage is included too, so an app can word its own message accurately.
+- Smaller: a "too many requests" reply from two of the app-facing endpoints now says so, instead of looking like an ordinary empty result.
+
 **Fixed — WhatsApp signing your phone out no longer goes unnoticed**
 
 - **OpenMasjidOS now checks every five minutes that WhatsApp can actually be reached**, and tells you by email, webhook and a banner on the dashboard the moment it cannot. WhatsApp sometimes signs a linked device out on its own — the same thing that happens to WhatsApp Desktop — and until now nothing noticed: your apps were told their messages had been accepted, the gateway accepted them, and they were recorded as sent while never arriving.

@@ -269,7 +269,7 @@ test('the suspect-window route is GET-only, on the read budget, and scoped to th
   const routes = fabric.slice(fabric.indexOf('const READ_ONLY_ROUTES'), fabric.indexOf('const READ_ONLY_ROUTES') + 300);
   assert.match(routes, /whatsapp\/suspect/);
   const route = fabric.slice(fabric.indexOf("server.get('/api/fabric/whatsapp/suspect'"));
-  assert.match(route, /outcomesInWindow\([^)]*app\.id\)/, "an app may only see its own traffic");
+  assert.match(route, /suspectWindowsFor\(app\.id\)/, 'an app may only see its own traffic');
   assert.match(route, /app\.whatsapp/, 'and must hold the whatsapp capability');
 });
 
@@ -280,4 +280,105 @@ test('the send path no longer claims a message was "delivered"', () => {
   // like success in the logs too.
   assert.doesNotMatch(wa, /WhatsApp: delivered \$\{/, 'the log must not overstate what happened');
   assert.match(wa, /the gateway accepted/);
+});
+
+// ── what the four app teams found ────────────────────────────────────────────────
+
+test('A HELD MESSAGE KEEPS ITS OUTCOME RECORD, however long it is held', () => {
+  // The Display app's question, which turned out to be a real gap: the 24h retention runs
+  // from the last STATE CHANGE, and a queued record's is its enqueue time — never
+  // refreshed while it waits. So a message held through a two-day outage had its outcome
+  // evicted before it was ever sent, and `/status/:id` began answering 404 ("unknown") for
+  // a message still sitting in the queue. Survivable when queues drained in seconds; not
+  // now that an outage holds messages for days.
+  const now = Date.now();
+  const threeDaysAgo = now - 3 * 24 * 3_600_000;
+  const kept = qstore.trimOutcomes(
+    [
+      { id: 'held', source: 'display', state: 'queued', at: threeDaysAgo, targetKind: 'group' },
+      { id: 'done', source: 'display', state: 'sent', at: threeDaysAgo, targetKind: 'group' },
+    ],
+    now,
+  );
+  const ids = kept.map((o) => o.id);
+  assert.ok(ids.includes('held'), 'a still-queued message must keep its handle');
+  assert.ok(!ids.includes('done'), 'a settled record older than a day is still pruned');
+});
+
+test('exempting queued records does not make them unbounded', () => {
+  // Age-exempt, but still subject to the COUNT caps — otherwise a paused queue during a
+  // long outage would grow the file without limit.
+  const now = Date.now();
+  const many = Array.from({ length: 900 }, (_, i) => ({
+    id: `q${i}`,
+    source: 'students',
+    state: 'queued' as const,
+    at: now - 10 * 24 * 3_600_000,
+    targetKind: 'person',
+  }));
+  const kept = qstore.trimOutcomes(many, now);
+  assert.ok(kept.length <= 500, `per-source cap must still apply, got ${kept.length}`);
+});
+
+test('SUSPECT WINDOWS SURVIVE RECOVERY — the moment apps actually come looking', () => {
+  // The Kiosk app's finding, and a real design fault: the route answered only while
+  // `down` was true, and relinking clears that. So the evidence disappeared exactly when
+  // an admin had just fixed things and every app went to ask what it had missed.
+  const mon = read('system', 'whatsapp-monitor.ts');
+  const clear = mon.slice(mon.indexOf('export function clearWhatsAppIncident'));
+  assert.match(clear, /\.\.\.s,/, 'clearing an incident must carry the history forward');
+
+  const fabric = read('api', 'fabric.ts');
+  const route = fabric.slice(fabric.indexOf("server.get('/api/fabric/whatsapp/suspect'"));
+  assert.doesNotMatch(route.slice(0, 1200), /health\.down/, 'the route must not gate on the incident still being open');
+  assert.match(route, /suspectWindowsFor\(app\.id\)/, 'and must still be scoped to the caller');
+});
+
+test('the evidence is snapshotted at detection, not recomputed later', () => {
+  // The outcome ring only keeps 24h, so computing the per-app counts on demand would have
+  // answered "0 messages" to anyone asking two days later — which reads as an all-clear.
+  const mon = read('system', 'whatsapp-monitor.ts');
+  const snap = mon.indexOf('const suspect = lastKnownGood ? outcomesInWindow');
+  const save = mon.indexOf('save({ down: true');
+  assert.ok(snap > 0 && save > 0 && snap < save, 'snapshot before persisting the incident');
+  assert.match(mon, /perSource: suspect/, 'the counts are stored on the incident');
+});
+
+test('a retained incident is bounded in age and number', () => {
+  const mon = read('system', 'whatsapp-monitor.ts');
+  assert.match(mon, /INCIDENT_RETENTION_MS/);
+  assert.match(mon, /MAX_INCIDENTS/);
+  // Long enough for every app's poll cadence — the slowest is hourly — and for the 24h ring.
+  assert.match(mon, /7 \* 24 \* 3_600_000/, 'a week comfortably outlives every consumer poll');
+});
+
+test('a window carries message ids and an honest truncation flag', () => {
+  // Requested by Donations, for apps that keep a per-message log and can reconcile exactly
+  // rather than approximately. Capped, and the cap is REPORTED rather than silently applied.
+  const wa = read('notify', 'whatsapp.ts');
+  const fn = wa.slice(wa.indexOf('export function outcomesInWindow'));
+  assert.match(fn, /ids: string\[\]/);
+  assert.match(fn, /truncated/);
+  assert.match(fn, /MAX_IDS/, 'ids must be capped so one roster run cannot bloat the file');
+});
+
+test('a machine-readable cause rides along, so apps need not parse prose', () => {
+  const mon = read('system', 'whatsapp-monitor.ts');
+  assert.match(mon, /export type LinkFailureCause/);
+  // 'unknown' must exist so a future cause cannot break a consumer's switch.
+  assert.match(mon, /'unknown'/);
+  for (const c of ['session-expired', 'needs-relink', 'key-rejected']) {
+    assert.match(mon, new RegExp(`'${c}'`), `${c} must be a possible cause`);
+  }
+});
+
+test('the suspect route states ok explicitly, so an error body cannot read as an all-clear', () => {
+  // Students' point: a 429 or 403 body that looks like the success shape is an all-clear to
+  // any caller that does not check the status code. /groups had exactly that trap.
+  const fabric = read('api', 'fabric.ts');
+  const route = fabric.slice(fabric.indexOf("server.get('/api/fabric/whatsapp/suspect'"));
+  assert.match(route.slice(0, 1200), /ok: true/);
+  // And the precedent they named is fixed too.
+  const groups = fabric.slice(fabric.indexOf("server.get('/api/fabric/whatsapp/groups'"));
+  assert.match(groups.slice(0, 900), /429\)\.send\(\{ groups: \[\], error:/, 'a 429 must say why');
 });

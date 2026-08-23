@@ -58,6 +58,42 @@ const AUTH_FAILS_MEAN_DEAD = 3;
 
 const STATE_PATH = path.join(CONFIG_DIR, 'whatsapp-health.json');
 
+/**
+ * A machine-readable cause, so an app can word its own message accurately instead of
+ * inferring one from prose. Requested by the Donations app. `unknown` exists so a future
+ * cause never breaks a consumer's switch.
+ */
+export type LinkFailureCause = 'session-expired' | 'needs-relink' | 'key-rejected' | 'unknown';
+
+/**
+ * A finished or ongoing outage, kept AFTER it is fixed.
+ *
+ * This is the Kiosk app's finding, and it was a real design fault: the suspect route
+ * originally answered only while `down` was true, and relinking clears that — so the
+ * evidence disappeared at exactly the moment somebody went looking for what they had
+ * missed. A consumer's whole job (cross-reference, decide, act) happens AFTER recovery.
+ *
+ * The per-app evidence is SNAPSHOTTED when the incident is confirmed, not computed on
+ * demand, for a second reason: the outcome ring only keeps 24 hours, so a window read two
+ * days later would have answered "0 messages" and looked like an all-clear.
+ */
+export interface Incident {
+  /** Last moment the link was known good — the start of the blind window. */
+  from: number;
+  /** When the outage was confirmed. */
+  to: number;
+  cause: LinkFailureCause;
+  /** The human sentence, for the alert and the dashboard. */
+  reason: string;
+  /** Per app: how many of its messages were reported sent inside the window. */
+  perSource: { source: string; count: number; ids: string[]; truncated: boolean }[];
+}
+
+/** How long a resolved incident stays queryable. Comfortably longer than every app's poll
+ *  interval (the fastest is 15 min, the slowest hourly) and than the 24h outcome ring. */
+const INCIDENT_RETENTION_MS = 7 * 24 * 3_600_000;
+const MAX_INCIDENTS = 5;
+
 interface HealthState {
   /** Whether we are currently in a declared incident. */
   down?: boolean;
@@ -67,9 +103,24 @@ interface HealthState {
   lastKnownGood?: number | null;
   /** Short reason, for the alert and the UI. */
   reason?: string | null;
+  cause?: LinkFailureCause | null;
+  /** Recent outages, newest last. Kept after recovery — see `Incident`. */
+  incidents?: Incident[];
 }
 
-const EMPTY: HealthState = { down: false, detectedAt: null, lastKnownGood: null, reason: null };
+const EMPTY: HealthState = {
+  down: false,
+  detectedAt: null,
+  lastKnownGood: null,
+  reason: null,
+  cause: null,
+  incidents: [],
+};
+
+/** Drop incidents that are too old, and cap how many are kept. */
+function pruneIncidents(list: Incident[], now: number): Incident[] {
+  return list.filter((i) => now - i.to <= INCIDENT_RETENTION_MS).slice(-MAX_INCIDENTS);
+}
 
 /**
  * Held in memory, not re-read per call.
@@ -98,31 +149,51 @@ function save(state: HealthState): void {
 let lastVerdict: 'alive' | 'dead' | null = null;
 
 /** `true` = link is good, `false` = link is dead, `null` = could not tell. */
-async function assess(): Promise<{ alive: boolean | null; reason: string }> {
+async function assess(): Promise<{ alive: boolean | null; reason: string; cause: LinkFailureCause }> {
   // 1. The send path's own evidence. A run of 401/403s means messages are being dropped
   //    right now, which is worth acting on without waiting for the probe to agree.
   const signals = sendPathSignals();
   if (signals.authFailures >= AUTH_FAILS_MEAN_DEAD) {
-    return { alive: false, reason: 'the gateway kept rejecting our key while sending' };
+    return {
+      alive: false,
+      reason: 'the gateway kept rejecting our key while sending',
+      cause: 'key-rejected',
+    };
   }
 
   // 2. The real probe — a question that has to reach WhatsApp.
   const probe = await probeLink();
-  if (probe.alive === false) return { alive: false, reason: probe.detail ?? 'the link is down' };
+  if (probe.alive === false) {
+    return {
+      alive: false,
+      reason: probe.detail ?? 'the link is down',
+      cause: probe.detail?.includes('key') ? 'key-rejected' : 'session-expired',
+    };
+  }
 
   // 3. The session row, for the states it genuinely detects. Its `ready` proves nothing,
   //    so it is only ever read for BAD news.
   const status = await gatewayStatus();
-  if (status.state === 'no-session') return { alive: false, reason: 'the WhatsApp session no longer exists' };
-  if (status.state === 'pending') return { alive: false, reason: 'the gateway is asking to be linked again' };
-  if (status.state === 'bad-key') return { alive: false, reason: 'the gateway rejected our key' };
+  if (status.state === 'no-session') {
+    return { alive: false, reason: 'the WhatsApp session no longer exists', cause: 'session-expired' };
+  }
+  if (status.state === 'pending') {
+    return { alive: false, reason: 'the gateway is asking to be linked again', cause: 'needs-relink' };
+  }
+  if (status.state === 'bad-key') {
+    return { alive: false, reason: 'the gateway rejected our key', cause: 'key-rejected' };
+  }
   if (status.state === 'problem') {
-    return { alive: false, reason: `the gateway reports "${status.detail || 'a problem'}"` };
+    return {
+      alive: false,
+      reason: `the gateway reports "${status.detail || 'a problem'}"`,
+      cause: 'session-expired',
+    };
   }
 
   // A successful probe is the only positive signal worth anything.
-  if (probe.alive === true) return { alive: true, reason: 'ok' };
-  return { alive: null, reason: probe.detail ?? 'could not tell' };
+  if (probe.alive === true) return { alive: true, reason: 'ok', cause: 'unknown' };
+  return { alive: null, reason: probe.detail ?? 'could not tell', cause: 'unknown' };
 }
 
 async function tick(): Promise<void> {
@@ -133,7 +204,7 @@ async function tick(): Promise<void> {
     return;
   }
 
-  const { alive, reason } = await assess();
+  const { alive, reason, cause } = await assess();
 
   // "Could not ask" is not an answer. Do not alert, do not clear an incident, do not let it
   // count towards the two agreeing ticks — otherwise a flaky uplink pauses a real queue.
@@ -152,7 +223,16 @@ async function tick(): Promise<void> {
     // Recovery. Clear the incident so the NEXT one alerts again. The queue stays paused on
     // purpose — a backlog must be released deliberately, not the moment the link returns.
     if (state.down && agreed) {
-      save({ down: false, detectedAt: null, lastKnownGood: Date.now(), reason: null });
+      // The incident stays in `incidents` — recovery is when apps come looking, so erasing
+      // it here is what made the endpoint answer "nothing happened" to everyone who asked.
+      save({
+        ...state,
+        down: false,
+        detectedAt: null,
+        lastKnownGood: Date.now(),
+        reason: null,
+        cause: null,
+      });
       log.info('WhatsApp health: the link is back. The held queue still needs releasing in Settings.');
     } else if (!state.down) {
       // Keep the last-known-good moving so the blind window stays tight when it does break.
@@ -173,10 +253,18 @@ async function tick(): Promise<void> {
   const lastKnownGood = state.lastKnownGood ?? null;
   if (!isQueuePaused()) pauseQueue(reason);
 
-  // Persist BEFORE alerting: a crash mid-send must not re-alert on the next boot.
-  save({ down: true, detectedAt, lastKnownGood, reason });
-
+  // Snapshot the evidence NOW. The outcome ring only holds 24 hours, so computing this on
+  // demand would have answered "0 messages" to anyone asking two days later — which reads
+  // as an all-clear. The set is closed at this moment anyway: the queue is paused above, so
+  // nothing further can be reported sent into this window.
   const suspect = lastKnownGood ? outcomesInWindow(lastKnownGood, detectedAt) : [];
+  const incidents = pruneIncidents(
+    [...(state.incidents ?? []), { from: lastKnownGood ?? detectedAt, to: detectedAt, cause, reason, perSource: suspect }],
+    detectedAt,
+  );
+
+  // Persist BEFORE alerting: a crash mid-send must not re-alert on the next boot.
+  save({ down: true, detectedAt, lastKnownGood, reason, cause, incidents });
   const copy = whatsappLinkLost({
     reason,
     held: queueDepth(),
@@ -204,7 +292,37 @@ export function whatsAppHealth(): Required<HealthState> {
     detectedAt: s.detectedAt ?? null,
     lastKnownGood: s.lastKnownGood ?? null,
     reason: s.reason ?? null,
+    cause: s.cause ?? null,
+    incidents: s.incidents ?? [],
   };
+}
+
+/**
+ * The windows in which THIS app's messages may not have arrived.
+ *
+ * Answers after recovery as well as during an outage — that is the whole point, and the
+ * original version's failure. Scoped to the caller: an app never learns another app's
+ * counts or ids.
+ */
+export function suspectWindowsFor(
+  appId: string,
+  now = Date.now(),
+): { from: number; to: number; cause: LinkFailureCause; count: number; ids: string[]; truncated: boolean }[] {
+  const s = load();
+  const out = [];
+  for (const inc of pruneIncidents(s.incidents ?? [], now)) {
+    const mine = inc.perSource.find((x) => x.source === appId);
+    if (!mine || mine.count === 0) continue;
+    out.push({
+      from: inc.from,
+      to: inc.to,
+      cause: inc.cause ?? 'unknown',
+      count: mine.count,
+      ids: mine.ids ?? [],
+      truncated: mine.truncated === true,
+    });
+  }
+  return out;
 }
 
 /** Clear a declared incident — used when the admin relinks or releases the queue, so the
@@ -212,7 +330,16 @@ export function whatsAppHealth(): Required<HealthState> {
 export function clearWhatsAppIncident(): void {
   const s = load();
   if (!s.down) return;
-  save({ down: false, detectedAt: null, lastKnownGood: Date.now(), reason: null });
+  // `incidents` is deliberately carried over: this runs when the admin RELINKS or releases
+  // the queue, which is exactly when their apps start asking what they missed.
+  save({
+    ...s,
+    down: false,
+    detectedAt: null,
+    lastKnownGood: Date.now(),
+    reason: null,
+    cause: null,
+  });
   lastVerdict = null;
 }
 

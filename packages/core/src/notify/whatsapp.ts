@@ -1207,14 +1207,32 @@ export function heldSummary(): {
  * outcome is written). Those are unrecoverable HERE by construction, so the honest thing is
  * to say which apps sent how many and when, and let each app decide from its own records.
  */
-export function outcomesInWindow(from: number, to: number, source?: string): { source: string; count: number }[] {
-  const bySource = new Map<string, number>();
+export function outcomesInWindow(
+  from: number,
+  to: number,
+  source?: string,
+): { source: string; count: number; ids: string[]; truncated: boolean }[] {
+  // Ids as well as counts, at the Donations app's request: an app keeping a per-message log
+  // can then reconcile exactly ("these 9 invoices") rather than approximately ("9 messages
+  // somewhere in this 3-hour window"). It costs no extra retention — these ids are already
+  // in the outcome ring — but it is capped per source so one roster run cannot make the
+  // health file enormous, and the cap is REPORTED rather than silently applied.
+  const MAX_IDS = 500;
+  const bySource = new Map<string, { count: number; ids: string[] }>();
   for (const o of outcomes) {
     if (o.state !== 'sent' || o.at < from || o.at > to) continue;
     if (source && o.source !== source) continue;
-    bySource.set(o.source, (bySource.get(o.source) ?? 0) + 1);
+    let e = bySource.get(o.source);
+    if (!e) {
+      e = { count: 0, ids: [] };
+      bySource.set(o.source, e);
+    }
+    e.count += 1;
+    if (e.ids.length < MAX_IDS) e.ids.push(o.id);
   }
-  return [...bySource.entries()].map(([s2, count]) => ({ source: s2, count })).sort((a, b) => b.count - a.count);
+  return [...bySource.entries()]
+    .map(([s2, e]) => ({ source: s2, count: e.count, ids: e.ids, truncated: e.count > e.ids.length }))
+    .sort((a, b) => b.count - a.count);
 }
 
 /**

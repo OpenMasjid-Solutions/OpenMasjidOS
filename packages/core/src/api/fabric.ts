@@ -34,7 +34,7 @@ import {
   MAX_MEDIA_BYTES,
   type OutgoingMedia,
 } from '../notify/whatsapp';
-import { whatsAppHealth } from '../system/whatsapp-monitor';
+import { suspectWindowsFor } from '../system/whatsapp-monitor';
 
 /**
  * Body cap for the WhatsApp send route: 4 MB of JSON for a 2 MB image.
@@ -435,13 +435,13 @@ export function registerFabric(server: FastifyInstance): void {
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
     if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
-    const health = whatsAppHealth();
-    if (!health.down || !health.lastKnownGood || !health.detectedAt) return reply.send({ windows: [] });
-    const mine = outcomesInWindow(health.lastKnownGood, health.detectedAt, app.id);
-    const count = mine.reduce((sum: number, m: { count: number }) => sum + m.count, 0);
-    return reply.send({
-      windows: count > 0 ? [{ from: health.lastKnownGood, to: health.detectedAt, count }] : [],
-    });
+    // Retained for a week AFTER recovery, not only while the link is down. The first cut
+    // answered only during an outage, and relinking clears that — so the evidence vanished
+    // at the exact moment an app went looking for what it had missed. Reported by Kiosk.
+    //
+    // `ok` is stated explicitly so a caller that does not check the status code cannot read
+    // a 403 or 429 body as an all-clear (the trap Students pointed out on /groups).
+    return reply.send({ ok: true, windows: suspectWindowsFor(app.id) });
   });
 
   server.get<{ Params: { id: string } }>('/api/fabric/whatsapp/status/:id', async (req, reply) => {
@@ -463,7 +463,10 @@ export function registerFabric(server: FastifyInstance): void {
    * ever a label and an opaque id.
    */
   server.get('/api/fabric/whatsapp/groups', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [] });
+    // An `error` field on the 429, because `{groups: []}` alone is indistinguishable from
+    // "you have no approved groups" to a caller that does not check the status code — and
+    // the Students app pointed out that this route is the precedent other consumers copy.
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [], error: 'Too many requests.' });
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
     if (!app || !app.whatsapp) {

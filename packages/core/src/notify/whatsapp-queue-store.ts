@@ -229,7 +229,25 @@ export function capOutcomes(all: OutcomeRecord[]): OutcomeRecord[] {
  * enforces the count caps that stop the file growing.
  */
 export function trimOutcomes(all: OutcomeRecord[], now: number): OutcomeRecord[] {
-  return capOutcomes(all.filter((o) => typeof o.at !== 'number' || now - o.at <= OUTCOME_MAX_AGE_MS));
+  return capOutcomes(
+    all.filter((o) => {
+      // A `queued` record is NOT settled, and its `at` is the moment it was enqueued —
+      // never refreshed while it waits. Age-pruning it evicted the outcome of a message
+      // that had not been sent yet, so `/status/:id` began answering 404 ("unknown") for a
+      // message still sitting in the queue, and the app lost its only handle on it. That
+      // was survivable while a queue drained in seconds; now that an outage HOLDS messages
+      // for days, it is the difference between "still waiting" and "vanished".
+      //
+      // Reported by the Display app, which asked the exact right question: does the 24h
+      // run from queueing or from settling? It runs from the last state change, so for a
+      // queued record it ran from queueing.
+      //
+      // Still bounded — `capOutcomes` applies the per-source and global COUNT caps to these
+      // as much as to any other record, so this cannot grow without limit.
+      if (o.state === 'queued') return true;
+      return typeof o.at !== 'number' || now - o.at <= OUTCOME_MAX_AGE_MS;
+    }),
+  );
 }
 
 /** Is this a plausible stored item? A hand-edited or truncated file must not crash boot. */
