@@ -462,7 +462,11 @@ button {
 
 /* ── Forms ──────────────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 0.4rem; margin-block-end: 1rem; }
-.label { font-size: 0.85rem; font-weight: 600; color: var(--color-ink-muted); }
+/* Block, because a bare <label> is inline: outside a .field (which is a flex column
+   and blockifies its children anyway) an inline label shares a line with whatever follows
+   it, and its margin-block is silently dropped. That put the backup-type label beside its
+   picker, and quietly lost the 0.6rem above the SSL paste boxes. */
+.label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--color-ink-muted); }
 .input,
 .textarea,
 .select {

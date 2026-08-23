@@ -2038,8 +2038,16 @@ function WhatsAppPanel() {
 
       {/* Setup / Groups / Commands. Reuses the `segmented` control the theme picker
           uses, so this reads as the same kind of choice rather than a new pattern. */}
+      {/* The wrapper is load-bearing, not decoration. `.segmented` is `display:inline-flex`
+          and `Toggle` renders a bare <button>, which is inline-block — both inline-level,
+          so they shared a LINE and the strip sat jammed against the on/off switch. The
+          `marginBlock` was applied (it does take effect on an inline-flex box) but moved
+          the whole line rather than separating the two, which is why it looked ignored.
+          Every other `.segmented` in this file already sits in a block container; this one
+          was the exception. */}
       {on && waLinked && (
-        <div className="segmented glass-inset" role="tablist" style={{ marginBlock: '0.9rem' }}>
+        <div style={{ marginBlock: '0.9rem' }}>
+        <div className="segmented glass-inset" role="tablist">
           {/* Literal keys, for the same reason as the section nav above. */}
           {(
             [
@@ -2058,6 +2066,7 @@ function WhatsAppPanel() {
               {tab.label}
             </button>
           ))}
+        </div>
         </div>
       )}
 
