@@ -1774,6 +1774,10 @@ function WhatsAppPanel() {
   // one connection, not three places — and the section itself is already addressable as
   // /settings/whatsapp, which is the link anything outside this panel actually wants.
   const [waTab, setWaTab] = useState<'setup' | 'groups' | 'commands'>('setup');
+  // What is being held while the link is down. Polled a little faster than the status
+  // query, because during an outage this is the number the admin is actually watching.
+  const held = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 60_000 });
+  const [askDiscard, setAskDiscard] = useState(false);
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
   // The pairing code stops being useful the instant the phone is linked, and leaving
@@ -1883,6 +1887,22 @@ function WhatsAppPanel() {
       if (confirmed) toast(t('settings.whatsappUnlinked'), 'success');
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const releaseHeld = trpc.whatsapp.releaseHeld.useMutation({
+    onSuccess: (r) => {
+      toast(t('settings.whatsappHeldReleased', { count: r.released }), 'success');
+      utils.whatsapp.held.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const discardHeld = trpc.whatsapp.discardHeld.useMutation({
+    onSuccess: (r) => {
+      setAskDiscard(false);
+      toast(t('settings.whatsappHeldDiscarded', { count: r.discarded }), 'success');
+      utils.whatsapp.held.invalidate();
     },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
@@ -2328,6 +2348,85 @@ function WhatsAppPanel() {
         </div>
       )}
 
+      {/* Held messages, and the honest account of what happened.
+
+          Ungated on the tab, like the unlink warning below, because it must survive a
+          switch to Groups or Commands — an admin dealing with an outage should not lose
+          the count by clicking around. Shown whenever anything is held, not only during a
+          declared incident, so a backlog is never invisible. */}
+      {on && (held.data?.total ?? 0) > 0 && (
+        <div
+          className="glass-inset panel"
+          style={{
+            marginBlockStart: '0.9rem',
+            borderInlineStart: `3px solid var(--color-${held.data?.health.down ? 'danger' : 'gold, #F59E0B'})`,
+          }}
+        >
+          <div className="setting-row__title">
+            {held.data?.health.down
+              ? t('settings.whatsappHeldTitleDown')
+              : t('settings.whatsappHeldTitle')}
+          </div>
+          <div className="setting-row__hint" style={{ marginBlockStart: '0.2rem' }}>
+            {t('settings.whatsappHeldBody', { count: held.data?.total ?? 0 })}
+          </div>
+
+          {/* Per app, so an admin can see at a glance whose messages are waiting. Counts
+              only — no recipient and no message text is sent to the browser. */}
+          {(held.data?.bySource.length ?? 0) > 0 && (
+            <div className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+              {held.data?.bySource.map((b) => (
+                <div key={b.source}>
+                  {b.source} — {b.count}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* The uncomfortable half. These went out into a dead link and were recorded as
+              sent; OpenMasjidOS does not keep their contents, so it cannot resend them and
+              must not imply it can. */}
+          {(held.data?.suspect.length ?? 0) > 0 && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-danger)' }}>
+              {t('settings.whatsappHeldSuspect', {
+                count: held.data?.suspect.reduce((n, x) => n + x.count, 0) ?? 0,
+              })}
+            </p>
+          )}
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.7rem' }}>
+            <button
+              className="btn btn--primary"
+              disabled={releaseHeld.isPending || held.data?.health.down === true}
+              onClick={() => releaseHeld.mutate()}
+            >
+              {releaseHeld.isPending ? t('common.working') : t('settings.whatsappHeldResend')}
+            </button>
+            <button className="btn" disabled={discardHeld.isPending} onClick={() => setAskDiscard(true)}>
+              {t('settings.whatsappHeldDiscard')}
+            </button>
+          </div>
+          {/* Resending into a link that is still down would just refill the queue, so the
+              button waits for the connection rather than failing loudly. */}
+          {held.data?.health.down && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+              {t('settings.whatsappHeldRelinkFirst')}
+            </p>
+          )}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={askDiscard}
+        onClose={() => setAskDiscard(false)}
+        onConfirm={() => discardHeld.mutate()}
+        title={t('settings.whatsappHeldDiscardTitle')}
+        body={t('settings.whatsappHeldDiscardBody', { count: held.data?.total ?? 0 })}
+        cost={t('settings.whatsappHeldDiscardCost')}
+        confirmLabel={t('settings.whatsappHeldDiscard')}
+        pending={discardHeld.isPending}
+      />
+
       {/* An unconfirmed unlink, said where it can actually be read.
 
           This deliberately sits OUTSIDE the linked-number block above and is gated on
@@ -2388,6 +2487,9 @@ function WhatsAppPanel() {
         <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
           {/* One line per distinct state. "Gateway down", "nothing created yet" and
               "created but not linked" have different fixes, so they must read differently. */}
+          {/* The queue depth used to appear only inside the "ready" sentence, so in every
+              state where a backlog was actually piling up it was invisible. It is now
+              appended to whatever the state sentence says. */}
           {s.state === 'ready'
             ? t('settings.whatsappStateReady', { queued: s.queued })
             : s.state === 'pending'

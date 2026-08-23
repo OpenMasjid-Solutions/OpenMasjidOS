@@ -33,6 +33,7 @@ import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
 import { startStripeMonitor } from './system/stripe-monitor';
+import { startWhatsAppMonitor } from './system/whatsapp-monitor';
 import { setInboundHandler, startWhatsAppInbound } from './notify/whatsapp-inbound';
 import { restoreWhatsAppQueue } from './notify/whatsapp';
 import { handleInboundCommand } from './commands/execute';
@@ -323,6 +324,13 @@ async function main() {
   // rather than taking a webhook because a dispute belongs to the ACCOUNT that
   // several apps share, and because a webhook would need a public platform route.
   startStripeMonitor();
+
+  // Notice when WhatsApp signs the masjid's phone out, hold the queue, and say so by
+  // email and webhook. It probes a route that has to REACH WhatsApp rather than reading
+  // OpenWA's cached session word — a session logged out at WhatsApp's end goes on
+  // reporting 'ready', which is how an outage once went unnoticed with every message
+  // recorded as sent. No-op until a phone has actually been linked.
+  startWhatsAppMonitor();
 
   // Keep installed apps pointed at this machine's CURRENT address. Moving the box
   // to a new subnet used to leave every app calling the old IP forever, because

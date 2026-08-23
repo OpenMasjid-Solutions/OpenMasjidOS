@@ -51,5 +51,8 @@ test('only bounded in-memory reads are on the read allow-list', () => {
   // an outbound fetch) must not inherit the loose budget just for being a GET.
   const list = src.slice(src.indexOf('READ_ONLY_ROUTES = ['), src.indexOf(']', src.indexOf('READ_ONLY_ROUTES = [')));
   const routes = [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(routes, ['/api/fabric/whatsapp/status/']);
+  // `/suspect` qualifies for the same reason `/status/` does: it answers from the
+  // in-memory incident state and the in-memory outcome ring. It does NOT probe the gateway
+  // — if it ever did, it would have to come off this list.
+  assert.deepEqual(routes, ['/api/fabric/whatsapp/suspect', '/api/fabric/whatsapp/status/']);
 });

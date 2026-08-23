@@ -104,6 +104,38 @@ switching to a different handset is one new pairing code and nothing else.
 Backups taken before a delete still contain these settings; deleting does not reach into
 archives you have already downloaded.
 
+### When WhatsApp signs your phone out
+
+WhatsApp sometimes signs a linked device out on its own — the same thing that happens to
+WhatsApp Desktop after a while, even when you are using it every day. It is not something
+OpenMasjidOS can prevent, and re-linking cannot be automated because the code has to be
+typed into the phone.
+
+What it *can* do is notice quickly and lose nothing.
+
+- **It checks every five minutes**, by asking the gateway something that has to reach
+  WhatsApp. It deliberately does not trust the gateway's own "ready" flag: a session that
+  WhatsApp has signed out can go on reporting itself as ready, which is exactly how an
+  outage once went unnoticed with every message recorded as sent.
+- **You get an email and a webhook notification**, and a banner on the dashboard. Never a
+  WhatsApp message, for obvious reasons — that option is not even offered for this alert.
+- **Messages stop and are held, not lost.** Anything waiting keeps its place. The 24-hour
+  limit on how long a message may wait counts only time the connection was *working*, so a
+  weekend-long outage does not quietly throw away Friday's messages.
+- **Nothing sends again until you say so.** Once you re-link the phone, Settings → WhatsApp
+  shows how many are waiting and which apps they came from, with a **Send them now** button
+  and a **Discard them** button. It does not release them automatically: a large backlog
+  going out one after another from a number that has just been re-linked is the single
+  behaviour most likely to get it restricted, so the decision is yours.
+
+> **The part we cannot fix.** Messages sent in the gap between the link dying and
+> OpenMasjidOS noticing were accepted by the gateway and recorded as sent. OpenMasjidOS does
+> not keep message contents once a message has been handed over — that is deliberate, so a
+> child's name and a family's fees are not sitting on disk longer than they must be — so it
+> genuinely cannot re-send those. The alert and the Settings panel tell you the period and
+> how many each app sent, so you can check in the app that sent them. Apps can read the same
+> thing from `GET /api/fabric/whatsapp/suspect` and re-send from their own records.
+
 ## Groups
 
 **One message to a group reaches everyone in it.** For an announcement — "madrasa is closed

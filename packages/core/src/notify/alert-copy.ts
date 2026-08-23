@@ -36,7 +36,7 @@ export interface AlertAction {
 }
 
 export interface AlertCopy {
-  alertId: 'app-offline' | 'core-update' | 'app-update' | 'stripe-chargeback';
+  alertId: 'app-offline' | 'core-update' | 'app-update' | 'stripe-chargeback' | 'whatsapp-link-lost';
   level: 'info' | 'warning' | 'error';
   /** The H1 and the subject. One short phrase. */
   title: string;
@@ -68,6 +68,62 @@ export function appOffline(name: string, id: string): AlertCopy {
 }
 
 /** A newer OpenMasjidOS release is available. */
+/**
+ * WhatsApp has signed the masjid's phone out and messages are not going anywhere.
+ *
+ * The copy has to carry three separate facts without becoming a wall: it is broken, N
+ * messages are safely held, and some earlier ones were reported sent but may never have
+ * arrived. The last is the uncomfortable one and it is stated plainly — the platform
+ * cannot resend those (their contents are gone by design) and pretending otherwise would
+ * be worse than admitting it.
+ *
+ * `summary` stays under 90 characters because it is the inbox snippet
+ * (test/email-render.test.ts), and the title under 78.
+ */
+export function whatsappLinkLost(info: {
+  reason: string;
+  held: number;
+  since: number | null;
+  detectedAt: number;
+  suspect: { source: string; count: number }[];
+}): AlertCopy {
+  const when = (t: number) => new Date(t).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  const suspectTotal = info.suspect.reduce((n, s2) => n + s2.count, 0);
+  const facts: AlertFact[] = [
+    { label: 'What happened', value: `WhatsApp signed this device out - ${info.reason}.` },
+    { label: 'Messages held', value: String(info.held) },
+  ];
+  if (info.since) facts.push({ label: 'Last known working', value: when(info.since) });
+  if (suspectTotal > 0) {
+    facts.push({
+      label: 'Reported sent but unconfirmed',
+      value:
+        `${suspectTotal} (` +
+        info.suspect.map((s2) => `${s2.source}: ${s2.count}`).join(', ') +
+        ') - these cannot be resent from OpenMasjidOS',
+    });
+  }
+  return {
+    alertId: 'whatsapp-link-lost',
+    level: 'error',
+    title: 'WhatsApp needs to be linked again',
+    // 89 chars at most, whatever the numbers.
+    summary: `WhatsApp is signed out, so messages are not going out. ${info.held} are waiting.`,
+    detail:
+      'Nothing has been lost: the messages waiting are kept and can be sent once you link the ' +
+      'phone again. Open OpenMasjidOS, go to Settings, choose WhatsApp, and link the number - ' +
+      'then press Resend. Messages listed above as unconfirmed went out before this was ' +
+      'noticed and may not have arrived; OpenMasjidOS does not keep their contents, so check ' +
+      'in the app that sent them.',
+    facts,
+    action: {
+      label: 'Open OpenMasjidOS',
+      note: 'Then go to Settings, choose WhatsApp, and link the phone again.',
+      path: '/settings/whatsapp',
+    },
+  };
+}
+
 export function coreUpdate(current: string, latest: string): AlertCopy {
   return {
     alertId: 'core-update',

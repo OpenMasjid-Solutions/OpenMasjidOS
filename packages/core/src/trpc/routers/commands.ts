@@ -24,7 +24,7 @@ import {
   setCommandsEnabled,
 } from '../../store/commands';
 import { isGrantable, listGrants, listNamespaces } from '../../commands/registry';
-import { inboundStatus } from '../../notify/whatsapp-inbound';
+import { inboundStatus, observedEventShapes } from '../../notify/whatsapp-inbound';
 import { gatewayTraffic } from '../../notify/whatsapp';
 import { menuText } from '../../commands/reply';
 import { getAdminName, getAdminPhone } from '../../auth/store';
@@ -65,6 +65,10 @@ export const commandsRouter = router({
   probe: protectedProcedure.mutation(async () => ({
     gateway: await gatewayTraffic(),
     inbound: inboundStatus(),
+    // The shapes of frames the filter discarded — key names only, never values. Purely
+    // diagnostic: it is how we find out whether WhatsApp delivery receipts reach this
+    // socket, since OpenWA documents neither its event names nor their payloads.
+    shapes: observedEventShapes(),
   })),
 
   setEnabled: protectedProcedure

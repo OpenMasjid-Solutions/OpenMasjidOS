@@ -172,7 +172,12 @@
     "appPendingTitle_one": "1 app is not on your selected channel yet",
     "appPendingTitle_other": "{{count}} apps are not on your selected channel yet",
     "devChannelTitle": "You're on Development builds",
-    "devChannelBody": "This masjid is running what we're still building, not a tested release. Updates arrive here the same way as on Stable — you'll be told when there's a new build. Switch back to Stable in Settings whenever you like."
+    "devChannelBody": "This masjid is running what we're still building, not a tested release. Updates arrive here the same way as on Stable — you'll be told when there's a new build. Switch back to Stable in Settings whenever you like.",
+    "whatsappDownTitle": "WhatsApp needs linking again",
+    "whatsappDownBody": "Your phone was signed out of WhatsApp, so messages are not going out. They are being held safely until you link it again.",
+    "whatsappDownBodyHeld_one": "Your phone was signed out of WhatsApp, so messages are not going out. {{count}} is being held safely until you link it again.",
+    "whatsappDownBodyHeld_other": "Your phone was signed out of WhatsApp, so messages are not going out. {{count}} are being held safely until you link it again.",
+    "whatsappDownAction": "Link phone again"
   },
   "actions": {
     "open": "Open",
@@ -766,7 +771,24 @@
     },
     "whatsappUnlinkUnconfirmedTitle": "Check your phone",
     "whatsappUnlinkUnconfirmedDone": "Done",
-    "updateCheckFailed": "Couldn't check for updates — OpenMasjidOS could not reach the internet. Your version may or may not be current; try again once the connection is back."
+    "updateCheckFailed": "Couldn't check for updates — OpenMasjidOS could not reach the internet. Your version may or may not be current; try again once the connection is back.",
+    "whatsappHeldTitle": "Messages waiting to send",
+    "whatsappHeldTitleDown": "WhatsApp needs linking again",
+    "whatsappHeldBody_one": "{{count}} message is being held. Nothing has been lost.",
+    "whatsappHeldBody_other": "{{count}} messages are being held. Nothing has been lost.",
+    "whatsappHeldSuspect_one": "{{count}} earlier message was reported as sent before this was noticed and may not have arrived. OpenMasjidOS does not keep message contents, so it cannot resend it — check in the app that sent it.",
+    "whatsappHeldSuspect_other": "{{count}} earlier messages were reported as sent before this was noticed and may not have arrived. OpenMasjidOS does not keep message contents, so it cannot resend them — check in the app that sent them.",
+    "whatsappHeldResend": "Send them now",
+    "whatsappHeldRelinkFirst": "Link your phone again first, then send them.",
+    "whatsappHeldReleased_one": "Sending {{count}} held message.",
+    "whatsappHeldReleased_other": "Sending {{count}} held messages.",
+    "whatsappHeldDiscard": "Discard them",
+    "whatsappHeldDiscardTitle": "Discard the waiting messages?",
+    "whatsappHeldDiscardBody_one": "{{count}} message will be thrown away and never sent.",
+    "whatsappHeldDiscardBody_other": "{{count}} messages will be thrown away and never sent.",
+    "whatsappHeldDiscardCost": "This cannot be undone. The apps that sent them will be told they failed, so they can decide what to do.",
+    "whatsappHeldDiscarded_one": "{{count}} message discarded.",
+    "whatsappHeldDiscarded_other": "{{count}} messages discarded."
   },
   "update": {
     "title": "Updating OpenMasjidOS",

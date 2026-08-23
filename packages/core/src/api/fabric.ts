@@ -29,10 +29,12 @@ import {
   enqueue as enqueueWhatsApp,
   whatsappOutcome,
   gatewayStatus as whatsappStatus,
+  outcomesInWindow,
   mediaProblem,
   MAX_MEDIA_BYTES,
   type OutgoingMedia,
 } from '../notify/whatsapp';
+import { whatsAppHealth } from '../system/whatsapp-monitor';
 
 /**
  * Body cap for the WhatsApp send route: 4 MB of JSON for a 2 MB image.
@@ -85,7 +87,8 @@ const RATE_MAX_APP = 120; // per identified app per minute — the meaningful li
 const RATE_MAX_APP_READ = 600;
 
 /** Routes that only read bounded in-memory state. Kept explicit — an allow-list, not a verb test. */
-const READ_ONLY_ROUTES = ['/api/fabric/whatsapp/status/'];
+const READ_ONLY_ROUTES = [
+  '/api/fabric/whatsapp/suspect','/api/fabric/whatsapp/status/'];
 
 /**
  * Does this request qualify for the larger read budget? Fails closed to the send budget.
@@ -413,6 +416,34 @@ export function registerFabric(server: FastifyInstance): void {
    * same as an unknown id, so this cannot be used to observe another app's traffic. Holds
    * no message text and no recipient.
    */
+  /**
+   * Windows in which this app's messages were reported sent but may never have arrived.
+   *
+   * Between a WhatsApp session dying and the platform noticing, OpenWA accepts messages and
+   * returns 2xx, so the platform records them `sent` — and the body is deleted at that
+   * moment, by design. Those are unrecoverable HERE. The app, however, still has its own
+   * source data, so the useful thing the platform can do is say WHEN it was blind and how
+   * many of this app's messages fell in it.
+   *
+   * Additive and read-only: an app that does not know about this route is unaffected, and
+   * nothing about the existing `/status/:id` response has changed. Scoped to the caller's
+   * own `source`, so it cannot become a way to observe another app's traffic — the same
+   * rule the per-id route follows.
+   */
+  server.get('/api/fabric/whatsapp/suspect', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
+    const health = whatsAppHealth();
+    if (!health.down || !health.lastKnownGood || !health.detectedAt) return reply.send({ windows: [] });
+    const mine = outcomesInWindow(health.lastKnownGood, health.detectedAt, app.id);
+    const count = mine.reduce((sum: number, m: { count: number }) => sum + m.count, 0);
+    return reply.send({
+      windows: count > 0 ? [{ from: health.lastKnownGood, to: health.detectedAt, count }] : [],
+    });
+  });
+
   server.get<{ Params: { id: string } }>('/api/fabric/whatsapp/status/:id', async (req, reply) => {
     if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
     const presented = req.headers['x-openmasjid-app-secret'];

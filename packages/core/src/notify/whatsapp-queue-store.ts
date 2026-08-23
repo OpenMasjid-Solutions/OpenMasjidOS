@@ -53,6 +53,17 @@ const STORE_PATH = path.join(CONFIG_DIR, 'whatsapp-queue.json');
 export const MAX_HELD_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * IMPORTANT: this measures time the link was USABLE, not wall-clock.
+ *
+ * It used to be wall-clock, and that turned a WhatsApp outage into data loss: a session
+ * that expired on a Friday meant every message enqueued over the weekend was silently
+ * marked `expired` on the next restart, having never had a chance to send. The reason for
+ * the bound is "a fee reminder that waited a day is stale, and releasing a day's backlog
+ * at once is a burst" — both of which are about time we COULD have sent and did not, so
+ * paused time must not count. See `effectiveHeldMs`.
+ */
+
+/**
  * How many recent outcomes to remember PER SENDING APP, so an app can ask what happened
  * after the 202.
  *
@@ -117,6 +128,14 @@ export interface StoredItem {
   attempts: number;
   /** Earliest retry time after a transient failure; see QueueItem.notBefore. */
   notBefore?: number;
+  /**
+   * Milliseconds this item spent on a PAUSED queue, accumulated when each pause ends.
+   *
+   * Per item rather than one global total, because an item enqueued halfway through an
+   * outage was only held for the remainder of it — crediting it the whole outage would let
+   * it outlive the bound by however long the outage ran before it arrived.
+   */
+  heldWhilePausedMs?: number;
 }
 
 interface PersistedState {
@@ -128,9 +147,53 @@ interface PersistedState {
   /** `targetKey` → last send, as pairs because a Map is not JSON. */
   lastPerRecipient: [string, number][];
   outcomes: OutcomeRecord[];
+  /**
+   * The queue is holding everything and will not send until an admin releases it.
+   *
+   * Set only by the health monitor, on a CONFIRMED lost link — never by a transient blip,
+   * which the pump's own wait already absorbs. Persisted because an outage outlives a
+   * restart, and a box that forgot it was paused would drain a two-day backlog at boot,
+   * which is the burst this whole mechanism exists to avoid.
+   */
+  paused?: boolean;
+  /** When the current pause began, for `effectiveHeldMs`. Null when running. */
+  pausedSince?: number | null;
 }
 
-const EMPTY: PersistedState = { queue: [], sends: [], groupSends: [], lastPerRecipient: [], outcomes: [] };
+const EMPTY: PersistedState = {
+  queue: [],
+  sends: [],
+  groupSends: [],
+  lastPerRecipient: [],
+  outcomes: [],
+  paused: false,
+  pausedSince: null,
+};
+
+/**
+ * How long an item has been waiting, counting only time the queue was RUNNING.
+ *
+ * `pausedSince` covers the pause in progress; `heldWhilePausedMs` covers earlier ones. The
+ * `Math.max` is what keeps an item enqueued mid-outage honest — it is only credited from
+ * its own arrival, not from the start of the pause.
+ */
+export function effectiveHeldMs(item: StoredItem, now: number, pausedSince: number | null): number {
+  const banked = item.heldWhilePausedMs ?? 0;
+  const current = pausedSince == null ? 0 : Math.max(0, now - Math.max(item.enqueuedAt, pausedSince));
+  return Math.max(0, now - item.enqueuedAt - banked - current);
+}
+
+/**
+ * Close out a pause: bank each item's share of it. Mutates in place, then the caller
+ * persists. Called when an admin releases the queue, or when the link recovers.
+ */
+export function bankPausedTime(items: StoredItem[], now: number, pausedSince: number | null): void {
+  if (pausedSince == null) return;
+  for (const item of items) {
+    const share = Math.max(0, now - Math.max(item.enqueuedAt, pausedSince));
+    item.heldWhilePausedMs = (item.heldWhilePausedMs ?? 0) + share;
+  }
+}
 
 /**
  * The COUNT bounds: newest N per source, then the global backstop. No clock involved.
@@ -195,6 +258,9 @@ export interface LoadedState {
   outcomes: OutcomeRecord[];
   /** Items dropped for being older than MAX_HELD_MS, so the caller can log it. */
   expired: StoredItem[];
+  /** Whether the queue was paused when the process stopped. */
+  paused: boolean;
+  pausedSince: number | null;
 }
 
 /**
@@ -213,10 +279,15 @@ export function loadQueueState(now: number): LoadedState {
   }
 
   const all = Array.isArray(raw.queue) ? raw.queue.filter(validItem) : [];
+  const paused = raw.paused === true;
+  // Only trust a pause timestamp that belongs to an actual pause, so a hand-edited or
+  // half-written file cannot credit every item unlimited holding time.
+  const pausedSince =
+    paused && typeof raw.pausedSince === 'number' && Number.isFinite(raw.pausedSince) ? raw.pausedSince : paused ? now : null;
   const queue: StoredItem[] = [];
   const expired: StoredItem[] = [];
   for (const item of all) {
-    (now - item.enqueuedAt > MAX_HELD_MS ? expired : queue).push(item);
+    (effectiveHeldMs(item, now, pausedSince) > MAX_HELD_MS ? expired : queue).push(item);
   }
 
   const pairs = Array.isArray(raw.lastPerRecipient) ? raw.lastPerRecipient : [];
@@ -241,6 +312,8 @@ export function loadQueueState(now: number): LoadedState {
     lastPerRecipient,
     outcomes: trimOutcomes(outcomes, now),
     expired,
+    paused,
+    pausedSince,
   };
 }
 
@@ -257,6 +330,8 @@ export function saveQueueState(state: {
   groupSends: number[];
   lastPerRecipient: Map<string, number>;
   outcomes: OutcomeRecord[];
+  paused?: boolean;
+  pausedSince?: number | null;
 }): void {
   try {
     const out: PersistedState = {
@@ -265,6 +340,8 @@ export function saveQueueState(state: {
       groupSends: state.groupSends,
       lastPerRecipient: [...state.lastPerRecipient.entries()],
       outcomes: capOutcomes(state.outcomes),
+      paused: state.paused === true,
+      pausedSince: state.paused === true ? (state.pausedSince ?? null) : null,
     };
     writeJson(STORE_PATH, out);
   } catch (err) {

@@ -52,6 +52,12 @@ const OS_ALERTS: { id: string; label: string; description: string }[] = [
       'Someone asked their bank to reverse a payment (a chargeback). Usually needs a reply before a deadline.',
   },
   {
+    id: 'whatsapp-link-lost',
+    label: 'WhatsApp needs linking again',
+    description:
+      "WhatsApp signed the masjid's phone out, so messages have stopped going out. They are held until you link it again.",
+  },
+  {
     id: 'command-run',
     label: 'Something was changed from WhatsApp',
     description:
@@ -126,16 +132,27 @@ function persist(): void {
  * Email and the webhook stay available to apps, because those genuinely are "tell the
  * admin something happened".
  */
-export function whatsappAllowed(source: string): boolean {
-  return source === 'os';
+export function whatsappAllowed(source: string, alertId?: string): boolean {
+  if (source !== 'os') return false;
+  // The one OS alert WhatsApp cannot carry: it fires BECAUSE WhatsApp is down. Routing it
+  // there sends it into a gateway that cannot deliver, where `enqueue` returns
+  // {queued:false} and it disappears with no log and no fallback — the same silent failure
+  // documented on `clearWhatsAppChannels` below. Refused rather than merely hidden, because
+  // the matrix is reachable outside the UI.
+  if (alertId && WHATSAPP_IMPOSSIBLE.has(alertId)) return false;
+  return true;
 }
+
+/** OS alerts that must never be routed over WhatsApp, whatever the config says. */
+const WHATSAPP_IMPOSSIBLE = new Set(['whatsapp-link-lost']);
 
 /** The channel routing for an alert type — defaults to email + webhook on. */
 export function getAlertChannels(source: string, id: string): AlertChannels {
   const stored = channels.get(key(source, id)) ?? { ...DEFAULT_CHANNELS };
   // Enforced on READ, so a file written while the column existed for apps (or edited by
-  // hand) cannot keep sending an app's alerts to the admin's phone.
-  return whatsappAllowed(source) ? stored : { ...stored, whatsapp: false };
+  // hand) cannot keep sending an app's alerts to the admin's phone. The id is passed too,
+  // because one OS alert (whatsapp-link-lost) can never use that channel either.
+  return whatsappAllowed(source, id) ? stored : { ...stored, whatsapp: false };
 }
 
 /** Turn a single channel on/off for an alert type. Non-default choices are
@@ -143,7 +160,7 @@ export function getAlertChannels(source: string, id: string): AlertChannels {
 export function setAlertChannel(source: string, id: string, channel: keyof AlertChannels, enabled: boolean): void {
   // The UI does not offer this, but the procedure is reachable — refuse rather than
   // storing a preference that `getAlertChannels` would then ignore.
-  if (channel === 'whatsapp' && !whatsappAllowed(source)) return;
+  if (channel === 'whatsapp' && !whatsappAllowed(source, id)) return;
   const next: AlertChannels = { ...getAlertChannels(source, id), [channel]: enabled };
   if (isDefault(next)) channels.delete(key(source, id));
   else channels.set(key(source, id), next);
@@ -199,7 +216,9 @@ export function listAlertTypes(): AlertTypeInfo[] {
     label: a.label,
     description: a.description,
     channels: getAlertChannels('os', a.id),
-    whatsappAvailable: true,
+    // Per ALERT, not just per source: whatsapp-link-lost fires because WhatsApp is down,
+    // so that column must read as unavailable rather than as an option that silently fails.
+    whatsappAvailable: whatsappAllowed('os', a.id),
   }));
   for (const app of listAppAlerts()) {
     for (const a of app.alerts) {

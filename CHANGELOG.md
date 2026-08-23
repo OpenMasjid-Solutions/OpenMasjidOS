@@ -13,6 +13,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — WhatsApp signing your phone out no longer goes unnoticed**
+
+- **OpenMasjidOS now checks every five minutes that WhatsApp can actually be reached**, and tells you by email, webhook and a banner on the dashboard the moment it cannot. WhatsApp sometimes signs a linked device out on its own — the same thing that happens to WhatsApp Desktop — and until now nothing noticed: your apps were told their messages had been accepted, the gateway accepted them, and they were recorded as sent while never arriving.
+- **The check does not trust the gateway's own "ready" light.** A session WhatsApp has signed out can go on reporting itself as ready, which is exactly why this went unnoticed — so the check asks the gateway something that has to reach WhatsApp instead.
+- **Messages are held instead of lost.** While the connection is down everything waits, keeping its place, and the 24-hour limit on waiting now counts only time the connection was working — so an outage over a weekend no longer quietly throws away Friday's messages.
+- **Nothing sends again until you say so.** After you re-link the phone, Settings → WhatsApp shows how many messages are waiting and which apps they came from, with **Send them now** and **Discard them**. It deliberately does not release them on its own: a big backlog going out all at once from a freshly re-linked number is the surest way to get it blocked.
+- **What was sent during the gap is reported honestly.** Messages that went out between the connection dying and this being noticed were accepted by the gateway and recorded as sent. OpenMasjidOS does not keep message contents after handing a message over, so it cannot re-send those — it now tells you the period and how many each app sent, so you can check in the app itself, and apps can look this up and re-send from their own records.
+- Smaller: the WhatsApp settings page shows how many messages are waiting in every state, not only when everything is healthy; and the server log no longer says a message was "delivered" when all that is known is that the gateway accepted it.
+
 **Fixed — from an audit of the code and the docs**
 
 - **Deleting WhatsApp could say it worked when your phone was never unlinked.** If the gateway was stopped or broken — which is a common reason to be deleting it — OpenMasjidOS could not ask WhatsApp to release the device, and then showed the ordinary success message anyway. Since the gateway is removed at that point, nothing was left that could ever unlink it, and the masjid was never told. It now says plainly when the release could not be confirmed, and tells you to remove the device on the phone yourself.

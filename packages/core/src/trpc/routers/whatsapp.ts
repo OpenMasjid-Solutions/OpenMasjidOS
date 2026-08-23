@@ -35,6 +35,10 @@ import {
   queueDepth,
   toDigits,
   listGatewayGroups,
+  heldSummary,
+  releaseQueue,
+  discardHeldMessages,
+  outcomesInWindow,
   unlinkSession,
   deleteGatewaySession,
   clearWhatsAppRuntime,
@@ -46,6 +50,7 @@ import { clearWhatsAppChannels } from '../../notify/alerts';
 import { setCommandsEnabled, clearCommandPeople } from '../../store/commands';
 import { reconcileWhatsAppInbound } from '../../notify/whatsapp-inbound';
 import { OPENWA_APP_ID } from '../../apps/managed';
+import { whatsAppHealth, clearWhatsAppIncident, checkWhatsAppHealthNow } from '../../system/whatsapp-monitor';
 
 /** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
  *  only so the UI gets a friendly error instead of a silent clamp. */
@@ -192,6 +197,10 @@ export const whatsappRouter = router({
         });
       }
       markLinked(new Date().toISOString());
+      // A fresh link IS the fix, so retire the incident now rather than leaving the banner
+      // up until the monitor's next tick. The queue stays paused: releasing it is separate
+      // and deliberate.
+      clearWhatsAppIncident();
       return { code: r.code ?? null };
     }),
 
@@ -308,6 +317,49 @@ export const whatsappRouter = router({
       }
       return { deleted: true, unlinked, stillLinked, gatewayRemoved };
     }),
+
+  /**
+   * What is being held while the link is down, plus the blind window.
+   *
+   * COUNTS AND APP IDS ONLY. The queue holds bodies and recipients — it must, or a resend
+   * would be impossible — but nothing about telling an admin "14 messages are waiting"
+   * needs a child's name off a fee reminder, so none of that leaves the server here.
+   */
+  held: protectedProcedure.query(() => {
+    const health = whatsAppHealth();
+    const summary = heldSummary();
+    // Messages reported sent between the last known-good moment and detection. These went
+    // out into a dead link and cannot be resent from here — their contents are gone by the
+    // time an outcome is written — so they are reported, not offered.
+    const suspect =
+      health.down && health.lastKnownGood && health.detectedAt
+        ? outcomesInWindow(health.lastKnownGood, health.detectedAt)
+        : [];
+    return { ...summary, health, suspect };
+  }),
+
+  /** Run a health check right now, for the "check again" button. */
+  recheck: protectedProcedure.mutation(async () => {
+    await checkWhatsAppHealthNow();
+    return whatsAppHealth();
+  }),
+
+  /**
+   * Send the held messages. Only ever from an explicit admin action — the queue does not
+   * drain on its own when the link returns, because a two-day backlog going out back to
+   * back from a freshly relinked number is the clearest ban signal there is.
+   */
+  releaseHeld: protectedProcedure.mutation(() => {
+    clearWhatsAppIncident();
+    return releaseQueue();
+  }),
+
+  /** Throw the held messages away. Each is recorded `failed` with a reason, so an app
+   *  polling the status endpoint gets a real answer rather than an unexplained 404. */
+  discardHeld: protectedProcedure.mutation(() => {
+    clearWhatsAppIncident();
+    return discardHeldMessages();
+  }),
 
   /**
    * The groups the linked phone is in, straight from the gateway — for the admin to pick

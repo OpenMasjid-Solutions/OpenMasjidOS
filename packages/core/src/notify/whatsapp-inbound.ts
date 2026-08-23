@@ -186,6 +186,41 @@ function noteEventName(event: string): void {
   eventNames.unshift(name);
   if (eventNames.length > MAX_EVENT_NAMES) eventNames.length = MAX_EVENT_NAMES;
 }
+
+/**
+ * Record the SHAPE of a frame we are about to discard — key names only, never values.
+ *
+ * Groundwork, not a feature. WhatsApp delivery receipts would let the platform say a
+ * message actually ARRIVED instead of "the gateway accepted it", which is the difference
+ * that let an outage go unnoticed with everything recorded as sent. Those receipts plausibly
+ * already reach this socket: it subscribes to `'*'`, and `handleFrame` drops every non-message
+ * frame unread. But OpenWA does not document its event names or payloads, and this codebase
+ * has been burned once by gateway client code written from memory — so the shape gets
+ * OBSERVED on real gateways before anything is built on it.
+ *
+ * KEYS ONLY, and that is a hard rule. An ack frame plausibly carries a phone number or a
+ * chat id; this is a diagnostic surfaced in the dashboard, so it must not become a place
+ * where recipients quietly accumulate. Capped, truncated, and no nested values.
+ */
+const eventShapes = new Map<string, string>();
+const MAX_EVENT_SHAPES = 12;
+
+function noteEventShape(event: string, data: unknown): void {
+  const name = String(event).slice(0, 60);
+  if (eventShapes.has(name)) return;
+  if (eventShapes.size >= MAX_EVENT_SHAPES) return;
+  let shape = typeof data;
+  if (data && typeof data === 'object') {
+    const keys = Object.keys(data as Record<string, unknown>).slice(0, 12).join(', ');
+    shape = `{ ${keys} }` as unknown as typeof shape;
+  }
+  eventShapes.set(name, String(shape).slice(0, 200));
+}
+
+/** The observed frame shapes, for the Commands diagnostics panel. Keys, never values. */
+export function observedEventShapes(): { event: string; shape: string }[] {
+  return [...eventShapes.entries()].map(([event, shape]) => ({ event, shape }));
+}
 const unparseableSeen = new Set<string>();
 /** Rate-limit the "a stranger tried a command" line so it cannot flood the log. */
 const strangerLogged = new Map<string, number>();
@@ -443,6 +478,9 @@ function handleFrame(frame: unknown): void {
   // Filter on the INNER name. `message.ack` fires for every message we send, so
   // treating one as inbound would re-run a command on its own reply's receipt.
   if (!isMessageEvent(name)) {
+    // Record what it looked like before dropping it. See `noteEventShape` — this is how we
+    // find out whether delivery receipts are reachable, without guessing at a payload.
+    noteEventShape(name, payload.data);
     log.debug(`WhatsApp commands: ignoring gateway event "${name}".`);
     return;
   }

@@ -88,6 +88,19 @@ export function Dashboard() {
   // App updates — same idea as the core check: surface them right on the dashboard.
   const appUpdatesQ = trpc.apps.updates.useQuery(undefined, { refetchInterval: 21_600_000 });
   const appUpdates = appUpdatesQ.data ?? [];
+  /**
+   * Is WhatsApp signed out right now?
+   *
+   * The dashboard has never queried WhatsApp before, and this is the one WhatsApp state
+   * worth the extra call: an active outage where messages are silently not going out. The
+   * Settings panel only polls while its own pane is open, so without this the masjid's
+   * first sign of a dead link is somebody saying they never got their message.
+   *
+   * Five minutes, not the ~6h the update checks use — an update can wait, an outage cannot.
+   */
+  const waHeldQ = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 300_000 });
+  const waDown = waHeldQ.data?.health.down === true;
+  const waHeld = waHeldQ.data?.total ?? 0;
   // Genuine version upgrades only — a channel move is a different operation with a
   // different follow-up (the OS has to move too, which only Settings → Updates does),
   // so it must not be swept into "Update all" from here.
@@ -238,6 +251,25 @@ export function Dashboard() {
           <button className="btn btn--primary" onClick={() => setUpdateOpen(true)}>
             <Download size={15} /> {t('settings.updateNow')}
           </button>
+        </div>
+      )}
+
+      {/* An active WhatsApp outage. Above the update banners on purpose: an update is a
+          "when you get a moment", this is "your messages are not going out right now". */}
+      {waDown && (
+        <div className="warn-banner glass" role="status">
+          <AlertTriangle size={22} />
+          <div style={{ flex: 1 }}>
+            <div className="warn-banner__title">{t('dashboard.whatsappDownTitle')}</div>
+            <div className="warn-banner__body">
+              {waHeld > 0
+                ? t('dashboard.whatsappDownBodyHeld', { count: waHeld })
+                : t('dashboard.whatsappDownBody')}
+            </div>
+          </div>
+          <Link className="btn btn--sm btn--primary" to="/settings/whatsapp">
+            {t('dashboard.whatsappDownAction')}
+          </Link>
         </div>
       )}
 

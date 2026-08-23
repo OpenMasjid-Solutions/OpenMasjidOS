@@ -67,6 +67,7 @@ import {
   loadQueueState,
   saveQueueState,
   trimOutcomes,
+  bankPausedTime,
   MAX_HELD_MS,
   type OutcomeRecord,
   type OutcomeState,
@@ -756,10 +757,18 @@ export async function deleteGatewaySession(): Promise<{ ok: boolean; error?: str
  */
 const onWhatsApp = new Map<string, boolean>();
 
+/** Note a `contacts/check` that could not answer. Proceeding anyway is right -- a hiccup
+ *  must not stop all sending -- but a run of them is evidence the link is gone. */
+function noteCheckFailure(ok: boolean): void {
+  if (ok) sendSignals.checkFailures = 0;
+  else sendSignals.checkFailures += 1;
+}
+
 async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boolean | null> {
   const cached = onWhatsApp.get(digits);
   if (cached !== undefined) return cached;
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/check/${digits}`);
+  noteCheckFailure(r.ok);
   if (!r.ok) return null;
   const j = r.json as { exists?: unknown; isRegistered?: unknown; registered?: unknown; numberExists?: unknown } | null;
   const yes = j?.exists ?? j?.isRegistered ?? j?.registered ?? j?.numberExists;
@@ -932,6 +941,28 @@ export function nextGapMs(limits: WhatsAppLimits, rand = Math.random): number {
 
 const queue: QueueItem[] = [];
 let running = false;
+
+/**
+ * The queue is holding everything until an admin releases it.
+ *
+ * Set ONLY by the health monitor on a confirmed lost link, and cleared only by an explicit
+ * release. Deliberately not cleared when the session comes back: after an outage the
+ * backlog is exactly the thing that must not go out on its own, because a freshly relinked
+ * number sending a two-day queue back to back is the clearest ban signal there is.
+ */
+let paused = false;
+let pausedSince: number | null = null;
+
+/**
+ * Evidence from the SEND path that the link is dead, for the health monitor to read.
+ *
+ * The monitor's own probe is the primary detector, but these two are things only the
+ * sender sees, and both used to be discarded: a 401/403 is classed non-retryable so the
+ * message is dropped after one attempt with a single log line, and a `contacts/check` that
+ * cannot answer returns null and the send proceeds regardless. Neither should be the last
+ * anyone hears of it.
+ */
+const sendSignals = { authFailures: 0, checkFailures: 0, lastAuthFailAt: 0 };
 let presenceOn = false;
 
 /**
@@ -945,7 +976,15 @@ const outcomes: OutcomeRecord[] = [];
 
 /** Persist queue + pacing history + outcomes. Called after every mutation. */
 function persist(): void {
-  saveQueueState({ queue, sends: sentAt, groupSends: groupSentAt, lastPerRecipient: lastToRecipient, outcomes });
+  saveQueueState({
+    queue,
+    sends: sentAt,
+    groupSends: groupSentAt,
+    lastPerRecipient: lastToRecipient,
+    outcomes,
+    paused,
+    pausedSince,
+  });
 }
 
 function noteOutcome(item: QueueItem, state: OutcomeState, reason?: string): void {
@@ -1001,11 +1040,19 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
   for (const [k, v] of state.lastPerRecipient) lastToRecipient.set(k, v);
   outcomes.length = 0;
   outcomes.push(...state.outcomes);
+  // An outage outlives a restart. Forgetting the pause here would drain the whole backlog
+  // at boot, which is precisely the burst the pause exists to prevent.
+  paused = state.paused;
+  pausedSince = state.pausedSince;
 
   // Anything held longer than a day is not sent. Recorded as an outcome rather than
   // vanishing, so an app that asks gets a real answer instead of silence.
   for (const stale of state.expired) {
-    noteOutcome(stale as QueueItem, 'expired', 'It waited more than 24 hours, so it was not sent.');
+    noteOutcome(
+      stale as QueueItem,
+      'expired',
+      'It waited more than 24 hours of working connection, so it was not sent.',
+    );
   }
   if (state.expired.length > 0) {
     log.warn(
@@ -1015,7 +1062,14 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
   }
   if (queue.length > 0) {
     log.info(`WhatsApp: restored ${queue.length} queued message(s) from the previous run.`);
-    void pump();
+    if (paused) {
+      log.warn(
+        `WhatsApp: the queue is PAUSED (the link was lost); ${queue.length} message(s) are held ` +
+          'and will not send until an admin releases them in Settings.',
+      );
+    } else {
+      void pump();
+    }
   }
   if (state.expired.length > 0 || queue.length > 0) persist();
   return { restored: queue.length, expired: state.expired.length };
@@ -1023,6 +1077,144 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
 
 export function queueDepth(): number {
   return queue.length;
+}
+
+/** Evidence the SEND path has gathered that the link may be dead. Read by the monitor. */
+export function sendPathSignals(): { authFailures: number; checkFailures: number; lastAuthFailAt: number } {
+  return { ...sendSignals };
+}
+
+export function isQueuePaused(): boolean {
+  return paused;
+}
+
+/**
+ * Probe whether the gateway can still reach WhatsApp.
+ *
+ * THE POINT: this asks a question that has to go through to WhatsApp, instead of reading
+ * OpenWA's cached session row. `gatewayStatus()` reports whatever `status` word the session
+ * holds, and a session logged out at WhatsApp's end can go on saying `ready` -- which is why
+ * the outage that prompted this was invisible: the sender gates on that same field, so the
+ * detector and the sender agreed with each other and both were wrong.
+ *
+ * A 503 from `/chats` is OpenWA telling us the engine's WhatsApp connection is gone. Any
+ * other failure is inconclusive and must NOT be reported as a dead link -- "could not ask"
+ * is never an answer (CLAUDE.md §13.2d).
+ */
+export async function probeLink(): Promise<{ alive: boolean | null; detail?: string }> {
+  const cfg = getWhatsAppConfig();
+  if (!isWhatsAppConfigured() || !cfg.sessionId) return { alive: null, detail: 'not configured' };
+  // limit=1: this is a liveness question, not a data fetch.
+  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats?limit=1`);
+  if (r.ok) return { alive: true };
+  if (r.status === 503) return { alive: false, detail: "the gateway's connection to WhatsApp has died" };
+  if (r.status === 401 || r.status === 403) return { alive: false, detail: 'the gateway rejected our key' };
+  // 409 = still starting, 0 = transport, 5xx = restarting: all inconclusive.
+  return { alive: null, detail: r.error ?? `the gateway answered ${r.status}` };
+}
+
+/**
+ * Hold everything. Called by the health monitor once a lost link is CONFIRMED.
+ *
+ * Idempotent, and it does not touch the messages themselves -- they stay on the queue with
+ * their bodies, which is what makes a later resend possible at all. Outcome records hold no
+ * body and no recipient by design, so the live queue is the only re-sendable state there is.
+ */
+export function pauseQueue(reason: string): void {
+  if (paused) return;
+  paused = true;
+  pausedSince = Date.now();
+  persist();
+  log.warn(`WhatsApp: queue PAUSED (${reason}); ${queue.length} message(s) held.`);
+}
+
+/**
+ * Release the hold and start sending again. Only ever from an explicit admin action.
+ *
+ * Banks the paused time first so the 24h bound counts only working connection -- otherwise
+ * releasing a two-day backlog would immediately expire all of it.
+ */
+export function releaseQueue(): { released: number } {
+  const held = queue.length;
+  if (paused) {
+    bankPausedTime(queue, Date.now(), pausedSince);
+    paused = false;
+    pausedSince = null;
+    persist();
+    log.info(`WhatsApp: queue released by an admin; sending ${held} held message(s).`);
+    void pump();
+  }
+  return { released: held };
+}
+
+/** Throw the held messages away, recording each one so an app that asks gets a real
+ *  answer rather than the 404 an unknown id produces. */
+export function discardHeldMessages(): { discarded: number } {
+  const n = queue.length;
+  for (const item of queue) {
+    noteOutcome(item, 'failed', 'It was discarded by an admin after the WhatsApp link was lost.');
+  }
+  queue.length = 0;
+  if (paused) {
+    paused = false;
+    pausedSince = null;
+  }
+  persist();
+  if (n > 0) log.warn(`WhatsApp: ${n} held message(s) discarded by an admin.`);
+  return { discarded: n };
+}
+
+/**
+ * What is being held, for the admin. COUNTS AND APP IDS ONLY.
+ *
+ * No body and no recipient leaves the server here. The queue holds both (it has to, to
+ * resend), but nothing about showing an admin "14 messages are waiting" requires reading a
+ * child's name off a fee reminder, so it does not.
+ */
+export function heldSummary(): {
+  paused: boolean;
+  pausedSince: number | null;
+  total: number;
+  oldest: number | null;
+  newest: number | null;
+  bySource: { source: string; count: number }[];
+} {
+  const bySource = new Map<string, number>();
+  let oldest: number | null = null;
+  let newest: number | null = null;
+  for (const item of queue) {
+    bySource.set(item.source, (bySource.get(item.source) ?? 0) + 1);
+    if (oldest == null || item.enqueuedAt < oldest) oldest = item.enqueuedAt;
+    if (newest == null || item.enqueuedAt > newest) newest = item.enqueuedAt;
+  }
+  return {
+    paused,
+    pausedSince,
+    total: queue.length,
+    oldest,
+    newest,
+    bySource: [...bySource.entries()]
+      .map(([source, count]) => ({ source, count }))
+      .sort((a, b) => b.count - a.count),
+  };
+}
+
+/**
+ * Messages reported `sent` inside a window -- the ones that may never have arrived.
+ *
+ * Between the link dying and the monitor confirming it, sends "succeed": OpenWA accepts
+ * them, we mark them sent, and the body is deleted (the item leaves the queue before the
+ * outcome is written). Those are unrecoverable HERE by construction, so the honest thing is
+ * to say which apps sent how many and when, and let each app decide from its own records.
+ */
+export function outcomesInWindow(from: number, to: number, source?: string): { source: string; count: number }[] {
+  const bySource = new Map<string, number>();
+  for (const o of outcomes) {
+    if (o.state !== 'sent' || o.at < from || o.at > to) continue;
+    if (source && o.source !== source) continue;
+    bySource.set(o.source, (bySource.get(o.source) ?? 0) + 1);
+  }
+  return [...bySource.entries()].map(([s2, count]) => ({ source: s2, count })).sort((a, b) => b.count - a.count);
 }
 
 /**
@@ -1118,9 +1310,15 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string; id
  */
 async function pump(): Promise<void> {
   if (running) return;
+  // Held, not dropped. Every item stays on the persisted queue with its body intact so the
+  // admin can release it once the phone is relinked.
+  if (paused) return;
   running = true;
   try {
     while (queue.length > 0) {
+      // Re-checked every iteration: the monitor can pause us mid-drain, and the remaining
+      // messages must stop where they are rather than finish the burst.
+      if (paused) break;
       let cfg = getWhatsAppConfig();
       if (!isWhatsAppConfigured()) {
         // Configuration was removed under us; drop the backlog rather than spin.
@@ -1333,6 +1531,14 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
         linkPreview: false,
       });
   if (!r.ok) {
+    // A 401/403 is classed non-retryable, so this message is about to be dropped after a
+    // single attempt. Record it: on its own it looks like a config mistake, but a run of
+    // them is how a dead link presents on the send path, and the monitor is what turns
+    // that into something the admin actually hears about.
+    if (r.status === 401 || r.status === 403) {
+      sendSignals.authFailures += 1;
+      sendSignals.lastAuthFailAt = Date.now();
+    }
     if (item.media) {
       // Named distinctly in the log, because "the image failed" and "the message failed"
       // send someone to different places — a 404 here means the gateway is too old to
@@ -1344,7 +1550,14 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     }
     return { ok: false, error: r.error, retryable: isRetryableStatus(r.status) };
   }
-  log.info(`WhatsApp: delivered ${item.media ? 'an image' : 'a message'} for ${item.source}.`);
+  // "accepted", NOT "delivered". All that has been established is that OpenWA's HTTP layer
+  // returned 2xx to our POST -- an accept receipt from the gateway process, not from
+  // WhatsApp and not from the recipient's phone. A session logged out at WhatsApp's end
+  // still accepts, stores and displays the message, which is exactly how a masjid ended up
+  // with everything marked sent and nothing arriving. Saying "delivered" here is the code
+  // asserting more than it knows.
+  sendSignals.authFailures = 0;
+  log.info(`WhatsApp: the gateway accepted ${item.media ? 'an image' : 'a message'} for ${item.source}.`);
   return { ok: true };
 }
 
