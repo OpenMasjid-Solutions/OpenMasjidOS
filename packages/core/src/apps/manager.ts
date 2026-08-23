@@ -1320,6 +1320,31 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   const appCommands = parseCommands(app.commands, id);
 
   // New compose; keep the user's saved settings (.env) untouched.
+  //
+  // Snapshot what is on disk FIRST, so a pull or an `up` that fails below can put it back.
+  // Without that, an aborted update left the NEW compose.yml (and the rewritten .env) on
+  // disk beside the OLD meta.json — and `startApp` reads that file straight from disk and
+  // is deliberately NOT compose-gated (CLAUDE.md §15). So the next time a volunteer pressed
+  // Start on an app whose update had failed, they silently got the new stack: the version
+  // the platform reports is the old one, and the risk gate that would have vetted the new
+  // compose at install time never ran on it.
+  //
+  // Read before write, and only what already exists — a missing file restores to "delete",
+  // which is the correct undo for a compose that was not there to begin with.
+  const prevCompose = fs.existsSync(composePath(id)) ? fs.readFileSync(composePath(id), 'utf8') : null;
+  const prevEnv = fs.existsSync(envPath(id)) ? fs.readFileSync(envPath(id), 'utf8') : null;
+  /** Put the app back exactly as it was. Best effort — a failure here is already the
+   *  unhappy path, and throwing would replace a clear message with a stack trace. */
+  const rollback = (): void => {
+    try {
+      if (prevCompose === null) fs.rmSync(composePath(id), { force: true });
+      else fs.writeFileSync(composePath(id), prevCompose, 'utf8');
+      if (prevEnv === null) fs.rmSync(envPath(id), { force: true });
+      else fs.writeFileSync(envPath(id), prevEnv, 'utf8');
+    } catch (err) {
+      log.warn(`Could not restore ${id} after a failed update.`, err);
+    }
+  };
   fs.writeFileSync(composePath(id), app.compose, 'utf8');
 
   const sso = app.sso === true;
@@ -1370,6 +1395,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('Could not download the update. Please check the connection and try again.');
+    // Nothing was applied, so leave nothing new behind for a later Start to pick up.
+    rollback();
     return;
   }
 
@@ -1379,6 +1406,9 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   if ((await composeUpStream(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('The update could not start. The previous version may still be running.');
+    // The old container is still the running one; put its compose back so a later Start
+    // recreates THAT, not the version that just failed to come up.
+    rollback();
     return;
   }
 

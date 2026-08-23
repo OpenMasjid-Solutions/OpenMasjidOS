@@ -13,6 +13,15 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — from an audit of the code and the docs**
+
+- **Deleting WhatsApp could say it worked when your phone was never unlinked.** If the gateway was stopped or broken — which is a common reason to be deleting it — OpenMasjidOS could not ask WhatsApp to release the device, and then showed the ordinary success message anyway. Since the gateway is removed at that point, nothing was left that could ever unlink it, and the masjid was never told. It now says plainly when the release could not be confirmed, and tells you to remove the device on the phone yourself.
+- **That same warning used to vanish before it could be read.** It was shown inside the panel that displays your linked number — and unlinking clears that number, so the warning disappeared a moment after appearing. It is now a notice that stays put until you dismiss it.
+- **Links that said "Settings → Payments" landed on Appearance.** Splitting Settings into sections broke five links from the App Store and an app's page, which all still pointed at the top of Settings. Each now opens the section it names.
+- **"Check for updates" said you were up to date when it could not check at all.** If the server could not reach the internet, the check quietly returned "nothing new" and you got a green tick — on the one screen you would use to find out whether you are missing a security update. It now says it could not check.
+- **A failed app update could apply itself later anyway.** When an update failed to download or failed to start, the new configuration was already written to disk while the app was still recorded at its old version. Pressing Start afterwards ran the new version without going through the safety check that every install and update passes. A failed update now puts the app back exactly as it was.
+- **Documentation that no longer matched the code has been corrected.** The WhatsApp guide said the sending limits were editable in Settings, the consent screen shown before linking a phone promised limits and a gentle warm-up for new numbers, and the code's own notes described caps and cooldowns as active. All of those were removed some time ago. Everything now says what actually happens: one message at a time with a typing indicator, and no limit on how much your apps send.
+
 **Changed — Settings is no longer one long page**
 
 - **Settings now has sections down the side** — Appearance, Account, Email, WhatsApp, Alerts, Payments, Remote access, Advanced — and shows one at a time instead of stacking all eleven panels on a single page you had to scroll through to find anything. Each section has its own address, so a link can now take you straight to the right place rather than to the top of the page. On a phone or a small screen the list becomes a strip across the top that you can swipe.

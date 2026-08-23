@@ -23,27 +23,40 @@
  *
  * ── WHAT "HUMAN SENDING BEHAVIOUR" MEANS HERE ──────────────────────────────────
  *
- *  1. **Serialised.** One message in flight, ever.
- *  2. **Randomised gap.** `minGapSeconds` + up to `jitterSeconds` of noise. A FIXED
- *     interval is itself a fingerprint — a person does not reply every 6.00 seconds.
- *  3. **Typing indicator**, for a duration scaled to the message length (people take
- *     longer over longer messages), then `paused`, then the send.
- *  4. **Presence.** Appear online while working, offline once idle. A number that is
+ * READ THIS LIST AS THE CURRENT CONTRACT. It was written when the pacer had a full set
+ * of brakes; almost all of them have since been removed at the maintainer's direction,
+ * and for a while this header still advertised four that no longer existed — which is
+ * the most dangerous kind of stale comment, because it is the first thing anyone reads
+ * before deciding whether a change here is safe.
+ *
+ *  1. **Serialised.** One message in flight, ever. This is the one that still carries
+ *     real weight: ban risk attaches to the NUMBER, so two callers each sending
+ *     "politely" at once is still a burst.
+ *  2. **Typing indicator**, for a duration scaled to the message length (people take
+ *     longer over longer messages), then `paused`, then the send. With everything below
+ *     gone, this is now the ONLY delay between two messages — a few seconds.
+ *  3. **Presence.** Appear online while working, offline once idle. A number that is
  *     permanently online and never reads anything looks like what it is.
- *  5. **Per-recipient cooldown.** One person is never hammered, even if three apps
- *     all have something to say to them. A group has its own, much longer cooldown.
- *  6. **Caps** per rolling hour and day, platform-wide — and a SEPARATE, tighter pair
- *     for groups. One group message is a single outbound message that reaches everyone,
- *     so it must not spend the allowance individual reminders need; but its blast radius
- *     is the whole group, so it needs a stricter brake of its own.
- *  7. **Warm-up ramp.** A freshly linked number gets a fraction of the caps for
- *     `warmupDays` — the period WhatsApp watches hardest, per OpenWA's guidance.
- *  8. **No time-of-day hold.** There was one (quiet hours) and it was removed — see the
- *     note where `inQuietHours` used to be. Nothing in the pacer may depend on the local
- *     hour, because the container's local hour is UTC.
- *  9. **Validate before first contact.** `contacts/check` confirms the number is on
+ *  4. **Validate before first contact.** `contacts/check` confirms the number is on
  *     WhatsApp. Sending to numbers that aren't is a documented ban signal.
- * 10. **Never auth-critical.** This queues; it does not deliver. Callers are told so.
+ *  5. **Bounded retry** with widening backoff on a transient failure, and a per-item
+ *     `notBefore` so one failing message never stalls the queue behind it.
+ *  6. **Never auth-critical.** This queues; it does not deliver. Callers are told so.
+ *
+ * ── WHAT IS GONE, AND MUST NOT BE ASSUMED ──────────────────────────────────────
+ *
+ * There is **no inter-message gap**, **no per-recipient or per-group cooldown**, **no
+ * hourly or daily cap** (individual or group), **no warm-up ramp**, and **no
+ * time-of-day hold**. `blockedReason` returns `null` unconditionally; `capExceeded`,
+ * `warmupFactor` and `nextGapMs` are inert and kept only for the reasoning written
+ * beside them, plus tests that assert their absence.
+ *
+ * So NOTHING here limits how much an app sends. An app looping over a 200-family roster
+ * sends 200 messages, back to back, as fast as the typing indicator allows. That
+ * residual risk is ACCEPTED, not overlooked (CLAUDE.md §13.2b-ii) — the callers bound
+ * their own volume. If a ceiling is ever wanted again it belongs HERE, on the shared
+ * queue, never per-app: an app-level limiter cannot see the number's total traffic,
+ * which is the only figure WhatsApp cares about.
  *
  * None of this makes a ban impossible, and the module must not pretend otherwise —
  * `docs/WHATSAPP.md` states the residual risk plainly for the admin.
@@ -1552,13 +1565,21 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
  * Send one message and WAIT — the ONE non-queued path, shared by the admin's test
  * button and the command reply lane.
  *
- * Bypasses the QUEUE, never the BUDGET. It is a real message from the real number, so
- * it counts against the same allowance — otherwise "message yourself in a loop" would
- * be the one unmetered way to send from this platform.
+ * Bypasses the queue. There is no longer any budget to bypass: the hour/day caps this
+ * used to be metered against are gone (see the header), so `sentAt` / `groupSentAt` are
+ * now a record of what was sent, not an allowance being spent. Kept because the history
+ * is what any future ceiling would have to be built on, and because it is the honest
+ * answer to "how much has this number sent recently?".
  *
- * Note it still WRITES `lastToRecipient` while never reading it. That map gates the
- * QUEUE, and the queue absolutely should hold off on someone we are mid-conversation
- * with. Removing the write is the obvious wrong edit.
+ * It also writes `lastToRecipient`, which nothing reads any more — the per-recipient
+ * cooldown that consumed it was removed. Kept for the same reason.
+ *
+ * What bounds this path is therefore NOT a cap. It is that a reply is only ever sent in
+ * answer to an inbound message from an already-authorised sender, and the inbound rate
+ * limit in `commands/gate.ts` (5, refill 1/15s) is what makes "message yourself in a
+ * loop" impossible. Don't add a send-side allowance check back here: one existed, it
+ * protected nothing because this function calls `sendOne` directly, and it locked admins
+ * out of the very commands they were testing.
  */
 export async function sendImmediate(target: Target, text: string, source: string): Promise<SendOutcome> {
   const cfg = getWhatsAppConfig();
@@ -1575,8 +1596,9 @@ export async function sendImmediate(target: Target, text: string, source: string
   if (outcome.ok) {
     (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
-    // The budget it just spent IS durable — otherwise a restart would forget every
-    // command reply and the caps would not hold across one.
+    // Persisted so the send history survives a restart. Not a budget any more (there
+    // are no caps), but it is the record any future ceiling would have to be built on,
+    // and a box in a restart loop that forgets what it sent has no history at all.
     persist();
   }
   return outcome;

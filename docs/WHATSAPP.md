@@ -311,11 +311,11 @@ restricted, and a day-old fee reminder is not the message anyone wanted), and it
 as `expired` so an app that asks gets a real answer. A damaged store file degrades to empty
 rather than stopping the daemon.
 
-The remaining limits are editable in Settings, within **hard bounds** the platform enforces.
-The bounds are a range, not a one-way ratchet — group caps can be raised as well as lowered
-(up to 20/hour and 50/day) but never past those ceilings; the gap can never go below
-**3 seconds**, with jitter always applied; and the per-recipient cooldown can be set to zero
-but the gap still separates every send. The defaults are deliberately well inside the bounds.
+There are **no remaining limits to edit**, and no controls for them in Settings. The caps,
+both cooldowns, the warm-up ramp and the inter-message gap were all removed; what is left is
+one message at a time and a typing indicator before each. Nothing in OpenMasjidOS caps how
+much your apps send — see *Why there is almost no pacing left* above, which is the honest
+version of this and sits earlier in the same page.
 
 ## For app authors
 

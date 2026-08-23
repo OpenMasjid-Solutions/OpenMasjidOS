@@ -60,7 +60,7 @@ function ShareOnlineChoice({
           style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #d4af37)' }}
         >
           {t('store.shareOnlineNoRemote')}{' '}
-          <Link to="/settings" style={{ color: 'var(--color-primary)' }}>
+          <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>
             {t('store.shareOnlineSettingsLink')}
           </Link>
         </p>
@@ -96,7 +96,7 @@ export function StoreCustom() {
           <div className="empty-state">
             <h3>{t('custom.disabledTitle')}</h3>
             <p>{t('custom.disabledBody')}</p>
-            <Link to="/settings" className="btn btn--primary" style={{ marginTop: '1rem' }}>
+            <Link to="/settings/advanced" className="btn btn--primary" style={{ marginTop: '1rem' }}>
               {t('nav.settings')}
             </Link>
           </div>

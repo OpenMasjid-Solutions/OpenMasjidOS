@@ -121,3 +121,78 @@ test('the dialogs stay outside the section panes', () => {
   assert.ok(paneEnd > 0 && updateModal > 0, 'expected to find the pane close and the modals');
   assert.ok(updateModal > paneEnd, 'UpdateModal must render outside the section panes, not inside one');
 });
+
+test('IN-PRODUCT LINKS point at the section they name, not at bare /settings', () => {
+  // Splitting Settings into panes silently broke every existing cross-page link: they all
+  // pointed at `/settings`, which now renders only the Appearance pane. A link whose own
+  // text says "Settings → Payments" landing on theme and wallpaper is the page telling the
+  // admin where it is taking them and then not doing it.
+  //
+  // The Dock is the deliberate exception — it is the generic way in, not a link to any
+  // particular setting, so bare /settings is correct there and it lives in components/.
+  const routes = path.join(UI, 'routes');
+  const offenders: string[] = [];
+  for (const f of fs.readdirSync(routes)) {
+    if (!f.endsWith('.tsx')) continue;
+    const src = fs.readFileSync(path.join(routes, f), 'utf8');
+    src.split('\n').forEach((line, i) => {
+      if (line.includes('to="/settings"')) offenders.push(`routes/${f}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(offenders, [], 'these link to bare /settings and will land on Appearance');
+});
+
+test('every section a deep link targets actually exists', () => {
+  // A link to /settings/billing when the section is called "payments" falls back to
+  // Appearance silently — the same failure, just spelled differently.
+  const ids = sectionIds();
+  const targets = new Set<string>();
+  for (const dir of ['routes', 'components']) {
+    const d = path.join(UI, dir);
+    for (const f of fs.readdirSync(d)) {
+      if (!f.endsWith('.tsx')) continue;
+      const src = fs.readFileSync(path.join(d, f), 'utf8');
+      for (const m of src.matchAll(/to="\/settings\/([a-z]+)"/g)) targets.add(m[1]!);
+    }
+  }
+  for (const target of targets) {
+    assert.ok(ids.includes(target), `a link points at /settings/${target}, which is not a section`);
+  }
+  assert.ok(targets.size >= 3, 'expected the retargeted deep links to be present');
+});
+
+test('the unconfirmed-unlink notice lives OUTSIDE the linked-number block', () => {
+  // It used to render inside `{linkedPhone && ...}` — and unlinking clears `linkedPhone`,
+  // so the action that raises the warning unmounted it. The admin got a closed dialog, no
+  // toast (suppressed on purpose, because this was meant to carry the message) and a
+  // paragraph that flashed for under a second, for the one outcome where their phone may
+  // still hold a device they can no longer revoke from here.
+  const src = fs.readFileSync(path.join(UI, 'routes', 'Settings.tsx'), 'utf8');
+  const warn = src.indexOf('{unlinkWarning && (');
+  assert.ok(warn > 0, 'the warning block must exist');
+  const linkedBlock = src.indexOf('{linkedPhone && showSetup && (');
+  assert.ok(linkedBlock > 0, 'the linked-number block must exist');
+  const linkedBlockEnd = src.indexOf('\n      )}', linkedBlock);
+  assert.ok(
+    warn > linkedBlockEnd,
+    'the warning must render after the linked-number block closes, or unlinking unmounts it',
+  );
+});
+
+test('an unconfirmed unlink is decided by `unlinked`, never by `stillLinked` alone', () => {
+  // There are TWO ways to fail: a 502 (tried, could not confirm) sets `stillLinked`; not
+  // reaching the gateway at all sets neither — and that is a common reason to be deleting
+  // in the first place. Branching on `stillLinked` treated "we never asked" as success.
+  const src = fs.readFileSync(path.join(UI, 'routes', 'Settings.tsx'), 'utf8');
+  assert.match(src, /const confirmed = r\.unlinked;/, 'both handlers must key off `unlinked`');
+  assert.doesNotMatch(
+    src,
+    /setUnlinkWarning\(r\.stillLinked\)/,
+    'keying the warning off stillLinked misses the unreachable-gateway case',
+  );
+  assert.doesNotMatch(
+    src,
+    /toast\(\s*r\.stillLinked \?/,
+    'the delete toast must not branch on stillLinked either',
+  );
+});

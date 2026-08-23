@@ -621,7 +621,7 @@
     "whatsapp": "WhatsApp",
     "whatsappHint": "Send alerts and app messages over WhatsApp, through a gateway running on your own server. Install OpenWA from the App Store, then enter the key and session name you gave it.",
     "whatsappRiskTitle": "Please read this before linking a phone",
-    "whatsappRiskBody": "WhatsApp does not officially allow this, and the number you link can be restricted or blocked — there is no way to make that risk zero. OpenMasjidOS spaces messages out, keeps well under WhatsApp’s limits and eases a new number in gently to reduce it, and email always keeps working as a fallback.",
+    "whatsappRiskBody": "WhatsApp does not officially allow this, and the number you link can be restricted or blocked — there is no way to make that risk zero, and a blocked number cannot be recovered. OpenMasjidOS sends one message at a time, never two at once, and shows a typing indicator before each one. It does not limit how much your apps send: an app messaging a few hundred families will send a few hundred messages. Email always keeps working as a fallback.",
     "whatsappSession": "Session name",
     "whatsappSessionHint": "A label for this masjid’s WhatsApp connection. OpenMasjidOS creates the session for you — you never need to open OpenWA to find an id.",
     "whatsappKey": "Gateway key",
@@ -640,7 +640,7 @@
     "whatsappStateReady": "Connected and ready. {{queued}} message(s) waiting to send.",
     "whatsappStateNotLinked": "The gateway is running, but no phone is linked yet. Use “Link your phone” below.",
     "whatsappEnable": "Send messages over WhatsApp",
-    "whatsappRiskCost": "Use a spare number the masjid keeps for this — never a volunteer's personal phone or your main published line. Email stays your reliable channel.",
+    "whatsappRiskCost": "Use a spare number the masjid keeps for this — never a volunteer's personal phone or your main published line. Email stays your reliable channel, and nothing you sign in with should ever depend on WhatsApp.",
     "whatsappRiskAccept": "I understand — turn it on",
     "whatsappGatewayStep": "The WhatsApp gateway",
     "whatsappGatewayInstallHint": "OpenMasjidOS sends WhatsApp messages through OpenWA, which runs on your own server. Install it to continue — it only appears in the App Store while this is switched on.",
@@ -763,7 +763,10 @@
       "setup": "Setup",
       "groups": "Groups",
       "commands": "Commands"
-    }
+    },
+    "whatsappUnlinkUnconfirmedTitle": "Check your phone",
+    "whatsappUnlinkUnconfirmedDone": "Done",
+    "updateCheckFailed": "Couldn't check for updates — OpenMasjidOS could not reach the internet. Your version may or may not be current; try again once the connection is back."
   },
   "update": {
     "title": "Updating OpenMasjidOS",

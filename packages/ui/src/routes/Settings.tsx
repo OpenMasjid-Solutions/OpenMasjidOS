@@ -50,6 +50,16 @@ function updateSentence(
   info: { updateAvailable: boolean; latest: string | null; reason: 'version' | 'channel' | null; channel: string },
   t: (k: string, o?: Record<string, unknown>) => string,
 ): string {
+  // `latest === null` means the check could not READ the channel's version — the server
+  // catches a failed fetch, logs it and returns normally, so "no update available" is
+  // indistinguishable from "we never found out" unless this is checked first.
+  //
+  // Saying "You're on the latest version" there is the dashboard asserting something it
+  // does not know, on the one screen a masjid uses to find out whether they are missing a
+  // security release. Offline is the common case on a box behind a captive portal or a
+  // blocked registry, and it is not an error the admin needs to fix — it just is not an
+  // answer, and has to read as one.
+  if (info.latest == null) return t('settings.updateCheckFailed');
   if (!info.updateAvailable) return t('settings.upToDate');
   if (info.reason === 'channel') {
     return info.channel === 'dev'
@@ -384,7 +394,10 @@ export function Settings() {
     if (updateInfo.isFetching) return; // don't stack checks/toasts during a spam burst
     const r = await updateInfo.refetch();
     if (r.data) {
-      toast(updateSentence(r.data, t), 'success');
+      // A check that could not reach the channel is reported as INFO, not success: a green
+      // tick is what made "we could not find out" look identical to "you are current".
+      // Not an error either — the box is fine, and nothing needs fixing.
+      toast(updateSentence(r.data, t), r.data.latest == null ? 'info' : 'success');
     } else {
       toast(t('errors.generic'), 'error');
     }
@@ -1746,7 +1759,16 @@ function WhatsAppPanel() {
   const [askDisable, setAskDisable] = useState(false);
   const [deleteAll, setDeleteAll] = useState(false);
   const [askUnlink, setAskUnlink] = useState(false);
-  /** Set when the gateway could not confirm WhatsApp released the device. */
+  /**
+   * Set whenever we did NOT get a positive confirmation that WhatsApp released the device.
+   *
+   * Note this is `!unlinked`, not `stillLinked`. There are two ways to fail — the gateway
+   * answered 502 (it tried and could not confirm), and the gateway could not be reached at
+   * all — and only the first sets `stillLinked`. Branching on `stillLinked` therefore
+   * treated "we never even asked" as success, which is the worst of the three outcomes:
+   * the container is about to be deleted, so after that nothing in this dashboard can ever
+   * revoke the device sitting in the masjid's WhatsApp → Linked devices list.
+   */
   const [unlinkWarning, setUnlinkWarning] = useState(false);
   // Setup / Groups / Commands. Local state rather than the URL: these are three views of
   // one connection, not three places — and the section itself is already addressable as
@@ -1759,6 +1781,9 @@ function WhatsAppPanel() {
   useEffect(() => {
     if (pairing && status.data?.state === 'ready') {
       setPairing(null);
+      // A fresh link supersedes any earlier "we could not confirm the unlink" notice —
+      // whatever was or was not released before, this phone is the one attached now.
+      setUnlinkWarning(false);
       toast(t('settings.whatsappLinkedNow'), 'success');
       void utils.whatsapp.get.invalidate();
     }
@@ -1817,9 +1842,22 @@ function WhatsAppPanel() {
         setLinkPhone('');
         setPairing(null);
         setGatewayCrash(null);
-        // Said plainly rather than as a success tick: if we could not confirm WhatsApp
-        // released the device, the masjid has to go and remove it on the phone itself.
-        toast(r.stillLinked ? t('settings.whatsappDeletedStillLinked') : t('settings.whatsappDeleted'), r.stillLinked ? 'error' : 'success');
+        // Said plainly rather than as a success tick: unless WhatsApp positively confirmed
+        // it released the device, the masjid has to go and remove it on the phone itself.
+        //
+        // Keyed on `!r.unlinked`, NOT on `r.stillLinked`. Only a 502 sets `stillLinked`;
+        // an unreachable gateway — which is a common reason to be deleting in the first
+        // place — sets neither, and used to fall through to the clean success message. The
+        // container is gone by then, so that was the one outcome where the admin most
+        // needed telling and was told the opposite.
+        const confirmed = r.unlinked;
+        toast(
+          confirmed ? t('settings.whatsappDeleted') : t('settings.whatsappDeletedStillLinked'),
+          confirmed ? 'success' : 'error',
+        );
+        // The toast is transient and this instruction is the only way back to a clean
+        // phone, so it also stays on the panel until they link something again.
+        setUnlinkWarning(!confirmed);
       } else {
         toast(t('settings.whatsappTurnedOff'), 'success');
       }
@@ -1835,9 +1873,14 @@ function WhatsAppPanel() {
   const unlink = trpc.whatsapp.unlink.useMutation({
     onSuccess: (r) => {
       setAskUnlink(false);
-      setUnlinkWarning(r.stillLinked);
+      // `!r.unlinked`, not `r.stillLinked` — see the state declaration. A 502 is not the
+      // only way to end up still linked; not reaching the gateway at all is the other.
+      const confirmed = r.unlinked;
+      setUnlinkWarning(!confirmed);
       setLinkPhone('');
-      if (!r.stillLinked) toast(t('settings.whatsappUnlinked'), 'success');
+      // A failure gets the banner rather than a toast, because a toast is gone in seconds
+      // and the instruction it carries is the only route back to a clean phone.
+      if (confirmed) toast(t('settings.whatsappUnlinked'), 'success');
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
     },
@@ -2273,14 +2316,38 @@ function WhatsAppPanel() {
               {unlink.isPending ? t('common.working') : t('settings.whatsappUnlink')}
             </button>
           </div>
-          {/* A 200 from the gateway is an acknowledgement, not a look at the handset — so
-              when it could not confirm the release, the masjid is told to go and check
-              rather than being shown a tick that might be wrong. */}
-          {unlinkWarning && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.7rem', color: 'var(--color-danger)' }}>
-              {t('settings.whatsappUnlinkUnconfirmed')}
-            </p>
-          )}
+        </div>
+      )}
+
+      {/* An unconfirmed unlink, said where it can actually be read.
+
+          This deliberately sits OUTSIDE the linked-number block above and is gated on
+          nothing but `unlinkWarning`. It used to live inside that block, which is the one
+          place it could not survive: unlinking clears `linkedPhone`, so the very action
+          that raises this warning unmounted it a moment later. The admin got a closed
+          dialog, no toast (the toast is suppressed precisely because this was meant to
+          carry the message), and a paragraph that flashed for under a second — for the
+          outcome where their phone may still be carrying a device they can no longer
+          revoke from here.
+
+          A 200 from the gateway is an acknowledgement, not a look at the handset, so this
+          is also the honest wording for "we could not confirm", not just for a failure. */}
+      {unlinkWarning && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.9rem', borderInlineStart: '3px solid var(--color-danger)' }}
+        >
+          <div className="setting-row" style={{ gap: '0.9rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div className="setting-row__text" style={{ flex: '1 1 16rem', minWidth: 0 }}>
+              <div className="setting-row__title">{t('settings.whatsappUnlinkUnconfirmedTitle')}</div>
+              <div className="setting-row__hint">{t('settings.whatsappUnlinkUnconfirmed')}</div>
+            </div>
+            {/* Dismissible, because it cannot clear itself: once the gateway is deleted
+                there is no status to re-check, so nothing else would ever take it down. */}
+            <button className="btn btn--sm" onClick={() => setUnlinkWarning(false)}>
+              {t('settings.whatsappUnlinkUnconfirmedDone')}
+            </button>
+          </div>
         </div>
       )}
 
