@@ -125,8 +125,18 @@ export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
     if (isViaTunnel(req)) {
-      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
-      return reply.code(404).send({ error: 'Not found.' });
+      const ref = noteRefusal(
+        req.url,
+        {
+          host: String(req.headers.host ?? ''),
+          method: req.method,
+          cfRay: String(req.headers['cf-ray'] ?? ''),
+          accept: String(req.headers.accept ?? ''),
+          agent: String(req.headers['user-agent'] ?? ''),
+        },
+        'lan-only-route',
+      );
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
     }
     done();
   });

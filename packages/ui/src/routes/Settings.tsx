@@ -3341,19 +3341,44 @@ function TunnelRefusals() {
         {t('settings.cfRefusalsHint')}
       </div>
       {rows.map((r) => (
-        <div key={`${r.reason}:${r.host}${r.path}`} className="setting-row__hint" style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-          <code style={{ flex: '1 1 16rem', minWidth: 0, wordBreak: 'break-all' }}>
-            {r.host}
-            {r.path}
-          </code>
-          <span style={{ flex: '0 0 auto' }}>
-            {r.reason === 'no-app-at-path'
-              ? t('settings.cfRefusalNoApp')
-              : r.reason === 'app-fabric-lan-only'
-                ? t('settings.cfRefusalAppFabric')
-                : t('settings.cfRefusalLanOnly')}
-            {r.count > 1 ? ` \u00d7${r.count}` : ''}
-          </span>
+        <div
+          key={r.ref}
+          className="setting-row__hint"
+          style={{ paddingBlock: '0.4rem', borderBlockStart: '1px solid var(--glass-border, rgba(255,255,255,0.08))' }}
+        >
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <code style={{ flex: '1 1 16rem', minWidth: 0, wordBreak: 'break-all' }}>
+              {r.host}
+              {r.path}
+            </code>
+            <span style={{ flex: '0 0 auto' }}>
+              {r.reason === 'no-app-at-path'
+                ? t('settings.cfRefusalNoApp')
+                : r.reason === 'app-fabric-lan-only'
+                  ? t('settings.cfRefusalAppFabric')
+                  : t('settings.cfRefusalLanOnly')}
+              {r.count > 1 ? ` \u00d7${r.count}` : ''}
+            </span>
+          </div>
+          {/* The reference is what someone seeing the error can read back to you, and the
+              Cloudflare ray is what ties this to Cloudflare's own record of the request —
+              including which of its locations served it, which is the obvious suspect when
+              the same page works for one visitor and not another. */}
+          <div style={{ display: 'flex', gap: '0.9rem', flexWrap: 'wrap', opacity: 0.75, marginBlockStart: '0.15rem' }}>
+            <span>
+              {t('settings.cfRefusalRef')} <code>{r.ref}</code>
+            </span>
+            <span>{r.method}</span>
+            <span>{r.wantsHtml ? t('settings.cfRefusalPage') : t('settings.cfRefusalData')}</span>
+            {r.cfRay ? (
+              <span>
+                {t('settings.cfRefusalRay')} <code>{r.cfRay}</code>
+              </span>
+            ) : null}
+          </div>
+          {r.agent ? (
+            <div style={{ opacity: 0.6, wordBreak: 'break-all', marginBlockStart: '0.1rem' }}>{r.agent}</div>
+          ) : null}
         </div>
       ))}
     </div>

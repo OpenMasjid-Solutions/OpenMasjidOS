@@ -121,12 +121,33 @@ export function isRouted(appId: string): boolean {
   return Boolean(seg) && routes.has(seg);
 }
 
-function firstSegment(url: string): string {
-  const path = url.split('?')[0].split('#')[0];
+function segmentOf(path: string): string {
   for (const part of path.split('/')) {
     if (part) return part;
   }
   return '';
+}
+
+/**
+ * The app segment this URL is for, matched against the routing table.
+ *
+ * Tries the raw spelling and the DECODED one, because the table is keyed on plain app
+ * paths while a client may send anything that decodes to one — `/%64onate` is `/donate`
+ * to every URL parser downstream, and reached here as the literal segment `%64onate`,
+ * matched nothing, and 404'd a request that should have routed.
+ *
+ * This is the same raw-versus-decoded split the Fabric guard is careful about
+ * (`isFabricSubpath` tests both), applied to the half that decides WHERE a request goes
+ * rather than whether it is allowed. No bypass: the guard already tests both spellings,
+ * so an encoded `/fabric` is still refused whichever way this resolves.
+ */
+function firstSegment(url: string): string {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  const direct = segmentOf(raw);
+  if (direct && routes.has(direct)) return direct;
+  const decoded = segmentOf(decodedPath(url));
+  if (decoded && routes.has(decoded)) return decoded;
+  return direct;
 }
 
 /** True if, after the app's path segment, the request targets the app's own
@@ -191,8 +212,18 @@ export function attachIngress(front: FastifyInstance): void {
     if (port == null) return done(); // not an app path → normal front-door handling
     // Refuse an app's /fabric/* over the tunnel — LAN-only (app↔platform + broker).
     if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url, seg)) {
-      noteRefusal(req.url, String(req.headers.host ?? ''), 'app-fabric-lan-only');
-      return reply.code(404).send({ error: 'Not found.' });
+      const ref = noteRefusal(
+        req.url,
+        {
+          host: String(req.headers.host ?? ''),
+          method: req.method,
+          cfRay: String(req.headers['cf-ray'] ?? ''),
+          accept: String(req.headers.accept ?? ''),
+          agent: String(req.headers['user-agent'] ?? ''),
+        },
+        'app-fabric-lan-only',
+      );
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
     }
     reply.hijack(); // we own the raw response from here
     proxyHttp(req.raw, reply.raw, port);

@@ -170,16 +170,28 @@ async function main() {
   // firewall and a bind address, not a route guard (see docs/SECURITY.md).
   server.get('/api/health', async (req, reply) => {
     if (isViaTunnel(req)) {
-      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
-      return reply.code(404).send({ error: 'Not found.' });
+      const ref = noteRefusal(req.url, {
+      host: String(req.headers.host ?? ''),
+      method: req.method,
+      cfRay: String(req.headers['cf-ray'] ?? ''),
+      accept: String(req.headers.accept ?? ''),
+      agent: String(req.headers['user-agent'] ?? ''),
+    }, 'lan-only-route');
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
     }
     return { status: 'ok', version: VERSION };
   });
 
   server.get('/api/ready', async (req, reply) => {
     if (isViaTunnel(req)) {
-      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
-      return reply.code(404).send({ error: 'Not found.' });
+      const ref = noteRefusal(req.url, {
+      host: String(req.headers.host ?? ''),
+      method: req.method,
+      cfRay: String(req.headers['cf-ray'] ?? ''),
+      accept: String(req.headers.accept ?? ''),
+      agent: String(req.headers['user-agent'] ?? ''),
+    }, 'lan-only-route');
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
     }
     return { ready: await dockerReachable() };
   });
@@ -276,15 +288,27 @@ async function main() {
     // and `install.sh` both call loopback and send no `cf-ray`.
     front.get('/api/health', async (req, reply) => {
       if (isViaTunnel(req)) {
-        noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
-        return reply.code(404).send({ error: 'Not found.' });
+        const ref = noteRefusal(req.url, {
+        host: String(req.headers.host ?? ''),
+        method: req.method,
+        cfRay: String(req.headers['cf-ray'] ?? ''),
+        accept: String(req.headers.accept ?? ''),
+        agent: String(req.headers['user-agent'] ?? ''),
+      }, 'lan-only-route');
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
       }
       return { status: 'ok', version: VERSION };
     });
     front.get('/api/ready', async (req, reply) => {
       if (isViaTunnel(req)) {
-        noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
-        return reply.code(404).send({ error: 'Not found.' });
+        const ref = noteRefusal(req.url, {
+        host: String(req.headers.host ?? ''),
+        method: req.method,
+        cfRay: String(req.headers['cf-ray'] ?? ''),
+        accept: String(req.headers.accept ?? ''),
+        agent: String(req.headers['user-agent'] ?? ''),
+      }, 'lan-only-route');
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
       }
       return { ready: await dockerReachable() };
     });
@@ -305,7 +329,17 @@ async function main() {
         // is a visitor at an address where no app is published. Both 404 identically to
         // the caller — only the record distinguishes them (see system/tunnel-refusals.ts).
         const raw = req.url.split('?')[0]!;
-        noteRefusal(req.url, asked, raw.startsWith('/api') ? 'lan-only-route' : 'no-app-at-path');
+        const ref = noteRefusal(
+          req.url,
+          {
+            host: asked,
+            method: req.method,
+            cfRay: String(req.headers['cf-ray'] ?? ''),
+            accept: String(req.headers.accept ?? ''),
+            agent: String(req.headers['user-agent'] ?? ''),
+          },
+          raw.startsWith('/api') ? 'lan-only-route' : 'no-app-at-path',
+        );
         // A person typing an address deserves a sentence, not a JSON object. Deliberately
         // says nothing about what IS published here — the whole point of this guard is that
         // the internet learns nothing about this masjid's platform from a wrong address.
@@ -321,10 +355,17 @@ async function main() {
                 '<h1 style="font-size:1.4rem;margin:0 0 .6rem">There is no page at this address</h1>' +
                 '<p style="margin:0;color:#4b5563">Please check the address and try again. ' +
                 'If someone gave you this link, ask them for the full one \u2014 pages here usually ' +
-                'have something after the website name.</p></div>',
+                'have something after the website name.</p>' +
+                // The reference is the whole point of showing anything at all: someone who
+                // hits this can read six characters back to the masjid, who can then find
+                // THIS request instead of guessing which of the day's refusals it was.
+                (ref
+                  ? `<p style="margin:1.2rem 0 0;color:#9ca3af;font-size:.85rem">Reference: <code>${ref}</code></p>`
+                  : '') +
+                '</div>',
             );
         }
-        return reply.code(404).send({ error: 'Not found.' });
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
       }
       const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
       if (!host) return reply.code(400).send({ error: 'Bad request.' });

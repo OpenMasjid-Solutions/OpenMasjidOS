@@ -790,10 +790,14 @@
     "whatsappHeldDiscarded_one": "{{count}} message discarded.",
     "whatsappHeldDiscarded_other": "{{count}} messages discarded.",
     "cfRefusalsTitle": "Recently turned away",
-    "cfRefusalsHint": "Requests that arrived through your internet link and were not served. If a page of yours is showing \"not found\", the reason is here. Only you can see this.",
+    "cfRefusalsHint": "Requests that arrived through your internet link and were not served. If someone says a page shows \"not found\", ask them for the reference shown on their screen and find it here. Only you can see this.",
     "cfRefusalNoApp": "No app is published at that address",
     "cfRefusalLanOnly": "Local network only",
-    "cfRefusalAppFabric": "The app's private area"
+    "cfRefusalAppFabric": "The app's private area",
+    "cfRefusalRef": "Reference",
+    "cfRefusalRay": "Cloudflare",
+    "cfRefusalPage": "Opening a page",
+    "cfRefusalData": "Loading data"
   },
   "update": {
     "title": "Updating OpenMasjidOS",
