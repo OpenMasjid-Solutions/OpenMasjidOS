@@ -23,7 +23,7 @@ import {
   composePull,
   composeUpStream,
 } from '../docker/compose';
-import { discoverApps } from '../docker/discovery';
+import { discoverApps, discoverAppsResult } from '../docker/discovery';
 import { docker } from '../docker/client';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
@@ -667,8 +667,24 @@ export async function restoreAppProxies(): Promise<void> {
 }
 
 /** Merge on-disk metadata with live Docker state; recover orphans. */
+/**
+ * The installed apps, AND whether Docker could actually be read.
+ *
+ * When `discoveryOk` is false every app comes back `running: false` with no ports —
+ * because that is all we know, not because it is true. A caller that routes traffic or
+ * raises alerts from those fields must check this first; one that just draws a list need
+ * not. See `DiscoveryResult.ok` for what happened when nothing checked.
+ */
+export async function listInstalledWithHealth(): Promise<{ apps: InstalledApp[]; discoveryOk: boolean }> {
+  const result = await discoverAppsResult();
+  return { apps: await buildInstalled(result.apps), discoveryOk: result.ok };
+}
+
 export async function listInstalled(): Promise<InstalledApp[]> {
-  const discovered = await discoverApps();
+  return buildInstalled(await discoverApps());
+}
+
+async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps>>): Promise<InstalledApp[]> {
   const byId = new Map<string, InstalledApp>();
 
   // 1. Apps we have metadata for.

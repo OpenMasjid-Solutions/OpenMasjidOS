@@ -17,7 +17,7 @@ import http from 'node:http';
 import net from 'node:net';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance } from 'fastify';
-import { listInstalled, getAppPath } from '../apps/manager';
+import { listInstalledWithHealth, getAppPath } from '../apps/manager';
 import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunnel';
 import { appHost } from './app-host';
 import { log } from '../logger';
@@ -75,7 +75,17 @@ let routes = new Map<string, number>(); // path segment → app HTTP port
 
 async function rebuild(): Promise<void> {
   try {
-    const apps = await listInstalled();
+    const { apps, discoveryOk } = await listInstalledWithHealth();
+    // THE BUG THIS GUARD EXISTS FOR. A Docker hiccup used to arrive as a perfectly
+    // well-formed list of apps that all happened to have no ports, so every app was
+    // dropped below and this table went empty — and every visitor to the masjid's public
+    // site got `{"error":"Not found."}` until the next tick ten seconds later. The
+    // `catch` underneath was written to prevent precisely that and never fired, because
+    // nothing threw. Keep what we had; it is far more likely to still be right.
+    if (!discoveryOk) {
+      log.warn('Ingress: could not read Docker; keeping the previous app routes.');
+      return;
+    }
     const next = new Map<string, number>();
     for (const a of apps) {
       // Per-app exposure opt-in: only route apps the admin has exposed over the
@@ -87,9 +97,16 @@ async function rebuild(): Promise<void> {
       const seg = getAppPath(a.id);
       if (seg && !RESERVED.has(seg)) next.set(seg, port);
     }
+    // Worth a line when the public site is about to go dark, even legitimately (every
+    // app stopped, or every app un-exposed) — this was silent, and silence is what made
+    // the outage above so hard to place.
+    if (next.size === 0 && routes.size > 0) {
+      log.warn(`Ingress: no app is exposed and running; ${routes.size} public path(s) will stop resolving.`);
+    }
     routes = next;
-  } catch {
-    /* keep the previous map on a transient Docker hiccup */
+  } catch (err) {
+    // Reached only if something OTHER than Docker readability threw.
+    log.warn('Ingress: rebuild failed; keeping the previous app routes.', err);
   }
 }
 

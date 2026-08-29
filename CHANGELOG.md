@@ -13,6 +13,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — public pages briefly showing "Not found" through the internet link**
+
+- **Pages shared over your remote-access link could answer "Not found" for a few seconds, on every app at once, then work again on a retry.** The cause was OpenMasjidOS briefly failing to read Docker and treating that as "there are no apps" rather than "I could not check". It then rebuilt its list of public web addresses, found nothing to publish, and stopped answering for every app until it looked again ten seconds later. It now keeps the addresses it already had whenever it cannot read Docker, which is almost always the right answer.
+- **The same fault could have emailed you an "app went offline" alert for every single app at once**, for the same reason — every app looked stopped because nothing could be read, not because anything had stopped. That check now waits for a real reading before deciding anything is down.
+- If every app genuinely does stop being published, that is now written to the log rather than happening silently.
+
 **Fixed — WhatsApp gap reporting, after feedback from the apps**
 
 - **The record of a gap now survives being fixed.** It could only be read while the connection was still down — and re-linking the phone cleared it — so an app looking for what it had missed found nothing, which is exactly when it would look. Gaps are now kept for a week after they end.

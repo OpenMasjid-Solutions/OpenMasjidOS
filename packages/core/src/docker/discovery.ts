@@ -32,14 +32,43 @@ export interface DiscoveredApp {
   name?: string;
 }
 
-/** Map of project → discovered app, built from live Docker state. */
-export async function discoverApps(): Promise<Map<string, DiscoveredApp>> {
+export interface DiscoveryResult {
+  apps: Map<string, DiscoveredApp>;
+  /**
+   * Did we actually get an answer from Docker?
+   *
+   * `false` means the daemon could not be ASKED — which is emphatically not the same as
+   * "there are no apps", even though both used to arrive as an empty map. Callers that
+   * merely display a list can ignore this; callers that make DECISIONS from it must not.
+   *
+   * This distinction was missing and it cost a masjid their public site. An empty result
+   * flowed into `listInstalled`, which reported every app with `ports: []` and
+   * `running: false`; `system/ingress.ts` then rebuilt its routing table, dropped every
+   * app for having no port, and answered `{"error":"Not found."}` to every visitor until
+   * the next 10-second tick. The rebuild's own `catch` was written to prevent exactly
+   * that and never fired, because nothing threw. Meanwhile `system/alert-monitor.ts` saw
+   * every app go from running to not-running and would email an "app went offline" alert
+   * for all of them.
+   *
+   * Same rule as CLAUDE.md §13.2d states for Stripe, and as the WhatsApp health monitor
+   * follows: **"couldn't ask" is never an answer.**
+   */
+  ok: boolean;
+}
+
+/**
+ * Live Docker state, WITH whether we actually managed to read it.
+ *
+ * Prefer this over `discoverApps()` anywhere the answer drives a decision.
+ */
+export async function discoverAppsResult(): Promise<DiscoveryResult> {
   const result = new Map<string, DiscoveredApp>();
   let containers: Dockerode.ContainerInfo[];
   try {
     containers = await docker.listContainers({ all: true });
   } catch {
-    return result; // Docker unreachable — return nothing rather than throwing.
+    // Nothing to report AND we could not ask. The second half is the important half.
+    return { apps: result, ok: false };
   }
 
   for (const c of containers) {
@@ -67,7 +96,18 @@ export async function discoverApps(): Promise<Map<string, DiscoveredApp>> {
   }
 
   for (const app of result.values()) app.ports.sort((a, b) => a - b);
-  return result;
+  return { apps: result, ok: true };
+}
+
+/**
+ * Live Docker state, discarding whether we could read it.
+ *
+ * Kept for callers that only ever DISPLAY the result, where an empty list during a hiccup
+ * is a cosmetic blip. Anything that routes traffic, alerts, or decides an app is gone must
+ * use `discoverAppsResult` instead — see the note on `DiscoveryResult.ok`.
+ */
+export async function discoverApps(): Promise<Map<string, DiscoveredApp>> {
+  return (await discoverAppsResult()).apps;
 }
 
 /** The set of running app project names — used by the "apps running" stat. */

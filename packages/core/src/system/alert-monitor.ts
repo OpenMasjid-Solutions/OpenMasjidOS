@@ -7,7 +7,7 @@
  * only records state (no boot-time noise). deliverAlert() gates on the admin's
  * granular on/off + sends to the admin email + webhook.
  */
-import { listInstalled } from '../apps/manager';
+import { listInstalledWithHealth } from '../apps/manager';
 import { deliverAlert } from '../notify/alerts';
 import { appOffline } from '../notify/alert-copy';
 import { isOfflineSuppressed } from './offline-suppress';
@@ -20,7 +20,13 @@ let primed = false;
 async function tick(): Promise<void> {
   let apps;
   try {
-    apps = await listInstalled();
+    const r = await listInstalledWithHealth();
+    // A Docker hiccup reports EVERY app as not-running, which this loop would read as
+    // every app going offline at once and email an alert for each. The catch below was
+    // meant to cover that and could not: nothing throws, the list just comes back with
+    // `running: false` everywhere. "Could not ask" is not "they are all down".
+    if (!r.discoveryOk) return;
+    apps = r.apps;
   } catch {
     return; // Docker hiccup — try again next tick
   }
