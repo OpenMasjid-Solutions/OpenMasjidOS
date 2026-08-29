@@ -13,6 +13,7 @@
  * app broker, and the ingress /fabric refusal all use ONE implementation.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { noteRefusal } from './tunnel-refusals';
 
 /**
  * `x-forwarded-proto` is attacker-influenced and arrives in more shapes than one
@@ -123,7 +124,10 @@ export function urlHasPrefix(url: string, prefix: string): boolean {
 export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
-    if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+    if (isViaTunnel(req)) {
+      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
+      return reply.code(404).send({ error: 'Not found.' });
+    }
     done();
   });
 }

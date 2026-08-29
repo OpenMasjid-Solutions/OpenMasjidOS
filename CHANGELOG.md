@@ -13,6 +13,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Added — you can now see why a public page was turned away**
+
+- **Settings → Remote access now lists recent requests your internet link refused, and why.** Every one of those refusals looked the same from outside — "Not found" and nothing else — and there was no record anywhere, so "my page says not found" was impossible to diagnose. There are three quite different reasons it can happen (nothing is published at that address, the address is one that only works on your local network, or it is an app's private area) and now you can tell which.
+- **The refusal itself is unchanged for visitors, on purpose.** Anyone on the internet still gets the same plain "not found" whatever the reason — telling them apart would let a stranger map which addresses on your server are real. The explanation is only visible to you, signed in, on your own network.
+- **Someone who mistypes your address now gets a sentence instead of a line of code.** They used to see `{"error":"Not found."}`. It now says there is no page at that address and suggests checking the link, without revealing anything about what your server does run.
+
 **Fixed — public pages briefly showing "Not found" through the internet link**
 
 - **Pages shared over your remote-access link could answer "Not found" for a few seconds, on every app at once, then work again on a retry.** The cause was OpenMasjidOS briefly failing to read Docker and treating that as "there are no apps" rather than "I could not check". It then rebuilt its list of public web addresses, found nothing to publish, and stopped answering for every app until it looked again ten seconds later. It now keeps the addresses it already had whenever it cannot read Docker, which is almost always the right answer.

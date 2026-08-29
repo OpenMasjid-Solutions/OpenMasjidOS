@@ -3320,6 +3320,46 @@ function StripePanel() {
 /** Cloudflare Tunnel — paste a token + domain once; the OS runs cloudflared so the
  *  masjid's apps are reachable from the internet. Apps read their public URL via the
  *  Fabric (`GET /api/fabric/site`). */
+/**
+ * Why the tunnel turned recent requests away.
+ *
+ * This is the panel that answers "my public page says Not found and I cannot tell why".
+ * Every one of those 404s is identical from outside on purpose, so this is the only place
+ * the difference is visible — and it is behind the LAN-only dashboard, which is what makes
+ * being specific here safe.
+ */
+function TunnelRefusals() {
+  const { t } = useTranslation();
+  // Only while someone is looking at this panel; it is a diagnostic, not a monitor.
+  const q = trpc.cloudflare.refusals.useQuery(undefined, { refetchInterval: 15_000 });
+  const rows = q.data ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="glass-inset panel" style={{ marginBlockStart: '0.9rem' }}>
+      <div className="setting-row__title">{t('settings.cfRefusalsTitle')}</div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+        {t('settings.cfRefusalsHint')}
+      </div>
+      {rows.map((r) => (
+        <div key={`${r.reason}:${r.host}${r.path}`} className="setting-row__hint" style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <code style={{ flex: '1 1 16rem', minWidth: 0, wordBreak: 'break-all' }}>
+            {r.host}
+            {r.path}
+          </code>
+          <span style={{ flex: '0 0 auto' }}>
+            {r.reason === 'no-app-at-path'
+              ? t('settings.cfRefusalNoApp')
+              : r.reason === 'app-fabric-lan-only'
+                ? t('settings.cfRefusalAppFabric')
+                : t('settings.cfRefusalLanOnly')}
+            {r.count > 1 ? ` \u00d7${r.count}` : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CloudflarePanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -3503,6 +3543,7 @@ function CloudflarePanel() {
         </p>
 
       </details>
+      <TunnelRefusals />
     </section>
   );
 }

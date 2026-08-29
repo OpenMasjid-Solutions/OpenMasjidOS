@@ -21,6 +21,7 @@ import { listInstalledWithHealth, getAppPath } from '../apps/manager';
 import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunnel';
 import { appHost } from './app-host';
 import { log } from '../logger';
+import { noteRefusal } from './tunnel-refusals';
 
 // How the core reaches an app's published host port — one definition, shared with the
 // per-app TLS proxy, the Fabric broker and the WhatsApp gateway client.
@@ -190,6 +191,7 @@ export function attachIngress(front: FastifyInstance): void {
     if (port == null) return done(); // not an app path → normal front-door handling
     // Refuse an app's /fabric/* over the tunnel — LAN-only (app↔platform + broker).
     if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url, seg)) {
+      noteRefusal(req.url, String(req.headers.host ?? ''), 'app-fabric-lan-only');
       return reply.code(404).send({ error: 'Not found.' });
     }
     reply.hijack(); // we own the raw response from here

@@ -788,7 +788,12 @@
     "whatsappHeldDiscardBody_other": "{{count}} messages will be thrown away and never sent.",
     "whatsappHeldDiscardCost": "This cannot be undone. The apps that sent them will be told they failed, so they can decide what to do.",
     "whatsappHeldDiscarded_one": "{{count}} message discarded.",
-    "whatsappHeldDiscarded_other": "{{count}} messages discarded."
+    "whatsappHeldDiscarded_other": "{{count}} messages discarded.",
+    "cfRefusalsTitle": "Recently turned away",
+    "cfRefusalsHint": "Requests that arrived through your internet link and were not served. If a page of yours is showing \"not found\", the reason is here. Only you can see this.",
+    "cfRefusalNoApp": "No app is published at that address",
+    "cfRefusalLanOnly": "Local network only",
+    "cfRefusalAppFabric": "The app's private area"
   },
   "update": {
     "title": "Updating OpenMasjidOS",

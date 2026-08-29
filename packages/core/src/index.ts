@@ -27,6 +27,7 @@ import { backupStream, backupFilename, BackupBusyError } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
+import { noteRefusal } from './system/tunnel-refusals';
 import { registerFabricTunnelGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI } from './api/static-ui';
 import { startAlertMonitor } from './system/alert-monitor';
@@ -168,12 +169,18 @@ async function main() {
   // reachable there is no header to detect and this still answers — mitigating THAT is a
   // firewall and a bind address, not a route guard (see docs/SECURITY.md).
   server.get('/api/health', async (req, reply) => {
-    if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+    if (isViaTunnel(req)) {
+      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
+      return reply.code(404).send({ error: 'Not found.' });
+    }
     return { status: 'ok', version: VERSION };
   });
 
   server.get('/api/ready', async (req, reply) => {
-    if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+    if (isViaTunnel(req)) {
+      noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
+      return reply.code(404).send({ error: 'Not found.' });
+    }
     return { ready: await dockerReachable() };
   });
 
@@ -268,11 +275,17 @@ async function main() {
     // treatment as the secret routes. Nothing real breaks: the Docker healthcheck
     // and `install.sh` both call loopback and send no `cf-ray`.
     front.get('/api/health', async (req, reply) => {
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
+        return reply.code(404).send({ error: 'Not found.' });
+      }
       return { status: 'ok', version: VERSION };
     });
     front.get('/api/ready', async (req, reply) => {
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        noteRefusal(req.url, String(req.headers.host ?? ''), 'lan-only-route');
+        return reply.code(404).send({ error: 'Not found.' });
+      }
       return { ready: await dockerReachable() };
     });
     registerFabric(front);
@@ -286,7 +299,33 @@ async function main() {
       // the same request two different ways — the Fabric guard robustly, this one
       // naively, missing `"HTTPS"`, `"https,http"` and a duplicated header (the exact
       // spellings `forwardedProtoIsHttps` exists to catch).
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        const asked = String(req.headers.host ?? '');
+        // An /api path here is a platform route being probed from outside; anything else
+        // is a visitor at an address where no app is published. Both 404 identically to
+        // the caller — only the record distinguishes them (see system/tunnel-refusals.ts).
+        const raw = req.url.split('?')[0]!;
+        noteRefusal(req.url, asked, raw.startsWith('/api') ? 'lan-only-route' : 'no-app-at-path');
+        // A person typing an address deserves a sentence, not a JSON object. Deliberately
+        // says nothing about what IS published here — the whole point of this guard is that
+        // the internet learns nothing about this masjid's platform from a wrong address.
+        if (req.method === 'GET' && String(req.headers.accept ?? '').includes('text/html')) {
+          return reply
+            .code(404)
+            .type('text/html')
+            .send(
+              '<!doctype html><meta charset="utf-8">' +
+                '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+                '<title>Page not found</title>' +
+                '<div style="font:16px/1.6 system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1.5rem;color:#1f2937">' +
+                '<h1 style="font-size:1.4rem;margin:0 0 .6rem">There is no page at this address</h1>' +
+                '<p style="margin:0;color:#4b5563">Please check the address and try again. ' +
+                'If someone gave you this link, ask them for the full one \u2014 pages here usually ' +
+                'have something after the website name.</p></div>',
+            );
+        }
+        return reply.code(404).send({ error: 'Not found.' });
+      }
       const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
       if (!host) return reply.code(400).send({ error: 'Bad request.' });
       const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
