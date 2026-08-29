@@ -53,6 +53,40 @@ export interface Refusal {
   count: number;
 }
 
+/**
+ * Paths every browser and phone asks for on its own, at the ROOT, whatever is published.
+ *
+ * These are not evidence of anything. A masjid serving apps under paths
+ * (`/donate`, `/kiosk`) will have every visitor's browser ask for `/favicon.ico` and,
+ * on iOS, the touch icons; Android asks for `/.well-known/assetlinks.json` when a link is
+ * opened. Recording them buries the one line that matters — the first real report from a
+ * masjid was four rows of exactly this and nothing else, which is precisely the failure
+ * this panel exists to prevent.
+ *
+ * Still refused, still 404 — only kept out of the record.
+ */
+const BROWSER_NOISE = [
+  '/favicon.ico',
+  '/apple-touch-icon.png',
+  '/apple-touch-icon-precomposed.png',
+  '/robots.txt',
+  '/sitemap.xml',
+  '/browserconfig.xml',
+  '/manifest.json',
+  '/site.webmanifest',
+];
+
+/** True for a path no human typed and no app owns. */
+export function isBrowserNoise(path: string): boolean {
+  const p = path.toLowerCase();
+  if (BROWSER_NOISE.includes(p)) return true;
+  // Apple appends a size to the touch icon: /apple-touch-icon-180x180.png
+  if (/^\/apple-touch-icon(-precomposed)?(-\d+x\d+)?\.png$/.test(p)) return true;
+  // Android App Links + the various probe files under /.well-known.
+  if (p.startsWith('/.well-known/')) return true;
+  return false;
+}
+
 /** Enough to see a pattern, few enough to be free. */
 const MAX = 25;
 /** Paths are truncated: a long URL is a log-flooding vector and adds nothing here. */
@@ -72,6 +106,9 @@ export function noteRefusal(rawPath: string, host: string, reason: RefusalReason
     .split('#')[0]!
     .slice(0, MAX_PATH);
   const cleanHost = String(host ?? '').slice(0, 120);
+  // Kept out of the record entirely — see BROWSER_NOISE. The request is still refused;
+  // it just is not something a masjid should have to read past.
+  if (isBrowserNoise(path)) return;
   const existing = recent.find((r) => r.path === path && r.reason === reason && r.host === cleanHost);
   if (existing) {
     existing.count += 1;

@@ -110,3 +110,47 @@ test('a browser navigation gets a sentence, not a JSON object', () => {
   const page = handler.slice(0, handler.indexOf('return reply.code(404).send'));
   assert.doesNotMatch(page, /listInstalled|routes\.|getAppPath/, 'the page must not enumerate apps');
 });
+
+test('BROWSER NOISE is refused but never recorded, or it buries the real line', () => {
+  // The first real report from a masjid was four rows of exactly this and nothing else:
+  // /favicon.ico, two apple-touch-icons and /.well-known/assetlinks.json. Every visitor's
+  // browser asks for those at the root whatever is published there, so recording them
+  // fills the one panel that answers "why is my page down".
+  refusals.__clearRefusalsForTests();
+  for (const noise of [
+    '/favicon.ico',
+    '/apple-touch-icon.png',
+    '/apple-touch-icon-precomposed.png',
+    '/apple-touch-icon-180x180.png',
+    '/.well-known/assetlinks.json',
+    '/robots.txt',
+  ]) {
+    refusals.noteRefusal(noise, 'a.org', 'no-app-at-path');
+  }
+  assert.deepEqual(refusals.recentRefusals(), [], 'none of these are evidence of anything');
+
+  // A real page request still lands.
+  refusals.noteRefusal('/donate', 'a.org', 'no-app-at-path');
+  assert.equal(refusals.recentRefusals().length, 1);
+});
+
+test('a path that merely looks like an icon is still recorded', () => {
+  // The filter must not swallow an app path. "/favicon.ico" is noise; "/donate/favicon.ico"
+  // is an exposed app asking for something, which is worth seeing.
+  refusals.__clearRefusalsForTests();
+  refusals.noteRefusal('/donate/favicon.ico', 'a.org', 'no-app-at-path');
+  refusals.noteRefusal('/favicons', 'a.org', 'no-app-at-path');
+  assert.equal(refusals.recentRefusals().length, 2);
+});
+
+test('the root icons a phone asks for are SERVED, not refused', () => {
+  // From the masjid's own logo, which is already public over the tunnel. Adding the site
+  // to a home screen produced a blank icon before this.
+  const fabric = fs.readFileSync(path.join(SRC, 'api', 'fabric.ts'), 'utf8');
+  for (const icon of ['/favicon.ico', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']) {
+    assert.ok(fabric.includes(`'${icon}'`), `${icon} should be served, not 404'd`);
+  }
+  // Raster only, same rule as the logo itself — no SVG script vector reaches the internet.
+  const route = fabric.slice(fabric.indexOf('const rootIcon'));
+  assert.match(route.slice(0, 500), /getLogo\(\)/, 'served from the existing public logo');
+});

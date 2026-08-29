@@ -19,7 +19,7 @@
  *
  * Neither moves masjid/prayer data into the platform (CLAUDE.md §13).
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
@@ -319,6 +319,34 @@ export function registerFabric(server: FastifyInstance): void {
   // over the tunnel: Slack/Discord fetch it from the internet as the webhook avatar,
   // and an app's public donor page embeds it. Raster only (see store/branding), so
   // there is no script-in-SVG vector. Short cache so a logo change propagates.
+  /**
+   * The icons a browser or phone fetches from the ROOT on its own.
+   *
+   * A masjid serves its apps under paths (`/donate`), so nothing is published at the root
+   * and every one of these 404'd. Harmless but not free: adding the site to a phone's home
+   * screen produced a blank icon, and the refusal log filled with them.
+   *
+   * Served from the masjid's own logo, which is ALREADY intentionally public over the
+   * tunnel (`/api/public/logo`, CLAUDE.md §15) — so this publishes nothing that was not
+   * public a moment ago. Raster only, for the same reason the logo is: no SVG script
+   * vector. A masjid with no logo set still gets a clean 404 rather than a broken image.
+   */
+  const rootIcon = async (_req: unknown, reply: FastifyReply) => {
+    const logo = getLogo();
+    if (!logo) return reply.code(404).header('cache-control', 'no-store').send({ error: 'Not found.' });
+    reply.header('access-control-allow-origin', '*');
+    reply.header('cache-control', 'public, max-age=300');
+    reply.type(logo.mime);
+    return reply.send(logo.buf);
+  };
+  for (const p of [
+    '/favicon.ico',
+    '/apple-touch-icon.png',
+    '/apple-touch-icon-precomposed.png',
+  ]) {
+    server.get(p, rootIcon);
+  }
+
   server.get('/api/public/logo', async (_req, reply) => {
     reply.header('access-control-allow-origin', '*');
     const logo = getLogo();
