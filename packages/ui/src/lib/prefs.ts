@@ -42,12 +42,28 @@ const DEFAULTS: Prefs = {
   timezone: '',
 };
 
-export const ACCENTS: Record<string, { label: string; primary: string; hover: string; subtle: string }> = {
-  cyan: { label: 'Cyan', primary: '#22D3EE', hover: '#67E8F9', subtle: 'rgba(34,211,238,0.12)' },
-  teal: { label: 'Teal', primary: '#2DD4BF', hover: '#5EEAD4', subtle: 'rgba(45,212,191,0.12)' },
-  sky: { label: 'Sky', primary: '#38BDF8', hover: '#7DD3FC', subtle: 'rgba(56,189,248,0.12)' },
-  violet: { label: 'Violet', primary: '#A78BFA', hover: '#C4B5FD', subtle: 'rgba(167,139,250,0.14)' },
-  gold: { label: 'Gold', primary: '#FBBF24', hover: '#FCD34D', subtle: 'rgba(251,191,36,0.14)' },
+/**
+ * The accent palette.
+ *
+ * `onPrimary` is the ink that goes ON this accent — a very dark variant of the accent
+ * itself, not a shared near-black. It has to travel with the accent because
+ * `applyAccent` sets `--color-btn` to `primary`, and an inline custom property on
+ * the root element beats the stylesheet's own `[data-theme="light"]` block. So
+ * choosing any accent in LIGHT mode replaced the dark blue button with a bright one
+ * while `--color-on-primary` stayed `#FFFFFF` — white on gold measures 1.67:1, about
+ * a third of the 4.5:1 AA needs, and every primary button, avatar and app-icon
+ * fallback on the page went with it. Keep each of these above 4.5:1 against its own
+ * `primary`; `theme-tokens.test.ts` does the arithmetic.
+ */
+export const ACCENTS: Record<
+  string,
+  { label: string; primary: string; hover: string; subtle: string; onPrimary: string }
+> = {
+  cyan: { label: 'Cyan', primary: '#22D3EE', hover: '#67E8F9', subtle: 'rgba(34,211,238,0.12)', onPrimary: '#00131C' },
+  teal: { label: 'Teal', primary: '#2DD4BF', hover: '#5EEAD4', subtle: 'rgba(45,212,191,0.12)', onPrimary: '#00201B' },
+  sky: { label: 'Sky', primary: '#38BDF8', hover: '#7DD3FC', subtle: 'rgba(56,189,248,0.12)', onPrimary: '#001B2E' },
+  violet: { label: 'Violet', primary: '#A78BFA', hover: '#C4B5FD', subtle: 'rgba(167,139,250,0.14)', onPrimary: '#190B3D' },
+  gold: { label: 'Gold', primary: '#FBBF24', hover: '#FCD34D', subtle: 'rgba(251,191,36,0.14)', onPrimary: '#2B1B00' },
 };
 
 export const WALLPAPERS: Record<string, { label: string; preview: string }> = {
@@ -74,6 +90,12 @@ export function applyAccent(id: string): void {
     el.style.removeProperty('--color-primary-subtle');
     el.style.removeProperty('--color-btn');
     el.style.removeProperty('--color-btn-hover');
+    // The default accent alone falls back to the stylesheet, and that is deliberate
+    // rather than an omission: light theme's default button is a DARK blue (#0369A1)
+    // that wants white ink, while every other accent paints a BRIGHT button that
+    // wants dark ink. Clearing the property is the only way both themes get the one
+    // that suits them.
+    el.style.removeProperty('--color-on-primary');
     return;
   }
   el.style.setProperty('--color-primary', a.primary);
@@ -81,6 +103,9 @@ export function applyAccent(id: string): void {
   el.style.setProperty('--color-primary-subtle', a.subtle);
   el.style.setProperty('--color-btn', a.primary);
   el.style.setProperty('--color-btn-hover', a.hover);
+  // Set alongside the background, never separately — these two are one decision, and
+  // an accent whose ink is left behind is unreadable in light mode.
+  el.style.setProperty('--color-on-primary', a.onPrimary);
 }
 
 export function applyWallpaper(id: string): void {

@@ -13,6 +13,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Fixed — the icon on "Update now" buttons was invisible until you hovered**
+
+- **The icon was being drawn in exactly the button's own colour.** The banner that announces an update was colouring every icon inside itself, and that included the icons inside its own buttons — so the icon sat invisibly on a background of the same shade, and only appeared when hovering changed the shade underneath it. The banner now colours only its own icon, and button icons use the dark ink that is meant to sit on a coloured button.
+- **Picking any accent colour other than the default also made light mode's buttons hard to read.** Choosing an accent replaced the button's colour but not the colour of the text and icons on top of it, leaving white on a bright button — white on gold measures 1.67:1 where the accessibility standard asks for at least 4.5:1. Every accent now carries its own very dark shade for whatever sits on it, and the arithmetic is checked by the test suite, so a new accent cannot be added without one.
+
 **Added — you can now see why a public page was turned away**
 
 - **Settings → Remote access now lists recent requests your internet link refused, and why.** Every one of those refusals looked the same from outside — "Not found" and nothing else — and there was no record anywhere, so "my page says not found" was impossible to diagnose. There are three quite different reasons it can happen (nothing is published at that address, the address is one that only works on your local network, or it is an app's private area) and now you can tell which.

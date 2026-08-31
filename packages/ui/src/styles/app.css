@@ -774,12 +774,20 @@ button {
   border-radius: var(--radius-card);
   border-inline-start: 3px solid var(--color-warning);
 }
-.warn-banner svg { color: var(--color-warning); flex-shrink: 0; }
+/* DIRECT CHILD ONLY. These style the banner's OWN leading icon. Written as a
+   descendant selector they also repainted the icon inside the banner's buttons,
+   and a rule that hits the svg directly beats the colour it would otherwise
+   inherit from .btn--primary. So the "Update now" icon was drawn in
+   --color-primary on a --color-btn background: in dark those two tokens are the
+   SAME hex, and the icon was perfectly invisible until :hover swapped the
+   background out from under it. Buttons now keep --color-on-primary, which is
+   the very dark on-accent ink these backgrounds were designed for. */
+.warn-banner > svg { color: var(--color-warning); flex-shrink: 0; }
 .warn-banner__title { font-weight: 600; color: var(--color-ink); }
 .warn-banner__body { font-size: 0.85rem; color: var(--color-ink-muted); margin-block-start: 0.1rem; }
 /* Update-available banner — same shape, primary accent (not a warning). */
 .warn-banner--update { border-inline-start-color: var(--color-primary); }
-.warn-banner--update svg { color: var(--color-primary); }
+.warn-banner--update > svg { color: var(--color-primary); }
 .gauge-fill--warn { background: linear-gradient(90deg, var(--color-warning), #f6c453); }
 
 @media (prefers-reduced-motion: reduce) {
