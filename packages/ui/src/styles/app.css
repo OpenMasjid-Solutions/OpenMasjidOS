@@ -462,7 +462,11 @@ button {
 
 /* ── Forms ──────────────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 0.4rem; margin-block-end: 1rem; }
-.label { font-size: 0.85rem; font-weight: 600; color: var(--color-ink-muted); }
+/* Block, because a bare <label> is inline: outside a .field (which is a flex column
+   and blockifies its children anyway) an inline label shares a line with whatever follows
+   it, and its margin-block is silently dropped. That put the backup-type label beside its
+   picker, and quietly lost the 0.6rem above the SSL paste boxes. */
+.label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--color-ink-muted); }
 .input,
 .textarea,
 .select {
@@ -562,10 +566,21 @@ button {
 .panel-title { font-family: var(--font-display); font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.9rem; }
 
 /* ── Modal ──────────────────────────────────────────────────────────────── */
+/* STACKING ORDER, in one place so it stops being decided by accident:
+     dock / chrome        40–60
+     in-dashboard windows 110 + index   (components/WindowManager.tsx)
+     modals & dialogs     250
+     toasts               260   (must clear a modal, or a toast raised from
+                                 inside a dialog is invisible)
+     splash               300   (components/AppShell.tsx)
+   Modals used to sit at 100, BELOW the window band — so a confirmation or an
+   install dialog opened while a log, terminal or file window was on screen
+   rendered behind it, and the app looked frozen: the backdrop dimmed, nothing
+   appeared, and the only way out was Escape. */
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 250;
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -770,12 +785,20 @@ button {
   border-radius: var(--radius-card);
   border-inline-start: 3px solid var(--color-warning);
 }
-.warn-banner svg { color: var(--color-warning); flex-shrink: 0; }
+/* DIRECT CHILD ONLY. These style the banner's OWN leading icon. Written as a
+   descendant selector they also repainted the icon inside the banner's buttons,
+   and a rule that hits the svg directly beats the colour it would otherwise
+   inherit from .btn--primary. So the "Update now" icon was drawn in
+   --color-primary on a --color-btn background: in dark those two tokens are the
+   SAME hex, and the icon was perfectly invisible until :hover swapped the
+   background out from under it. Buttons now keep --color-on-primary, which is
+   the very dark on-accent ink these backgrounds were designed for. */
+.warn-banner > svg { color: var(--color-warning); flex-shrink: 0; }
 .warn-banner__title { font-weight: 600; color: var(--color-ink); }
 .warn-banner__body { font-size: 0.85rem; color: var(--color-ink-muted); margin-block-start: 0.1rem; }
 /* Update-available banner — same shape, primary accent (not a warning). */
 .warn-banner--update { border-inline-start-color: var(--color-primary); }
-.warn-banner--update svg { color: var(--color-primary); }
+.warn-banner--update > svg { color: var(--color-primary); }
 .gauge-fill--warn { background: linear-gradient(90deg, var(--color-warning), #f6c453); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -794,7 +817,7 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 0.5rem;
-  z-index: 200;
+  z-index: 260;
   pointer-events: none;
 }
 .toast {
@@ -1016,4 +1039,89 @@ button {
   border-radius: 5px;
   background: var(--glass-bg-inset);
   color: var(--color-ink);
+}
+
+/* ── Settings: section nav ────────────────────────────────────────────────────────
+   Settings outgrew a single scrolling page (eleven panels, WhatsApp alone about a
+   third of it), so each section is now its own pane with the list beside it.
+
+   Logical properties throughout — `inline-start`, `margin-inline` — so the list sits
+   on the correct side without a second rule.
+*/
+.settings-layout {
+  display: grid;
+  grid-template-columns: 13.5rem minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+/* The pane is a plain block: the panels inside it already carry their own spacing,
+   and `minmax(0, 1fr)` above is what stops a wide child (a log window, a long table)
+   from pushing the grid wider than the page. */
+.settings-pane {
+  min-inline-size: 0;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  /* Follows you down a long pane rather than scrolling away — Advanced is tall enough
+     that the list would otherwise be off-screen exactly when you want to leave. */
+  position: sticky;
+  inset-block-start: 1rem;
+}
+
+.settings-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 9px;
+  color: var(--color-ink-muted);
+  text-decoration: none;
+  font-size: 0.92rem;
+  line-height: 1.3;
+  transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease;
+}
+
+.settings-nav__item:hover {
+  background: var(--glass-bg-inset);
+  color: var(--color-ink);
+}
+
+.settings-nav__item.is-active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* Keyboard focus must stay visible: this is the page's primary navigation. */
+.settings-nav__item:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Narrow screens: the list becomes a strip above the pane. A dropdown would take less
+   room but hides the eight choices behind a tap; a strip you can swipe shows them. */
+@media (max-width: 56rem) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    gap: 0.4rem;
+    overflow-x: auto;
+    padding-block-end: 0.35rem;
+    /* Edge-to-edge so the strip reads as scrollable rather than as a clipped row. */
+    margin-inline: -0.2rem;
+    padding-inline: 0.2rem;
+    scrollbar-width: thin;
+  }
+  .settings-nav__item {
+    flex: 0 0 auto;
+    background: var(--glass-bg-inset);
+  }
 }

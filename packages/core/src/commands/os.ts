@@ -61,7 +61,3 @@ export const OS_COMMANDS: CommandEntry[] = [
   control('restart', 'Restart an app', 'Turns it off and on again — the usual fix for a stuck screen.', true),
   control('update', 'Update one app', 'Downloads and applies the latest version of one app.', true),
 ];
-
-export function osCommand(id: string): CommandEntry | null {
-  return OS_COMMANDS.find((c) => c.id === id) ?? null;
-}

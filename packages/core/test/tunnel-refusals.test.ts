@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * A refused tunnel request must be explicable to the masjid and opaque to everyone else.
+ *
+ * Five guards answered tunnel traffic with a byte-identical `{"error":"Not found."}` and
+ * no log line anywhere. Three completely different situations produced it — nothing is
+ * published at that path, the path is a LAN-only platform route, or it is an app's own
+ * LAN-only `/fabric` space — and from outside they were indistinguishable, which is
+ * correct, and from INSIDE they were also indistinguishable, which is not.
+ *
+ * Both halves are pinned here, because it is easy to fix the second by breaking the first.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const req = createRequire(__filename);
+const refusals = req('../src/system/tunnel-refusals') as typeof import('../src/system/tunnel-refusals');
+
+const SRC = path.join(__dirname, '..', 'src');
+const read = (...p: string[]) => fs.readFileSync(path.join(SRC, ...p), 'utf8');
+
+test('a refusal is recorded with its reason', () => {
+  refusals.__clearRefusalsForTests();
+  refusals.noteRefusal('/donate', { host: 'masjid.example.org' }, 'no-app-at-path');
+  const [r] = refusals.recentRefusals();
+  assert.equal(r!.path, '/donate');
+  assert.equal(r!.host, 'masjid.example.org');
+  assert.equal(r!.reason, 'no-app-at-path');
+  assert.equal(r!.count, 1);
+});
+
+test('repeats collapse, so one retrying phone cannot evict everything else', () => {
+  refusals.__clearRefusalsForTests();
+  for (let i = 0; i < 12; i++) refusals.noteRefusal('/donate', { host: 'a.org' }, 'no-app-at-path');
+  refusals.noteRefusal('/kiosk', { host: 'a.org' }, 'no-app-at-path');
+  const all = refusals.recentRefusals();
+  assert.equal(all.length, 2, 'twelve retries are one line, not twelve');
+  assert.equal(all.find((r) => r.path === '/donate')!.count, 12);
+});
+
+test('THE QUERY STRING IS NEVER KEPT — that is where tokens and ids live', () => {
+  refusals.__clearRefusalsForTests();
+  refusals.noteRefusal('/donate/pay?token=secret-abc&id=42', { host: 'a.org' }, 'no-app-at-path');
+  const [r] = refusals.recentRefusals();
+  assert.equal(r!.path, '/donate/pay');
+  assert.doesNotMatch(JSON.stringify(refusals.recentRefusals()), /secret-abc/);
+});
+
+test('the list is bounded', () => {
+  refusals.__clearRefusalsForTests();
+  for (let i = 0; i < 200; i++) refusals.noteRefusal(`/p${i}`, { host: 'a.org' }, 'no-app-at-path');
+  assert.ok(refusals.recentRefusals().length <= 25);
+});
+
+test('a very long path cannot flood the record', () => {
+  refusals.__clearRefusalsForTests();
+  refusals.noteRefusal('/' + 'x'.repeat(5000), { host: 'a.org' }, 'no-app-at-path');
+  assert.ok(refusals.recentRefusals()[0]!.path.length <= 120);
+});
+
+// ── the disclosure rule ──────────────────────────────────────────────────────────
+
+test('THE RESPONSE STAYS IDENTICAL for every reason — the internet learns nothing', () => {
+  // A discriminating 404 would let a stranger map which paths are real platform routes on
+  // this box and which are nothing. That is exactly what the tunnel guard withholds, and
+  // it is the easy thing to break while making the failure diagnosable.
+  const index = read('index.ts');
+  const ingress = read('system', 'ingress.ts');
+  const viaTunnel = read('system', 'via-tunnel.ts');
+  for (const [name, src] of [['index', index], ['ingress', ingress], ['via-tunnel', viaTunnel]] as const) {
+    for (const m of src.matchAll(/code\(404\)[\s\S]{0,120}?send\(\{([^}]*)\}\)/g)) {
+      const body = m[1]!;
+      assert.doesNotMatch(body, /reason|code:/, `${name}: a 404 body must not name the guard that fired`);
+    }
+  }
+});
+
+test('every guard that refuses tunnel traffic records why', () => {
+  // Counts STATEMENTS, not string literals: each refusal now writes the message twice, in
+  // the two branches of `ref ? {...} : {...}`. Counting literals made this fail on a
+  // correct change, which is its own kind of broken test.
+  for (const [file, src] of [
+    ['index.ts', read('index.ts')],
+    ['ingress.ts', read('system', 'ingress.ts')],
+    ['via-tunnel.ts', read('system', 'via-tunnel.ts')],
+  ] as const) {
+    const refusals404 = [...src.matchAll(/code\(404\)\.send\([^;]*Not found\./g)].length;
+    const noteCount = [...src.matchAll(/noteRefusal\(/g)].length;
+    assert.ok(
+      noteCount >= refusals404,
+      `${file}: ${refusals404} tunnel 404(s) but only ${noteCount} recorded — an unexplained refusal is what made this undiagnosable`,
+    );
+  }
+});
+
+test('every tunnel 404 offers the reference when there is one', () => {
+  // A refusal that records the detail but hands the visitor nothing to quote is only half
+  // the mechanism — they still cannot tell the masjid WHICH request failed.
+  for (const [file, src] of [
+    ['index.ts', read('index.ts')],
+    ['ingress.ts', read('system', 'ingress.ts')],
+    ['via-tunnel.ts', read('system', 'via-tunnel.ts')],
+  ] as const) {
+    for (const m of src.matchAll(/code\(404\)\.send\(([^;]*Not found\.[^;]*)\)/g)) {
+      assert.match(m[1]!, /ref/, `${file}: this 404 does not offer a reference`);
+    }
+  }
+});
+
+test('the record is only readable over the LAN-only dashboard', () => {
+  const router = read('trpc', 'routers', 'cloudflare.ts');
+  assert.match(router, /refusals: protectedProcedure/, 'behind a session');
+  // And never over the Fabric, which apps reach.
+  const fabric = read('api', 'fabric.ts');
+  assert.doesNotMatch(fabric, /recentRefusals/, 'apps must not be able to read a masjid\'s refused paths');
+});
+
+test('a browser navigation gets a sentence, not a JSON object', () => {
+  const index = read('index.ts');
+  const handler = index.slice(index.indexOf('front.setNotFoundHandler'));
+  assert.match(handler, /text\/html/, 'a person typing an address deserves words');
+  // But it must still say nothing about what IS published here.
+  const page = handler.slice(0, handler.indexOf('return reply.code(404).send'));
+  assert.doesNotMatch(page, /listInstalled|routes\.|getAppPath/, 'the page must not enumerate apps');
+});
+
+test('BROWSER NOISE is refused but never recorded, or it buries the real line', () => {
+  // The first real report from a masjid was four rows of exactly this and nothing else:
+  // /favicon.ico, two apple-touch-icons and /.well-known/assetlinks.json. Every visitor's
+  // browser asks for those at the root whatever is published there, so recording them
+  // fills the one panel that answers "why is my page down".
+  refusals.__clearRefusalsForTests();
+  for (const noise of [
+    '/favicon.ico',
+    '/apple-touch-icon.png',
+    '/apple-touch-icon-precomposed.png',
+    '/apple-touch-icon-180x180.png',
+    '/.well-known/assetlinks.json',
+    '/robots.txt',
+  ]) {
+    refusals.noteRefusal(noise, { host: 'a.org' }, 'no-app-at-path');
+  }
+  assert.deepEqual(refusals.recentRefusals(), [], 'none of these are evidence of anything');
+
+  // A real page request still lands.
+  refusals.noteRefusal('/donate', { host: 'a.org' }, 'no-app-at-path');
+  assert.equal(refusals.recentRefusals().length, 1);
+});
+
+test('a path that merely looks like an icon is still recorded', () => {
+  // The filter must not swallow an app path. "/favicon.ico" is noise; "/donate/favicon.ico"
+  // is an exposed app asking for something, which is worth seeing.
+  refusals.__clearRefusalsForTests();
+  refusals.noteRefusal('/donate/favicon.ico', { host: 'a.org' }, 'no-app-at-path');
+  refusals.noteRefusal('/favicons', { host: 'a.org' }, 'no-app-at-path');
+  assert.equal(refusals.recentRefusals().length, 2);
+});
+
+test('the root icons a phone asks for are SERVED, not refused', () => {
+  // From the masjid's own logo, which is already public over the tunnel. Adding the site
+  // to a home screen produced a blank icon before this.
+  const fabric = fs.readFileSync(path.join(SRC, 'api', 'fabric.ts'), 'utf8');
+  for (const icon of ['/favicon.ico', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']) {
+    assert.ok(fabric.includes(`'${icon}'`), `${icon} should be served, not 404'd`);
+  }
+  // Raster only, same rule as the logo itself — no SVG script vector reaches the internet.
+  const route = fabric.slice(fabric.indexOf('const rootIcon'));
+  assert.match(route.slice(0, 500), /getLogo\(\)/, 'served from the existing public logo');
+});
+
+test('A REFERENCE is returned, and it finds that exact request', () => {
+  // The point of this whole mechanism: a page works for one visitor and not another, so
+  // the failing visitor reads six characters off their screen and the masjid finds THAT
+  // request rather than guessing which of the day's refusals it was.
+  refusals.__clearRefusalsForTests();
+  const ref = refusals.noteRefusal(
+    '/donate',
+    { host: 'a.org', method: 'GET', cfRay: '8f2a1c-LHR', accept: 'text/html', agent: 'Mozilla/5.0' },
+    'no-app-at-path',
+  );
+  assert.ok(ref && /^[0-9a-f]{6}$/.test(ref), `expected a short hex ref, got ${ref}`);
+  const found = refusals.recentRefusals().find((r) => r.ref === ref);
+  assert.ok(found, 'the ref must locate the record');
+  assert.equal(found!.cfRay, '8f2a1c-LHR', "Cloudflare's own id ties this to their record");
+  assert.equal(found!.wantsHtml, true, 'a page load, not a background fetch');
+  assert.equal(found!.method, 'GET');
+});
+
+test('the reference encodes nothing — it is safe to show a stranger', () => {
+  // It appears in a public 404, so it must not carry the reason, the path or anything
+  // else the disclosure rule withholds.
+  refusals.__clearRefusalsForTests();
+  const ref = refusals.noteRefusal('/secret-admin-path', { host: 'a.org' }, 'lan-only-route')!;
+  assert.doesNotMatch(ref, /secret|admin|lan|path/i);
+  assert.equal(ref.length, 6);
+  // Two identical-looking refusals from different paths must not collide predictably.
+  const other = refusals.noteRefusal('/another', { host: 'a.org' }, 'lan-only-route')!;
+  assert.notEqual(ref, other);
+});
+
+test('a repeat keeps one reference but refreshes the Cloudflare id', () => {
+  // Collapsing keeps the list readable; the useful ray is the request being looked at
+  // now, not the first of the day.
+  refusals.__clearRefusalsForTests();
+  const first = refusals.noteRefusal('/donate', { host: 'a.org', cfRay: 'ray-1' }, 'no-app-at-path');
+  const second = refusals.noteRefusal('/donate', { host: 'a.org', cfRay: 'ray-2' }, 'no-app-at-path');
+  assert.equal(first, second, 'one line, one reference');
+  assert.equal(refusals.recentRefusals()[0]!.cfRay, 'ray-2');
+});
+
+test('a path we do not record has no reference to offer', () => {
+  // Handing out a reference that finds nothing would be worse than none at all.
+  refusals.__clearRefusalsForTests();
+  assert.equal(refusals.noteRefusal('/favicon.ico', { host: 'a.org' }, 'no-app-at-path'), null);
+});
+
+test('ROUTING MATCHES THE DECODED SEGMENT, not just the raw one', () => {
+  // The Fabric guard has always tested both spellings; the lookup that decides WHERE a
+  // request goes tested only the raw one. `/%64onate` is `/donate` to every URL parser
+  // downstream, but arrived here as the literal segment `%64onate`, matched nothing, and
+  // 404'd a request that should have routed.
+  const src = read('system', 'ingress.ts');
+  const fn = src.slice(src.indexOf('function firstSegment'), src.indexOf('/** True if, after the app'));
+  assert.match(fn, /decodedPath/, 'the decoded spelling must be tried');
+  assert.match(fn, /routes\.has/, 'and matched against the real table');
+});

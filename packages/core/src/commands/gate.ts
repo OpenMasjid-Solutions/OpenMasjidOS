@@ -58,7 +58,21 @@ export type DropReason =
 export type GateOutcome =
   | { pass: true; person: CommandPerson; msg: InboundMessage; digits: string }
   /** `notice` is set ONLY for 'rate-limited' — the one drop that may answer. */
-  | { pass: false; drop: DropReason; notice?: boolean; keys?: string[]; digits?: string };
+  /**
+   * `notice` is set ONLY for 'rate-limited' — the one drop that may answer.
+   * `prefixed` is set ONLY for 'unknown-sender', and says the ignored message
+   * actually began with the command prefix. The whitelist still drops it before
+   * anything else is evaluated; this only tells the caller whether the attempt was
+   * deliberate enough to be worth a log line.
+   */
+  | {
+      pass: false;
+      drop: DropReason;
+      notice?: boolean;
+      keys?: string[];
+      digits?: string;
+      prefixed?: boolean;
+    };
 
 export interface GateContext {
   now: number;
@@ -153,7 +167,17 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
   //       spam signal this account can emit. The caller logs it only if it looked like
   //       a deliberate command attempt.
   const person = authoriseSender(msg.fromDigits);
-  if (!person) return { pass: false, drop: 'unknown-sender', digits: msg.fromDigits };
+  if (!person) {
+    return {
+      pass: false,
+      drop: 'unknown-sender',
+      digits: msg.fromDigits,
+      // Read, not acted on: the drop above already happened. Ordinary conversation
+      // from a stranger stays completely silent; a deliberate `!` attempt is the
+      // one an admin should hear about.
+      prefixed: body.startsWith(COMMAND_PREFIX),
+    };
+  }
 
   // 11. Duplicate suppression, recorded before execution and kept regardless of
   //     outcome. Without an id we key on the content so a redelivery still collides.

@@ -89,32 +89,6 @@
   .glass-inset  { background-color: var(--color-surface); }
 }
 
-/* Accent glow — a soft colored bloom behind a primary/active element. */
-.glow-accent {
-  position: relative;
-  isolation: isolate;
-}
-.glow-accent::before {
-  content: "";
-  position: absolute;
-  inset: -28%;
-  z-index: -1;
-  border-radius: inherit;
-  pointer-events: none;
-  background: radial-gradient(circle, var(--color-primary-subtle), transparent 70%);
-  background: radial-gradient(circle,
-    color-mix(in srgb, var(--color-primary) calc(var(--glow-strength) * 100%), transparent),
-    transparent 70%);
-  filter: blur(20px);
-  opacity: var(--glow-strength);
-}
-.glow-accent--gold::before {
-  background: radial-gradient(circle, var(--color-gold-subtle), transparent 70%);
-  background: radial-gradient(circle,
-    color-mix(in srgb, var(--color-gold) calc(var(--glow-strength) * 100%), transparent),
-    transparent 70%);
-}
-
 /* Live status dot — heartbeat glow; state conveyed by color + label, not motion. */
 .status-dot {
   position: relative;

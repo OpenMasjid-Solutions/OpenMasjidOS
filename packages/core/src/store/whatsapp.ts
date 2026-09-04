@@ -20,46 +20,61 @@
  * in the core boot path.
  *
  * **This is an UNOFFICIAL WhatsApp client and an account can be restricted or banned
- * for using it.** OpenWA says so itself. Every default here is chosen to be
- * conservative rather than fast; see `notify/whatsapp.ts` for the pacing that
- * enforces it.
+ * for using it.** OpenWA says so itself.
+ *
+ * The `limits` below LOOK like the anti-ban policy and are not: every brake they once
+ * described has been removed from `notify/whatsapp.ts`, so they are stored, clamped and
+ * validated but read by nothing. What actually remains is one serialised queue and a
+ * typing indicator. See the header of `notify/whatsapp.ts` for the current contract.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
+import { toDigits } from '../util/phone';
 
 export type WhatsAppProvider = 'none' | 'openwa';
 
 /**
- * Sending limits. These are the anti-ban policy, expressed as data so an admin can
- * tighten them without a code change — but NOT loosen them past what the transport
- * will honour (`clampLimits`).
+ * Sending limits — INERT. Retained shape, not live policy; see the note inside.
  */
 export interface WhatsAppLimits {
-  /** Hard ceiling per rolling hour, across every app and the OS together. */
-  perHour: number;
-  /** Hard ceiling per rolling 24h. */
-  perDay: number;
+  // NOTHING IN THIS INTERFACE IS ENFORCED ANY MORE. Every field below is still stored,
+  // clamped and validated, but no code reads any of them as a brake: the individual caps,
+  // the group caps, both cooldowns, the randomised gap and the warm-up ramp were all
+  // removed (notify/whatsapp.ts, `blockedReason` / `capExceeded`). They are kept so the
+  // shape survives for a future ceiling and so an existing config file still loads.
+  //
+  // Said plainly here because the previous version of this comment claimed "group caps
+  // survive", which was true when written and is not now — and this is the file someone
+  // reads to find out what the platform actually limits.
   /** Minimum seconds between any two sends (a random extra gap is added on top). */
   minGapSeconds: number;
   /** Extra random seconds added to every gap, so the cadence is never a fixed beat. */
   jitterSeconds: number;
   /** Minimum seconds before the same recipient may be messaged again. */
   perRecipientCooldownSeconds: number;
-  /** Local hour (0–23) when quiet hours begin; messages queue instead of sending. */
-  quietStartHour: number;
-  /** Local hour (0–23) when quiet hours end. */
-  quietEndHour: number;
+  // There is deliberately no quiet-hours window here any more, and nothing should add
+  // one back in this shape. It held EVERY message on the queue, and the queue is shared
+  // by the OS and every installed app — with no per-message urgency flag, so an app had
+  // no way to mark a message as one that must not wait. A parent's receipt waiting until
+  // morning is fine; a staff alert about a declined card waiting until morning removes
+  // the entire reason a treasurer carries a phone. It was also evaluated against the
+  // CONTAINER's clock, which is UTC, so for a US Eastern masjid the "21:00-07:00" window
+  // actually fell at 17:00-03:00 local and swallowed the whole evening.
+  //
+  // If per-recipient quiet time is ever wanted, it belongs with the SENDER who knows what
+  // the recipient is (an app deciding when to message parents), not in a shared pacer that
+  // deliberately knows nothing about them.
   /** Days after linking during which the caps are reduced (a new number is watched). */
   warmupDays: number;
   /**
-   * Group caps, tracked SEPARATELY from individual messages.
+   * Group caps. Inert, like the rest — nothing tracks or enforces them.
    *
-   * One message to a group of 200 is a single outbound message that reaches everyone, so
-   * it must not consume the allowance that fee reminders need — and equally it must not
-   * be unlimited, because posting to a big group every few minutes is its own kind of
-   * spam, and the one people actually complain about.
+   * The reasoning they were written for still stands and is why the shape is kept: one
+   * message to a group of 200 reaches everyone, so a group ceiling should be tighter than
+   * an individual one AND tracked separately, or an announcement eats the allowance fee
+   * reminders need. If a ceiling ever returns, it returns here.
    */
   groupPerHour: number;
   groupPerDay: number;
@@ -110,9 +125,18 @@ export interface WhatsAppConfig {
    * sending a volunteer into another app's admin panel to copy a UUID back.
    */
   sessionId: string;
+  /**
+   * The number the gateway is linked to, in digits, as the gateway reports it.
+   *
+   * Recorded (not admin-entered) so `enqueue` can answer "is this a message to ourselves?"
+   * synchronously. Asking the gateway would mean a network call on a path that must return
+   * immediately, and getting it wrong means queueing into a void.
+   */
+  linkedPhone: string;
   /** The human label used when creating the session. Alphanumeric and hyphens only. */
   sessionName: string;
-  /** When the session was first linked — the warm-up ramp counts from here. */
+  /** When the session was first linked. The warm-up ramp that counted from here is gone;
+   *  kept because "how long has this number been in use?" is worth knowing. */
   linkedAt: string | null;
   limits: WhatsAppLimits;
   /** Groups the admin has approved for apps to post into. Empty by default. */
@@ -126,19 +150,17 @@ interface WhatsAppFile {
 const WHATSAPP_PATH = path.join(CONFIG_DIR, 'whatsapp.json');
 
 /**
- * Conservative by design. OpenWA's own guidance is "a few messages per minute per
- * session is sustainable; thousands in an hour is not", so the defaults sit an order
- * of magnitude below even that: a masjid sending fee reminders to parents does not
- * need throughput, it needs the number to still work next term.
+ * The values a fresh config starts with. NOT in force — see `WhatsAppLimits`.
+ *
+ * Kept at their original conservative settings so that if enforcement ever returns, it
+ * returns at a safe default rather than at whatever a config file happens to hold.
+ * OpenWA's own guidance is "a few messages per minute per session is sustainable;
+ * thousands in an hour is not", and these sit an order of magnitude below that.
  */
 export const DEFAULT_LIMITS: WhatsAppLimits = {
-  perHour: 12,
-  perDay: 60,
   minGapSeconds: 6,
-  jitterSeconds: 14, // so the real gap is 6–20s, never a detectable fixed beat
+  jitterSeconds: 14, // inert: there is no inter-message gap for this to widen
   perRecipientCooldownSeconds: 60,
-  quietStartHour: 21,
-  quietEndHour: 7,
   warmupDays: 7,
   // A masjid announcement is an occasional thing; four an hour is already generous,
   // and a group that hears from you ten times a day starts muting you.
@@ -152,6 +174,7 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
   baseUrl: '',
   apiKey: '',
   sessionId: '',
+  linkedPhone: '',
   sessionName: 'openmasjid',
   linkedAt: null,
   limits: { ...DEFAULT_LIMITS },
@@ -169,14 +192,10 @@ export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLim
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(v)));
   const d = DEFAULT_LIMITS;
   return {
-    perHour: clamp(n(l?.perHour, d.perHour), 1, 60),
-    perDay: clamp(n(l?.perDay, d.perDay), 1, 500),
     // Never below 3s between sends, whatever the config says.
     minGapSeconds: clamp(n(l?.minGapSeconds, d.minGapSeconds), 3, 600),
     jitterSeconds: clamp(n(l?.jitterSeconds, d.jitterSeconds), 1, 600),
     perRecipientCooldownSeconds: clamp(n(l?.perRecipientCooldownSeconds, d.perRecipientCooldownSeconds), 0, 86_400),
-    quietStartHour: clamp(n(l?.quietStartHour, d.quietStartHour), 0, 23),
-    quietEndHour: clamp(n(l?.quietEndHour, d.quietEndHour), 0, 23),
     warmupDays: clamp(n(l?.warmupDays, d.warmupDays), 0, 90),
     // Group ceilings are deliberately far tighter than the individual ones: the blast
     // radius of one message is the whole group, so "20 an hour" is already well past
@@ -334,15 +353,32 @@ function computeNext(input: WhatsAppUpsert): WhatsAppConfig {
   return next;
 }
 
-/** The exact config a save WOULD persist — for verify-before-save. */
-export function previewWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfig {
-  return computeNext(input);
-}
-
 export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic {
   cache = computeNext(input);
   persist();
   return getWhatsAppConfigPublic();
+}
+
+/**
+ * Forget the gateway entirely — key, session, linked number, approved groups, the lot.
+ *
+ * This CANNOT be expressed as a `saveWhatsAppConfig` call, and that is deliberate rather
+ * than an oversight: `computeNext` ignores a blank `apiKey` on purpose (`:343`), so that
+ * changing one limit never makes an admin re-paste their secret. The same carve-out means
+ * no admin edit can ever blank the key. Erasing it has to be its own, explicitly-named
+ * operation — which is also the right shape for something this destructive.
+ *
+ * The file is removed rather than rewritten with defaults: a masjid asking to delete
+ * everything should not be left with a file on disk that still says what their session
+ * used to be called. The next read falls back to `DEFAULT_CONFIG` on its own.
+ */
+export function deleteWhatsAppConfig(): void {
+  cache = { ...DEFAULT_CONFIG, limits: { ...DEFAULT_LIMITS }, groups: [] };
+  try {
+    fs.rmSync(WHATSAPP_PATH, { force: true });
+  } catch {
+    /* best effort — the in-memory cache is already cleared, which is what sending reads */
+  }
 }
 
 /**
@@ -357,6 +393,14 @@ export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic 
  */
 export function recordSessionId(id: string): void {
   cache = { ...cache, sessionId: id };
+  persist();
+}
+
+/** Remember the linked number, as digits. Platform-recorded, never an admin field. */
+export function recordLinkedPhone(raw: string): void {
+  const digits = toDigits(raw) ?? '';
+  if (digits === cache.linkedPhone) return; // avoid a write per status poll
+  cache = { ...cache, linkedPhone: digits };
   persist();
 }
 

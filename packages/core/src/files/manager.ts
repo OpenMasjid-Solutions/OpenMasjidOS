@@ -80,6 +80,19 @@ const STAGING_ROOT = path.join(ROOT, '.backup-staging');
  */
 const PLATFORM_APP_FILES = new Set(['compose.yml', '.env', 'meta.json']);
 
+/**
+ * The CORE's own compose, which lives at the sandbox root rather than under apps/.
+ *
+ * This is the same class of hole as OPENMASJIDOS-004 and it was left open by the fix
+ * for it: `apps/<id>/compose.yml` was protected, and `<DATA_DIR>/docker-compose.yml`
+ * — the file that defines the container running as root with the Docker socket and
+ * the whole data directory mounted — was not. The installer's Repair rewrites it and
+ * Update recreates from it, so an edit here is executed with full host privilege,
+ * and it never passes `apps/compose-validate.ts` because that gate only ever sees
+ * app composes.
+ */
+const CORE_COMPOSE = path.join(ROOT, 'docker-compose.yml').toLowerCase();
+
 function isInside(root: string, p: string): boolean {
   return p === root || p.startsWith(root + path.sep);
 }
@@ -92,6 +105,9 @@ function classifyProtected(full: string): string | null {
   if (isInside(STAGING_ROOT, full)) {
     return 'This folder is used while a backup is being prepared. It clears itself when the backup finishes.';
   }
+  if (full.toLowerCase() === CORE_COMPOSE) {
+    return "This file is how OpenMasjidOS itself runs, so it's kept private. Use the installer to update or repair.";
+  }
   const rel = path.relative(APPS_ROOT, full);
   if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
     const parts = rel.split(path.sep);
@@ -100,8 +116,35 @@ function classifyProtected(full: string): string | null {
     if (parts.length === 2 && PLATFORM_APP_FILES.has(parts[1]!.toLowerCase())) {
       return "This file is how OpenMasjidOS runs this app, so it's kept private. Manage the app from its own page instead.";
     }
+    // Exactly apps/<id> — the app's own folder. It stays BROWSABLE (that is the
+    // point of the explorer, and its data lives under here), but it must not be
+    // deleted or renamed: doing either takes compose.yml, .env and meta.json with
+    // it, which is precisely the three files the branch above refuses to touch one
+    // at a time. Refusing each file while allowing their parent to be removed
+    // wholesale is not a sandbox. Enforced only for the destructive verbs — see
+    // assertNotPlatformDir.
+    if (parts.length === 1) return APP_DIR_SENTINEL;
   }
   return null;
+}
+
+/**
+ * Marker returned by classifyProtected for an `apps/<id>` directory.
+ *
+ * It is not a plain refusal because listing and opening inside the folder must keep
+ * working; only remove and rename are refused. `protectedReason` filters it out so
+ * every read path behaves exactly as before.
+ */
+const APP_DIR_SENTINEL = '\u0000app-dir';
+
+/** Refuse remove/rename on an `apps/<id>` folder. Read paths never call this. */
+function assertNotPlatformDir(full: string): void {
+  if (classifyProtected(full) === APP_DIR_SENTINEL) {
+    throw new FileError(
+      "This is an app's own folder, so it can't be removed or renamed here. Uninstall the app from its own page instead.",
+      'PROTECTED',
+    );
+  }
 }
 
 /**
@@ -115,11 +158,16 @@ function classifyProtected(full: string): string | null {
  * every spelling the consumer might follow, and fail closed.
  */
 function protectedReason(full: string): string | null {
-  const direct = classifyProtected(full);
+  // The app-folder sentinel is not a refusal for reads — see assertNotPlatformDir.
+  const real0 = classifyProtected(full);
+  const direct = real0 === APP_DIR_SENTINEL ? null : real0;
   if (direct) return direct;
   try {
     const real = fs.realpathSync(full);
-    if (real !== full) return classifyProtected(real);
+    if (real !== full) {
+      const via = classifyProtected(real);
+      return via === APP_DIR_SENTINEL ? null : via;
+    }
   } catch {
     /* doesn't exist yet — the lexical check above is the one that matters */
   }
@@ -229,6 +277,7 @@ export function renameEntry(rel: string, newName: string): void {
   const full = resolve(rel);
   if (full === ROOT) throw new FileError('That item cannot be renamed.', 'BAD_NAME');
   if (full === APPS_ROOT) throw new FileError('That folder cannot be renamed — your apps are stored in it.', 'PROTECTED');
+  assertNotPlatformDir(full);
   if (!fs.existsSync(full)) throw new FileError('That item does not exist.', 'NOT_FOUND');
   const target = path.join(path.dirname(full), safeName(newName));
   if (!within(target)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
@@ -243,6 +292,7 @@ export function removeEntry(rel: string): void {
   const full = resolve(rel);
   if (full === ROOT) throw new FileError('The root folder cannot be deleted.', 'BAD_NAME');
   if (full === APPS_ROOT) throw new FileError('That folder cannot be deleted — your apps are stored in it.', 'PROTECTED');
+  assertNotPlatformDir(full);
   if (!fs.existsSync(full)) throw new FileError('That item does not exist.', 'NOT_FOUND');
   fs.rmSync(full, { recursive: true, force: true });
 }

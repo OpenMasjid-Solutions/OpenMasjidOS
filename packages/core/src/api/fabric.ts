@@ -19,7 +19,7 @@
  *
  * Neither moves masjid/prayer data into the platform (CLAUDE.md §13).
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
@@ -27,11 +27,14 @@ import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
 import {
   enqueue as enqueueWhatsApp,
+  whatsappOutcome,
   gatewayStatus as whatsappStatus,
+  outcomesInWindow,
   mediaProblem,
   MAX_MEDIA_BYTES,
   type OutgoingMedia,
 } from '../notify/whatsapp';
+import { suspectWindowsFor } from '../system/whatsapp-monitor';
 
 /**
  * Body cap for the WhatsApp send route: 4 MB of JSON for a 2 MB image.
@@ -47,31 +50,115 @@ import { getLogo, hasLogo } from '../store/branding';
 import { listAccountsPublic, getAccountFull } from '../store/stripe';
 import { appPublicUrl, appBasePath } from '../system/cloudflared';
 import { log } from '../logger';
+import { matchesSecretRoute, decodedPath, resolveDotSegments } from '../system/via-tunnel';
 
 // Lightweight per-IP fixed-window limiter for the secret-gated Fabric routes,
 // which are reachable without a session. It runs BEFORE any lookup so a flood of
 // bad-secret requests can't tie up the event loop (security audit, defence-in-
 // depth on top of the in-memory secret index).
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 120; // requests per IP per minute across the Fabric routes
+/**
+ * Two tiers, because the source IP is nearly useless as an identity here.
+ *
+ * Every installed app reaches the core through Docker's published port, so they all present
+ * the SAME peer address (the bridge gateway, 172.17.0.1 — measured). A per-IP limiter is
+ * therefore effectively a single global bucket that every app shares: one chatty or hostile
+ * app could exhaust it and lock every other app out of email, WhatsApp and Stripe. That is a
+ * cross-app denial of service, which is exactly what the Fabric's isolation is meant to
+ * prevent.
+ *
+ * So: keep the coarse IP tier — it runs BEFORE any lookup, which is the property it was
+ * added for (a flood of bad-secret requests must not tie up the event loop) — and add a
+ * per-app tier once the caller is known, so one app's traffic cannot spend another's budget.
+ */
+const RATE_MAX = 600; // coarse per-IP ceiling: a shared bucket, so deliberately generous
+const RATE_MAX_APP = 120; // per identified app per minute — the meaningful limit
+
+/**
+ * Read-only status polling gets its own, larger budget on its own counter.
+ *
+ * `GET /api/fabric/whatsapp/status/:id` is an in-memory array scan with no outbound effect;
+ * `POST /api/fabric/whatsapp` messages a real phone and carries the ban risk the tight limit
+ * exists for. Sharing one bucket priced them identically, so an app doing exactly what the
+ * platform asks — record the id, poll for the outcome — spent its send allowance on reads and
+ * was 429'd part-way through reconciling a roster run. Separate counter, so a polling burst
+ * can never refuse a send, or the reverse.
+ */
+const RATE_MAX_APP_READ = 600;
+
+/** Routes that only read bounded in-memory state. Kept explicit — an allow-list, not a verb test. */
+const READ_ONLY_ROUTES = [
+  '/api/fabric/whatsapp/suspect','/api/fabric/whatsapp/status/'];
+
+/**
+ * Does this request qualify for the larger read budget? Fails closed to the send budget.
+ *
+ * Two rules, because getting this wrong widens the limit that actually matters (§15: never a
+ * raw-string `startsWith` on a URL in a security decision):
+ *
+ * 1. **GET only.** Every sending route is a POST, so a method check alone makes it impossible
+ *    for a send to be priced as a read — this is the load-bearing half.
+ * 2. **The raw AND decoded-and-dot-resolved spellings must both match.** Fastify dispatches on
+ *    the resolved path, so `/api/fabric/whatsapp/status/..` resolves to the send route while
+ *    the raw text still carries the `status/` prefix. Requiring both spellings to agree means
+ *    a disagreement falls back to the tight budget rather than granting the loose one.
+ */
+function isReadOnlyFabricRoute(method: string, url: string): boolean {
+  if (method.toUpperCase() !== 'GET') return false;
+  const raw = (url.split('?')[0] ?? '').toLowerCase();
+  const resolved = resolveDotSegments(decodedPath(url)).toLowerCase();
+  return READ_ONLY_ROUTES.some((r) => raw.startsWith(r) && resolved.startsWith(r));
+}
 const fabricHits = new Map<string, { count: number; resetAt: number }>();
 
-function fabricRateOk(ip: string): boolean {
+function hit(key: string, max: number): boolean {
   const now = Date.now();
   if (fabricHits.size > 5000) {
     for (const [k, w] of fabricHits) if (w.resetAt <= now) fabricHits.delete(k);
   }
-  const w = fabricHits.get(ip);
+  const w = fabricHits.get(key);
   if (!w || w.resetAt <= now) {
-    fabricHits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    fabricHits.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return true;
   }
-  if (w.count >= RATE_MAX) return false;
+  if (w.count >= max) return false;
   w.count += 1;
   return true;
 }
 
+function fabricRateOk(ip: string): boolean {
+  return hit(`ip:${ip}`, RATE_MAX);
+}
+
 export function registerFabric(server: FastifyInstance): void {
+  /**
+   * The per-app rate tier, applied centrally.
+   *
+   * One hook rather than a line in each of the twelve route handlers — same reasoning as
+   * `registerFabricTunnelGuard`: a limit that has to be remembered at every call site is a
+   * limit that will be missing from the thirteenth route. Resolving the caller here costs an
+   * in-memory index lookup, which the route then repeats; that is cheap and worth it.
+   *
+   * A request whose secret resolves to no app falls through to the coarse per-IP tier in the
+   * handler, which is the correct order: we must not spend an expensive lookup deciding
+   * whether to rate-limit an unauthenticated flood.
+   */
+  server.addHook('onRequest', (req, reply, done) => {
+    if (!matchesSecretRoute(req.url)) return done();
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (app) {
+      // Separate counter as well as a separate ceiling: sharing the key would let a
+      // polling burst refuse a send even under the larger limit.
+      const read = isReadOnlyFabricRoute(req.method, req.url);
+      const key = read ? `appread:${app.id}` : `app:${app.id}`;
+      if (!hit(key, read ? RATE_MAX_APP_READ : RATE_MAX_APP)) {
+        return reply.code(429).send({ error: 'Too many requests.' });
+      }
+    }
+    done();
+  });
+
   // B1 — single sign-on introspection. Returns whether the omos_session cookie
   // ON THIS REQUEST is valid. It is the trust anchor (an app mints a signed-in
   // session from a `true`), so it FAILS CLOSED and is bound to the calling app's
@@ -232,6 +319,34 @@ export function registerFabric(server: FastifyInstance): void {
   // over the tunnel: Slack/Discord fetch it from the internet as the webhook avatar,
   // and an app's public donor page embeds it. Raster only (see store/branding), so
   // there is no script-in-SVG vector. Short cache so a logo change propagates.
+  /**
+   * The icons a browser or phone fetches from the ROOT on its own.
+   *
+   * A masjid serves its apps under paths (`/donate`), so nothing is published at the root
+   * and every one of these 404'd. Harmless but not free: adding the site to a phone's home
+   * screen produced a blank icon, and the refusal log filled with them.
+   *
+   * Served from the masjid's own logo, which is ALREADY intentionally public over the
+   * tunnel (`/api/public/logo`, CLAUDE.md §15) — so this publishes nothing that was not
+   * public a moment ago. Raster only, for the same reason the logo is: no SVG script
+   * vector. A masjid with no logo set still gets a clean 404 rather than a broken image.
+   */
+  const rootIcon = async (_req: unknown, reply: FastifyReply) => {
+    const logo = getLogo();
+    if (!logo) return reply.code(404).header('cache-control', 'no-store').send({ error: 'Not found.' });
+    reply.header('access-control-allow-origin', '*');
+    reply.header('cache-control', 'public, max-age=300');
+    reply.type(logo.mime);
+    return reply.send(logo.buf);
+  };
+  for (const p of [
+    '/favicon.ico',
+    '/apple-touch-icon.png',
+    '/apple-touch-icon-precomposed.png',
+  ]) {
+    server.get(p, rootIcon);
+  }
+
   server.get('/api/public/logo', async (_req, reply) => {
     reply.header('access-control-allow-origin', '*');
     const logo = getLogo();
@@ -271,7 +386,7 @@ export function registerFabric(server: FastifyInstance): void {
   // so it has to be enforced in one place for every caller at once.
   //
   // This QUEUES. It does not send. Human pacing puts delivery seconds to minutes away,
-  // and quiet hours can defer it for hours, so `{queued: true}` is the honest answer
+  // and a cap can defer it, so `{queued: true}` is the honest answer
   // and no app may treat it as delivery. Nothing auth-critical (a login code, a
   // one-time password) may depend on this — say so to app authors, loudly, in
   // docs/WHATSAPP.md.
@@ -312,7 +427,59 @@ export function registerFabric(server: FastifyInstance): void {
       reason,
       media: reason === 'ready',
       maxMediaBytes: MAX_MEDIA_BYTES,
+      // `outcomes` says this platform can tell you what became of a queued message
+      // (GET /api/fabric/whatsapp/status/:id). Absent means false, as with `media`.
+      outcomes: true,
     });
+  });
+
+  /**
+   * What became of a message this app queued.
+   *
+   * Exists because `202 {queued:true}` was the end of the story: an app recorded that it
+   * had handed a message over and there was nothing, anywhere, that could contradict it.
+   * That is what made a real 24-hour non-delivery undiagnosable from the app's side.
+   *
+   * Scoped to the CALLER's own messages — an id belonging to another app answers 404, the
+   * same as an unknown id, so this cannot be used to observe another app's traffic. Holds
+   * no message text and no recipient.
+   */
+  /**
+   * Windows in which this app's messages were reported sent but may never have arrived.
+   *
+   * Between a WhatsApp session dying and the platform noticing, OpenWA accepts messages and
+   * returns 2xx, so the platform records them `sent` — and the body is deleted at that
+   * moment, by design. Those are unrecoverable HERE. The app, however, still has its own
+   * source data, so the useful thing the platform can do is say WHEN it was blind and how
+   * many of this app's messages fell in it.
+   *
+   * Additive and read-only: an app that does not know about this route is unaffected, and
+   * nothing about the existing `/status/:id` response has changed. Scoped to the caller's
+   * own `source`, so it cannot become a way to observe another app's traffic — the same
+   * rule the per-id route follows.
+   */
+  server.get('/api/fabric/whatsapp/suspect', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
+    // Retained for a week AFTER recovery, not only while the link is down. The first cut
+    // answered only during an outage, and relinking clears that — so the evidence vanished
+    // at the exact moment an app went looking for what it had missed. Reported by Kiosk.
+    //
+    // `ok` is stated explicitly so a caller that does not check the status code cannot read
+    // a 403 or 429 body as an all-clear (the trap Students pointed out on /groups).
+    return reply.send({ ok: true, windows: suspectWindowsFor(app.id) });
+  });
+
+  server.get<{ Params: { id: string } }>('/api/fabric/whatsapp/status/:id', async (req, reply) => {
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
+    const presented = req.headers['x-openmasjid-app-secret'];
+    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
+    const rec = whatsappOutcome(String(req.params.id ?? ''), app.id);
+    if (!rec) return reply.code(404).send({ error: 'No such message.' });
+    return reply.send({ id: rec.id, state: rec.state, reason: rec.reason, at: rec.at, target: rec.targetKind });
   });
 
   /**
@@ -324,7 +491,10 @@ export function registerFabric(server: FastifyInstance): void {
    * ever a label and an opaque id.
    */
   server.get('/api/fabric/whatsapp/groups', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [] });
+    // An `error` field on the 429, because `{groups: []}` alone is indistinguishable from
+    // "you have no approved groups" to a caller that does not check the status code — and
+    // the Students app pointed out that this route is the precedent other consumers copy.
+    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [], error: 'Too many requests.' });
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
     if (!app || !app.whatsapp) {
@@ -419,14 +589,19 @@ export function registerFabric(server: FastifyInstance): void {
       const result = enqueueWhatsApp(
         group ? { groupId: group, text, media, source: app.id } : { to, text, media, source: app.id },
       );
-      // 202: accepted for later delivery, which is exactly what happened.
+      // 202: accepted for later delivery, which is exactly what happened. The body now
+      // also carries an `id` the app can poll — see /api/fabric/whatsapp/status/:id.
       return reply.code(result.queued ? 202 : 400).send(result);
     },
   );
 
   // Fabric alert — an app raises an admin alert (a camera/reader offline, a failed
-  // payment, …). Requires the `notify` capability AND the alert id must be one the
-  // app declared in its manifest. The platform gates on the admin's granular on/off
+  // payment, …). The gate is the app's own manifest `alerts:` declaration — that is
+  // what issues the per-app secret in the first place — and the id must be one it
+  // declared. It does NOT require a `notify` capability; this comment used to say it
+  // did, contradicting the inline comment eight lines below and the docs, and
+  // describing a check that has never existed is how a reader concludes a route is
+  // better guarded than it is. The platform gates on the admin's granular on/off
   // for that alert, then delivers to the admin email + the webhook. Not CORS-enabled.
   server.post('/api/fabric/alert', async (req, reply) => {
     if (!fabricRateOk(req.ip)) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });

@@ -142,7 +142,7 @@ export function AppDetail() {
             />
           </div>
           <p className="setting-row__hint">
-            <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('appDetail.internetSettingsLink')}</Link>
+            <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>{t('appDetail.internetSettingsLink')}</Link>
           </p>
         </div>
       )}

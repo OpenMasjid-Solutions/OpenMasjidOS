@@ -57,9 +57,34 @@ function bindSource(v: unknown): string | null {
     return v.split(':')[0];
   }
   if (v && typeof v === 'object') {
-    const obj = v as { type?: string; source?: string };
-    if (obj.type && obj.type !== 'bind') return null; // volume/tmpfs/npipe
-    return obj.source ?? null;
+    const obj = v as { type?: unknown; source?: unknown };
+    // `type` decides whether `source` is a HOST path, so it decides whether any host-path
+    // check runs at all — which makes it the highest-value field in this file to get wrong.
+    //
+    // It WAS wrong: the test used to be `obj.type !== 'bind'`, so a long-form mount written
+    //
+    //     - type: ${CACHE_MODE:-bind}
+    //       source: /var/run/docker.sock
+    //       target: /var/run/docker.sock
+    //
+    // was classified as a non-bind volume and returned early — `checkHostPath` never ran and
+    // `checkCompose` returned NO dangers and NO refusals. Compose interpolates BEFORE it
+    // validates the schema (verified with `docker compose config`: with an EMPTY .env the
+    // `:-bind` default renders `type: bind`), so at runtime it is a real bind mount of the
+    // Docker socket. The app installed on the ordinary one-click path with no risk dialog and
+    // held host root. `source: /` behaved identically.
+    //
+    // So: only a LITERAL non-bind type may skip the check. An interpolated one is unknowable,
+    // and unknowable means assume the dangerous reading — the same fail-closed rule
+    // `hasInterpolation` already applies everywhere else in this file.
+    //
+    // Note the asymmetry that has to be preserved: a genuine `type: volume` must stay CLEAN,
+    // because `trpc/routers/store.ts` hard-blocks on any danger at all, so treating ordinary
+    // named volumes as suspicious would refuse to install real catalog apps.
+    if (typeof obj.type === 'string' && !hasInterpolation(obj.type) && obj.type.trim() !== 'bind') {
+      return null; // volume / tmpfs / npipe, stated literally
+    }
+    return typeof obj.source === 'string' ? obj.source : null;
   }
   return null;
 }
@@ -169,6 +194,18 @@ function checkVolume(name: string, v: unknown, dangers: string[]): void {
     dangers.push(`"${name}" uses a variable in a volume mount, so we can't check it's safe.`);
     return;
   }
+  // The same rule for the LONG form's own fields. `bindSource` now treats an interpolated
+  // `type` as possibly-bind so the host path is still inspected, but that only helps when the
+  // source is an absolute path we recognise; an interpolated type with a named or relative
+  // source would otherwise slip through unexamined. Checked here so the whole mount, in
+  // either spelling, is subject to one rule.
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const o = v as { type?: unknown; source?: unknown; target?: unknown };
+    if (hasInterpolation(o.type) || hasInterpolation(o.source) || hasInterpolation(o.target)) {
+      dangers.push(`"${name}" uses a variable in a volume mount, so we can't check it's safe.`);
+      return;
+    }
+  }
   const raw = bindSource(v);
   if (!raw) return;
   if (hasInterpolation(raw)) {
@@ -237,7 +274,18 @@ function externalTarget(key: string, def: unknown): { isExternal: boolean; targe
   const d = def as Record<string, unknown>;
   const ext = d.external;
   // `external: true|yes|1` (short form) or `external: { name: … }` (long form).
-  const isExternal = isTruthyFlag(ext) || (!!ext && typeof ext === 'object');
+  //
+  // An INTERPOLATED value counts as external too, and that is not pedantry: with
+  //     volumes: { omos-students_data: { external: ${X:-true} } }
+  // `isTruthyFlag` sees the literal text `${X:-true}` (not truthy), so `isExternal` was
+  // false, `name` was absent, and the function returned null — no check of any kind. At
+  // runtime compose interpolates it to `true` and the container attaches to another app's
+  // database. Treating an unverifiable flag as SET is the same fail-closed rule applied to
+  // interpolated mounts, and it lets the existing reserved-namespace refusal below do its
+  // job: with `external` believed, the target falls back to the KEY, which is the real
+  // volume name. (An interpolated `name:` was already covered by the `hasInterpolation`
+  // check in the callers.)
+  const isExternal = isTruthyFlag(ext) || hasInterpolation(ext) || (!!ext && typeof ext === 'object');
   const named =
     typeof d.name === 'string'
       ? d.name
@@ -386,6 +434,24 @@ export function checkCompose(text: string): ComposeCheck {
       const v = (svc as Record<string, unknown>)[field];
       if (typeof v === 'string' && /^\s*(container|service):/i.test(v)) {
         dangers.push(`"${name}" joins another container's namespace (${field}: ${v.trim()}).`);
+      }
+    }
+    // `network_mode: <a bare docker network name>` is the SERVICE-LEVEL way to join an
+    // existing network, and it bypasses `checkExternalNetworks` entirely because it needs no
+    // top-level `networks:` entry to inspect. Verified against real Docker: a service with
+    // `network_mode: omos-victim_default` joined that network and resolved the other
+    // container by name — so it can reach an app's UNPUBLISHED ports directly, with no host
+    // port, no proxy, and none of the Fabric broker's manifest-grant authorization.
+    //
+    // Same isolation class as the external-network case, so the same verdict: the reserved
+    // namespace is a hard REFUSAL, and a non-reserved network is deliberately left alone for
+    // the reasons given on `checkExternalNetworks` (legitimate homelab use, and any danger
+    // hard-blocks the catalog path).
+    if (typeof svc.network_mode === 'string') {
+      const mode = svc.network_mode.trim();
+      const isKeyword = /^(host|none|bridge|default)$/i.test(mode) || /^(container|service):/i.test(mode);
+      if (!isKeyword && RESERVED_NAMESPACE_RE.test(mode)) {
+        refusals.push(`"${name}" joins another OpenMasjid app's private network (network_mode: ${mode}).`);
       }
     }
     const caps = toArr(svc.cap_add);

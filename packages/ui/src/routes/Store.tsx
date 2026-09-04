@@ -246,7 +246,7 @@ function InstallModal({
             ) : (
               <p className="setting-row__hint">
                 {t('store.stripeNone')}{' '}
-                <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('store.stripeNoneLink')}</Link>
+                <Link to="/settings/payments" style={{ color: 'var(--color-primary)' }}>{t('store.stripeNoneLink')}</Link>
               </p>
             )
           ) : f.type === 'select' ? (
@@ -286,9 +286,9 @@ function InstallModal({
             </span>
           </label>
           {expose && !remoteReady && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #d4af37)' }}>
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}>
               {t('store.shareOnlineNoRemote')}{' '}
-              <Link to="/settings" style={{ color: 'var(--color-primary)' }}>{t('store.shareOnlineSettingsLink')}</Link>
+              <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>{t('store.shareOnlineSettingsLink')}</Link>
             </p>
           )}
           <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>

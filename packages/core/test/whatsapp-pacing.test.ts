@@ -31,7 +31,6 @@ const noHistory = () => ({
 /** A person target. `blockedReason` takes a Target now, so groups get their own budget
  *  without a second copy of the policy — see whatsapp-groups.test.ts. */
 const who = (digits: string) => ({ kind: 'person' as const, digits });
-const NOON = 12; // a safely non-quiet hour
 
 // ── phone numbers ────────────────────────────────────────────────────────────────
 
@@ -53,21 +52,31 @@ test('a number is never given a country code we guessed', () => {
 
 // ── quiet hours ──────────────────────────────────────────────────────────────────
 
-test('quiet hours hold overnight, across midnight', () => {
-  // Default window is 21:00–07:00, which wraps — the easy bug is treating start<end.
-  const q = (h: number) => wa.inQuietHours(h, L);
-  for (const h of [21, 22, 23, 0, 3, 6]) assert.equal(q(h), true, `${h}:00 is quiet`);
-  for (const h of [7, 9, 12, 17, 20]) assert.equal(q(h), false, `${h}:00 is not quiet`);
-});
+test('there is no time-of-day hold, at any hour', () => {
+  // Quiet hours were removed in v0.51.1 and must not come back in this shape. Two reasons,
+  // both load-bearing:
+  //
+  //   1. The queue is SHARED by the OS and every app, and there is no per-message urgency
+  //      flag — so a window that holds a parent's receipt (fine) also holds a staff alert
+  //      about a declined card (not fine, and the reason a treasurer carries a phone).
+  //   2. It was evaluated against the CONTAINER's clock, which is UTC because nothing sets
+  //      TZ. The "21:00-07:00" window therefore fell at 17:00-03:00 for a US Eastern
+  //      masjid and swallowed the whole evening.
+  assert.equal(
+    (wa as Record<string, unknown>).inQuietHours,
+    undefined,
+    'inQuietHours must stay deleted — see the note in notify/whatsapp.ts',
+  );
+  // And nothing else may sneak a local-hour test back in: the pacer must be clock-agnostic
+  // beyond `now` as an instant.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.ok(!/getHours()/.test(code), 'the pacer must not read the local hour');
 
-test('a non-wrapping window and an empty window both behave', () => {
-  const daytimeQuiet = { ...L, quietStartHour: 9, quietEndHour: 17 };
-  assert.equal(wa.inQuietHours(12, daytimeQuiet), true);
-  assert.equal(wa.inQuietHours(8, daytimeQuiet), false);
-  // start === end means "no quiet hours", not "quiet for 24 hours" — getting this
-  // backwards would silently stop every message for ever.
-  const none = { ...L, quietStartHour: 0, quietEndHour: 0 };
-  for (let h = 0; h < 24; h++) assert.equal(wa.inQuietHours(h, none), false, `${h}:00 must be allowed`);
+  // Behaviourally: with a clean history, every hour of the day is sendable.
+  for (let h = 0; h < 24; h++) {
+    const at = Date.UTC(2026, 0, 15, h, 30);
+    assert.equal(wa.blockedReason(at, who('15550101234'), L, null, noHistory()), null, `${h}:00 must send`);
+  }
 });
 
 /**
@@ -84,61 +93,96 @@ function codeOf(file: string): string {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-test('quiet hours DELAY, they never discard', () => {
-  // The queue must wait and re-evaluate, not drop the item: a fee reminder should
-  // arrive in the morning, not vanish overnight. Asserted POSITIONALLY — a fixed-size
-  // window around the branch ran past `continue` into the ordinary send path below it,
-  // so the test failed on code that was already correct.
+test('a message that cannot go yet is DELAYED, never discarded', () => {
+  // The queue must wait and reconsider, not drop the item: a fee reminder should arrive
+  // late, not vanish. Asserted structurally, against the code rather than the comments.
   const body = codeOf('notify/whatsapp.ts');
-  const at = body.indexOf('if (reason)');
-  assert.ok(at > 0, 'the pump must consult the policy');
+  const at = body.indexOf('if (index < 0)');
+  assert.ok(at > 0, 'the pump must decide whether anything is sendable');
   const continueAt = body.indexOf('continue;', at);
-  const shiftAt = body.indexOf('queue.shift()', at);
-  assert.ok(continueAt > at, 'a blocked send must be retried');
-  assert.ok(shiftAt > continueAt, 'and must NOT be removed from the queue before that retry');
+  const removeAt = body.indexOf('queue.splice(index, 1)', at);
+  assert.ok(continueAt > at, 'when nothing can go, the pump waits and reconsiders');
+  assert.ok(removeAt > continueAt, 'and nothing is removed from the queue before that');
+});
+
+test('one blocked message does not stall the rest of the queue', () => {
+  // The head-of-line bug: the pump read `queue[0]` and, if that item could not go, slept and
+  // re-read the SAME item — so one waiting message held up every other app's traffic for as
+  // long as its own wait. With the 30-minute group cooldown that was half an hour of total
+  // silence caused by one group post, which is exactly how "my image never arrives, but
+  // another app's later messages do" happens.
+  const code = codeOf('notify/whatsapp.ts');
+  assert.ok(!code.includes('const item = queue[0]'), 'the pump must not fix on the head');
+  assert.ok(code.includes('const item = queue[index]'), 'it must send the first SENDABLE item');
+  // And a retry backoff must be per-item, not a sleep that holds the whole pump.
+  assert.ok(!code.includes('await sleep(backoff)'), 'backoff must not stall the queue');
+  assert.ok(code.includes('item.notBefore ='), 'a failing item reschedules itself instead');
 });
 
 // ── caps ─────────────────────────────────────────────────────────────────────────
 
-test('the hourly cap counts only the last hour, and the daily cap the last day', () => {
+test('individual messages have no hourly or daily cap', () => {
+  // Removed at the maintainer's decision: with the warm-up ramp the caps came to 3/hour
+  // on a freshly linked number, which blocked ordinary use and even testing, for a sending
+  // pattern (one parent at a time) they were never aimed at. Spacing is the brake now —
+  // the randomised 6-20s gap plus the per-recipient cooldown.
+  //
+  // The trade-off is recorded rather than hidden: an app looping over 200 parents will send
+  // all 200, spaced but unbounded. If that ever needs a ceiling it belongs HERE, on the
+  // shared queue, not in each app — a per-app limiter cannot see the number's total traffic.
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  // 12 sends, all within the last hour → at the default cap of 12.
-  for (let i = 0; i < L.perHour; i++) hist.sends.push(now - i * 60_000);
-  assert.equal(blocked(now, hist), 'hourly limit reached');
-  // Move them to two hours ago: the hour cap frees up, the day cap still counts them.
-  const older = noHistory();
-  for (let i = 0; i < L.perHour; i++) older.sends.push(now - 2 * 3_600_000 - i * 60_000);
-  assert.equal(blocked(now, older), null, 'an hour later, sending resumes');
+  for (let i = 0; i < 500; i++) hist.sends.push(now - i * 1_000);
+  assert.equal(blocked(now, hist), null, '500 sends in the last few minutes is still allowed');
+  assert.ok(!('perHour' in L), 'perHour must not exist in WhatsAppLimits');
+  assert.ok(!('perDay' in L), 'perDay must not exist in WhatsAppLimits');
 });
 
-test('the daily cap holds even when the hour is quiet', () => {
+test('nothing delays a send any more — not a person, not a group', () => {
+  // Every rate cap is gone, group ones included. They were the last thing that could hold
+  // a message for an hour with nothing telling the sender why, and a group image was the
+  // case that hit it. What still shapes traffic is per-message and bounded: one serialised
+  // queue, a typing indicator, presence, and contacts/check before first contact.
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  // Spread the full day's allowance across the day, so no single hour is near its cap.
-  for (let i = 0; i < L.perDay; i++) hist.sends.push(now - (i + 1) * 20 * 60_000);
-  const reason = blocked(now, hist);
-  assert.equal(reason, 'daily limit reached');
+  for (let i = 0; i < 500; i++) {
+    hist.sends.push(now - i * 1_000);
+    hist.groupSends.push(now - i * 1_000);
+  }
+  assert.equal(blocked(now, hist), null, 'a person is never blocked');
+  assert.equal(wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist), null, 'nor a group');
+  // Including on a number linked seconds ago, which the warm-up ramp used to quarter.
+  const justLinked = new Date(now - 1000).toISOString();
+  assert.equal(wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, justLinked, hist), null);
 });
 
 function blocked(now: number, hist: ReturnType<typeof noHistory>, linkedAt: string | null = null): string | null {
-  return wa.blockedReason(now, NOON, who('15550101234'), L, linkedAt, hist);
+  return wa.blockedReason(now, who('15550101234'), L, linkedAt, hist);
 }
 
 // ── per-recipient cooldown ───────────────────────────────────────────────────────
 
-test('one person is never hammered, even by different apps', () => {
-  // Two apps each having something to say to the same parent is exactly the case a
-  // per-app limiter cannot see.
+test('there is no per-recipient or per-group cooldown any more', () => {
+  // Removed at the maintainer's decision. The per-group one was 30 MINUTES, and together
+  // with the head-of-line bug in  it meant one group post stalled every other app's
+  // messages for that whole window — the reported "my image never arrives".
   const now = 1_000_000_000_000;
   const hist = noHistory();
-  hist.lastPerRecipient.set('15550101234', now - 5_000);
-  assert.equal(blocked(now, hist), 'this recipient was messaged very recently');
-  // A different recipient is unaffected.
-  assert.equal(wa.blockedReason(now, NOON, who('447700900123'), L, null, hist), null);
-  // And once the cooldown expires, they can be messaged again.
-  hist.lastPerRecipient.set('15550101234', now - (L.perRecipientCooldownSeconds + 1) * 1000);
-  assert.equal(blocked(now, hist), null);
+  hist.lastPerRecipient.set('15550101234', now - 1); // messaged a millisecond ago
+  assert.equal(blocked(now, hist), null, 'a person can be messaged again immediately');
+  hist.lastPerRecipient.set('group:1@g.us', now - 1);
+  assert.equal(
+    wa.blockedReason(now, { kind: 'group', groupId: '1@g.us' }, L, null, hist),
+    null,
+    'and so can a group',
+  );
+});
+
+test('the last-send map is still WRITTEN, though nothing reads it as a brake', () => {
+  // Kept deliberately: it costs nothing, sendImmediate documents relying on the write, and
+  // it is what any future per-recipient policy would need. Pinned so a tidy-up does not
+  // remove the data along with the rule.
+  assert.ok(codeOf('notify/whatsapp.ts').includes('lastToRecipient.set('), 'the write must remain');
 });
 
 // ── warm-up ──────────────────────────────────────────────────────────────────────
@@ -164,13 +208,14 @@ test('an unknown or skewed link date never locks a working masjid out', () => {
   assert.equal(wa.warmupFactor('2026-03-10T12:00:00Z', { ...L, warmupDays: 0 }, now), 1, 'ramp disabled');
 });
 
-test('the warm-up ramp still allows at least one message', () => {
-  // `Math.floor(perHour * 0.25)` on a tightened config could reach 0, which would be a
-  // silent total outage rather than a slow start.
-  const tiny = { ...L, perHour: 1, perDay: 1 };
+test('the warm-up ramp still allows at least one group post', () => {
+  // `Math.floor(groupPerHour * 0.25)` on a tightened config could reach 0, which would be
+  // a silent total outage rather than a slow start. (The ramp no longer affects individual
+  // messages, since those have no cap for it to scale.)
+  const tiny = { ...L, groupPerHour: 1, groupPerDay: 1 };
   const linkedToday = new Date().toISOString();
-  const r = wa.blockedReason(Date.now(), NOON, who('15550101234'), tiny, linkedToday, noHistory());
-  assert.equal(r, null, 'a brand-new number on a tight cap can still send one message');
+  const r = wa.blockedReason(Date.now(), { kind: 'group', groupId: '1@g.us' }, tiny, linkedToday, noHistory());
+  assert.equal(r, null, 'a brand-new number on a tight cap can still post once');
 });
 
 // ── gap + typing ─────────────────────────────────────────────────────────────────
@@ -202,39 +247,33 @@ test('typing time grows with the message but stays bounded', () => {
 test('clampLimits only ever lets an admin be MORE careful', () => {
   // The UI is not the only writer, so the floor lives in the store.
   const wild = store.clampLimits({
-    perHour: 100_000,
-    perDay: 1_000_000,
     minGapSeconds: 0,
     jitterSeconds: 0,
     perRecipientCooldownSeconds: -5,
-    quietStartHour: 99,
-    quietEndHour: -3,
     warmupDays: 9999,
   });
-  assert.ok(wild.perHour <= 60, `perHour clamped, got ${wild.perHour}`);
-  assert.ok(wild.perDay <= 500, `perDay clamped, got ${wild.perDay}`);
   assert.ok(wild.minGapSeconds >= 3, 'never below a 3s gap');
   assert.ok(wild.jitterSeconds >= 1, 'always some jitter');
   assert.ok(wild.perRecipientCooldownSeconds >= 0);
-  assert.ok(wild.quietStartHour >= 0 && wild.quietStartHour <= 23);
-  assert.ok(wild.quietEndHour >= 0 && wild.quietEndHour <= 23);
   assert.ok(wild.warmupDays <= 90);
+  // The window is gone from the shape entirely, not merely unused.
+  assert.ok(!('quietStartHour' in wild), 'quietStartHour must not exist in WhatsAppLimits');
+  assert.ok(!('quietEndHour' in wild), 'quietEndHour must not exist in WhatsAppLimits');
   // Junk and omissions fall back to the conservative defaults rather than to zero.
   const empty = store.clampLimits(undefined);
   assert.deepEqual(empty, store.DEFAULT_LIMITS);
   // @ts-expect-error deliberately wrong types — this arrives from a JSON file
-  assert.equal(store.clampLimits({ perHour: 'lots', minGapSeconds: null }).perHour, store.DEFAULT_LIMITS.perHour);
+  assert.equal(store.clampLimits({ minGapSeconds: null }).minGapSeconds, store.DEFAULT_LIMITS.minGapSeconds);
 });
 
 test('the defaults are far below what OpenWA calls sustainable', () => {
   // Their guidance is "a few messages per minute is sustainable; thousands an hour is
   // not". A masjid needs neither — it needs the number to still work next term.
   const d = store.DEFAULT_LIMITS;
-  assert.ok(d.perHour <= 20, `default perHour should be modest, got ${d.perHour}`);
+  assert.ok(d.groupPerHour <= 8, `default groupPerHour should be modest, got ${d.groupPerHour}`);
   assert.ok(d.minGapSeconds >= 5, 'a human does not reply instantly');
   assert.ok(d.jitterSeconds >= 5, 'and not on a metronome');
   assert.ok(d.warmupDays >= 3, 'a new number must be eased in');
-  assert.ok(d.quietStartHour !== d.quietEndHour, 'quiet hours are on by default');
 });
 
 // ── structural guarantees ────────────────────────────────────────────────────────
@@ -274,10 +313,10 @@ test('a transient failure keeps its place in the queue, a permanent one does not
   const pumpAt = code.indexOf('async function pump');
   const body = code.slice(pumpAt);
   const retryAt = body.indexOf('outcome.retryable');
-  const shiftAt = body.indexOf('queue.shift()');
+  const removeAt = body.indexOf('queue.splice(index, 1)');
   assert.ok(retryAt > 0, 'the pump must classify the failure');
-  assert.ok(retryAt < shiftAt, 'and must decide BEFORE removing the message from the queue');
-  assert.match(body.slice(retryAt, shiftAt), /continue/, 'a retryable failure keeps its place');
+  assert.ok(retryAt < removeAt, 'and must decide BEFORE removing the message from the queue');
+  assert.match(body.slice(retryAt, removeAt), /continue/, 'a retryable failure keeps its place');
   // And it must give up eventually rather than looping on a permanently broken gateway.
   assert.match(code, /MAX_ATTEMPTS/, 'retries must be bounded');
 });

@@ -13,116 +13,13 @@
  * digits the gateway wants. Pasting a full `+44 7700 900123` still works — the country is
  * detected from the prefix and the field splits itself.
  *
- * No phone-number library. libphonenumber is ~150 KB gzipped for validation depth this
- * does not need, and Pi-friendliness is a stated value (CLAUDE.md §6). Dial codes are a
- * static table; grouping is cosmetic.
+ * The country table and the digit grouping live in `lib/phone.ts`: they are shared with
+ * every place the dashboard shows a number back to the admin, and being React-free is
+ * what lets a core test cover them (`packages/ui` has no test runner of its own).
  */
 import { useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-
-/** Dial codes, longest-prefix-first at lookup time so +1876 beats +1. */
-interface Country {
-  iso: string;
-  name: string;
-  dial: string;
-  /** Shown instead of `name` where one dial code covers several countries. */
-  label?: string;
-}
-
-// Not exhaustive — the countries a masjid using this is realistically in, plus the whole
-// of the Gulf, South Asia, Southeast Asia and Africa where the platform is likeliest to
-// land. "Other" below lets any number be entered in full.
-const COUNTRIES: Country[] = [
-  // One entry, because they share a dial code: two options with the same `value` would
-  // make picking Canada snap the box back to "United States".
-  { iso: 'US', name: 'United States', dial: '1', label: 'United States / Canada' },
-  { iso: 'GB', name: 'United Kingdom', dial: '44' },
-  { iso: 'IE', name: 'Ireland', dial: '353' },
-  { iso: 'AU', name: 'Australia', dial: '61' },
-  { iso: 'NZ', name: 'New Zealand', dial: '64' },
-  { iso: 'ZA', name: 'South Africa', dial: '27' },
-  { iso: 'NG', name: 'Nigeria', dial: '234' },
-  { iso: 'KE', name: 'Kenya', dial: '254' },
-  { iso: 'TZ', name: 'Tanzania', dial: '255' },
-  { iso: 'EG', name: 'Egypt', dial: '20' },
-  { iso: 'MA', name: 'Morocco', dial: '212' },
-  { iso: 'DZ', name: 'Algeria', dial: '213' },
-  { iso: 'TN', name: 'Tunisia', dial: '216' },
-  { iso: 'SA', name: 'Saudi Arabia', dial: '966' },
-  { iso: 'AE', name: 'United Arab Emirates', dial: '971' },
-  { iso: 'QA', name: 'Qatar', dial: '974' },
-  { iso: 'KW', name: 'Kuwait', dial: '965' },
-  { iso: 'BH', name: 'Bahrain', dial: '973' },
-  { iso: 'OM', name: 'Oman', dial: '968' },
-  { iso: 'JO', name: 'Jordan', dial: '962' },
-  { iso: 'LB', name: 'Lebanon', dial: '961' },
-  { iso: 'TR', name: 'Türkiye', dial: '90' },
-  { iso: 'PK', name: 'Pakistan', dial: '92' },
-  { iso: 'IN', name: 'India', dial: '91' },
-  { iso: 'BD', name: 'Bangladesh', dial: '880' },
-  { iso: 'LK', name: 'Sri Lanka', dial: '94' },
-  { iso: 'MY', name: 'Malaysia', dial: '60' },
-  { iso: 'ID', name: 'Indonesia', dial: '62' },
-  { iso: 'SG', name: 'Singapore', dial: '65' },
-  { iso: 'FR', name: 'France', dial: '33' },
-  { iso: 'DE', name: 'Germany', dial: '49' },
-  { iso: 'NL', name: 'Netherlands', dial: '31' },
-  { iso: 'BE', name: 'Belgium', dial: '32' },
-  { iso: 'ES', name: 'Spain', dial: '34' },
-  { iso: 'IT', name: 'Italy', dial: '39' },
-  { iso: 'SE', name: 'Sweden', dial: '46' },
-  { iso: 'NO', name: 'Norway', dial: '47' },
-  { iso: 'DK', name: 'Denmark', dial: '45' },
-];
-
-/** Longest dial code first, so `1876` (Jamaica) is not read as `1` (US). */
-const BY_LENGTH = [...COUNTRIES].sort((a, b) => b.dial.length - a.dial.length);
-
-/** Where an empty field starts. */
-const DEFAULT_DIAL = '1';
-
-export function digitsOnly(s: string): string {
-  return String(s ?? '').replace(/[^0-9]/g, '');
-}
-
-/**
- * Split stored E.164 digits into a country and the rest.
- *
- * Ambiguity is real (`1` is both the US and Canada) and it does not matter: the pair only
- * has to re-join to the same digits, and both pick the same dial code.
- */
-export function splitPhone(e164: string): { dial: string; national: string } {
-  const d = digitsOnly(e164);
-  if (!d) return { dial: '', national: '' };
-  const hit = BY_LENGTH.find((c) => d.startsWith(c.dial));
-  return hit ? { dial: hit.dial, national: d.slice(hit.dial.length) } : { dial: '', national: d };
-}
-
-/**
- * Cosmetic grouping so a long string of digits stays readable while being typed.
- *
- * Threes from the left, EXCEPT that a trailing single digit joins the group before it.
- * That exception is the whole point: plain threes wrote a US number as `555 010 123 4`,
- * putting a space after the ninth digit and stranding the last one — which is exactly
- * what a masjid reported. Merging gives `555 010 1234`.
- *
- * Deliberately not a per-country pattern. A neutral rule is wrong in a boring way; a
- * table of national formats is wrong in a confident way, and it would need maintaining
- * for every country a masjid might be in. Purely presentation — `value` is always bare
- * digits, and the server is the authority on what is valid.
- *
- * Grouping from the left also keeps the digits still as they are typed: anchoring the
- * last four instead reflows every group on each keystroke.
- */
-function group(national: string): string {
-  const d = digitsOnly(national);
-  if (d.length <= 4) return d;
-  const chunks = d.match(/.{1,3}/g) ?? [];
-  if (chunks.length > 1 && chunks[chunks.length - 1]!.length === 1) {
-    chunks[chunks.length - 2] += chunks.pop();
-  }
-  return chunks.join(' ');
-}
+import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, splitPhone } from '../lib/phone';
 
 interface PhoneFieldProps {
   /** E.164 digits, no `+`. Empty string when unset. */
@@ -180,7 +77,15 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
       <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
         <select
           className="input glass-inset"
-          style={{ inlineSize: '9.5rem', flex: '0 0 auto' }}
+          // Sized to its own content, NOT to a number someone picked by eye. A fixed
+          // width was wrong twice here — 9.5rem clipped the old full country names, and
+          // the 7.5rem that replaced it still clipped `US/CA (+1)` once the dropdown
+          // arrow and the input's padding took their share. Guessing a third number
+          // would only have moved the guess: the arrow's width and the input padding are
+          // the browser's business, not something this file can know. `auto` asks it to
+          // fit the widest option, which is the actual requirement; the floor stops the
+          // control collapsing if the list is ever trimmed to short labels.
+          style={{ inlineSize: 'auto', minInlineSize: '9rem', flex: '0 0 auto' }}
           value={dial}
           disabled={disabled}
           onChange={(e) => setDial(e.target.value)}
@@ -190,8 +95,10 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
               a state where typing produces a number with no country code. "Other" is the
               escape hatch for a country not listed — then the code is typed too. */}
           {COUNTRIES.map((c) => (
-            <option key={c.iso} value={c.dial}>
-              {c.label ?? c.name} +{c.dial}
+            // `title` keeps the full name reachable on hover, so shortening the visible
+            // label costs nothing for a country whose acronym someone does not know.
+            <option key={c.iso} value={c.dial} title={c.label ?? c.name}>
+              {c.short ?? c.iso} (+{c.dial})
             </option>
           ))}
           <option value="">{t('settings.phoneCountryOther')}</option>
@@ -206,7 +113,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
           // place a country code can come from.
           style={{ flex: '1 1 auto', minInlineSize: '8rem' }}
           disabled={disabled}
-          value={group(national)}
+          value={group(national, dial)}
           onChange={(e) => setNational(e.target.value)}
           placeholder={t('settings.phoneNumberPlaceholder')}
         />

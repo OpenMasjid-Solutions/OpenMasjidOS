@@ -7,6 +7,49 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.51.1
+
+A maintenance release. Most of it is work you will not see — a full review of the
+whole project turned up a set of problems before any masjid ran into them — but a
+few of the fixes are things you would have noticed.
+
+**Things you may have run into**
+
+- **Buttons showed no icon until you hovered over them.** The "Update now" icon was
+  being drawn in exactly the button's own colour. Choosing any accent other than the
+  default also made light mode's buttons hard to read, because the accent changed the
+  button but not the writing on it.
+- **Dialogs could open behind a window.** If you had a log, terminal or file window
+  open and then confirmed something, the dialog appeared behind it — the screen
+  dimmed and nothing else happened, which looked like a freeze. One press of Escape
+  also used to close two things at once.
+- **Renaming a file needed a mouse.** The rename box could not be reached with the
+  keyboard. Escape now cancels a rename.
+- **WhatsApp could not be told it was working again.** After OpenMasjidOS detected
+  that your WhatsApp link had dropped, releasing your held messages simply had them
+  held again a few minutes later, with nothing on screen explaining why.
+- **Update emails could repeat.** If your internet was down when OpenMasjidOS checked
+  for an update, it treated that as "nothing new" and forgot it had already told you
+  — so the same update was emailed again once the connection returned.
+- **A phone number that was not on WhatsApp when first checked stayed refused**, even
+  after it joined.
+
+**Keeping your server safe**
+
+Several ways in were closed before anyone found them. In plain terms: the file
+browser could reach the file that defines OpenMasjidOS itself, and could delete an
+app's folder wholesale; an app could describe itself as official and be published to
+the internet without being asked; and a stranger could hold connections open through
+your remote-access link. None of this was reported by a masjid — it came out of a
+review — and none of it needs anything from you beyond updating.
+
+**Reading the documentation**
+
+If you or a volunteer has ever read the project's own documentation, parts of it
+described software that was never built — wrong colours, wrong addresses, features
+listed as missing that have shipped for months, and settings that do not exist. It
+has been checked line by line against the code and corrected.
+
 ## 0.51.0
 
 **Run your masjid's server from WhatsApp**

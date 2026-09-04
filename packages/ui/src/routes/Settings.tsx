@@ -5,9 +5,9 @@
  * advanced. No masjid/prayer config ever lives here; that belongs to apps.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText } from 'lucide-react';
+import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText, MessageCircle, SlidersHorizontal } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { getCsrf, setCsrf, withKey } from '../lib/session';
 import { usePrefs, prefsStore, ACCENTS, WALLPAPERS } from '../lib/prefs';
@@ -19,6 +19,7 @@ import { RestoreModal } from '../components/RestoreModal';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PhoneField } from '../components/PhoneField';
+import { formatPhone } from '../lib/phone';
 import { AppLogs } from '../components/AppLogs';
 import { openApp } from '../lib/apps';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
@@ -49,6 +50,16 @@ function updateSentence(
   info: { updateAvailable: boolean; latest: string | null; reason: 'version' | 'channel' | null; channel: string },
   t: (k: string, o?: Record<string, unknown>) => string,
 ): string {
+  // `latest === null` means the check could not READ the channel's version — the server
+  // catches a failed fetch, logs it and returns normally, so "no update available" is
+  // indistinguishable from "we never found out" unless this is checked first.
+  //
+  // Saying "You're on the latest version" there is the dashboard asserting something it
+  // does not know, on the one screen a masjid uses to find out whether they are missing a
+  // security release. Offline is the common case on a box behind a captive portal or a
+  // blocked registry, and it is not an error the admin needs to fix — it just is not an
+  // answer, and has to read as one.
+  if (info.latest == null) return t('settings.updateCheckFailed');
   if (!info.updateAvailable) return t('settings.upToDate');
   if (info.reason === 'channel') {
     return info.channel === 'dev'
@@ -199,11 +210,94 @@ function BrandingPanel() {
   );
 }
 
+/**
+ * The sections of Settings, in nav order.
+ *
+ * Settings had grown to eleven stacked panels on one page — around three thousand lines
+ * of it — and finding anything meant scrolling past everything. Each entry here is now a
+ * pane of its own with its own address, so `/settings/whatsapp` can be linked to directly
+ * from an app's page, a toast, or the App Store, instead of dropping someone at the top
+ * of the page to hunt.
+ *
+ * Order is by how often a masjid touches it, not by how the code is organised: the things
+ * a volunteer changes (how it looks, who they are, how it reaches people) come first, and
+ * the machine-shaped settings sit at the bottom under Advanced.
+ */
+const SECTIONS = [
+  { id: 'appearance', icon: Sparkles },
+  { id: 'account', icon: KeyRound },
+  { id: 'email', icon: Bell },
+  { id: 'whatsapp', icon: MessageCircle },
+  { id: 'alerts', icon: AlertTriangle },
+  { id: 'payments', icon: CreditCard },
+  { id: 'remote', icon: Globe },
+  { id: 'advanced', icon: SlidersHorizontal },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]['id'];
+
+const DEFAULT_SECTION: SectionId = 'appearance';
+
+function isSectionId(v: string | undefined): v is SectionId {
+  return SECTIONS.some((s) => s.id === v);
+}
+
+/**
+ * The section list.
+ *
+ * `NavLink`s rather than buttons with state: the section IS the URL, so back and forward
+ * work, a section can be bookmarked, and refreshing the page keeps you where you were —
+ * none of which a state-only tab strip gives you.
+ *
+ * On a narrow screen the same list turns into a horizontal strip above the pane (see
+ * `.settings-nav` in app.css). A dropdown was the alternative and hides the choices;
+ * with only eight of them, a strip you can swipe shows what is there.
+ */
+function SettingsNav({ active }: { active: SectionId }) {
+  const { t } = useTranslation();
+  // Written out rather than built as `settings.nav.${id}`. A key assembled at runtime
+  // cannot be checked against en.json, and `i18n-keys.test.ts` exists precisely because
+  // a missing key ships as the raw key on screen — which it once did, in this panel.
+  const labels: Record<SectionId, string> = {
+    appearance: t('settings.nav.appearance'),
+    account: t('settings.nav.account'),
+    email: t('settings.nav.email'),
+    whatsapp: t('settings.nav.whatsapp'),
+    alerts: t('settings.nav.alerts'),
+    payments: t('settings.nav.payments'),
+    remote: t('settings.nav.remote'),
+    advanced: t('settings.nav.advanced'),
+  };
+  return (
+    <nav className="settings-nav" aria-label={t('settings.title')}>
+      {SECTIONS.map((s) => {
+        const Icon = s.icon;
+        return (
+          <NavLink
+            key={s.id}
+            to={`/settings/${s.id}`}
+            className={cn('settings-nav__item', s.id === active && 'is-active')}
+            aria-current={s.id === active ? 'page' : undefined}
+          >
+            <Icon size={16} aria-hidden />
+            <span>{labels[s.id]}</span>
+          </NavLink>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function Settings() {
   const { t } = useTranslation();
   const { toast } = useToast();
   const prefs = usePrefs();
   const utils = trpc.useUtils();
+  // An unknown or missing section falls back rather than 404s: a stale bookmark from
+  // before a section was renamed should land somewhere useful, not on an error.
+  const { section: sectionParam } = useParams();
+  const section: SectionId = isSectionId(sectionParam) ? sectionParam : DEFAULT_SECTION;
+  const show = (id: SectionId) => section === id;
 
   const serverSettings = trpc.settings.get.useQuery();
   const sysInfo = trpc.system.info.useQuery();
@@ -300,7 +394,10 @@ export function Settings() {
     if (updateInfo.isFetching) return; // don't stack checks/toasts during a spam burst
     const r = await updateInfo.refetch();
     if (r.data) {
-      toast(updateSentence(r.data, t), 'success');
+      // A check that could not reach the channel is reported as INFO, not success: a green
+      // tick is what made "we could not find out" look identical to "you are current".
+      // Not an error either — the box is fine, and nothing needs fixing.
+      toast(updateSentence(r.data, t), r.data.latest == null ? 'info' : 'success');
     } else {
       toast(t('errors.generic'), 'error');
     }
@@ -328,6 +425,17 @@ export function Settings() {
         <p className="page-sub">{t('settings.subtitle')}</p>
       </header>
 
+      <div className="settings-layout">
+        <SettingsNav active={section} />
+
+        {/* Only the chosen section is mounted. That is the point of the split — a pane
+            no one is looking at should not be running its polling queries either (the
+            WhatsApp panel alone polls the gateway, and the stats and backup panels each
+            hold their own timers). */}
+        <div className="settings-pane">
+
+      {show('appearance') && (
+        <>
       {/* Appearance */}
       <section className="glass-raised panel">
         <h2 className="panel-title">{t('settings.appearance')}</h2>
@@ -450,32 +558,42 @@ export function Settings() {
         )}
       </section>
 
-      {/* Masjid logo (branding for emails + webhooks) */}
+      {/* Masjid logo (branding for emails + webhooks). Lives with Appearance because
+          that is what an admin is thinking about when they look for it. */}
       <BrandingPanel />
+        </>
+      )}
 
       {/* Account */}
-      <ChangePassword />
-
-      {/* Notifications */}
-      <NotificationsPanel />
+      {show('account') && <ChangePassword />}
 
       {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
-      <EmailPanel />
+      {show('email') && <EmailPanel />}
 
-      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Sits beside Email
-          because it is the same kind of thing — an outbound transport the platform owns
-          on every app's behalf. */}
-      <WhatsAppPanel />
+      {/* WhatsApp gateway (OpenWA, shared with apps via the Fabric). Its own section
+          rather than sitting beside Email: it is the same kind of thing — an outbound
+          transport the platform owns on every app's behalf — but it carries a gateway
+          app, groups and admin commands with it, and stacked below Email it was a third
+          of the whole page. */}
+      {show('whatsapp') && <WhatsAppPanel />}
 
-      {/* Alerts — granular on/off per alert type (OS + apps) */}
-      <AlertsPanel />
+      {show('alerts') && (
+        <>
+          {/* Where alerts GO (the webhook), then WHICH alerts go there. Together,
+              because choosing a channel and choosing what routes to it is one task. */}
+          <NotificationsPanel />
+          <AlertsPanel />
+        </>
+      )}
 
       {/* Payments (Stripe vault, shared with apps via the Fabric) */}
-      <StripePanel />
+      {show('payments') && <StripePanel />}
 
       {/* Remote access (Cloudflare tunnel + domain) */}
-      <CloudflarePanel />
+      {show('remote') && <CloudflarePanel />}
 
+      {show('advanced') && (
+        <>
       {/* Advanced */}
       <section className="glass-raised panel">
         <h2 className="panel-title">{t('settings.advanced')}</h2>
@@ -622,9 +740,19 @@ export function Settings() {
         </div>
       </section>
 
-      {/* Off-site backups (scheduled upload to Google Drive / NAS) */}
+      {/* Off-site backups (scheduled upload to Google Drive / NAS). Sits under Advanced
+          beside the manual download/restore rows above, so a masjid looking for "my
+          backups" finds both in one place rather than in two different sections. */}
       <ScheduledBackupPanel />
+        </>
+      )}
 
+        </div>
+      </div>
+
+      {/* The dialogs stay OUTSIDE the section panes. Several are opened from one section
+          and survive a navigation (the restore upload especially), and a modal unmounted
+          mid-flight by a nav click would abandon whatever it was doing. */}
       <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} currentVersion={sysInfo.data?.version ?? ''} />
 
       <Modal open={!!restoreFile} onClose={() => !restoreUploading && setRestoreFile(null)} title={t('settings.restoreConfirmTitle')}>
@@ -1626,6 +1754,30 @@ function WhatsAppPanel() {
   const [apiKey, setApiKey] = useState('');
   const [linkPhone, setLinkPhone] = useState('');
   const [askEnable, setAskEnable] = useState(false);
+  // Turning it OFF now asks a question rather than acting, because there are two
+  // different "off"s and only the admin knows which they mean (see the dialog below).
+  const [askDisable, setAskDisable] = useState(false);
+  const [deleteAll, setDeleteAll] = useState(false);
+  const [askUnlink, setAskUnlink] = useState(false);
+  /**
+   * Set whenever we did NOT get a positive confirmation that WhatsApp released the device.
+   *
+   * Note this is `!unlinked`, not `stillLinked`. There are two ways to fail — the gateway
+   * answered 502 (it tried and could not confirm), and the gateway could not be reached at
+   * all — and only the first sets `stillLinked`. Branching on `stillLinked` therefore
+   * treated "we never even asked" as success, which is the worst of the three outcomes:
+   * the container is about to be deleted, so after that nothing in this dashboard can ever
+   * revoke the device sitting in the masjid's WhatsApp → Linked devices list.
+   */
+  const [unlinkWarning, setUnlinkWarning] = useState(false);
+  // Setup / Groups / Commands. Local state rather than the URL: these are three views of
+  // one connection, not three places — and the section itself is already addressable as
+  // /settings/whatsapp, which is the link anything outside this panel actually wants.
+  const [waTab, setWaTab] = useState<'setup' | 'groups' | 'commands'>('setup');
+  // What is being held while the link is down. Polled a little faster than the status
+  // query, because during an outage this is the number the admin is actually watching.
+  const held = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 60_000 });
+  const [askDiscard, setAskDiscard] = useState(false);
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
   // The pairing code stops being useful the instant the phone is linked, and leaving
@@ -1633,6 +1785,9 @@ function WhatsAppPanel() {
   useEffect(() => {
     if (pairing && status.data?.state === 'ready') {
       setPairing(null);
+      // A fresh link supersedes any earlier "we could not confirm the unlink" notice —
+      // whatever was or was not released before, this phone is the one attached now.
+      setUnlinkWarning(false);
       toast(t('settings.whatsappLinkedNow'), 'success');
       void utils.whatsapp.get.invalidate();
     }
@@ -1674,6 +1829,83 @@ function WhatsAppPanel() {
     onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+  const disable = trpc.whatsapp.disable.useMutation({
+    onSuccess: (r) => {
+      setAskDisable(false);
+      setDeleteAll(false);
+      setProvider('none');
+      if (r.deleted) {
+        // The panel's inputs are seeded from the server ONCE and then owned locally, so
+        // after a delete they still hold the old address and session name — and one press
+        // of Save would write them straight back. Clearing them (and re-arming the seed)
+        // is what makes the delete actually stick.
+        seededWa.current = false;
+        setApiKey('');
+        setBaseUrl('');
+        setSessionName('');
+        setLinkPhone('');
+        setPairing(null);
+        setGatewayCrash(null);
+        // Said plainly rather than as a success tick: unless WhatsApp positively confirmed
+        // it released the device, the masjid has to go and remove it on the phone itself.
+        //
+        // Keyed on `!r.unlinked`, NOT on `r.stillLinked`. Only a 502 sets `stillLinked`;
+        // an unreachable gateway — which is a common reason to be deleting in the first
+        // place — sets neither, and used to fall through to the clean success message. The
+        // container is gone by then, so that was the one outcome where the admin most
+        // needed telling and was told the opposite.
+        const confirmed = r.unlinked;
+        toast(
+          confirmed ? t('settings.whatsappDeleted') : t('settings.whatsappDeletedStillLinked'),
+          confirmed ? 'success' : 'error',
+        );
+        // The toast is transient and this instruction is the only way back to a clean
+        // phone, so it also stays on the panel until they link something again.
+        setUnlinkWarning(!confirmed);
+      } else {
+        toast(t('settings.whatsappTurnedOff'), 'success');
+      }
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+      // The trustee list and the gateway's App Store visibility both change on a delete.
+      utils.commands.invalidate();
+      utils.store.catalog.invalidate();
+      utils.apps.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const unlink = trpc.whatsapp.unlink.useMutation({
+    onSuccess: (r) => {
+      setAskUnlink(false);
+      // `!r.unlinked`, not `r.stillLinked` — see the state declaration. A 502 is not the
+      // only way to end up still linked; not reaching the gateway at all is the other.
+      const confirmed = r.unlinked;
+      setUnlinkWarning(!confirmed);
+      setLinkPhone('');
+      // A failure gets the banner rather than a toast, because a toast is gone in seconds
+      // and the instruction it carries is the only route back to a clean phone.
+      if (confirmed) toast(t('settings.whatsappUnlinked'), 'success');
+      utils.whatsapp.get.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const releaseHeld = trpc.whatsapp.releaseHeld.useMutation({
+    onSuccess: (r) => {
+      toast(t('settings.whatsappHeldReleased', { count: r.released }), 'success');
+      utils.whatsapp.held.invalidate();
+      utils.whatsapp.status.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
+  const discardHeld = trpc.whatsapp.discardHeld.useMutation({
+    onSuccess: (r) => {
+      setAskDiscard(false);
+      toast(t('settings.whatsappHeldDiscarded', { count: r.discarded }), 'success');
+      utils.whatsapp.held.invalidate();
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
   const restartGateway = trpc.whatsapp.restartGateway.useMutation({
     onSuccess: (r) => {
       // Only clear the previous failure when this attempt actually held — otherwise
@@ -1691,11 +1923,34 @@ function WhatsAppPanel() {
   const gw = cfg.data.gateway;
   const on = provider !== 'none';
 
-  /** Turning it ON is gated on the warning; turning it OFF is immediate and reversible. */
+  /** Which phone the gateway is actually attached to right now, if any. Deliberately
+   *  `state === 'ready'` AND a number: `pending` and `problem` can also carry a phone (a
+   *  linked-then-disconnected handset), and calling that "linked and sending" would be a
+   *  lie on the one panel an admin checks when messages stop. */
+  const linkedPhone = s?.state === 'ready' && s.phone ? s.phone : null;
+
+  /**
+   * Groups and Commands only exist once a phone is linked, so the tabs only appear then.
+   *
+   * Showing three tabs where two of them error is worse than showing none: it presents
+   * setup steps as though they were optional, when linking is the thing that has to
+   * happen first. Before that, this panel is just its setup, with no strip at all.
+   */
+  const waLinked = s?.state === 'ready';
+  const showSetup = !waLinked || waTab === 'setup';
+
+  /**
+   * Turning it ON is gated on the ban-risk warning; turning it OFF now asks WHICH off.
+   *
+   * It used to switch off silently, which was fine as far as it went — but it left the
+   * key, the session, the approved groups and the trustee phone list on disk with nothing
+   * saying so. An admin who believed they had removed WhatsApp had not, and an admin who
+   * only wanted a pause had no way to know their setup was safe. The dialog answers both.
+   */
   function setEnabled(next: boolean) {
     if (next) return setAskEnable(true);
-    setProvider('none');
-    save.mutate({ provider: 'none' });
+    setDeleteAll(false);
+    setAskDisable(true);
   }
 
   return (
@@ -1728,7 +1983,114 @@ function WhatsAppPanel() {
         pending={save.isPending}
       />
 
-      {on && (
+      {/* Turning it off: a checkbox, not a second switch, because the two outcomes are a
+          choice made ONCE at the moment of turning it off — not an ongoing setting.
+          Modelled on the app-removal dialog, which asks the same question about data.
+          Closing must clear the tick: leaving it on from a previous visit would put
+          permanent destruction one click away in a dialog that looks freshly opened. */}
+      <Modal
+        open={askDisable}
+        onClose={() => {
+          setAskDisable(false);
+          setDeleteAll(false);
+        }}
+        title={t('settings.whatsappOffTitle')}
+      >
+        <p style={{ margin: 0 }}>{t('settings.whatsappOffBody')}</p>
+        <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', margin: '1rem 0' }}>
+          <input
+            type="checkbox"
+            style={{ marginBlockStart: '0.2rem' }}
+            checked={deleteAll}
+            onChange={(e) => setDeleteAll(e.target.checked)}
+          />
+          <span>
+            {t('settings.whatsappOffDelete')}
+            <span className="hint" style={{ display: 'block' }}>
+              {t('settings.whatsappOffDeleteHint')}
+            </span>
+          </span>
+        </label>
+        {/* Only when it is actually about to happen. A permanent warning next to an
+            unticked box is noise; next to a ticked one it is the last thing read. */}
+        {deleteAll && (
+          <p className="setting-row__hint" style={{ color: 'var(--color-gold, #F59E0B)' }}>
+            {t('settings.whatsappOffDeleteCost')}
+          </p>
+        )}
+        {disable.isPending ? (
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBlockStart: '1.2rem' }}>
+            <span className="spinner" /> {t('common.working')}
+          </p>
+        ) : (
+          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginBlockStart: '1.4rem' }}>
+            <button
+              className="btn"
+              onClick={() => {
+                setAskDisable(false);
+                setDeleteAll(false);
+              }}
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              className={cn('btn', deleteAll ? 'btn--danger' : undefined)}
+              onClick={() => disable.mutate({ deleteEverything: deleteAll })}
+            >
+              {deleteAll ? t('settings.whatsappOffDeleteConfirm') : t('settings.whatsappOffConfirm')}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* Unlinking is its own action, separate from turning the feature off: changing
+          handsets should not mean re-pasting a key and re-approving every group. */}
+      <ConfirmDialog
+        open={askUnlink}
+        onClose={() => setAskUnlink(false)}
+        onConfirm={() => unlink.mutate()}
+        title={t('settings.whatsappUnlinkTitle')}
+        body={t('settings.whatsappUnlinkBody')}
+        cost={t('settings.whatsappUnlinkCost')}
+        confirmLabel={t('settings.whatsappUnlinkConfirm')}
+        pending={unlink.isPending}
+      />
+
+      {/* Setup / Groups / Commands. Reuses the `segmented` control the theme picker
+          uses, so this reads as the same kind of choice rather than a new pattern. */}
+      {/* The wrapper is load-bearing, not decoration. `.segmented` is `display:inline-flex`
+          and `Toggle` renders a bare <button>, which is inline-block — both inline-level,
+          so they shared a LINE and the strip sat jammed against the on/off switch. The
+          `marginBlock` was applied (it does take effect on an inline-flex box) but moved
+          the whole line rather than separating the two, which is why it looked ignored.
+          Every other `.segmented` in this file already sits in a block container; this one
+          was the exception. */}
+      {on && waLinked && (
+        <div style={{ marginBlock: '0.9rem' }}>
+        <div className="segmented glass-inset" role="tablist">
+          {/* Literal keys, for the same reason as the section nav above. */}
+          {(
+            [
+              { id: 'setup', label: t('settings.whatsappTab.setup') },
+              { id: 'groups', label: t('settings.whatsappTab.groups') },
+              { id: 'commands', label: t('settings.whatsappTab.commands') },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={waTab === tab.id}
+              className={cn(waTab === tab.id && 'is-active')}
+              onClick={() => setWaTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        </div>
+      )}
+
+      {on && showSetup && (
         <>
           {/* Step one is the gateway app itself. It is hidden from the dashboard and the
               store on purpose, so this is the only place it can be installed or opened. */}
@@ -1832,7 +2194,7 @@ function WhatsAppPanel() {
         </>
       )}
 
-      {on && (
+      {on && showSetup && (
         <>
           <div className="field" style={{ maxWidth: '22rem' }}>
             <label className="label">{t('settings.whatsappSession')}</label>
@@ -1892,8 +2254,14 @@ function WhatsAppPanel() {
       </div>
 
       {/* Linking by pairing code, not QR: there is no screen on a headless box to
-          photograph, and the admin may be nowhere near the machine. */}
-      {cfg.data.configured && (
+          photograph, and the admin may be nowhere near the machine.
+
+          Hidden once a phone IS linked. It used to show regardless, so a masjid with a
+          working connection was still looking at an empty "Link your phone" box and a
+          "Get a code" button — which reads as "this didn't work", and invites linking a
+          second handset over a working one. Only one number can be attached, so when
+          there is one the panel states it instead of asking for it. */}
+      {cfg.data.configured && !linkedPhone && showSetup && (
         <div style={{ marginBlockStart: '0.9rem' }}>
           <div className="setting-row__title">{t('settings.whatsappLink')}</div>
           <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
@@ -1949,22 +2317,155 @@ function WhatsAppPanel() {
         </div>
       )}
 
-      {/* Which phone is actually linked. Without it the panel says "connected" and the
-          admin has to take on trust that it is the number they meant — and on a masjid's
-          spare handset that is exactly the thing worth double-checking. */}
-      {s?.state === 'ready' && s.phone && (
-        <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
-          {t('settings.whatsappLinkedTo')} <strong>+{s.phone}</strong>
-        </p>
+      {/* Which phone is actually linked — the answer to the question this whole panel
+          exists to answer, so it is stated, not tucked into a hint line. On a masjid's
+          spare handset "is that the right number?" is exactly the thing worth
+          double-checking, and a run of bare digits is not something anyone checks. */}
+      {linkedPhone && showSetup && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.9rem', borderInlineStart: '3px solid var(--color-accent)' }}
+        >
+          <div className="setting-row" style={{ gap: '0.9rem', flexWrap: 'wrap' }}>
+            <div className="setting-row__text" style={{ flex: '1 1 14rem', minWidth: 0 }}>
+              <div className="setting-row__hint">{t('settings.whatsappLinkedTo')}</div>
+              <div
+                style={{
+                  fontSize: '1.45rem',
+                  fontWeight: 650,
+                  lineHeight: 1.3,
+                  marginBlockStart: '0.15rem',
+                  userSelect: 'all',
+                }}
+              >
+                {formatPhone(linkedPhone)}
+              </div>
+            </div>
+            <button className="btn" disabled={unlink.isPending} onClick={() => setAskUnlink(true)}>
+              {unlink.isPending ? t('common.working') : t('settings.whatsappUnlink')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Held messages, and the honest account of what happened.
+
+          Ungated on the tab, like the unlink warning below, because it must survive a
+          switch to Groups or Commands — an admin dealing with an outage should not lose
+          the count by clicking around. Shown whenever anything is held, not only during a
+          declared incident, so a backlog is never invisible. */}
+      {on && (held.data?.total ?? 0) > 0 && (
+        <div
+          className="glass-inset panel"
+          style={{
+            marginBlockStart: '0.9rem',
+            borderInlineStart: `3px solid var(--color-${held.data?.health.down ? 'danger' : 'gold, #F59E0B'})`,
+          }}
+        >
+          <div className="setting-row__title">
+            {held.data?.health.down
+              ? t('settings.whatsappHeldTitleDown')
+              : t('settings.whatsappHeldTitle')}
+          </div>
+          <div className="setting-row__hint" style={{ marginBlockStart: '0.2rem' }}>
+            {t('settings.whatsappHeldBody', { count: held.data?.total ?? 0 })}
+          </div>
+
+          {/* Per app, so an admin can see at a glance whose messages are waiting. Counts
+              only — no recipient and no message text is sent to the browser. */}
+          {(held.data?.bySource.length ?? 0) > 0 && (
+            <div className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+              {held.data?.bySource.map((b) => (
+                <div key={b.source}>
+                  {b.source} — {b.count}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* The uncomfortable half. These went out into a dead link and were recorded as
+              sent; OpenMasjidOS does not keep their contents, so it cannot resend them and
+              must not imply it can. */}
+          {(held.data?.suspect.length ?? 0) > 0 && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-danger)' }}>
+              {t('settings.whatsappHeldSuspect', {
+                count: held.data?.suspect.reduce((n, x) => n + x.count, 0) ?? 0,
+              })}
+            </p>
+          )}
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.7rem' }}>
+            <button
+              className="btn btn--primary"
+              disabled={releaseHeld.isPending || held.data?.health.down === true}
+              onClick={() => releaseHeld.mutate()}
+            >
+              {releaseHeld.isPending ? t('common.working') : t('settings.whatsappHeldResend')}
+            </button>
+            <button className="btn" disabled={discardHeld.isPending} onClick={() => setAskDiscard(true)}>
+              {t('settings.whatsappHeldDiscard')}
+            </button>
+          </div>
+          {/* Resending into a link that is still down would just refill the queue, so the
+              button waits for the connection rather than failing loudly. */}
+          {held.data?.health.down && (
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+              {t('settings.whatsappHeldRelinkFirst')}
+            </p>
+          )}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={askDiscard}
+        onClose={() => setAskDiscard(false)}
+        onConfirm={() => discardHeld.mutate()}
+        title={t('settings.whatsappHeldDiscardTitle')}
+        body={t('settings.whatsappHeldDiscardBody', { count: held.data?.total ?? 0 })}
+        cost={t('settings.whatsappHeldDiscardCost')}
+        confirmLabel={t('settings.whatsappHeldDiscard')}
+        pending={discardHeld.isPending}
+      />
+
+      {/* An unconfirmed unlink, said where it can actually be read.
+
+          This deliberately sits OUTSIDE the linked-number block above and is gated on
+          nothing but `unlinkWarning`. It used to live inside that block, which is the one
+          place it could not survive: unlinking clears `linkedPhone`, so the very action
+          that raises this warning unmounted it a moment later. The admin got a closed
+          dialog, no toast (the toast is suppressed precisely because this was meant to
+          carry the message), and a paragraph that flashed for under a second — for the
+          outcome where their phone may still be carrying a device they can no longer
+          revoke from here.
+
+          A 200 from the gateway is an acknowledgement, not a look at the handset, so this
+          is also the honest wording for "we could not confirm", not just for a failure. */}
+      {unlinkWarning && (
+        <div
+          className="glass-inset panel"
+          style={{ marginBlockStart: '0.9rem', borderInlineStart: '3px solid var(--color-danger)' }}
+        >
+          <div className="setting-row" style={{ gap: '0.9rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div className="setting-row__text" style={{ flex: '1 1 16rem', minWidth: 0 }}>
+              <div className="setting-row__title">{t('settings.whatsappUnlinkUnconfirmedTitle')}</div>
+              <div className="setting-row__hint">{t('settings.whatsappUnlinkUnconfirmed')}</div>
+            </div>
+            {/* Dismissible, because it cannot clear itself: once the gateway is deleted
+                there is no status to re-check, so nothing else would ever take it down. */}
+            <button className="btn btn--sm" onClick={() => setUnlinkWarning(false)}>
+              {t('settings.whatsappUnlinkUnconfirmedDone')}
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Groups. Only once a phone is actually linked — there is nothing to list before
           that, and offering the section would just produce an error. */}
-      {s?.state === 'ready' && <WhatsAppGroups approved={cfg.data.groups} />}
+      {waLinked && waTab === 'groups' && <WhatsAppGroups approved={cfg.data.groups} />}
 
       {/* Commands. Same gate as Groups: there is nothing to configure before a phone
           is linked, and offering it would only produce an error. */}
-      {s?.state === 'ready' && <WhatsAppCommands />}
+      {waLinked && waTab === 'commands' && <WhatsAppCommands />}
 
       {/* The risk we warned about, actually happening. WhatsApp told the gateway it has
           limited this number, so the admin hears it here rather than wondering why
@@ -1981,11 +2482,14 @@ function WhatsAppPanel() {
       )}
 
       {/* Live state plus the queue depth, which is the honest answer to "why has my
-          message not arrived?" — it is paced, and may be waiting out quiet hours. */}
+          message not arrived?" — it is paced, so it may still be waiting its turn. */}
       {s && (
         <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
           {/* One line per distinct state. "Gateway down", "nothing created yet" and
               "created but not linked" have different fixes, so they must read differently. */}
+          {/* The queue depth used to appear only inside the "ready" sentence, so in every
+              state where a backlog was actually piling up it was invisible. It is now
+              appended to whatever the state sentence says. */}
           {s.state === 'ready'
             ? t('settings.whatsappStateReady', { queued: s.queued })
             : s.state === 'pending'
@@ -2374,7 +2878,7 @@ function WhatsAppCommands() {
                   <div className="setting-row__text" style={{ flex: 1, minWidth: 0 }}>
                     <div className="setting-row__title">{p.label}</div>
                     <div className="setting-row__hint">
-                      +{p.phone}
+                      {formatPhone(p.phone)}
                       {p.scopes.length === 0 && ` · ${t('settings.commandsNoGrants')}`}
                     </div>
                   </div>
@@ -2816,6 +3320,71 @@ function StripePanel() {
 /** Cloudflare Tunnel — paste a token + domain once; the OS runs cloudflared so the
  *  masjid's apps are reachable from the internet. Apps read their public URL via the
  *  Fabric (`GET /api/fabric/site`). */
+/**
+ * Why the tunnel turned recent requests away.
+ *
+ * This is the panel that answers "my public page says Not found and I cannot tell why".
+ * Every one of those 404s is identical from outside on purpose, so this is the only place
+ * the difference is visible — and it is behind the LAN-only dashboard, which is what makes
+ * being specific here safe.
+ */
+function TunnelRefusals() {
+  const { t } = useTranslation();
+  // Only while someone is looking at this panel; it is a diagnostic, not a monitor.
+  const q = trpc.cloudflare.refusals.useQuery(undefined, { refetchInterval: 15_000 });
+  const rows = q.data ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="glass-inset panel" style={{ marginBlockStart: '0.9rem' }}>
+      <div className="setting-row__title">{t('settings.cfRefusalsTitle')}</div>
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>
+        {t('settings.cfRefusalsHint')}
+      </div>
+      {rows.map((r) => (
+        <div
+          key={r.ref}
+          className="setting-row__hint"
+          style={{ paddingBlock: '0.4rem', borderBlockStart: '1px solid var(--glass-border, rgba(255,255,255,0.08))' }}
+        >
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <code style={{ flex: '1 1 16rem', minWidth: 0, wordBreak: 'break-all' }}>
+              {r.host}
+              {r.path}
+            </code>
+            <span style={{ flex: '0 0 auto' }}>
+              {r.reason === 'no-app-at-path'
+                ? t('settings.cfRefusalNoApp')
+                : r.reason === 'app-fabric-lan-only'
+                  ? t('settings.cfRefusalAppFabric')
+                  : t('settings.cfRefusalLanOnly')}
+              {r.count > 1 ? ` \u00d7${r.count}` : ''}
+            </span>
+          </div>
+          {/* The reference is what someone seeing the error can read back to you, and the
+              Cloudflare ray is what ties this to Cloudflare's own record of the request —
+              including which of its locations served it, which is the obvious suspect when
+              the same page works for one visitor and not another. */}
+          <div style={{ display: 'flex', gap: '0.9rem', flexWrap: 'wrap', opacity: 0.75, marginBlockStart: '0.15rem' }}>
+            <span>
+              {t('settings.cfRefusalRef')} <code>{r.ref}</code>
+            </span>
+            <span>{r.method}</span>
+            <span>{r.wantsHtml ? t('settings.cfRefusalPage') : t('settings.cfRefusalData')}</span>
+            {r.cfRay ? (
+              <span>
+                {t('settings.cfRefusalRay')} <code>{r.cfRay}</code>
+              </span>
+            ) : null}
+          </div>
+          {r.agent ? (
+            <div style={{ opacity: 0.6, wordBreak: 'break-all', marginBlockStart: '0.1rem' }}>{r.agent}</div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CloudflarePanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -2993,12 +3562,13 @@ function CloudflarePanel() {
 
         <p
           className="setting-row__hint"
-          style={{ marginBlockStart: '0.5rem', color: 'var(--color-gold, #d4af37)', fontWeight: 600 }}
+          style={{ marginBlockStart: '0.5rem', color: 'var(--color-gold, #F59E0B)', fontWeight: 600 }}
         >
           {t('settings.cfHttpWarn', { port: routes.data?.ingressPort ?? 80 })}
         </p>
 
       </details>
+      <TunnelRefusals />
     </section>
   );
 }

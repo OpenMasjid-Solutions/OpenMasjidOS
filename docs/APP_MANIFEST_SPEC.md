@@ -57,6 +57,8 @@ fields are ignored. Each entry is a `CatalogApp` (`packages/core/src/apps/types.
 | `alerts` | – | A list of alert types this app can raise, `{ id, label, description? }[]` (below). Each gets a granular on/off in Settings → Alerts (all on by default). The app fires one with `POST /api/fabric/alert`. Declaring alerts issues the per-app secret. |
 | `whatsapp` | – | `true` to opt into Fabric WhatsApp — the app may `POST /api/fabric/whatsapp` to send through the masjid's own gateway, and never sees the gateway credentials. It **queues** (`202 {queued}`), never sends synchronously, and takes **one recipient per call**. `GET` the same path first to learn whether this masjid can send at all, and read an absent field as `false`. **Which events go out and to whom is YOUR setting** — the platform's alerts matrix has no WhatsApp column for apps, because it routes to the admin's one number. For announcements, `GET /api/fabric/whatsapp/groups` (only the groups the **admin** approved) and send `group` instead of `to`. An optional `media` sends an **image** (png/jpeg/webp, 2 MB decoded) with `text` as its caption — check `media` on the `GET` first. Never use it for anything auth-critical: it is an unofficial client and the number can be restricted. See [`WHATSAPP.md`](WHATSAPP.md). Issues the per-app secret. |
 | `commands` | – | A list of commands an admin can run against this app over WhatsApp, `{ id, label, description?, argument?: { label }, confirm? }[]` (below). The platform authorises, renders the menu and asks for confirmation; the app only executes, at `POST /fabric/commands/run`. Max 12; `id` must be kebab-case, not all digits, and not `help`/`yes`/`no`/`cancel`/`stop`. `argument` must be an **object** — `argument: true` is refused rather than coerced. Declaring commands issues the per-app secret (required: the platform authenticates to you with *your* secret). **`commands` is a reserved Fabric capability** — you cannot expose this handler to other apps via `fabric.provides`. |
+| `domain` | – | `true` to opt into the **domain** capability — the app may `GET /api/fabric/site` to learn its own PUBLIC URL (the admin's tunnel domain + the app's path) for building absolute links: Stripe success/cancel URLs, webhook endpoints, QR codes. Returns an empty URL when remote access is off, so treat "no URL yet" as normal rather than an error. Issues the per-app secret. |
+| `comingSoon` | – | `true` marks this as a **teaser** for an app that is not released yet. The entry needs no repo, no image and no `compose` — the App Store renders it with a "Coming soon" badge and no install action, and the platform **refuses to install it** (`store.ts`). Use it to reserve a listing; drop the flag and add the `compose` when the app is ready. |
 
 ### `settings` fields (`SettingField`)
 
@@ -174,11 +176,13 @@ installed app validate (or impersonate) the session as another.
 
 > Same-host assumption: cookie-based SSO works because the dashboard and the app share a host on
 > different ports. An app on a different host simply won't see the cookie and falls back to its own
-> login. **Transport:** this is fine on a plain-HTTP LAN with `SameSite=Strict`; if the platform or an
+> login. **Transport:** this is fine on a plain-HTTP LAN with `SameSite=Lax` (Lax, not Strict — the
+> dashboard is HTTPS and apps are HTTP, so "Open" is a cross-scheme navigation Strict would refuse
+> the cookie on); if the platform or an
 > app ever runs cross-host, `/api/auth/session` must be HTTPS-only and `omos_session` must be `Secure`.
 
 **Notifications (so an app can alert the masjid)** — opt in with `notifications: true`. The masjid
-admin configures ONE webhook (Slack / Discord / generic) in **Settings → Notifications**; apps relay
+admin configures ONE webhook (Slack / Discord / generic) in **Settings → Alerts**; apps relay
 through the platform and **never see the webhook URL** (the platform owns the destination, so an app
 can't point it anywhere — no SSRF from apps).
 

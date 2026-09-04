@@ -23,7 +23,7 @@ import {
   composePull,
   composeUpStream,
 } from '../docker/compose';
-import { discoverApps } from '../docker/discovery';
+import { discoverApps, discoverAppsResult } from '../docker/discovery';
 import { docker } from '../docker/client';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
@@ -66,7 +66,22 @@ const RESERVED_APP_IDS = new Set(['cloudflared']);
  * the moment someone shipped an app under it. Refusing at install is the whole
  * job; nothing here ever removes an existing directory.
  */
-const RESERVED_ID_WORDS = new Set(['os', 'omos', 'openmasjid', 'openmasjidos', 'platform', 'help']);
+const RESERVED_ID_WORDS = new Set([
+  'os',
+  'omos',
+  'openmasjid',
+  'openmasjidos',
+  'platform',
+  'help',
+  // Also in RESERVED_APP_IDS, and that is exactly why it has to be here too.
+  // Membership there means listInstalled() `rmSync`s the directory — so without
+  // this line a catalog entry with `id: cloudflared` installs perfectly happily and
+  // then has its compose.yml, its .env (holding its Fabric secret) and its meta.json
+  // deleted out from under a still-running container, while discovery hides it from
+  // the dashboard so nobody can see what happened. Refusing at install is free;
+  // nothing on this path deletes anything.
+  'cloudflared',
+]);
 
 /** True if this id names the platform rather than an app. Refuse it at install. */
 export function isReservedAppId(id: string): boolean {
@@ -667,8 +682,24 @@ export async function restoreAppProxies(): Promise<void> {
 }
 
 /** Merge on-disk metadata with live Docker state; recover orphans. */
+/**
+ * The installed apps, AND whether Docker could actually be read.
+ *
+ * When `discoveryOk` is false every app comes back `running: false` with no ports —
+ * because that is all we know, not because it is true. A caller that routes traffic or
+ * raises alerts from those fields must check this first; one that just draws a list need
+ * not. See `DiscoveryResult.ok` for what happened when nothing checked.
+ */
+export async function listInstalledWithHealth(): Promise<{ apps: InstalledApp[]; discoveryOk: boolean }> {
+  const result = await discoverAppsResult();
+  return { apps: await buildInstalled(result.apps), discoveryOk: result.ok };
+}
+
 export async function listInstalled(): Promise<InstalledApp[]> {
-  const discovered = await discoverApps();
+  return buildInstalled(await discoverApps());
+}
+
+async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps>>): Promise<InstalledApp[]> {
   const byId = new Map<string, InstalledApp>();
 
   // 1. Apps we have metadata for.
@@ -706,14 +737,26 @@ export async function listInstalled(): Promise<InstalledApp[]> {
   // 2. Running/known projects without metadata — recover them (golden rule).
   for (const disc of discovered.values()) {
     if (byId.has(disc.id)) continue;
-    // We can't vet a recovered app, so never claim it's "Official". Honour a
-    // kind label if Docker has one, otherwise treat it as Custom.
-    const kind: AppMeta['kind'] =
-      disc.kind === 'catalog' || disc.kind === 'community' ? disc.kind : 'custom';
+    // We can't vet a recovered app, so never claim it's "Official" — and that means
+    // NOT reading `disc.kind`, which is where this used to go wrong. That value comes
+    // from a `com.openmasjid.kind` Docker label, and **nothing in the platform ever
+    // writes one**: discovery only reads it. So the only way a label is present is
+    // that the app's own compose set it — and a pasted or community compose can set
+    // anything, while `apps/compose-validate.ts` never inspects `labels:` at all.
+    // Honouring it let an unvetted stack promote itself to `catalog` ("Official"),
+    // which also flipped its default tunnel exposure from private to PUBLIC. Trust
+    // is not something the subject gets to assert.
+    //
+    // `exposed` is pinned false for the same reason. `undefined` is grandfathered as
+    // exposed so pre-0.40 installs did not go dark, but that grandfathering is for
+    // apps an admin actually installed — a stack we just found running and cannot
+    // vet must not be published to the internet on its own say-so. The admin can
+    // switch it on in Settings, which is the point at which a person has looked.
     const recovered: AppMeta = {
       id: disc.id,
       name: disc.name || prettify(disc.id),
-      kind,
+      kind: 'custom',
+      exposed: false,
       createdAt: new Date().toISOString(),
     };
     try {
@@ -1064,13 +1107,6 @@ export function isExposedMeta(meta: Pick<AppMeta, 'kind' | 'exposed'>): boolean 
   return meta.kind === 'catalog';
 }
 
-/** Whether an app is exposed over the tunnel. See `isExposedMeta` for the
- *  kind-dependent default when the app never recorded a choice. */
-export function isAppExposed(id: string): boolean {
-  const meta = loadMeta(id);
-  return meta ? isExposedMeta(meta) : false;
-}
-
 /** Turn an app's internet exposure on/off (the admin's per-app consent). Rewrites
  *  the OPENMASJID_PUBLIC_URL env to match; the CALLER must reup the app so the
  *  container picks up the new value and the ingress route map rebuilds. */
@@ -1320,6 +1356,31 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   const appCommands = parseCommands(app.commands, id);
 
   // New compose; keep the user's saved settings (.env) untouched.
+  //
+  // Snapshot what is on disk FIRST, so a pull or an `up` that fails below can put it back.
+  // Without that, an aborted update left the NEW compose.yml (and the rewritten .env) on
+  // disk beside the OLD meta.json — and `startApp` reads that file straight from disk and
+  // is deliberately NOT compose-gated (CLAUDE.md §15). So the next time a volunteer pressed
+  // Start on an app whose update had failed, they silently got the new stack: the version
+  // the platform reports is the old one, and the risk gate that would have vetted the new
+  // compose at install time never ran on it.
+  //
+  // Read before write, and only what already exists — a missing file restores to "delete",
+  // which is the correct undo for a compose that was not there to begin with.
+  const prevCompose = fs.existsSync(composePath(id)) ? fs.readFileSync(composePath(id), 'utf8') : null;
+  const prevEnv = fs.existsSync(envPath(id)) ? fs.readFileSync(envPath(id), 'utf8') : null;
+  /** Put the app back exactly as it was. Best effort — a failure here is already the
+   *  unhappy path, and throwing would replace a clear message with a stack trace. */
+  const rollback = (): void => {
+    try {
+      if (prevCompose === null) fs.rmSync(composePath(id), { force: true });
+      else fs.writeFileSync(composePath(id), prevCompose, 'utf8');
+      if (prevEnv === null) fs.rmSync(envPath(id), { force: true });
+      else fs.writeFileSync(envPath(id), prevEnv, 'utf8');
+    } catch (err) {
+      log.warn(`Could not restore ${id} after a failed update.`, err);
+    }
+  };
   fs.writeFileSync(composePath(id), app.compose, 'utf8');
 
   const sso = app.sso === true;
@@ -1370,6 +1431,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('Could not download the update. Please check the connection and try again.');
+    // Nothing was applied, so leave nothing new behind for a later Start to pick up.
+    rollback();
     return;
   }
 
@@ -1379,6 +1442,9 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   if ((await composeUpStream(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
     onLine('');
     onLine('The update could not start. The previous version may still be running.');
+    // The old container is still the running one; put its compose back so a later Start
+    // recreates THAT, not the version that just failed to come up.
+    rollback();
     return;
   }
 

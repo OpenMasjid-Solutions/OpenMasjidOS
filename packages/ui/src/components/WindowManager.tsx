@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { useTranslation } from 'react-i18next';
 import { X, Minus, Maximize2 } from 'lucide-react';
 import { useWindows, type WindowState } from './Windows';
+import { anyModalOpen } from './Modal';
 import { ErrorBoundary } from './ErrorBoundary';
 
 export function WindowManager() {
@@ -22,6 +23,9 @@ export function WindowManager() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // A dialog on top owns the keypress. Without this, one Escape closed the
+      // dialog and the window behind it at the same time.
+      if (anyModalOpen()) return;
       const visible = windows.filter((w) => !w.minimized);
       if (visible.length === 0) return;
       const front = visible.reduce((a, b) => (b.z > a.z ? b : a));
@@ -92,7 +96,7 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
     >
       <div className={`win glass-raised win-enter${win.wide ? ' win--wide' : ''}`} style={win.fullscreen ? { width: '100%', height: '100%', maxHeight: 'none' } : undefined}>
         <header className="win-head" onPointerDown={startDrag} onDoubleClick={() => toggleFullscreen(win.id)}>
-          <div className="traffic" role="group" aria-label="Window controls">
+          <div className="traffic" role="group" aria-label={t('windows.controls')}>
             {/* No close control while the window is locked (an update in progress). The
                 manager's close() refuses it anyway; hiding the button stops it being an
                 invitation. Minimize stays — the work is unaffected and the dock brings it
@@ -102,10 +106,10 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
                 <X size={9} strokeWidth={3.5} />
               </button>
             )}
-            <button className="tl tl-min" aria-label="Minimize" onClick={() => minimize(win.id)}>
+            <button className="tl tl-min" aria-label={t('windows.minimize')} onClick={() => minimize(win.id)}>
               <Minus size={9} strokeWidth={3.5} />
             </button>
-            <button className="tl tl-full" aria-label="Fullscreen" onClick={() => toggleFullscreen(win.id)}>
+            <button className="tl tl-full" aria-label={t('windows.fullscreen')} onClick={() => toggleFullscreen(win.id)}>
               <Maximize2 size={8} strokeWidth={3.5} />
             </button>
           </div>

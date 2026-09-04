@@ -186,7 +186,8 @@ which matters most when the machine is wall-mounted, in a cupboard, or in an off
   `!os updates` for what's waiting.
 - **Fix things** — `!os restart 2` to bring a stuck display back, `!os start 3` / `!os stop 3`,
   and `!os update 3` to update a single app. Send one without a number and it lists your apps so
-  you can pick. Anything that changes something asks you to confirm first, and raises an alert
+  you can pick. Stopping, restarting and updating ask you to confirm first; starting an app does
+  not, because turning something back on is the safe direction. All of them raise an alert
   afterwards through your usual channels, so you find out even if it wasn't you.
 - **Each app can add its own commands** under `!<app>` — send the app's name on its own to see
   a numbered menu of what it offers. An app can also ask you a question and take a plain reply,
@@ -217,7 +218,8 @@ which matters most when the machine is wall-mounted, in a cupboard, or in an off
 
 - **Forced HTTPS** — the dashboard is served over TLS with a self-signed certificate generated on first boot, or bring your own. A damaged certificate can't stop the box starting: it's replaced automatically and the dashboard stays reachable.
 - **Reached by address** — open `https://<your-server-ip>` from any device on the same network. To stop that address changing, give the machine a DHCP reservation in your router's settings. (A `.local` name and installer-managed static IP are planned, not built.) See [`docs/NETWORKING.md`](docs/NETWORKING.md).
-- **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the admin dashboard itself is never exposed.
+- **Remote access** — an optional Cloudflare Tunnel publishes chosen apps on your own domain. **Per-app and off by default**, and the tunnel never carries the admin dashboard.
+- **If your server has a public IP** (a VPS, or a router forwarding ports to it), put a firewall in front of it. OpenMasjidOS listens on ports 80 and 443 for everyone on the network it can see, and it cannot tell "my LAN" apart from "the internet" — so on a directly-reachable machine the dashboard's login page is reachable from outside, and a few internal routes with it. The dashboard is still behind your password, but a firewall allowing only your own network is the thing that makes "local only" actually local. See [`docs/SECURITY.md`](docs/SECURITY.md).
 - **Follows the box** — move the machine to a different network and your apps find the dashboard again by themselves.
 
 ### Files and the machine
@@ -322,7 +324,7 @@ Boot the Pi (ethernet recommended), wait ~90 seconds, then:
 ```bash
 ssh openmasjid@openmasjid.local
 sudo apt update && sudo apt upgrade -y && sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | sudo bash
 ```
 
 Open the Pi's IP. For a stable address, add a DHCP reservation in your router.

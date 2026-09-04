@@ -6,6 +6,7 @@
  * for prayer times (that's an app concern, CLAUDE.md §13).
  */
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { usePrefs } from '../lib/prefs';
 import { ambient } from '../lib/ambient';
 
@@ -28,6 +29,7 @@ function format(now: Date, clock24h: boolean, tz: string): { time: string; date:
 }
 
 export function Clock() {
+  const { t } = useTranslation();
   const prefs = usePrefs();
   const [now, setNow] = useState(() => new Date());
   // Rapid taps on the clock toggle the optional ambient scene (a quiet extra).
@@ -52,7 +54,7 @@ export function Clock() {
   }
 
   return (
-    <div className="clock-widget glass-raised" role="group" aria-label="Clock" onClick={onTap}>
+    <div className="clock-widget glass-raised" role="group" aria-label={t('common.clock')} onClick={onTap}>
       <span className="clock-time">{time}</span>
       <span className="clock-date">{date}</span>
     </div>

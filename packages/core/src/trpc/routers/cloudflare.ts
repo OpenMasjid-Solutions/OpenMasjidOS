@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
+import { recentRefusals } from '../../system/tunnel-refusals';
 import { getSettings, updateCloudflare } from '../../settings/store';
 import {
   hasToken,
@@ -43,6 +44,15 @@ async function status() {
 }
 
 export const cloudflareRouter = router({
+  /**
+   * Why recent requests through the tunnel were refused.
+   *
+   * Safe to be specific HERE and nowhere else: this is the LAN-only dashboard, behind a
+   * session. The 404 the internet gets stays deliberately identical for every reason, so
+   * a stranger cannot map which paths are real routes on this platform.
+   */
+  refusals: protectedProcedure.query(() => recentRefusals()),
+
   status: protectedProcedure.query(() => status()),
 
   /** Remote-access routing info for the guided setup. The admin adds ONE Cloudflare

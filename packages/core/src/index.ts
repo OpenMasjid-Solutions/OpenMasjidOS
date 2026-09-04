@@ -27,13 +27,16 @@ import { backupStream, backupFilename, BackupBusyError } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
+import { noteRefusal } from './system/tunnel-refusals';
 import { registerFabricTunnelGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI } from './api/static-ui';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
 import { startStripeMonitor } from './system/stripe-monitor';
+import { startWhatsAppMonitor } from './system/whatsapp-monitor';
 import { setInboundHandler, startWhatsAppInbound } from './notify/whatsapp-inbound';
+import { restoreWhatsAppQueue } from './notify/whatsapp';
 import { handleInboundCommand } from './commands/execute';
 import { registerTerminals } from './api/terminals';
 import { registerFiles } from './api/files';
@@ -159,9 +162,39 @@ async function main() {
   });
 
   // Health — unauthenticated, used by the installer and the container healthcheck.
-  server.get('/api/health', async () => ({ status: 'ok', version: VERSION }));
+  //
+  // The version is withheld from anything that looks like it came through the tunnel, exactly
+  // as on the front door. This copy was missed when the front-door pair was guarded, which is
+  // the usual shape of that mistake: two listeners, one fix. On a host that is directly
+  // reachable there is no header to detect and this still answers — mitigating THAT is a
+  // firewall and a bind address, not a route guard (see docs/SECURITY.md).
+  server.get('/api/health', async (req, reply) => {
+    if (isViaTunnel(req)) {
+      const ref = noteRefusal(req.url, {
+      host: String(req.headers.host ?? ''),
+      method: req.method,
+      cfRay: String(req.headers['cf-ray'] ?? ''),
+      accept: String(req.headers.accept ?? ''),
+      agent: String(req.headers['user-agent'] ?? ''),
+    }, 'lan-only-route');
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+    }
+    return { status: 'ok', version: VERSION };
+  });
 
-  server.get('/api/ready', async () => ({ ready: await dockerReachable() }));
+  server.get('/api/ready', async (req, reply) => {
+    if (isViaTunnel(req)) {
+      const ref = noteRefusal(req.url, {
+      host: String(req.headers.host ?? ''),
+      method: req.method,
+      cfRay: String(req.headers['cf-ray'] ?? ''),
+      accept: String(req.headers.accept ?? ''),
+      agent: String(req.headers['user-agent'] ?? ''),
+    }, 'lan-only-route');
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+    }
+    return { ready: await dockerReachable() };
+  });
 
   // Backup download — a gzipped tar of platform config + app data. Authenticated
   // by the session cookie directly (it's a browser download, not a tRPC call).
@@ -254,11 +287,29 @@ async function main() {
     // treatment as the secret routes. Nothing real breaks: the Docker healthcheck
     // and `install.sh` both call loopback and send no `cf-ray`.
     front.get('/api/health', async (req, reply) => {
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        const ref = noteRefusal(req.url, {
+        host: String(req.headers.host ?? ''),
+        method: req.method,
+        cfRay: String(req.headers['cf-ray'] ?? ''),
+        accept: String(req.headers.accept ?? ''),
+        agent: String(req.headers['user-agent'] ?? ''),
+      }, 'lan-only-route');
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+      }
       return { status: 'ok', version: VERSION };
     });
     front.get('/api/ready', async (req, reply) => {
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        const ref = noteRefusal(req.url, {
+        host: String(req.headers.host ?? ''),
+        method: req.method,
+        cfRay: String(req.headers['cf-ray'] ?? ''),
+        accept: String(req.headers.accept ?? ''),
+        agent: String(req.headers['user-agent'] ?? ''),
+      }, 'lan-only-route');
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+      }
       return { ready: await dockerReachable() };
     });
     registerFabric(front);
@@ -272,7 +323,50 @@ async function main() {
       // the same request two different ways — the Fabric guard robustly, this one
       // naively, missing `"HTTPS"`, `"https,http"` and a duplicated header (the exact
       // spellings `forwardedProtoIsHttps` exists to catch).
-      if (isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
+      if (isViaTunnel(req)) {
+        const asked = String(req.headers.host ?? '');
+        // An /api path here is a platform route being probed from outside; anything else
+        // is a visitor at an address where no app is published. Both 404 identically to
+        // the caller — only the record distinguishes them (see system/tunnel-refusals.ts).
+        const raw = req.url.split('?')[0]!;
+        const ref = noteRefusal(
+          req.url,
+          {
+            host: asked,
+            method: req.method,
+            cfRay: String(req.headers['cf-ray'] ?? ''),
+            accept: String(req.headers.accept ?? ''),
+            agent: String(req.headers['user-agent'] ?? ''),
+          },
+          raw.startsWith('/api') ? 'lan-only-route' : 'no-app-at-path',
+        );
+        // A person typing an address deserves a sentence, not a JSON object. Deliberately
+        // says nothing about what IS published here — the whole point of this guard is that
+        // the internet learns nothing about this masjid's platform from a wrong address.
+        if (req.method === 'GET' && String(req.headers.accept ?? '').includes('text/html')) {
+          return reply
+            .code(404)
+            .type('text/html')
+            .send(
+              '<!doctype html><meta charset="utf-8">' +
+                '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+                '<title>Page not found</title>' +
+                '<div style="font:16px/1.6 system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1.5rem;color:#1f2937">' +
+                '<h1 style="font-size:1.4rem;margin:0 0 .6rem">There is no page at this address</h1>' +
+                '<p style="margin:0;color:#4b5563">Please check the address and try again. ' +
+                'If someone gave you this link, ask them for the full one \u2014 pages here usually ' +
+                'have something after the website name.</p>' +
+                // The reference is the whole point of showing anything at all: someone who
+                // hits this can read six characters back to the masjid, who can then find
+                // THIS request instead of guessing which of the day's refusals it was.
+                (ref
+                  ? `<p style="margin:1.2rem 0 0;color:#9ca3af;font-size:.85rem">Reference: <code>${ref}</code></p>`
+                  : '') +
+                '</div>',
+            );
+        }
+        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+      }
       const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
       if (!host) return reply.code(400).send({ error: 'Bad request.' });
       const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
@@ -311,6 +405,13 @@ async function main() {
   // several apps share, and because a webhook would need a public platform route.
   startStripeMonitor();
 
+  // Notice when WhatsApp signs the masjid's phone out, hold the queue, and say so by
+  // email and webhook. It probes a route that has to REACH WhatsApp rather than reading
+  // OpenWA's cached session word — a session logged out at WhatsApp's end goes on
+  // reporting 'ready', which is how an outage once went unnoticed with every message
+  // recorded as sent. No-op until a phone has actually been linked.
+  startWhatsAppMonitor();
+
   // Keep installed apps pointed at this machine's CURRENT address. Moving the box
   // to a new subnet used to leave every app calling the old IP forever, because
   // OPENMASJID_BASE_URL was resolved once at install and never revisited.
@@ -322,6 +423,12 @@ async function main() {
   // the one queue in notify/whatsapp.ts.
   setInboundHandler(handleInboundCommand);
   startWhatsAppInbound();
+
+  // Bring back anything the send queue was holding when we last stopped. Without this a
+  // message held by a cap or the warm-up ramp is destroyed by a restart, silently: the
+  // caller was told 202 and there is nothing anywhere to contradict it. That was a real
+  // masjid, accepted-and-never-delivered for over 24 hours.
+  restoreWhatsAppQueue();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.

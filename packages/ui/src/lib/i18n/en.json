@@ -1,21 +1,15 @@
 {
-  "app": {
-    "name": "OpenMasjidOS",
-    "tagline": "Your masjid, your software"
-  },
   "common": {
     "loading": "Loading…",
     "save": "Save changes",
     "saving": "Saving…",
     "saved": "Changes saved",
     "cancel": "Cancel",
-    "confirm": "Confirm",
     "close": "Close",
-    "back": "Back",
-    "retry": "Try again",
     "working": "Just a moment…",
     "starting": "Starting…",
-    "sessionClosed": "Session closed"
+    "sessionClosed": "Session closed",
+    "clock": "Clock"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -46,11 +40,17 @@
     "save": "Save",
     "saved": "File saved.",
     "protectedTag": "Private",
-    "protectedHint": "This is OpenMasjidOS's own data, so it's kept private. Your settings and keys are managed in Settings, and each app is managed from its own page."
+    "protectedHint": "This is OpenMasjidOS's own data, so it's kept private. Your settings and keys are managed in Settings, and each app is managed from its own page.",
+    "breadcrumbs": "Folders",
+    "renameConfirm": "Save name",
+    "renameCancel": "Cancel renaming"
   },
   "windows": {
     "open": "Open window",
-    "minimized": "Minimized — click to reopen"
+    "minimized": "Minimized — click to reopen",
+    "controls": "Window controls",
+    "minimize": "Minimize",
+    "fullscreen": "Fullscreen"
   },
   "ports": {
     "title": "Port already in use",
@@ -172,7 +172,12 @@
     "appPendingTitle_one": "1 app is not on your selected channel yet",
     "appPendingTitle_other": "{{count}} apps are not on your selected channel yet",
     "devChannelTitle": "You're on Development builds",
-    "devChannelBody": "This masjid is running what we're still building, not a tested release. Updates arrive here the same way as on Stable — you'll be told when there's a new build. Switch back to Stable in Settings whenever you like."
+    "devChannelBody": "This masjid is running what we're still building, not a tested release. Updates arrive here the same way as on Stable — you'll be told when there's a new build. Switch back to Stable in Settings whenever you like.",
+    "whatsappDownTitle": "WhatsApp needs linking again",
+    "whatsappDownBody": "Your phone was signed out of WhatsApp, so messages are not going out. They are being held safely until you link it again.",
+    "whatsappDownBodyHeld_one": "Your phone was signed out of WhatsApp, so messages are not going out. {{count}} is being held safely until you link it again.",
+    "whatsappDownBodyHeld_other": "Your phone was signed out of WhatsApp, so messages are not going out. {{count}} are being held safely until you link it again.",
+    "whatsappDownAction": "Link phone again"
   },
   "actions": {
     "open": "Open",
@@ -187,7 +192,6 @@
     "shell": "Open shell",
     "options": "App options",
     "install": "Install",
-    "installed": "Installed",
     "remove": "Remove"
   },
   "tags": {
@@ -216,22 +220,12 @@
     "title": "App Store",
     "subtitle": "Find and install apps for your masjid",
     "search": "Search apps…",
-    "loading": "Loading available apps…",
     "empty": "No apps available yet",
     "emptyHint": "The app catalog is on its way. Check back soon.",
     "refresh": "Refresh",
     "thirdParty": "3rd Party App",
     "installedAlready": "Already installed",
     "comingSoon": "Coming soon",
-    "categories": {
-      "all": "All",
-      "displays": "Displays",
-      "community": "Community",
-      "donations": "Donations",
-      "quran": "Quran",
-      "admin": "Admin",
-      "utilities": "Utilities"
-    },
     "installTitle": "Install {{name}}",
     "installCta": "Install now",
     "installing": "Installing…",
@@ -246,7 +240,6 @@
     "stripeNoneLink": "Settings → Payments"
   },
   "custom": {
-    "title": "Install a custom app",
     "warning": "Custom apps come from outside the OpenMasjidOS store and aren't reviewed by us. A bad or untrusted file can break your server or expose it. Only install ones you trust.",
     "name": "App name",
     "namePlaceholder": "e.g. My Dashboard",
@@ -335,14 +328,6 @@
     "dashboardNamePlaceholder": "OpenMasjidOS",
     "dashboardNameHint": "Shown in the greeting. Leave blank for the default.",
     "showSplash": "Play the welcome animation on load",
-    "language": "Language",
-    "languageLabel": "Interface language",
-    "languageHint": "More translations are on the way — only English is complete for now.",
-    "languages": {
-      "english": "English",
-      "arabic": "العربية",
-      "urdu": "اردو"
-    },
     "account": "Account",
     "accountName": "Your name",
     "accountEmail": "Your email",
@@ -399,7 +384,6 @@
     "eagerBody": "We love how keen you are for the next release — really. But please allow us a little time between updates; we're only human, and good things take a moment to bake. If you'd like speedy, jam-packed releases, please consider supporting the project — it genuinely helps us ship faster. JazākAllāhu khayran.",
     "eagerDonate": "Support the project",
     "network": "Network",
-    "hostname": "Hostname",
     "address": "Address",
     "reconnect": "Reconnect apps",
     "reconnecting": "Reconnecting…",
@@ -469,7 +453,6 @@
     "rebooting": "Rebooting… the server is going down. This page will be unavailable until it's back (usually a minute or two) — then refresh.",
     "freedSpace": "Freed up {{amount}}.",
     "freedNone": "Nothing to clean up — you're all tidy.",
-    "clock": "Clock",
     "showClock": "Show a clock on the dashboard",
     "clockFormat": "Time format",
     "clock12h": "12-hour",
@@ -614,14 +597,13 @@
     "notificationsTestFailed": "Couldn't send. Check the webhook URL and that notifications are turned on.",
     "sourceCode": "Source code",
     "sourceCodeHint": "OpenMasjidOS is free and open source (AGPL-3.0).",
-    "about": "About",
     "version": "Version",
     "accountPhone": "WhatsApp number",
     "accountPhoneHint": "Where OpenMasjidOS sends WhatsApp alerts, and the number the test message goes to. Include the country code. Leave empty to turn it off. This is not a sign-in.",
     "whatsapp": "WhatsApp",
     "whatsappHint": "Send alerts and app messages over WhatsApp, through a gateway running on your own server. Install OpenWA from the App Store, then enter the key and session name you gave it.",
     "whatsappRiskTitle": "Please read this before linking a phone",
-    "whatsappRiskBody": "WhatsApp does not officially allow this, and the number you link can be restricted or blocked — there is no way to make that risk zero. OpenMasjidOS spaces messages out and keeps quiet hours to reduce it, and email always keeps working as a fallback.",
+    "whatsappRiskBody": "WhatsApp does not officially allow this, and the number you link can be restricted or blocked — there is no way to make that risk zero, and a blocked number cannot be recovered. OpenMasjidOS sends one message at a time, never two at once, and shows a typing indicator before each one. It does not limit how much your apps send: an app messaging a few hundred families will send a few hundred messages. Email always keeps working as a fallback.",
     "whatsappSession": "Session name",
     "whatsappSessionHint": "A label for this masjid’s WhatsApp connection. OpenMasjidOS creates the session for you — you never need to open OpenWA to find an id.",
     "whatsappKey": "Gateway key",
@@ -640,7 +622,7 @@
     "whatsappStateReady": "Connected and ready. {{queued}} message(s) waiting to send.",
     "whatsappStateNotLinked": "The gateway is running, but no phone is linked yet. Use “Link your phone” below.",
     "whatsappEnable": "Send messages over WhatsApp",
-    "whatsappRiskCost": "Use a spare number the masjid keeps for this — never a volunteer's personal phone or your main published line. Email stays your reliable channel.",
+    "whatsappRiskCost": "Use a spare number the masjid keeps for this — never a volunteer's personal phone or your main published line. Email stays your reliable channel, and nothing you sign in with should ever depend on WhatsApp.",
     "whatsappRiskAccept": "I understand — turn it on",
     "whatsappGatewayStep": "The WhatsApp gateway",
     "whatsappGatewayInstallHint": "OpenMasjidOS sends WhatsApp messages through OpenWA, which runs on your own server. Install it to continue — it only appears in the App Store while this is switched on.",
@@ -706,7 +688,6 @@
     "commandsRemoveBody": "They will not be able to run anything by message. You can add them again later.",
     "commandsStateConnected": "Listening for commands.",
     "commandsDotSilent": "Connected, but not receiving",
-    "commandsStateSilent": "Connected to the gateway, but it hasn't sent us anything yet.",
     "commandsDiagHeard": "What the gateway has sent us:",
     "commandsDiagNothing": "nothing at all",
     "commandsDiagCounts": "{{seen}} command(s) read, {{ignored}} from numbers not on the list, {{unreadable}} not understood.",
@@ -731,7 +712,68 @@
     "whatsappStateNoSession": "Gateway found, no connection created yet. Use “Link your phone” below and OpenMasjidOS will set it up.",
     "whatsappStateProblem": "The phone connection needs attention (“{{detail}}”). Try linking it again.",
     "updateChannelMoveToDev": "A Development build (v{{version}}) is available for this channel.",
-    "updateChannelMoveToStable": "Returning to Stable will move you to v{{version}}."
+    "updateChannelMoveToStable": "Returning to Stable will move you to v{{version}}.",
+    "whatsappOffTitle": "Turn WhatsApp off?",
+    "whatsappOffBody": "Messages will stop going out over WhatsApp. Your gateway, your linked number, your approved groups and your command list are all kept, so turning it back on later picks up exactly where you left off — nothing to set up again.",
+    "whatsappOffConfirm": "Turn it off",
+    "whatsappOffDelete": "Also remove the gateway and delete everything",
+    "whatsappOffDeleteHint": "Unlinks your phone from WhatsApp, removes the OpenWA app and its data, and deletes your gateway key, approved groups, message history and the list of people who can send commands.",
+    "whatsappOffDeleteCost": "This cannot be undone. If you turn WhatsApp on again later you will need to install the gateway, link a phone and approve your groups from scratch. Backups taken before now still contain these settings.",
+    "whatsappOffDeleteConfirm": "Delete everything",
+    "whatsappTurnedOff": "WhatsApp is off. Your settings have been kept.",
+    "whatsappDeleted": "WhatsApp has been removed and your settings deleted.",
+    "whatsappDeletedStillLinked": "Everything was deleted, but WhatsApp could not confirm your phone was unlinked. Open WhatsApp on that phone → Settings → Linked devices and remove it there.",
+    "whatsappUnlink": "Unlink this number",
+    "whatsappUnlinkTitle": "Unlink this phone?",
+    "whatsappUnlinkBody": "WhatsApp will remove OpenMasjidOS from that phone’s linked devices and messages will stop going out until you link a number again.",
+    "whatsappUnlinkCost": "Your gateway key and approved groups are kept, so linking another number is just a new code — nothing else to set up.",
+    "whatsappUnlinkConfirm": "Unlink it",
+    "whatsappUnlinked": "That number has been unlinked.",
+    "whatsappUnlinkUnconfirmed": "The connection was stopped, but WhatsApp did not confirm the phone was unlinked. Open WhatsApp on that phone → Settings → Linked devices and remove it there.",
+    "nav": {
+      "appearance": "Appearance",
+      "account": "Account",
+      "email": "Email",
+      "whatsapp": "WhatsApp",
+      "alerts": "Alerts",
+      "payments": "Payments",
+      "remote": "Remote access",
+      "advanced": "Advanced"
+    },
+    "whatsappTab": {
+      "setup": "Setup",
+      "groups": "Groups",
+      "commands": "Commands"
+    },
+    "whatsappUnlinkUnconfirmedTitle": "Check your phone",
+    "whatsappUnlinkUnconfirmedDone": "Done",
+    "updateCheckFailed": "Couldn't check for updates — OpenMasjidOS could not reach the internet. Your version may or may not be current; try again once the connection is back.",
+    "whatsappHeldTitle": "Messages waiting to send",
+    "whatsappHeldTitleDown": "WhatsApp needs linking again",
+    "whatsappHeldBody_one": "{{count}} message is being held. Nothing has been lost.",
+    "whatsappHeldBody_other": "{{count}} messages are being held. Nothing has been lost.",
+    "whatsappHeldSuspect_one": "{{count}} earlier message was reported as sent before this was noticed and may not have arrived. OpenMasjidOS does not keep message contents, so it cannot resend it — check in the app that sent it.",
+    "whatsappHeldSuspect_other": "{{count}} earlier messages were reported as sent before this was noticed and may not have arrived. OpenMasjidOS does not keep message contents, so it cannot resend them — check in the app that sent them.",
+    "whatsappHeldResend": "Send them now",
+    "whatsappHeldRelinkFirst": "Link your phone again first, then send them.",
+    "whatsappHeldReleased_one": "Sending {{count}} held message.",
+    "whatsappHeldReleased_other": "Sending {{count}} held messages.",
+    "whatsappHeldDiscard": "Discard them",
+    "whatsappHeldDiscardTitle": "Discard the waiting messages?",
+    "whatsappHeldDiscardBody_one": "{{count}} message will be thrown away and never sent.",
+    "whatsappHeldDiscardBody_other": "{{count}} messages will be thrown away and never sent.",
+    "whatsappHeldDiscardCost": "This cannot be undone. The apps that sent them will be told they failed, so they can decide what to do.",
+    "whatsappHeldDiscarded_one": "{{count}} message discarded.",
+    "whatsappHeldDiscarded_other": "{{count}} messages discarded.",
+    "cfRefusalsTitle": "Recently turned away",
+    "cfRefusalsHint": "Requests that arrived through your internet link and were not served. If someone says a page shows \"not found\", ask them for the reference shown on their screen and find it here. Only you can see this.",
+    "cfRefusalNoApp": "No app is published at that address",
+    "cfRefusalLanOnly": "Local network only",
+    "cfRefusalAppFabric": "The app's private area",
+    "cfRefusalRef": "Reference",
+    "cfRefusalRay": "Cloudflare",
+    "cfRefusalPage": "Opening a page",
+    "cfRefusalData": "Loading data"
   },
   "update": {
     "title": "Updating OpenMasjidOS",
@@ -745,10 +787,6 @@
     "title": "Restoring from backup",
     "restarting": "Restarting OpenMasjidOS — reconnecting…",
     "done": "Restore complete."
-  },
-  "status": {
-    "running": "Running",
-    "stopped": "Stopped"
   },
   "confirm": {
     "stripeRemoveTitle": "Remove the {{name}} payment details?",
@@ -769,10 +807,19 @@
   },
   "errors": {
     "generic": "Something went wrong. Please try again.",
-    "network": "Cannot reach the server. Check your connection and try again.",
     "notFound": "Page not found",
     "notFoundHint": "The page you're looking for doesn't exist.",
     "goHome": "Go to Dashboard",
     "boundary": "Something went wrong here. Try closing and reopening this window."
+  },
+  "updateAll": {
+    "title": "Updating your apps",
+    "button_one": "Update {{count}} app",
+    "button_other": "Update all {{count}} apps",
+    "progress": "Updating {{name}} — {{current}} of {{total}}…",
+    "done_one": "{{count}} app updated.",
+    "done_other": "All {{count}} apps updated.",
+    "nothing": "Everything is already up to date.",
+    "checkAbove": "If an app had trouble starting again, the reason is in the messages above."
   }
 }

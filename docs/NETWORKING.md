@@ -22,7 +22,7 @@ has no public name, so no certificate authority can issue for it. The first time
 phone or laptop opens the dashboard, the browser will say **"Not secure"**. Click
 **Advanced → Proceed** once per device and you will not be asked again.
 
-You can replace the certificate with your own in **Settings → Security**. A damaged or
+You can replace the certificate with your own in **Settings → Advanced**. A damaged or
 half-restored certificate cannot stop the box booting: it is quarantined and regenerated,
 and if no certificate can be made at all the dashboard falls back to plain HTTP rather
 than refusing to start.

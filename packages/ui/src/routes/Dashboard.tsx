@@ -16,6 +16,7 @@ import { StatCard } from '../components/StatCard';
 import { AppCard } from '../components/AppCard';
 import { UpdateModal } from '../components/UpdateModal';
 import { AppUpdate } from '../components/AppUpdate';
+import { UpdateAllApps } from '../components/UpdateAllApps';
 import { useWindows } from '../components/Windows';
 import { Page } from '../components/Page';
 import { MasjidMark } from '../components/Glyphs';
@@ -87,6 +88,23 @@ export function Dashboard() {
   // App updates — same idea as the core check: surface them right on the dashboard.
   const appUpdatesQ = trpc.apps.updates.useQuery(undefined, { refetchInterval: 21_600_000 });
   const appUpdates = appUpdatesQ.data ?? [];
+  /**
+   * Is WhatsApp signed out right now?
+   *
+   * The dashboard has never queried WhatsApp before, and this is the one WhatsApp state
+   * worth the extra call: an active outage where messages are silently not going out. The
+   * Settings panel only polls while its own pane is open, so without this the masjid's
+   * first sign of a dead link is somebody saying they never got their message.
+   *
+   * Five minutes, not the ~6h the update checks use — an update can wait, an outage cannot.
+   */
+  const waHeldQ = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 300_000 });
+  const waDown = waHeldQ.data?.health.down === true;
+  const waHeld = waHeldQ.data?.total ?? 0;
+  // Genuine version upgrades only — a channel move is a different operation with a
+  // different follow-up (the OS has to move too, which only Settings → Updates does),
+  // so it must not be swept into "Update all" from here.
+  const versionUpdates = appUpdates.filter((u) => u.reason === 'version');
   const windows = useWindows();
   function openAppUpdate(u: { id: string; name: string }) {
     // Locked until it finishes — same rule as the app card and the core updater: an
@@ -99,6 +117,28 @@ export function Dashboard() {
       locked: true,
       icon: <Download size={15} />,
       node: <AppUpdate id={u.id} name={u.name} onDone={() => windows.setLocked(winId, false)} />,
+    });
+  }
+
+  /**
+   * Update every app that has a genuine version update, in one window.
+   *
+   * Channel moves are deliberately EXCLUDED. They are already driven by "Update all" in
+   * Settings → Updates, which also brings the OS across afterwards; running them from
+   * here would do half that job and leave the platform on the other channel's image —
+   * the mixed state the channel feature exists to prevent.
+   */
+  function openUpdateAll(list: { id: string; name: string }[]) {
+    let winId = -1;
+    winId = windows.open({
+      title: t('updateAll.title'),
+      dedupeKey: 'update:all-apps',
+      wide: true,
+      // Locked while it runs, same rule as every other update path: a window that can be
+      // closed can be started again over the top of the run already going.
+      locked: true,
+      icon: <Download size={15} />,
+      node: <UpdateAllApps apps={list} onDone={() => windows.setLocked(winId, false)} />,
     });
   }
 
@@ -214,6 +254,25 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* An active WhatsApp outage. Above the update banners on purpose: an update is a
+          "when you get a moment", this is "your messages are not going out right now". */}
+      {waDown && (
+        <div className="warn-banner glass" role="status">
+          <AlertTriangle size={22} />
+          <div style={{ flex: 1 }}>
+            <div className="warn-banner__title">{t('dashboard.whatsappDownTitle')}</div>
+            <div className="warn-banner__body">
+              {waHeld > 0
+                ? t('dashboard.whatsappDownBodyHeld', { count: waHeld })
+                : t('dashboard.whatsappDownBody')}
+            </div>
+          </div>
+          <Link className="btn btn--sm btn--primary" to="/settings/whatsapp">
+            {t('dashboard.whatsappDownAction')}
+          </Link>
+        </div>
+      )}
+
       {appUpdates.length > 0 && (
         <div className="warn-banner warn-banner--update glass" role="status">
           <Sparkles size={22} />
@@ -226,6 +285,17 @@ export function Dashboard() {
                 ? t('dashboard.appPendingTitle', { count: appUpdates.length })
                 : t('dashboard.appUpdateTitle', { count: appUpdates.length })}
             </div>
+            {/* Only once there is more than one to do — a single "Update all" sitting
+                above a single app's own button is two buttons for one action. */}
+            {versionUpdates.length > 1 && (
+              <button
+                className="btn btn--sm btn--primary"
+                style={{ marginBlockStart: '0.5rem' }}
+                onClick={() => openUpdateAll(versionUpdates)}
+              >
+                <Download size={14} /> {t('updateAll.button', { count: versionUpdates.length })}
+              </button>
+            )}
             <div className="warn-banner__body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.35rem' }}>
               {appUpdates.map((u) => (
                 <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>

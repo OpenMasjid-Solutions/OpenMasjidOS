@@ -258,3 +258,103 @@ test('".." is still refused rather than silently resolved', () => {
   assert.ok(dangers.length > 0);
   assert.match(dangers[0], /escapes the app folder/);
 });
+
+// ── interpolation must not decide whether a check RUNS (v0.51.1) ─────────────────
+//
+// The gate reads the RAW compose text, but `docker compose` interpolates BEFORE it
+// validates the schema. That is fine for a field whose VALUE is dangerous — those are
+// already failed closed by `hasInterpolation`. It was not fine for a field that decides
+// whether any check happens at all, and there were three of them.
+
+test('an interpolated volume `type` cannot skip the host-path check', () => {
+  // THE CRITICAL ONE. `bindSource` used to early-return for any `type` that was not
+  // literally 'bind', so this was classified as a named volume and `checkHostPath` never
+  // ran: checkCompose returned NO dangers and NO refusals, and the app installed on the
+  // ordinary one-click path with no risk dialog. Verified against real Docker at the time:
+  // with an EMPTY .env the `:-bind` default renders `type: bind`, so the container came up
+  // holding the host Docker socket — host root, from an app meant to run at arm's length.
+  for (const source of ['/var/run/docker.sock', '/', '/etc', '/opt/openmasjid']) {
+    const yml = `services:
+  app:
+    image: x
+    volumes:
+      - type: \${CACHE_MODE:-bind}
+        source: ${source}
+        target: /mnt`;
+    const { dangers, refusals } = checkCompose(yml);
+    assert.ok(dangers.length + refusals.length > 0, `${source} must not pass the gate`);
+  }
+});
+
+test('an interpolated `type` is caught even when the source looks harmless', () => {
+  // `bindSource` now treats an unverifiable type as possibly-bind, but that only helps when
+  // the source is a path we recognise. A named/relative source with a variable type would
+  // otherwise slip through unexamined, so the long form fails closed on its own fields too.
+  const yml = `services:
+  app:
+    image: x
+    volumes:
+      - type: \${M:-bind}
+        source: appdata
+        target: /data`;
+  const { dangers } = checkCompose(yml);
+  assert.ok(dangers.some((d) => /variable in a volume mount/.test(d)));
+});
+
+test('a literal non-bind type stays clean, so real apps still install', () => {
+  // The asymmetry that has to survive: any danger hard-blocks the catalog path, so treating
+  // ordinary named volumes as suspicious would refuse to install shipped apps.
+  const yml = `services:
+  app:
+    image: x
+    volumes:
+      - type: volume
+        source: data
+        target: /data
+volumes:
+  data:`;
+  const { dangers, refusals } = checkCompose(yml);
+  assert.deepEqual(dangers, []);
+  assert.deepEqual(refusals, []);
+});
+
+test('an interpolated `external:` cannot evade the cross-app refusal', () => {
+  // `isTruthyFlag` saw the literal text `${X:-true}` (not truthy) and no `name:` was
+  // present, so `externalTarget` returned null and NOTHING was checked — while at runtime
+  // compose resolved it to `true` and attached to another app's database. An unverifiable
+  // flag now counts as SET, which lets the reserved-namespace refusal see the key.
+  const yml = `services:
+  app:
+    image: x
+    volumes:
+      - omos-students_data:/steal
+volumes:
+  omos-students_data:
+    external: \${X:-true}`;
+  const { refusals } = checkCompose(yml);
+  assert.ok(refusals.some((r) => /another OpenMasjid app's data/.test(r)), 'must be a hard refusal');
+});
+
+test('network_mode cannot join another app private network', () => {
+  // The service-level way to join an existing network, which bypasses the top-level
+  // `networks:` map entirely because it needs no entry there to inspect. Verified against
+  // real Docker: the container joined the network AND resolved the other container by name,
+  // so it reaches UNPUBLISHED ports with no host port, no proxy, and none of the Fabric
+  // broker's manifest-grant authorization.
+  for (const net of ['omos-students_default', 'openmasjid_default', 'OMOS-Students_default']) {
+    const { refusals } = checkCompose(`services:\n  app:\n    image: x\n    network_mode: ${net}`);
+    assert.ok(refusals.some((r) => /private network/.test(r)), `${net} must be refused`);
+  }
+});
+
+test('ordinary network_mode values are unaffected', () => {
+  // `bridge`/`default` are clean; `host` remains the danger it always was; a non-reserved
+  // external network stays deliberately unflagged (see checkExternalNetworks for why).
+  for (const mode of ['bridge', 'default', 'my-homelab-net']) {
+    const { dangers, refusals } = checkCompose(`services:\n  app:\n    image: x\n    network_mode: ${mode}`);
+    assert.deepEqual(refusals, [], mode);
+    assert.deepEqual(dangers, [], mode);
+  }
+  const host = checkCompose('services:\n  app:\n    image: x\n    network_mode: host');
+  assert.ok(host.dangers.some((d) => /host networking/.test(d)));
+});

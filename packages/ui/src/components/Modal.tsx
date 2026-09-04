@@ -42,8 +42,34 @@ interface ModalProps {
  * animated ancestor, and it fixes every dialog at once because they all build on
  * this component.
  */
+/**
+ * How many modals are currently on screen.
+ *
+ * WindowManager also listens for Escape, on `window` — so one keypress used to be
+ * handled twice: the dialog closed AND the log window behind it closed with it.
+ * Neither listener can see the other through the DOM (the modal is portalled and
+ * the window is a sibling), so they agree through this counter instead.
+ *
+ * Counts LOCKED modals too. A locked dialog ignores its own Escape deliberately
+ * (an update is running), and that must not silently hand the keypress to the
+ * window manager — the one thing Escape must never do mid-update is close the
+ * window showing the progress.
+ */
+let openModals = 0;
+export function anyModalOpen(): boolean {
+  return openModals > 0;
+}
+
 export function Modal({ open, onClose, title, wide, locked, children }: ModalProps) {
   const { t } = useTranslation();
+
+  useEffect(() => {
+    if (!open) return;
+    openModals += 1;
+    return () => {
+      openModals -= 1;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open || locked) return;

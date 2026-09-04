@@ -30,8 +30,17 @@ packages/ui     React 18 + Vite + Tailwind v4 + Motion dashboard
   the host for CPU/memory/uptime, so values describe the machine. CPU temp is
   reported "where available" (null otherwise). Disk reports the filesystem
   backing the mounted data dir.
-- **Auth:** argon2id hashing + a random session token in an HTTP-only,
-  SameSite=Strict cookie (not Secure — plain-HTTP LAN). Sessions are in-memory.
+- **Auth:** argon2id hashing (via `@node-rs/argon2`) + a random session token in
+  an HTTP-only, **SameSite=Lax** cookie. Sessions are in-memory, so a core restart
+  signs everyone out.
+  - **Lax, not Strict, deliberately.** The dashboard is HTTPS but apps are served
+    over HTTP, so clicking "Open" is a cross-scheme top-level navigation that
+    browsers treat as cross-site. Strict withholds the cookie there and breaks SSO
+    on the first open. Replay is blocked by the origin-bound dashboard key, not by
+    SameSite.
+  - **Secure is opt-in** (`OPENMASJID_SECURE_COOKIE=1`), off by default for the same
+    reason: an app on a plain-HTTP port must still receive the forwarded cookie.
+    Turn it on when the whole deployment is end-to-end HTTPS.
 - **UI serving:** the daemon serves `packages/ui/dist` via `@fastify/static`
   with an SPA fallback to `index.html` for client routes; `/trpc` and `/api`
   never fall back.
@@ -69,14 +78,16 @@ healthcheck uses busybox `wget` against `/api/health`.
   re-shown (and its metadata re-persisted). A running app can never silently
   vanish from the dashboard after a core update.
 
-### Scope delta from the previous (Go/Svelte) build
-The rewritten CLAUDE.md scope (§4, §13) does **not** include the file manager or
-web terminals that the earlier build had. They are intentionally omitted here.
-Backup is implemented as a streaming tar download; restore is deferred (the UI
-labels it "coming soon").
-
 ## Ports & data
-- Default port **8723** (`http://openmasjidos.local:8723` / `http://<ip>:8723`).
+- **HTTPS on 443** is the dashboard (`TLS_PORT`), behind a self-signed certificate
+  that every device on the LAN accepts once. **80** (`PORT`) is an HTTP front door
+  that 308-redirects browsers to HTTPS and carries the path-based app ingress plus
+  the LAN-only Fabric routes, which app backends reach server-to-server and so
+  cannot present a self-signed cert to. Both are published by `docker-compose.yml`.
+- **Reached at `https://<server-ip>`.** There is no `.local` name: mDNS was never
+  implemented (see `docs/NETWORKING.md`). `openmasjidos.local` appears only as a
+  certificate SAN, so it will work the day mDNS is added. A masjid wanting a fixed
+  address adds a DHCP reservation on their router.
 - Data dir **/opt/openmasjid** → mounted at `/data`. Config in `/data/config`,
   per-app state in `/data/apps/<id>/`.
 
@@ -103,18 +114,33 @@ from the security audit (and the hardening applied):
   blocking, manual+revalidated redirects, http(s) only), a streamed download cap,
   a timeout, and filtered decompression — so a zip/decompression bomb can't OOM
   the root core.
-- **Login is throttled per source IP** with escalating backoff (a flood from one
-  IP can't lock out the admin), and password verification runs in uniform time.
+- **Login is throttled globally, NOT per source IP**, and that is forced rather
+  than chosen: with Docker's default `userland-proxy`, `docker-proxy` re-originates
+  every inbound connection from the bridge gateway, so an app container, a laptop
+  on the LAN and a client from the public internet all present the same address.
+  A per-IP check would therefore answer "private" for everyone (`util/net.ts`, and
+  `test/ip-private.test.ts` fails the build if `peerIsPrivate` reappears). What is
+  in place: serialized verification, a growing per-attempt delay on consecutive
+  failures applied outside the mutex so the admin is never queued behind an
+  attacker's, and uniform-time password comparison. A hard lockout is **off by
+  default** precisely because a global one would let an attacker deny the real
+  admin; operators exposing the dashboard to the internet opt in with
+  `OPENMASJID_LOGIN_LOCKOUT=1`.
 - The root daemon installs `uncaughtException`/`unhandledRejection` guards and
   the terminal bridge handles stream errors, so a single failure can't crash the
   control plane.
 - Supply chain: a CI `audit` job resolves the tree and fails on high/critical
-  advisories. The fuller fix is a committed lockfile + `npm ci` (run `npm
-  install` once on a Node machine and commit `package-lock.json`).
+  advisories. `package-lock.json` **is** committed and the image builds with
+  `npm ci`, so the audit grades the tree that actually ships. The job is
+  deliberately not a dependency of `build`: an advisory published overnight in a
+  transitive dependency is not a reason the project cannot ship a fix.
 
-Accepted tradeoffs (documented, not bugs): plain-HTTP on the LAN (no Secure
-cookie), and the core running as root with the Docker socket mounted (the
-standard single-host control-plane model, same as CasaOS/Umbrel/Portainer).
+Accepted tradeoffs (documented, not bugs): the session cookie is not `Secure` by
+default so that HTTP-served apps still receive it for SSO (opt in with
+`OPENMASJID_SECURE_COOKIE=1`); the dashboard's certificate is self-signed, so every
+device meets one browser warning; and the core runs as root with the Docker socket
+mounted — the standard single-host control-plane model, same as
+CasaOS/Umbrel/Portainer.
 
 ### UI windows: a top-level window manager, separate from dialogs
 In-dashboard windows (app shells, app logs, the root terminal, and file

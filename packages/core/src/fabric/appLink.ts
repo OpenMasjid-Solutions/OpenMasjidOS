@@ -42,6 +42,10 @@ const MAX_BODY = FABRIC_MAX_BODY; // 256 KB, each direction
 const DEFAULT_TIMEOUT_MS = FABRIC_DEFAULT_TIMEOUT_MS;
 const DEFAULT_RATE_MAX = Number.parseInt(process.env.OPENMASJID_FABRIC_BROKER_RATE ?? '', 10) || 60;
 const RATE_WINDOW_MS = 60_000;
+/** Pre-auth ceiling per source address. Deliberately looser than the per-caller
+ *  budget: several apps legitimately share one address (the Docker bridge SNATs
+ *  them all — see util/net.ts), so this exists to bound abuse, not to pace apps. */
+const IP_RATE_MAX = Number.parseInt(process.env.OPENMASJID_FABRIC_BROKER_IP_RATE ?? '', 10) || 600;
 const APP_ID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const CAPABILITY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const METHOD_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -100,6 +104,16 @@ function defaultDeps(): AppLinkDeps {
 export function registerAppLink(server: FastifyInstance, overrides?: Partial<AppLinkDeps>): void {
   const deps: AppLinkDeps = { ...defaultDeps(), ...overrides };
   const callerRateOk = makeRateLimiter();
+  // A SECOND limiter, keyed by source address and checked BEFORE authentication.
+  //
+  // `callerRateOk` keys on `caller.id`, which only exists once a secret has been
+  // accepted — so it bounds a misbehaving app and does nothing at all about an
+  // unauthenticated flood. Every wrong secret still costs a constant-time compare
+  // against every registered app inside `findFabricApp`, and nothing capped how many
+  // of those a caller could ask for. This is the same coarse per-IP tier the other
+  // Fabric routes apply, kept local to this module rather than imported from
+  // api/fabric.ts, which imports this one.
+  const ipRateOk = makeRateLimiter();
 
   server.post('/api/fabric/app/:targetAppId/:capability/:method', async (req, reply) => {
     const started = deps.now();
@@ -108,6 +122,11 @@ export function registerAppLink(server: FastifyInstance, overrides?: Partial<App
       capability: string;
       method: string;
     };
+
+    // 0. Bound the work an UNAUTHENTICATED caller can demand, before spending any.
+    if (!ipRateOk(req.ip || 'unknown', started, IP_RATE_MAX)) {
+      return fabricError(reply, 429, 'rate_limited', 'Too many requests — slow down.');
+    }
 
     // 1. Authenticate the CALLER (constant-time inside findFabricApp). Never reveal
     //    whether the target exists on an auth failure.

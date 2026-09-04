@@ -156,10 +156,6 @@ function changed(): void {
   }
 }
 
-export function getCommandConfig(): CommandConfig {
-  return cache;
-}
-
 export function listCommandPeople(): CommandPerson[] {
   return cache.people;
 }
@@ -246,6 +242,24 @@ export function renameCommandPerson(rawPhone: string, label: string): CommandPer
 export function removeCommandPerson(rawPhone: string): CommandPerson[] {
   const phone = toDigits(rawPhone);
   cache = { ...cache, people: cache.people.filter((p) => p.phone !== phone) };
+  changed();
+  return cache.people;
+}
+
+/**
+ * Remove EVERY authorised sender. For the "delete it all" path in Settings.
+ *
+ * This list is the whole authorisation model for admin commands — a phone on it can
+ * start, stop and update a masjid's apps with no password step. Leaving it behind after
+ * the masjid has deleted WhatsApp would mean that re-enabling the feature months later
+ * silently re-arms whichever numbers were trusted back then, including a volunteer's
+ * phone that has since changed hands. So it goes with everything else.
+ *
+ * One call to `changed()`, not one per person: the hook re-reconciles the inbound socket
+ * and resets conversations, and firing that per row would do the same work N times.
+ */
+export function clearCommandPeople(): CommandPerson[] {
+  cache = { ...cache, people: [] };
   changed();
   return cache.people;
 }
