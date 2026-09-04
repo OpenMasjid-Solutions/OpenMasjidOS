@@ -596,8 +596,12 @@ export function registerFabric(server: FastifyInstance): void {
   );
 
   // Fabric alert — an app raises an admin alert (a camera/reader offline, a failed
-  // payment, …). Requires the `notify` capability AND the alert id must be one the
-  // app declared in its manifest. The platform gates on the admin's granular on/off
+  // payment, …). The gate is the app's own manifest `alerts:` declaration — that is
+  // what issues the per-app secret in the first place — and the id must be one it
+  // declared. It does NOT require a `notify` capability; this comment used to say it
+  // did, contradicting the inline comment eight lines below and the docs, and
+  // describing a check that has never existed is how a reader concludes a route is
+  // better guarded than it is. The platform gates on the admin's granular on/off
   // for that alert, then delivers to the admin email + the webhook. Not CORS-enabled.
   server.post('/api/fabric/alert', async (req, reply) => {
     if (!fabricRateOk(req.ip)) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });

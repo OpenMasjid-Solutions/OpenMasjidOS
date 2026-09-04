@@ -156,10 +156,6 @@ function changed(): void {
   }
 }
 
-export function getCommandConfig(): CommandConfig {
-  return cache;
-}
-
 export function listCommandPeople(): CommandPerson[] {
   return cache.people;
 }

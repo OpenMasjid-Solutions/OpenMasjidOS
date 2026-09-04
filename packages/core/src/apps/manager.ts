@@ -66,7 +66,22 @@ const RESERVED_APP_IDS = new Set(['cloudflared']);
  * the moment someone shipped an app under it. Refusing at install is the whole
  * job; nothing here ever removes an existing directory.
  */
-const RESERVED_ID_WORDS = new Set(['os', 'omos', 'openmasjid', 'openmasjidos', 'platform', 'help']);
+const RESERVED_ID_WORDS = new Set([
+  'os',
+  'omos',
+  'openmasjid',
+  'openmasjidos',
+  'platform',
+  'help',
+  // Also in RESERVED_APP_IDS, and that is exactly why it has to be here too.
+  // Membership there means listInstalled() `rmSync`s the directory — so without
+  // this line a catalog entry with `id: cloudflared` installs perfectly happily and
+  // then has its compose.yml, its .env (holding its Fabric secret) and its meta.json
+  // deleted out from under a still-running container, while discovery hides it from
+  // the dashboard so nobody can see what happened. Refusing at install is free;
+  // nothing on this path deletes anything.
+  'cloudflared',
+]);
 
 /** True if this id names the platform rather than an app. Refuse it at install. */
 export function isReservedAppId(id: string): boolean {
@@ -722,14 +737,26 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
   // 2. Running/known projects without metadata — recover them (golden rule).
   for (const disc of discovered.values()) {
     if (byId.has(disc.id)) continue;
-    // We can't vet a recovered app, so never claim it's "Official". Honour a
-    // kind label if Docker has one, otherwise treat it as Custom.
-    const kind: AppMeta['kind'] =
-      disc.kind === 'catalog' || disc.kind === 'community' ? disc.kind : 'custom';
+    // We can't vet a recovered app, so never claim it's "Official" — and that means
+    // NOT reading `disc.kind`, which is where this used to go wrong. That value comes
+    // from a `com.openmasjid.kind` Docker label, and **nothing in the platform ever
+    // writes one**: discovery only reads it. So the only way a label is present is
+    // that the app's own compose set it — and a pasted or community compose can set
+    // anything, while `apps/compose-validate.ts` never inspects `labels:` at all.
+    // Honouring it let an unvetted stack promote itself to `catalog` ("Official"),
+    // which also flipped its default tunnel exposure from private to PUBLIC. Trust
+    // is not something the subject gets to assert.
+    //
+    // `exposed` is pinned false for the same reason. `undefined` is grandfathered as
+    // exposed so pre-0.40 installs did not go dark, but that grandfathering is for
+    // apps an admin actually installed — a stack we just found running and cannot
+    // vet must not be published to the internet on its own say-so. The admin can
+    // switch it on in Settings, which is the point at which a person has looked.
     const recovered: AppMeta = {
       id: disc.id,
       name: disc.name || prettify(disc.id),
-      kind,
+      kind: 'custom',
+      exposed: false,
       createdAt: new Date().toISOString(),
     };
     try {
@@ -1078,13 +1105,6 @@ export function setAppPath(id: string, path: string): string {
 export function isExposedMeta(meta: Pick<AppMeta, 'kind' | 'exposed'>): boolean {
   if (typeof meta.exposed === 'boolean') return meta.exposed;
   return meta.kind === 'catalog';
-}
-
-/** Whether an app is exposed over the tunnel. See `isExposedMeta` for the
- *  kind-dependent default when the app never recorded a choice. */
-export function isAppExposed(id: string): boolean {
-  const meta = loadMeta(id);
-  return meta ? isExposedMeta(meta) : false;
 }
 
 /** Turn an app's internet exposure on/off (the admin's per-app consent). Rewrites

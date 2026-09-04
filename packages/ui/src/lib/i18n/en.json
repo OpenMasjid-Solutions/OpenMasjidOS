@@ -1,21 +1,15 @@
 {
-  "app": {
-    "name": "OpenMasjidOS",
-    "tagline": "Your masjid, your software"
-  },
   "common": {
     "loading": "Loading…",
     "save": "Save changes",
     "saving": "Saving…",
     "saved": "Changes saved",
     "cancel": "Cancel",
-    "confirm": "Confirm",
     "close": "Close",
-    "back": "Back",
-    "retry": "Try again",
     "working": "Just a moment…",
     "starting": "Starting…",
-    "sessionClosed": "Session closed"
+    "sessionClosed": "Session closed",
+    "clock": "Clock"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -46,11 +40,17 @@
     "save": "Save",
     "saved": "File saved.",
     "protectedTag": "Private",
-    "protectedHint": "This is OpenMasjidOS's own data, so it's kept private. Your settings and keys are managed in Settings, and each app is managed from its own page."
+    "protectedHint": "This is OpenMasjidOS's own data, so it's kept private. Your settings and keys are managed in Settings, and each app is managed from its own page.",
+    "breadcrumbs": "Folders",
+    "renameConfirm": "Save name",
+    "renameCancel": "Cancel renaming"
   },
   "windows": {
     "open": "Open window",
-    "minimized": "Minimized — click to reopen"
+    "minimized": "Minimized — click to reopen",
+    "controls": "Window controls",
+    "minimize": "Minimize",
+    "fullscreen": "Fullscreen"
   },
   "ports": {
     "title": "Port already in use",
@@ -192,7 +192,6 @@
     "shell": "Open shell",
     "options": "App options",
     "install": "Install",
-    "installed": "Installed",
     "remove": "Remove"
   },
   "tags": {
@@ -221,22 +220,12 @@
     "title": "App Store",
     "subtitle": "Find and install apps for your masjid",
     "search": "Search apps…",
-    "loading": "Loading available apps…",
     "empty": "No apps available yet",
     "emptyHint": "The app catalog is on its way. Check back soon.",
     "refresh": "Refresh",
     "thirdParty": "3rd Party App",
     "installedAlready": "Already installed",
     "comingSoon": "Coming soon",
-    "categories": {
-      "all": "All",
-      "displays": "Displays",
-      "community": "Community",
-      "donations": "Donations",
-      "quran": "Quran",
-      "admin": "Admin",
-      "utilities": "Utilities"
-    },
     "installTitle": "Install {{name}}",
     "installCta": "Install now",
     "installing": "Installing…",
@@ -251,7 +240,6 @@
     "stripeNoneLink": "Settings → Payments"
   },
   "custom": {
-    "title": "Install a custom app",
     "warning": "Custom apps come from outside the OpenMasjidOS store and aren't reviewed by us. A bad or untrusted file can break your server or expose it. Only install ones you trust.",
     "name": "App name",
     "namePlaceholder": "e.g. My Dashboard",
@@ -340,14 +328,6 @@
     "dashboardNamePlaceholder": "OpenMasjidOS",
     "dashboardNameHint": "Shown in the greeting. Leave blank for the default.",
     "showSplash": "Play the welcome animation on load",
-    "language": "Language",
-    "languageLabel": "Interface language",
-    "languageHint": "More translations are on the way — only English is complete for now.",
-    "languages": {
-      "english": "English",
-      "arabic": "العربية",
-      "urdu": "اردو"
-    },
     "account": "Account",
     "accountName": "Your name",
     "accountEmail": "Your email",
@@ -404,7 +384,6 @@
     "eagerBody": "We love how keen you are for the next release — really. But please allow us a little time between updates; we're only human, and good things take a moment to bake. If you'd like speedy, jam-packed releases, please consider supporting the project — it genuinely helps us ship faster. JazākAllāhu khayran.",
     "eagerDonate": "Support the project",
     "network": "Network",
-    "hostname": "Hostname",
     "address": "Address",
     "reconnect": "Reconnect apps",
     "reconnecting": "Reconnecting…",
@@ -474,7 +453,6 @@
     "rebooting": "Rebooting… the server is going down. This page will be unavailable until it's back (usually a minute or two) — then refresh.",
     "freedSpace": "Freed up {{amount}}.",
     "freedNone": "Nothing to clean up — you're all tidy.",
-    "clock": "Clock",
     "showClock": "Show a clock on the dashboard",
     "clockFormat": "Time format",
     "clock12h": "12-hour",
@@ -619,7 +597,6 @@
     "notificationsTestFailed": "Couldn't send. Check the webhook URL and that notifications are turned on.",
     "sourceCode": "Source code",
     "sourceCodeHint": "OpenMasjidOS is free and open source (AGPL-3.0).",
-    "about": "About",
     "version": "Version",
     "accountPhone": "WhatsApp number",
     "accountPhoneHint": "Where OpenMasjidOS sends WhatsApp alerts, and the number the test message goes to. Include the country code. Leave empty to turn it off. This is not a sign-in.",
@@ -711,7 +688,6 @@
     "commandsRemoveBody": "They will not be able to run anything by message. You can add them again later.",
     "commandsStateConnected": "Listening for commands.",
     "commandsDotSilent": "Connected, but not receiving",
-    "commandsStateSilent": "Connected to the gateway, but it hasn't sent us anything yet.",
     "commandsDiagHeard": "What the gateway has sent us:",
     "commandsDiagNothing": "nothing at all",
     "commandsDiagCounts": "{{seen}} command(s) read, {{ignored}} from numbers not on the list, {{unreadable}} not understood.",
@@ -812,10 +788,6 @@
     "restarting": "Restarting OpenMasjidOS — reconnecting…",
     "done": "Restore complete."
   },
-  "status": {
-    "running": "Running",
-    "stopped": "Stopped"
-  },
   "confirm": {
     "stripeRemoveTitle": "Remove the {{name}} payment details?",
     "stripeRemoveBody": "Apps that take payments through this account will stop working straight away.",
@@ -835,7 +807,6 @@
   },
   "errors": {
     "generic": "Something went wrong. Please try again.",
-    "network": "Cannot reach the server. Check your connection and try again.",
     "notFound": "Page not found",
     "notFoundHint": "The page you're looking for doesn't exist.",
     "goHome": "Go to Dashboard",

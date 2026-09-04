@@ -3562,7 +3562,7 @@ function CloudflarePanel() {
 
         <p
           className="setting-row__hint"
-          style={{ marginBlockStart: '0.5rem', color: 'var(--color-gold, #d4af37)', fontWeight: 600 }}
+          style={{ marginBlockStart: '0.5rem', color: 'var(--color-gold, #F59E0B)', fontWeight: 600 }}
         >
           {t('settings.cfHttpWarn', { port: routes.data?.ingressPort ?? 80 })}
         </p>

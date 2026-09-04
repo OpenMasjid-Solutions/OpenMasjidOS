@@ -102,7 +102,7 @@ export function Files() {
       </header>
 
       {/* Breadcrumbs */}
-      <nav className="breadcrumbs" aria-label="Breadcrumb">
+      <nav className="breadcrumbs" aria-label={t('files.breadcrumbs')}>
         <button className="crumb" onClick={() => setPath('/')} aria-label={t('files.home')}>
           <Home size={15} />
         </button>
@@ -164,37 +164,63 @@ export function Files() {
           <ul className="file-list">
             {list.data!.entries.map((entry) => (
               <li key={entry.name} className="file-row">
-                <button
-                  className="file-main"
-                  type="button"
-                  onClick={() => openEntry(entry)}
-                  disabled={entry.protected}
-                  title={entry.protected ? t('files.protectedHint') : undefined}
-                  style={{ cursor: entry.protected ? 'not-allowed' : 'pointer', opacity: entry.protected ? 0.6 : 1 }}
-                >
-                  <span className="file-icon">
-                    {/* OpenMasjidOS's own settings, keys and per-app compose files. Shown
-                        as locked rather than hidden — a volunteer should be able to see
-                        that the platform's data lives here — but not opened or changed. */}
-                    {entry.protected ? <Lock size={18} /> : entry.isDir ? <Folder size={18} /> : <FileIcon size={18} />}
-                  </span>
-                  {renaming === entry.name ? (
-                    <span style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
-                      <input
-                        className="input glass-inset"
-                        style={{ padding: '0.2rem 0.4rem', width: '12rem' }}
-                        value={renameValue}
-                        autoFocus
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') rename.mutate({ path: joinPath(path, entry.name), name: renameValue }); }}
-                      />
-                      <button className="icon-btn" onClick={() => rename.mutate({ path: joinPath(path, entry.name), name: renameValue })}><Check size={15} /></button>
-                      <button className="icon-btn" onClick={() => setRenaming(null)}><X size={15} /></button>
+                {/* The rename editor is a SIBLING of the open-button, never a child of
+                    it. An <input> and two <button>s nested inside a <button> is invalid
+                    HTML, and browsers do not reliably focus interactive content inside a
+                    button — so the confirm and cancel controls could not be reached by
+                    keyboard at all, and the whole row was one big click target that
+                    swallowed clicks meant for the text field. */}
+                {renaming === entry.name ? (
+                  <div className="file-main" style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                    <span className="file-icon">
+                      {entry.isDir ? <Folder size={18} /> : <FileIcon size={18} />}
                     </span>
-                  ) : (
+                    <input
+                      className="input glass-inset"
+                      style={{ padding: '0.2rem 0.4rem', width: '12rem' }}
+                      value={renameValue}
+                      autoFocus
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') rename.mutate({ path: joinPath(path, entry.name), name: renameValue });
+                        if (e.key === 'Escape') setRenaming(null);
+                      }}
+                    />
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      aria-label={t('files.renameConfirm')}
+                      onClick={() => rename.mutate({ path: joinPath(path, entry.name), name: renameValue })}
+                    >
+                      <Check size={15} />
+                    </button>
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      aria-label={t('files.renameCancel')}
+                      onClick={() => setRenaming(null)}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="file-main"
+                    type="button"
+                    onClick={() => openEntry(entry)}
+                    disabled={entry.protected}
+                    title={entry.protected ? t('files.protectedHint') : undefined}
+                    style={{ cursor: entry.protected ? 'not-allowed' : 'pointer', opacity: entry.protected ? 0.6 : 1 }}
+                  >
+                    <span className="file-icon">
+                      {/* OpenMasjidOS's own settings, keys and per-app compose files. Shown
+                          as locked rather than hidden — a volunteer should be able to see
+                          that the platform's data lives here — but not opened or changed. */}
+                      {entry.protected ? <Lock size={18} /> : entry.isDir ? <Folder size={18} /> : <FileIcon size={18} />}
+                    </span>
                     <span className="file-name">{entry.name}</span>
-                  )}
-                </button>
+                  </button>
+                )}
 
                 <span className="file-size">{entry.isDir ? '—' : formatBytes(entry.size)}</span>
 

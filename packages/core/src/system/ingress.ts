@@ -39,6 +39,12 @@ const STRIP_HEADERS = [
   'x-forwarded-host',
   'x-forwarded-port',
   'forwarded',
+  // Client-IP headers of exactly the class this list exists to remove. Any proxy
+  // in front of us would set these; a caller reaching us directly can type them,
+  // and an app reading either one would be reading the caller's own choice.
+  'x-real-ip',
+  'true-client-ip',
+
   // Cloudflare's real-client-IP header. Stripped like the rest and re-set below ONLY
   // when the request actually came through the tunnel: on the LAN anyone can send it,
   // and it was previously honoured unconditionally — so a caller on the masjid's
@@ -58,9 +64,20 @@ function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
   const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
   for (const h of STRIP_HEADERS) delete headers[h];
   const tunnel = isViaTunnelHeaders(req.headers);
-  // Real client IP: Cloudflare's CF-Connecting-IP, but ONLY when the request really
-  // arrived through the tunnel — off-tunnel that header is just something the caller
-  // typed. Off-tunnel we use the socket peer, which cannot be forged.
+  // Real client IP: Cloudflare's CF-Connecting-IP, but only when the request looks
+  // like it arrived through the tunnel; otherwise the socket peer.
+  //
+  // BE HONEST ABOUT WHAT THIS IS WORTH. `isViaTunnelHeaders` reads `cf-ray` /
+  // `x-forwarded-proto`, which Cloudflare sets at its edge and a tunnel client
+  // therefore cannot strip — that is the direction this guard is sound in. But
+  // this listener is also reachable directly (HOST is 0.0.0.0 and 80 is published),
+  // and a caller arriving that way can simply TYPE `cf-ray` and `cf-connecting-ip`
+  // and have both honoured here. So an app's X-Forwarded-For is trustworthy against
+  // a tunnel visitor and NOT against someone who can reach this port. It is a
+  // routing signal, never an authorisation one — and no route anywhere grants a
+  // session or relaxes CSRF on the strength of it (CLAUDE.md §15). The real
+  // mitigations are a firewall and a bind address, as documented for the operator
+  // in docs/SECURITY.md.
   const cfIp = tunnel ? req.headers['cf-connecting-ip'] : undefined;
   const trustedCfIp = typeof cfIp === 'string' && cfIp ? cfIp : '';
   headers['x-forwarded-for'] = trustedCfIp || req.socket?.remoteAddress || '';
@@ -233,7 +250,17 @@ export function attachIngress(front: FastifyInstance): void {
   front.server.on('upgrade', (req, socket, head) => {
     const seg = firstSegment(req.url ?? '');
     const port = seg ? routes.get(seg) : undefined;
-    if (port == null) return; // not an app path — leave it (front door has no other WS)
+    if (port == null) {
+      // DESTROY it, never just return. Nothing else on this listener handles
+      // `upgrade`, so an abandoned socket gets no response and no close — it sits
+      // open holding a file descriptor until the peer gives up, and the peer is
+      // the one choosing. On the tunnel-facing front door that is an
+      // unauthenticated resource-exhaustion lever against a daemon running as root
+      // with the Docker socket, obtained by opening WebSockets at any path that is
+      // not an app.
+      socket.destroy();
+      return;
+    }
     // Same /fabric/* refusal on the WebSocket path (a WS upgrade must not tunnel in).
     if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url ?? '', seg)) {
       socket.destroy();
@@ -253,6 +280,8 @@ export function attachIngress(front: FastifyInstance): void {
         'x-forwarded-port',
         'forwarded',
         'cf-connecting-ip',
+        'x-real-ip',
+        'true-client-ip',
       ]);
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         if (drop.has(req.rawHeaders[i].toLowerCase())) continue;

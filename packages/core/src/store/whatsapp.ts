@@ -353,11 +353,6 @@ function computeNext(input: WhatsAppUpsert): WhatsAppConfig {
   return next;
 }
 
-/** The exact config a save WOULD persist — for verify-before-save. */
-export function previewWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfig {
-  return computeNext(input);
-}
-
 export function saveWhatsAppConfig(input: WhatsAppUpsert): WhatsAppConfigPublic {
   cache = computeNext(input);
   persist();

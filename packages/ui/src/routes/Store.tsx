@@ -286,7 +286,7 @@ function InstallModal({
             </span>
           </label>
           {expose && !remoteReady && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #d4af37)' }}>
+            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}>
               {t('store.shareOnlineNoRemote')}{' '}
               <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>{t('store.shareOnlineSettingsLink')}</Link>
             </p>

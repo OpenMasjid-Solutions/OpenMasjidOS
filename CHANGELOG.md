@@ -13,6 +13,45 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+**Security — found by a full audit, none of it reported from the field**
+
+- **The File Explorer could edit the file that defines OpenMasjidOS itself.** Its sandbox protected each app's private files but not `docker-compose.yml` at the top of the data folder — the file that describes the OpenMasjidOS container, which runs with full access to the machine. Anyone signed in could rewrite it, and the installer's Update or Repair would then run it. Now refused, along with deleting or renaming an app's whole folder (which took that app's private files with it, one level up from where they were each individually protected).
+- **An app could promote itself to "Official".** If OpenMasjidOS found an app running that it had no record of, it read the app's own labels to decide whether the app was official — and an official app is public on the internet by default. Anything an app says about itself is now ignored: a recovered app is Custom and stays off the internet until you say otherwise.
+- **A web connection to an address with no app behind it was never closed.** It was left open, holding a slot, until the far end gave up — and the far end chooses. Over a remote-access link that is something a stranger can do repeatedly. Now closed immediately.
+- **Two more headers that let a caller on your network claim to be someone else** are stripped before a request reaches an app, so an app's own logs and limits see the real caller.
+- **The app-to-app connection now limits how much work an unrecognised caller can demand** before it has proved who it is.
+- **An app id that OpenMasjidOS reserves for itself is now refused at install** rather than installing and then having its files deleted underneath it.
+
+**Fixed — things that could not recover, or that told you the same thing twice**
+
+- **A WhatsApp outage could never be reported as over.** The check that spotted a dead link counted rejected messages, and that count only cleared on a successful send — but a confirmed outage stops sending. So once it had tripped, releasing your held messages simply had them held again minutes later, with nothing on screen explaining why. The evidence now expires.
+- **A failed update check was treated as "no update".** With no internet, the check quietly reported nothing pending and forgot it had already told you — so the same update was emailed again every time the connection came back.
+- **A number that was not on WhatsApp when first checked was refused for ever after**, even after joining, because the answer was remembered permanently. It now expires, and the list of remembered numbers is capped.
+- **A command sent to your server from a number that is not on your list left no trace at all.** It is now recorded in your log — still never answered, which is deliberate.
+
+**Fixed — the dashboard**
+
+- **Dialogs opened behind windows.** A confirmation or an update dialog opened while a log, terminal or file window was on screen rendered behind it: the screen dimmed, nothing appeared, and it looked frozen.
+- **One press of Escape closed two things** — the dialog and the window behind it.
+- **Renaming a file was unreachable by keyboard**, because the editor was nested inside a button. Escape now cancels a rename.
+- Five labels used by screen readers were untranslated English.
+
+**Documentation — a full sweep against the code**
+
+- **THEMING.md described a design system that was never built.** It documented 28 CSS variables that do not exist — including the example contributors are told to copy — three fonts the project does not ship, four icon components that were never written, and contrast figures that were invented (it reported gold in dark mode as 3.2:1 when it is 9.08:1). Rewritten from the real files, with every contrast figure measured.
+- **ARCHITECTURE.md gave the dashboard's address as a port and hostname that have never worked**, said the file manager, terminals and restore were not built (all three ship), described the login throttle as per-IP when it cannot be, and named the wrong cookie setting.
+- **CLAUDE.md's colour palette was from an abandoned design** — emerald on charcoal, where the product is cyan on navy — and it described three settings that do not exist (a language picker, an animation toggle, an installer network step) plus Docker labels the platform never writes.
+- Corrected the Raspberry Pi guide (the installer needs `sudo`, and the command as printed would abort), a claim that every WhatsApp command asks for confirmation (starting an app does not), two "Settings → …" paths naming sections that do not exist, and two undocumented app-manifest fields.
+- Every link in every document was checked: all resolve, and all 10 external addresses are live.
+
+**Removed — dead code**
+
+- Six exported functions nothing called, 18 unused interface strings (including a seven-item App Store category list for a filter that was never built), an unused CSS block, and an orphaned comment.
+
+**Added**
+
+- `test/audit-hardening.test.ts` — 15 tests, each pinning one of the above, each checked by reintroducing the bug and confirming the test fails.
+
 **Fixed — the icon on "Update now" buttons was invisible until you hovered**
 
 - **The icon was being drawn in exactly the button's own colour.** The banner that announces an update was colouring every icon inside itself, and that included the icons inside its own buttons — so the icon sat invisibly on a background of the same shade, and only appeared when hovering changed the shade underneath it. The banner now colours only its own icon, and button icons use the dark ink that is meant to sit on a coloured button.

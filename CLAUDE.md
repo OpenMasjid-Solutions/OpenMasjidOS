@@ -85,7 +85,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 ## 4. Scope
 
 ### ✅ In scope (v1.0)
-- **A full-lifecycle one-line `curl | bash` installer.** On a fresh machine it runs a complete guided **install**. On a machine that already has OpenMasjidOS, the same command opens a **management menu**: Update / Repair / Reconfigure network / Uninstall. Works on common Linux (Debian/Ubuntu, Raspberry Pi OS, Fedora), architecture-aware (amd64 + arm64).
+- **A full-lifecycle one-line `curl | bash` installer.** On a fresh machine it runs a complete guided **install**. On a machine that already has OpenMasjidOS, the same command opens a **management menu**: Update / Repair / Reset sign-in / Remove. Works on common Linux (Debian/Ubuntu, Raspberry Pi OS, Fedora), architecture-aware (amd64 + arm64).
 - Installer auto-installs Docker + the Docker Compose plugin if missing, sets up OpenMasjidOS as a managed service, and during install also:
   - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §8). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped.
   - **Sets a hostname and mDNS** so the dashboard is reachable at **`openmasjidos.local`** (plus the raw IP as a fallback). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped. Today the dashboard is reached at `https://<server-ip>`, and the `.local` name only appears as a certificate SAN so it will work if mDNS is ever added.
@@ -95,7 +95,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 - **App management:** install / start / stop / restart / remove / update apps; view status and logs.
 - **File explorer:** a dock app to browse, upload, download, rename, and delete files under the data dir (sandboxed server-side — no path-traversal or symlink escape).
 - **App Store client:** fetches the catalog from `OpenMasjidAPPS`, renders listings, handles one-click install.
-- **Settings (platform-only):** dashboard customization (theme, accent, dashboard name, UI language, display preferences) and an **Advanced** section (see §13). **Settings contains NO masjid/prayer details** — those belong to apps.
+- **Settings (platform-only):** dashboard customization (theme, accent, wallpaper, dashboard name, masjid logo, display preferences) and an **Advanced** section (see §13). **Settings contains NO masjid/prayer details** — those belong to apps.
 - **Advanced → custom apps:** an opt-in toggle (off by default) that, when enabled, adds a **"3rd Party App"** button to the App Store. That button opens a UI where an advanced user can install any container by **pasting a `docker-compose.yml`**. Clearly gated behind warnings.
 - **Theming:** light + dark mode, **dark is default**, with high-quality animations and full `prefers-reduced-motion` support.
 - **i18n + RTL:** English first, but the UI must be translation-ready and must render correctly right-to-left (Arabic/Urdu).
@@ -170,7 +170,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 | HTTP server | **Fastify** (tRPC Fastify adapter) | Lightweight, fast; also serves the built UI assets. |
 | Docker control | **dockerode** + shelling to `docker compose` | All Docker interaction wrapped in one module. |
 | System stats | **systeminformation** | CPU/RAM/disk/uptime/temperature; reads host `/proc`. |
-| Auth | **argon2** (hashing) + signed, HTTP-only session cookie | Single admin in v1.0. |
+| Auth | **`@node-rs/argon2`** (argon2id) + signed, HTTP-only session cookie | Prebuilt musl/glibc binaries, so the multi-arch Alpine image needs no compiler. Single admin in v1.0. |
 | Frontend framework | **React 18 + Vite + TypeScript** | The UX target's framework; biggest animation/component ecosystem. |
 | Styling | **Tailwind CSS v4** + CSS custom properties | Tailwind v4 uses CSS `@theme`; theme tokens live in CSS and flip via `data-theme`. |
 | Components | **shadcn/ui** (Radix primitives, copied-in) | Accessible, fully owned in-repo, easy to theme. |
@@ -194,11 +194,16 @@ OpenMasjidOS/
 ├── CLAUDE.md                  # this file
 ├── README.md                  # human-facing, with the curl one-liner up top
 ├── LICENSE                    # AGPL-3.0 (NOT PolyForm — see §3)
+├── CLA.md                     # the Contributor License Agreement (§3)
+├── CONTRIBUTING.md            # how to work on this repo
+├── CHANGELOG.md               # fetched live by the dashboard as "What's new" (§18)
 ├── VERSION                    # single source of truth for the version (see §18)
 ├── package.json               # npm workspaces root + top-level scripts
 ├── install.sh                 # the one-line installer / lifecycle manager
 ├── Dockerfile                 # multi-stage: build ui + core → one runtime image
 ├── docker-compose.yml         # how the core runs itself
+├── tsconfig.base.json         # shared compiler options both workspaces extend
+├── .github/workflows/         # docker-build (image + tags), cla, generate-lockfile
 │
 ├── assets/                    # brand/readme images
 ├── signatures/                # CLA signatures land on the cla-signatures branch, not here
@@ -234,7 +239,8 @@ OpenMasjidOS/
 │   │   │   ├── stripe/                  # dispute (chargeback) polling
 │   │   │   ├── system/                  # channel, tls, ingress, app-proxy, app-host, backup,
 │   │   │   │                            #   restore, cloudflared, update-lock, monitors, …
-│   │   │   └── util/                    # phone, version, origin, id, json-store, image-size
+│   │   │   └── util/                    # phone, version, origin, id, json-store, image-size,
+│   │   │                                #   net (why a peer check can't work), slug
 │   │   ├── test/              # node:test. EVERY file must be listed in package.json's
 │   │   │                      #   `test` script — an unlisted test never runs (§17).
 │   │   ├── package.json  tsconfig.json  tsconfig.test.json
@@ -364,9 +370,9 @@ As shipped, `main()` parses exactly: `--install`, `--update`, `--repair`, `--res
 
 The dashboard is **always** behind a login. There is no pre-baked password and no anonymous access to any feature.
 
-- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** — **name + email + password** (enforce a sane minimum strength). **Login is by username** (= the name), NOT the email; the **email is stored only for sending OS alerts** (an app going offline, etc.). This keeps pre-email installs working (they log in with their original username; they can add an alert email in Settings → Account). `verifyCredentials` accepts the stored username OR the email. Optionally let them pick a theme (dark is pre-selected) and UI language. Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
+- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** — **name + email + password** (enforce a sane minimum strength). **Login is by username** (= the name), NOT the email; the **email is stored only for sending OS alerts** (an app going offline, etc.). This keeps pre-email installs working (they log in with their original username; they can add an alert email in Settings → Account). `verifyCredentials` accepts the stored username OR the email. Optionally let them pick a theme (dark is pre-selected). Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
 - **Subsequent visits:** standard login screen → dashboard. Wrong credentials get a friendly, rate-limited error.
-- **Sessions:** server-side session, secure + HTTP-only + SameSite cookie. Logout clears it. Passwords hashed with **argon2id** (the `argon2` package), never stored or logged in plaintext.
+- **Sessions:** server-side session, secure + HTTP-only + SameSite cookie. Logout clears it. Passwords hashed with **argon2id** via **`@node-rs/argon2`**, never stored or logged in plaintext.
 - **Account management** (in Settings): change password. (Multiple users/roles are v1.1.)
 - **tRPC guard:** every router except the auth/first-run procedures requires a valid session; the UI redirects unauthenticated users to login.
 
@@ -471,7 +477,12 @@ This is **off by default**. It is enabled in **Settings → Advanced → "Allow 
   - **Community apps** — browse + install apps from **CasaOS-compatible app stores** the admin adds by URL (an "Add app store" field; a note recommends CasaOS-compatible repos). Installed community apps are tagged "Community".
   - **Docker Compose** — a **paste-a-compose** UI: a name, an optional icon, a `docker-compose.yml` text area, and an optional `.env` text area.
 - On submit the core **validates** the YAML before running anything: it must parse; reject or hard-warn on dangerous settings (`privileged: true`, `network_mode: host`, mounting `/var/run/docker.sock`, mounting sensitive host paths). Dangerous stacks require an explicit "I understand the risk" confirmation.
-- The stack runs as project `omos-custom-<slug>`, labeled `com.openmasjid.app=custom-<slug>` and `com.openmasjid.kind=custom`. Data lives under `/opt/openmasjid/apps/custom-<slug>/`.
+- The stack runs as compose project `omos-custom-<slug>`; data lives under
+  `/opt/openmasjid/apps/custom-<slug>/`. **The platform writes no Docker labels** — discovery is
+  by the compose project name (Docker's own `com.docker.compose.project`) exactly as §10 says,
+  and the kind is recorded in `apps/<id>/meta.json`. `docker/discovery.ts` *reads* a
+  `com.openmasjid.kind`/`.name` label if an app happens to set one, but nothing here sets it, so
+  never rely on one being there.
 - After install it appears in the dashboard's installed-apps grid and is managed exactly like a catalog app (start / stop / logs / remove), but visually tagged "Custom".
 - **Wording must make the risk clear** without being scary: e.g. *"Custom apps come from outside the OpenMasjidOS store and aren't reviewed by us. Only install ones you trust."*
 
@@ -494,12 +505,21 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 
 ### 13.1 Customize
 - **Theme:** Dark (default) / Light / Follow system.
-- **Accent color:** small curated palette (emerald default, plus a few tasteful options incl. gold).
+- **Accent color:** the five in `lib/prefs.ts` `ACCENTS` — **Cyan (default)**, Teal, Sky, Violet,
+  Gold. Each carries its own `onPrimary`, a very dark variant of itself used as the ink on top
+  of it; `applyAccent` must set the two together or light mode puts white text on a bright
+  button (`theme-tokens.test.ts` does the contrast arithmetic).
 - **Dashboard name:** cosmetic title shown in the header (default `OpenMasjidOS`; a masjid may rename it to whatever they like — this is decoration, not prayer config).
 - **Masjid logo:** an optional uploaded logo (PNG/JPG/WebP, ≤1 MB; raster only — no SVG). Stored server-side as raw bytes (`config/branding/`, chmod 600), NOT a data URI in settings. Reused across the masjid's outbound comms: notification webhooks (Slack/Discord) show it as the sender avatar, OS-sent emails (alerts + the test) show it as a remote `<img>` — **both only when remote access is configured**, because the receiving service fetches the image from *its* network, so a LAN address is useless — and apps can read it over the Fabric (`/api/public/appearance` → `logo`) to brand their own receipts. **Email deliberately does NOT use a CID attachment** (it did until v0.47.0): the MIME was correct — nodemailer emits `multipart/related` + `Content-Disposition: inline`, and Resend's `content_id` is its only documented inline lever with no disposition field — but mail clients list *any* part carrying a filename in their attachment row, so the logo arrived as a downloadable `logo.png`. Dropping the filename is the only thing that changes the MIME and it breaks inline rendering in Outlook/Thunderbird, so the only provider-independent fix is to send no attachment at all. Without a tunnel, the masjid's name renders as a text wordmark instead (always rendered, so a client that blocks remote images is never left with a blank header). Admin upload/clear is LAN-only + auth-gated; the read is the public `GET /api/public/logo`. Still presentation, not masjid/prayer config.
-- **UI language:** dashboard language (drives i18n + RTL).
+- **UI language: there is NO language control, and this is deliberate.** English is the only
+  locale, `i18n/index.ts` registers only `en`, and Settings has never rendered a picker. The
+  i18next plumbing stays — every string still goes through `t()`, because a missing key then
+  fails a test instead of shipping raw text to a masjid — but do not describe a language
+  setting that a masjid cannot find, and do not justify a design decision by appealing to
+  translations that do not exist. `applyLanguage` and `RTL_LANGS` remain wired for the day a
+  second locale lands.
 - **Display preferences:** time format (12/24h) and timezone used for showing timestamps/log times in the dashboard. (Purely a display setting for the platform — not used for prayer calculations.)
-- **Animations:** on / reduced (also auto-respects the OS reduced-motion setting).
+- **Animations: there is NO on/reduced control, and the OS setting is the whole mechanism.** `prefers-reduced-motion` is honoured unconditionally in `tokens.css` and in the Motion presets, which is the part that matters for accessibility and is non-negotiable (§14). A dashboard toggle was described here for a long time and has never existed in `routes/Settings.tsx`; if one is wanted it is a `reduceMotion` pref feeding `MotionConfig` plus a `data-motion` attribute the CSS blocks key off — a deliberate change, not something to describe as already shipped.
 
 ### 13.2 Account
 - Change admin **name + email** (email = login id + where OS alerts go) and password.
@@ -564,7 +584,7 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 ### 13.2d Chargeback alerts (`stripe-chargeback`)
 - The platform polls each configured Stripe account for **disputes** (chargebacks) and raises the OS `stripe-chargeback` alert through the same matrix (`system/stripe-monitor.ts` + `stripe/disputes.ts`). No-op until a Stripe account exists; no app change needed.
 - **Why the platform and not a donations app.** A dispute belongs to the **account**, and the whole point of the Stripe vault (§13.2 / `store/stripe.ts`) is that several apps share ONE account — so an app-raised alert would double-fire or, if that app were stopped, never fire. Chargebacks also arrive days/weeks after the payment, when the app may well be off.
-- **Why polling and not a webhook.** A Stripe webhook needs a publicly reachable platform route, and §15 permits exactly two public-over-tunnel routes (`/api/public/appearance`, `/api/public/logo`) — a third would breach that invariant, and would still leave every LAN-only masjid with no alerts. Polling is outbound-only, adds no attack surface, and works with no remote access. The cost is latency (≤ one 30-min interval) against a dispute window measured in days.
+- **Why polling and not a webhook.** A Stripe webhook needs a publicly reachable platform route, and §15 keeps that list to presentation assets that carry nothing — a route accepting Stripe POSTs would breach that, and would still leave every LAN-only masjid with no alerts. Polling is outbound-only, adds no attack surface, and works with no remote access. The cost is latency (≤ one 30-min interval) against a dispute window measured in days.
 - **This is monitoring, not payment processing** — it stays inside §4's "payment-agnostic" rule. The platform creates no charges and moves no money; it reads dispute status with credentials it already holds, exactly as the existing green/red Stripe status dot does.
 - Rules that must not regress: **state is PERSISTED** (`config/stripe-disputes.json`) because a chargeback is a one-shot event — in-memory tracking would re-alert every open dispute on each restart; a **failure to reach Stripe records NOTHING** (treating "couldn't ask" as "none" would mark unseen chargebacks as seen and lose them permanently) and never alerts; **first run** absorbs settled history silently but DOES alert anything still `needs_response`, because doing nothing loses that money by default; and **>5 new disputes in one poll become one grouped alert**, since card-testing fraud can otherwise flood the inbox. Amounts respect zero-/two-/three-decimal currencies (JPY, KWD) — dividing by 100 regardless would misreport a Gulf masjid's KWD by 10x.
 
@@ -597,7 +617,10 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Allow custom apps** (off by default) → enables the "3rd Party App" button in the App Store (see §11), with a clear risk note.
 - **Enable app shells** (off by default) → adds an "Open shell" option to each app (a browser terminal into that app's container, via the Docker API with a TTY).
 - **Enable root terminal** (off by default) → a root shell into the OpenMasjidOS core itself, launched from Advanced. Clearly marked as powerful.
-- **Network info:** show current hostname, `.local` address, and IP (read-only here; changes are made via the installer's "Reconfigure network").
+- **Network info:** show the current hostname and IP, read-only. **There is nowhere to change
+  it from** — the installer has no network step (§8.1) and mDNS is unimplemented, so a masjid
+  wanting a fixed address adds a DHCP reservation on their router. Do not link this to a
+  "Reconfigure network" entry; it does not exist.
 - **"Check for updates" + one-click live update** for the core: the dashboard pulls the new image and recreates the core itself (via a detached helper container), streaming progress to a live log window and reconnecting when it's back — no terminal needed. Installed apps are never touched (golden rule).
 - **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one.
 
@@ -651,8 +674,21 @@ at from running their polling queries.
 Calm, dignified, and modern. Inspired by Islamic geometric art (girih/arabesque tessellations) and the architecture of masjids (domes, arches/mihrab, minarets, the crescent). It should feel respectful and serene, never gaudy. The *level of polish* should match umbrelOS; the *visual language* is masjid, not generic.
 
 ### Color tokens (Tailwind v4 `@theme` + CSS custom properties in `tokens.css`)
-- **Dark (DEFAULT):** deep night-sky base (`#0E1814`-ish charcoal-green), elevated surfaces a step lighter, **emerald/teal** primary (`#1FA37A` family), warm **gold** accent (`#D4AF37`, used sparingly for highlights/active states). Text near-white with a green undertone.
-- **Light:** soft warm ivory/parchment base, same emerald primary tuned for contrast, gold accent.
+> The emerald-on-charcoal palette this section described for a long time was never built. What
+> shipped is a **cyan-on-deep-navy** scheme, and a contributor copying the old hexes produced
+> colours that appear nowhere in the product. `packages/ui/src/styles/tokens.css` is the source
+> of truth; the values below are transcribed from it.
+
+- **Dark (DEFAULT):** deep navy base (`--color-surface: #030D1A`), raised surfaces a step lighter
+  (`#0A1828`, `#0F2040`), **cyan** primary (`--color-primary: #22D3EE`, hover `#67E8F9`), warm
+  **amber** accent (`--color-accent`/`--color-gold: #F59E0B`, used sparingly). Ink is near-white
+  with a cool cast (`--color-ink: #F4F7FB`).
+- **Light:** a pale ground with the same amber accent and a deeper blue primary
+  (`--color-primary: #0284C7`, buttons `--color-btn: #0369A1`), because the bright cyan cannot
+  carry white text at AA on a light background.
+- **The accent is user-chosen** (§13.1) and `applyAccent` overwrites `--color-primary`,
+  `--color-btn` and `--color-on-primary` inline on the root element, which beats the
+  `[data-theme="light"]` block. So never assume the stylesheet's value is the live one.
 - All colors as CSS variables so switching theme = toggling `data-theme="dark|light"` on the root. Never hardcode hex in components.
 - Meet WCAG AA contrast in both themes.
 
@@ -727,7 +763,7 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - **Every listener that serves `/api/fabric` must carry `registerFabricTunnelGuard`** (v0.45.0) — the TLS dashboard server as well as the HTTP front door. `test/fabric-lan-only.test.ts` pins this structurally.
 - **Every path comparison against a request URL matches the DECODED path, not the raw text** (v0.46.0). The router dispatches on the percent-decoded path, so a guard that compared `req.url` verbatim was walked past with `/api/%66abric/app/…` — raw text that doesn't start with `/api/fabric` but still reached the app-to-app broker. `matchesSecretRoute` and `isFabricSubpath` now test the raw **and** `decodedPath()` spellings and fail closed; `decodedPath` resolves escape-by-escape so one malformed `%zz` can't throw the comparison away. `isViaTunnel` likewise compares the first `x-forwarded-proto` hop trimmed + lowercased (`"HTTPS"`, `"https,http"`, and a duplicated header all count). Never reintroduce a raw-string `startsWith` on a URL in a security check.
 - **A backup must never report success it can't back** (v0.45.0). `backupStream()` returns `{ stream, done }`; a volume that fails to archive fails the whole backup (its partial file is deleted), the outer tar's exit code flows through `done`, and a failure destroys the stream. `runBackup` requires `upload.ok && archive.ok` **before** recording success and **before** `pruneOld` — pruning on an unverified result is how repeated silent failures evict every good archive. One backup at a time (`BackupBusyError` → 409); manual download and scheduler share one staging path. Restore stops apps before refilling volumes and reports per-volume failures. In `tarVolume`, a staging **write** failure is tracked separately from the container's exit code (`writeFailed`, v0.46.0) — the two are independent, and folding it in with `code ??= -1` silently reported success whenever `docker run` had already exited 0 (i.e. ENOSPC on the final flush, the likeliest real failure). **Known-open, and NOT covered by `ok`:** volumes are tarred live, and a torn SQLite/WAL capture still exits tar 0 — so `ok: true` is not proof the databases inside will open. That fix is app-side (`VACUUM INTO` snapshots in each app); don't add a platform-side check that only looks like it covers it. The archive is also unencrypted (`rclone crypt` is the real fix).
-- **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance` and `/api/public/logo` (low-sensitivity presentation assets — the latter is the masjid logo, raster-only so no SVG-script vector, served for webhook avatars + apps' public pages). Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
+- **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance`, `/api/public/logo`, and the three root icon aliases `/favicon.ico`, `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png` (low-sensitivity presentation assets — the icons serve the SAME already-public logo bytes, raster-only so no SVG-script vector, and exist because a phone asks for them at the root of any site it is asked to bookmark). Five routes, not two: count them here whenever one is added, because a registered route skips the front-door `notFoundHandler` and is therefore reachable over the tunnel by construction. Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
   - **"LAN-only" means "refused over the tunnel", NOT "only reachable from the LAN" — do not write it as the stronger claim.** The guard is a deny-list on a header signal, and it is sound in the direction that matters (a tunnel client cannot strip `cf-ray`, which Cloudflare sets at its edge). But `HOST` is `0.0.0.0` and the compose publishes 80/443, so on a **directly reachable host** — a public-IP VPS, or a router forwarding those ports — requests arrive with no Cloudflare headers and nothing distinguishes the internet from the office laptop. Those routes, and the login page, are then internet-facing.
   - **A source-address check is NOT the fix, and adding one would be a regression.** With Docker's default `userland-proxy=true`, `docker-proxy` re-originates every inbound connection from the bridge gateway: measured on a real daemon, an app container, host-network cloudflared, and a client from **outside the host entirely** all present `172.17.0.1`. So a peer check would answer "private" for the internet — an allow-list in appearance that admits everyone. `util/net.ts` carries the full note and `test/ip-private.test.ts` fails the build if `peerIsPrivate` reappears; the same SNAT fact is why the login lockout cannot be per-IP (`trpc/routers/auth.ts`). The real mitigations are a firewall and a bind address, documented for the operator in `docs/SECURITY.md` → *What "LAN-only" means, exactly*.
   - What holds regardless of network position: **no route grants a session, skips a password, or relaxes CSRF because a request looks local** — every use of `isViaTunnel` is a route guard, never an authn/authz decision — and every `/api/fabric/*` route independently requires the 256-bit per-app secret **and** the declared capability. Reaching a Fabric route is not using it.
@@ -811,6 +847,33 @@ A release is a `dev → master` merge. `VERSION` conflicts every single time by 
 1. Edit the `VERSION` file — change the number, nothing else.
 2. Commit with message `chore: bump version to x.y.z`.
 3. Push. CI reads `VERSION` and tags the image from it. The dashboard shows it in Settings → Advanced.
+
+### A RELEASE IS NOT FINISHED UNTIL A GITHUB RELEASE IS PUBLISHED
+
+**A tag is not a release.** Pushing `vX.Y.Z` makes CI build and publish the image; it does not
+create anything a human can read. Both are required, and the release is the step that gets
+forgotten — the repo sat with tags through `v0.51.0` while the newest published Release was
+`v0.49.3`, so the repository front page advertised software five versions out of date as
+"Latest", and six versions shipped with no readable notes anywhere on GitHub.
+
+So a release, in full, is:
+
+1. Merge `dev` → `master`, resolving the `VERSION` conflict to the release number (§18 above).
+2. Rewrite `## Unreleased` into `## X.Y.Z` — **only what a masjid would notice** (see below).
+3. Push `master`.
+4. Push the `vX.Y.Z` tag. This is what publishes `:latest` and the exact version tag (§13.4).
+5. **Publish the GitHub Release for that tag**, with the `## X.Y.Z` changelog section as its body:
+   `gh release create vX.Y.Z --title "vX.Y.Z — <the one-line point of it>" --notes-file <file>`.
+6. Bump `dev`'s `VERSION` to the NEXT base version's `-dev.1` (§18 — never the released base).
+
+**Which of these a masjid actually sees, precisely.** The dashboard's "What's new" panel does
+**NOT** read GitHub Releases: `store/changelog.ts` fetches `CHANGELOG.md` raw from the branch
+matching the masjid's channel (`changelogUrl()` → `master` for Stable, `dev` for Development).
+**So `CHANGELOG.md` on `master` is the text that reaches a masjid, and it is the one that must
+be plain and warm.** The GitHub Release serves everyone else — someone evaluating the project,
+a contributor checking what changed, anyone who lands on the repo — and it is the only place
+those people look. Keeping the two in step costs one command; letting them drift means either a
+masjid updates with no explanation, or the public repo looks abandoned.
 
 ### CHANGELOG.md — two audiences, two levels of detail
 

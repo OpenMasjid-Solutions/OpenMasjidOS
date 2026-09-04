@@ -755,17 +755,62 @@ export async function deleteGatewaySession(): Promise<{ ok: boolean; error?: str
  * the check itself is traffic. `null` = could not tell, which must NOT be treated as
  * "no" (that would silently stop all sending when the gateway hiccups).
  */
-const onWhatsApp = new Map<string, boolean>();
+/**
+ * Cached `contacts/check` answers, with the bounds a permanent cache was missing.
+ *
+ * A bare `Map<string, boolean>` kept a NEGATIVE answer for the life of the process, so a
+ * family that joined WhatsApp after their first receipt bounced was refused for ever —
+ * and since a masjid restarts rarely, "for ever" is the operative word. It was also
+ * unbounded: one entry per distinct recipient, and a school-fees app messaging a few
+ * hundred families every month never gives any of them back.
+ *
+ * A positive answer keeps indefinitely (numbers essentially do not deregister) but is
+ * still subject to the size cap; a negative one expires, because it is the answer that
+ * can become wrong.
+ */
+const onWhatsApp = new Map<string, { yes: boolean; at: number }>();
+const CONTACT_CACHE_MAX = 2000;
+const CONTACT_NEGATIVE_TTL_MS = 24 * 60 * 60_000;
 
-/** Note a `contacts/check` that could not answer. Proceeding anyway is right -- a hiccup
- *  must not stop all sending -- but a run of them is evidence the link is gone. */
+/** Cached answer, or undefined when we should ask again. */
+function cachedRegistration(digits: string, now: number): boolean | undefined {
+  const hit = onWhatsApp.get(digits);
+  if (!hit) return undefined;
+  if (!hit.yes && now - hit.at > CONTACT_NEGATIVE_TTL_MS) {
+    onWhatsApp.delete(digits);
+    return undefined;
+  }
+  return hit.yes;
+}
+
+function rememberRegistration(digits: string, yes: boolean, now: number): void {
+  // Map iterates in insertion order, so the first key is the oldest write.
+  if (onWhatsApp.size >= CONTACT_CACHE_MAX) {
+    const oldest = onWhatsApp.keys().next();
+    if (!oldest.done) onWhatsApp.delete(oldest.value);
+  }
+  onWhatsApp.set(digits, { yes, at: now });
+}
+
+/**
+ * Note a `contacts/check` that could not answer. Proceeding anyway is right — a
+ * hiccup must not stop all sending.
+ *
+ * The counter is recorded and surfaced for diagnostics, and is deliberately NOT read
+ * by the health monitor as a dead-link verdict. An unanswerable check is exactly the
+ * "could not ask" case (CLAUDE.md §13.2d): it is inconclusive, so it must not decide
+ * anything on its own. This comment previously promised the monitor consumed it,
+ * which it never has — and a signal documented as load-bearing but wired to nothing
+ * is worse than no signal, because it stops anyone looking for the real one.
+ */
 function noteCheckFailure(ok: boolean): void {
   if (ok) sendSignals.checkFailures = 0;
   else sendSignals.checkFailures += 1;
 }
 
 async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boolean | null> {
-  const cached = onWhatsApp.get(digits);
+  const now = Date.now();
+  const cached = cachedRegistration(digits, now);
   if (cached !== undefined) return cached;
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/check/${digits}`);
   noteCheckFailure(r.ok);
@@ -773,7 +818,7 @@ async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boo
   const j = r.json as { exists?: unknown; isRegistered?: unknown; registered?: unknown; numberExists?: unknown } | null;
   const yes = j?.exists ?? j?.isRegistered ?? j?.registered ?? j?.numberExists;
   if (typeof yes !== 'boolean') return null;
-  onWhatsApp.set(digits, yes);
+  rememberRegistration(digits, yes, now);
   return yes;
 }
 

@@ -55,6 +55,19 @@ const CHECK_MS = 5 * 60_000;
 const FIRST_CHECK_MS = 60_000;
 /** A run of send-side auth rejections is itself evidence, without waiting for a probe. */
 const AUTH_FAILS_MEAN_DEAD = 3;
+/**
+ * How recent that run of rejections has to be to still count as evidence.
+ *
+ * THE BUG THIS FIXES: `authFailures` is monotonic and resets ONLY on a
+ * successful send — but a confirmed incident PAUSES the queue, so no send happens,
+ * so it can never reset. Once three rejections had been seen, `assess()` returned
+ * `dead` for ever: the link could never be reported recovered, the admin releasing
+ * the queue simply had it paused again on the next tick, and nothing in the
+ * dashboard could explain why. Comfortably longer than two check intervals
+ * (2 x 5 min) so a real incident is still caught by the two-agreeing-ticks rule,
+ * and short enough that a stale counter stops vetoing recovery.
+ */
+const AUTH_FAILS_WINDOW_MS = 15 * 60_000;
 
 const STATE_PATH = path.join(CONFIG_DIR, 'whatsapp-health.json');
 
@@ -153,7 +166,9 @@ async function assess(): Promise<{ alive: boolean | null; reason: string; cause:
   // 1. The send path's own evidence. A run of 401/403s means messages are being dropped
   //    right now, which is worth acting on without waiting for the probe to agree.
   const signals = sendPathSignals();
-  if (signals.authFailures >= AUTH_FAILS_MEAN_DEAD) {
+  const authFailsAreCurrent =
+    signals.lastAuthFailAt > 0 && Date.now() - signals.lastAuthFailAt < AUTH_FAILS_WINDOW_MS;
+  if (signals.authFailures >= AUTH_FAILS_MEAN_DEAD && authFailsAreCurrent) {
     return {
       alive: false,
       reason: 'the gateway kept rejecting our key while sending',

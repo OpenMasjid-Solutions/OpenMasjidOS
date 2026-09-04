@@ -98,8 +98,15 @@ export const authRouter = router({
     phone: ctx.username ? getAdminPhone() : null,
   })),
 
-  /** First-run only: create the admin account (name + email + password) and start a
-   *  session. The email is the login identifier AND where OS alerts are sent. */
+  /**
+   * First-run only: create the admin account (name + email + password) and start a
+   * session.
+   *
+   * The NAME is the login username; the email is stored so OS alerts have somewhere
+   * to go, and is accepted as an alternative login id by `verifyCredentials`
+   * (CLAUDE.md §9). This used to say the email WAS the identifier, contradicting a
+   * comment eighteen lines below in the same procedure.
+   */
   setup: publicProcedure.input(setupInput).mutation(async ({ input, ctx }) => {
     if (isAuthStoreDamaged()) {
       // Fail closed, but say something a volunteer can act on rather than the

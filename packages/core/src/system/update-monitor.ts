@@ -39,8 +39,19 @@ async function checkCore(): Promise<void> {
       // summary rather than being left empty.
       const copy = coreUpdate(u.current, u.latest);
       await deliverAlert({ source: 'os', text: copy.summary, ...copy });
-    } else {
-      alertedCore = null; // no update pending → let a future one re-alert
+    } else if (u.latest != null) {
+      // Only forget the dedupe when the check actually SUCCEEDED.
+      //
+      // `checkForUpdate()` swallows a failed fetch and returns `latest: null` —
+      // it does not throw — so the `catch` below can never see an offline check, and
+      // this branch used to treat "the internet was down" as "there is no update",
+      // clearing `alertedCore` and re-emailing the admin about the same version on the
+      // next successful cycle. On a flaky uplink that is one email per outage.
+      //
+      // This is the same rule as the Stripe dispute poller and the WhatsApp health
+      // monitor (CLAUDE.md §13.2d): a failure to ask records nothing and decides
+      // nothing. `latest` is non-null only when a well-formed VERSION came back.
+      alertedCore = null;
     }
   } catch (err) {
     log.warn(`core update check failed: ${(err as Error).message}`);

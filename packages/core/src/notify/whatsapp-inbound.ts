@@ -562,6 +562,12 @@ async function handleInbound(event: string, args: unknown[]): Promise<void> {
     }
     case 'unknown-sender': {
       counters.ignoredUnknown += 1;
+      // The log line CLAUDE.md §13.2b-iii promises. It never actually happened:
+      // `noteStrangerAttempt` existed, was documented as "called by the executor",
+      // and had no callers — so someone probing a masjid's server with `!os` left
+      // no trace anywhere. Still no reply, ever; only a rate-limited warning in the
+      // masjid's own log.
+      if (outcome.prefixed && outcome.digits) noteStrangerAttempt(outcome.digits);
       return;
     }
     case 'rate-limited': {

@@ -186,7 +186,8 @@ which matters most when the machine is wall-mounted, in a cupboard, or in an off
   `!os updates` for what's waiting.
 - **Fix things** — `!os restart 2` to bring a stuck display back, `!os start 3` / `!os stop 3`,
   and `!os update 3` to update a single app. Send one without a number and it lists your apps so
-  you can pick. Anything that changes something asks you to confirm first, and raises an alert
+  you can pick. Stopping, restarting and updating ask you to confirm first; starting an app does
+  not, because turning something back on is the safe direction. All of them raise an alert
   afterwards through your usual channels, so you find out even if it wasn't you.
 - **Each app can add its own commands** under `!<app>` — send the app's name on its own to see
   a numbered menu of what it offers. An app can also ask you a question and take a plain reply,
@@ -323,7 +324,7 @@ Boot the Pi (ethernet recommended), wait ~90 seconds, then:
 ```bash
 ssh openmasjid@openmasjid.local
 sudo apt update && sudo apt upgrade -y && sudo apt install -y curl
-curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidOS/master/install.sh | sudo bash
 ```
 
 Open the Pi's IP. For a stable address, add a DHCP reservation in your router.

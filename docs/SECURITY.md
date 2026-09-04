@@ -10,7 +10,11 @@ assumptions and the knobs for hardening a more exposed deployment.
 ## Trust model
 
 - **Designed for a trusted LAN.** The expected deployment is a mini-PC / Raspberry
-  Pi / VPS on the masjid's own network, reached at `https://openmasjidos.local`.
+  Pi / VPS on the masjid's own network, reached at `https://<server-ip>` over a
+  self-signed certificate. There is no `.local` address — mDNS was never built, so
+  `openmasjidos.local` does not resolve (it exists only as a certificate SAN; see
+  `docs/NETWORKING.md`). Read *What "LAN-only" means, exactly* below before
+  assuming the network itself keeps anyone out.
 - **One admin account.** It is effectively host-root (it can install apps and open
   a root shell), so the admin password is the keys to the machine — use a strong
   one (the setup screen enforces ≥12 characters and shows a strength meter).
@@ -23,7 +27,7 @@ assumptions and the knobs for hardening a more exposed deployment.
   door on 80 that redirects to HTTPS (and answers the health check + the Fabric
   API, which app backends reach over HTTP).
 - The cert is **self-signed by default** (a LAN box can't get a public CA cert);
-  regenerate it or upload your own (cert + key) in **Settings → Security & SSL**.
+  regenerate it or upload your own (cert + key) in **Settings → Advanced**.
 - **Stripe apps** (manifest `https: true`) are served over HTTPS on a dedicated
   per-app proxy port; other apps stay on plain HTTP.
 

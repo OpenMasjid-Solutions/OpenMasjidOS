@@ -40,6 +40,12 @@ const STRIP_HEADERS = [
   'x-forwarded-host',
   'x-forwarded-port',
   'forwarded',
+  // Client-IP headers of exactly the class this list exists to remove. Any proxy
+  // in front of us would set these; a caller reaching us directly can type them,
+  // and an app reading either one would be reading the caller's own choice.
+  'x-real-ip',
+  'true-client-ip',
+
   // This listener is LAN-facing and never sits behind Cloudflare, so any
   // cf-connecting-ip on it was typed by the caller. It used to be preferred over the
   // socket peer, which let anyone on the network pick the IP the app logged and rate-
@@ -140,6 +146,8 @@ export function ensureProxy(id: string, httpsPort: number, targetPort: number): 
         'x-forwarded-port',
         'forwarded',
         'cf-connecting-ip',
+        'x-real-ip',
+        'true-client-ip',
       ]);
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         if (drop.has(req.rawHeaders[i].toLowerCase())) continue;

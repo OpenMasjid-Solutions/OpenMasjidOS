@@ -47,7 +47,7 @@ identically. A `[data-theme="light"]` block then overrides the same names.
 
 [data-theme="light"] {
   color-scheme: light;
-  --color-surface: #F7FAFC;
+  --color-surface: #F0F9FF;
   /* overrides only — same names */
 }
 ```
@@ -181,29 +181,38 @@ no flash of the wrong theme and no inline script in `index.html` to keep in step
 
 ### Font Choices
 
-| Role | Font | Fallback |
-|---|---|---|
-| UI / body | `Inter` (variable font) | `system-ui, -apple-system, sans-serif` |
-| Display / headings | `Playfair Display` (variable, regular + italic) | `Georgia, serif` |
-| Arabic / Naskh (RTL) | `Noto Naskh Arabic` | `Arial, sans-serif` |
-| Monospace (logs, code) | `JetBrains Mono` | `ui-monospace, monospace` |
+**Two faces ship. That is the whole set.** This table used to name Playfair Display, Noto Naskh
+Arabic and JetBrains Mono; none of the three is in `package.json` or reachable at runtime, so a
+contributor asking for them silently got the fallback.
 
-Load fonts via `@font-face` with `font-display: swap`. Subset aggressively — the Latin subset of Inter is enough for non-RTL locales. Load the Arabic face only when `lang` is `ar` or `ur`.
+| Role | Token | Font | Fallback chain |
+|---|---|---|---|
+| UI / body | `--font-sans` | `Inter Variable` | `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` |
+| Display / headings | `--font-display` | `Space Grotesk Variable` | falls back to `var(--font-sans)` |
+| Monospace | *(none)* | — | use `ui-monospace, monospace` directly |
 
-### Type Scale Tokens
+Both are **bundled** via `@fontsource-variable/*`, imported as side effects at the top of
+`main.tsx` — self-hosted, no external CDN, and nothing to `@font-face` yourself. Adding a face
+means adding a dependency and an import, not a CSS rule. Always go through the two tokens rather
+than naming a family in a component.
 
-| Token | Value | Usage |
-|---|---|---|
-| `--text-xs` | `0.75rem / 1rem` | Captions, timestamps, badge labels |
-| `--text-sm` | `0.875rem / 1.25rem` | Secondary body, form labels |
-| `--text-base` | `1rem / 1.625rem` | Primary body text |
-| `--text-lg` | `1.125rem / 1.75rem` | Card taglines, emphasized body |
-| `--text-xl` | `1.25rem / 1.75rem` | Section subheadings |
-| `--text-2xl` | `1.5rem / 2rem` | Page headings |
-| `--text-3xl` | `1.875rem / 2.25rem` | Major section titles |
-| `--text-4xl` | `2.25rem / 2.75rem` | Hero / display text (sparingly) |
+### Type scale — THERE IS NO TOKEN SET, and pretending otherwise is worse than saying so
 
-Apply the display font only for `--text-2xl` and above, and only for actual headings. Body text always uses Inter.
+This section used to document `--text-xs` through `--text-4xl`. **None of those tokens exists in
+`tokens.css`**, so every one of them resolved to nothing and the rule below telling you never to
+hardcode a font size was impossible to follow as written.
+
+What the codebase actually does: sizes are written directly in `app.css` on the semantic classes
+(`.page-title`, `.section-title`, `.setting-row__title`, `.hint`, …) in `rem`. So:
+
+- **Reach for an existing class before inventing a size.** Most text in the product already has
+  one, and matching it is what keeps the page coherent.
+- If you genuinely need a new size, put it on a class in `app.css` next to its siblings — not
+  inline in a component, and not as a new one-off token nothing else uses.
+- Adding a real scale would be a deliberate change with its own diff. Until someone makes it,
+  do not write docs or code that assume it.
+
+Apply `--font-display` only to genuine headings; body text is always `--font-sans`.
 
 ### Font Weight Conventions
 
@@ -212,7 +221,7 @@ Apply the display font only for `--text-2xl` and above, and only for actual head
 | 400 (regular) | Body text |
 | 500 (medium) | Labels, nav items, button text |
 | 600 (semibold) | Card titles, form section headings |
-| 700 (bold) | Page headings with Inter; all weights with Playfair Display |
+| 700 (bold) | Page headings, stat values, and anything set in `--font-display` |
 
 ---
 
@@ -220,9 +229,13 @@ Apply the display font only for `--text-2xl` and above, and only for actual head
 
 ### The Background Pattern
 
-The low-opacity geometric tessellation that underlies the dashboard is generated as an inline SVG pattern and applied via `background-image` on `--color-bg-base` surfaces. Key rules:
+The low-opacity geometric tessellation that underlies the dashboard is an inline SVG data URI in
+the `--geometric-pattern` token, painted over the scene by `components/SceneBackground.tsx`. Key
+rules:
 
-- Opacity must be `var(--color-geometric-pattern)` — approximately 4% opacity in dark mode, 6% in light. At this level it reads as texture, not decoration.
+- Strength is `--pattern-opacity` (`0.5` in dark), multiplied by the tile's own `opacity="0.15"`,
+  so it lands at a few percent on screen. At that level it reads as texture, not decoration.
+  There is no `--color-geometric-pattern` token — that name was never defined.
 - The pattern must be the same tile in both themes; only opacity changes.
 - Never animate the background pattern itself (it would be distracting and expensive).
 - The SVG tile is a girih-style star polygon — 8-point or 10-point. Avoid the 5-point star (it carries unintended nationalist connotations in some contexts).
@@ -233,7 +246,7 @@ The low-opacity geometric tessellation that underlies the dashboard is generated
 | Context | Motif | Guidance |
 |---|---|---|
 | Page background | Girih tessellation | Always, at very low opacity |
-| Empty states | Dome or mihrab illustration | One per empty state, monochrome in `--color-primary-300` or `--color-text-tertiary` |
+| Empty states | `<MasjidScene />` | One per empty state, monochrome — it inherits `currentColor`, so set `--color-ink-faint` or `--color-primary-muted` on the wrapper |
 | App Store hero | Geometric star | Optional, one instance, paired with text |
 | Icons | Crescent, dome, minaret, mihrab | Only from the custom glyph set (see Section 7) |
 | Splash screen | Geometric pattern assembling | Exactly once on first load, < 1s, skip immediately on interaction |
@@ -254,14 +267,17 @@ OpenMasjidOS ships a small set of custom masjid glyphs alongside `lucide-react`.
 
 ### The Glyph Set
 
-| Glyph | Component name | Usage |
-|---|---|---|
-| Dome | `<IconDome />` | Dashboard home, app category: displays |
-| Minaret | `<IconMinaret />` | Settings, administration apps |
-| Crescent + star | `<IconCrescent />` | Quran/Islamic resources category, brand mark |
-| Mihrab arch | `<IconMihrab />` | Empty states for app listings, prayer category |
+**Two components ship, not four.** `IconDome`, `IconMinaret`, `IconCrescent` and `IconMihrab`
+were documented here for a long time and have never existed; `Glyphs.tsx` exports these:
 
-All four glyphs live in `packages/ui/src/components/Glyphs.tsx`. They take `size` and `className`, and inherit colour via `currentColor`. Always provide `aria-label` or pair with a visible label — do not use these as purely decorative elements without an `aria-hidden="true"`.
+| Glyph | Component | Default size | Used by |
+|---|---|---|---|
+| Masjid mark (brand) | `<MasjidMark />` | 28 | `Dock` nav, `AuthScreen`, `Splash`, dashboard empty state |
+| Masjid scene (illustration) | `<MasjidScene />` | 96 | `NotFound` empty-state art |
+
+Both live in `packages/ui/src/components/Glyphs.tsx`, take `size` and `className`, and inherit
+colour via `currentColor`. Pair them with a visible label, or mark them `aria-hidden="true"` when
+they are purely decorative — which, in every current use, they are.
 
 ### Using Lucide vs Custom Glyphs
 
@@ -326,23 +342,29 @@ single decision rather than one per component.
 
 ### Animation Catalogue
 
-| Element | Animation | Duration | Easing |
-|---|---|---|---|
-| Page/route transition | Crossfade + 6px rise | `--duration-slow` | `--easing-out` |
-| Card enter (staggered grid) | Fade + 8px rise, 40ms stagger | `--duration-normal` | `--easing-out` |
-| Card hover | Scale 1.0 → 1.015, shadow lift | `--duration-fast` | `--easing-spring` |
-| Button press | Scale 1.0 → 0.97 | `80ms` | `--easing-in` |
-| Modal open | Scale 0.95 → 1.0, fade | `--duration-normal` | `--easing-spring` |
-| Modal close | Scale 1.0 → 0.95, fade out | `--duration-fast` | `--easing-in` |
-| Toast enter (from bottom-right) | Slide up + fade | `--duration-normal` | `--easing-out` |
-| Toast exit | Slide right + fade | `--duration-fast` | `--easing-in` |
-| Skeleton shimmer | Gradient sweep | `1.6s` infinite | `linear` |
-| Install progress (pulling) | Indeterminate progress bar | `--duration-deliberate` looping | `--easing-smooth` |
-| Install progress (starting) | Determinate fill to 80% | `--duration-deliberate` | `--easing-smooth` |
-| Install success | Scale pop + checkmark draw | `--duration-normal` | `--easing-spring` |
-| Dashboard splash | Geometric pattern assembles | `< 800ms` total | Staggered `--easing-out` |
-| Sidebar nav item active | Gold indicator slides in | `--duration-fast` | `--easing-spring` |
-| Toggle (on/off) | Thumb slides + track color cross-fades | `--duration-fast` | `--easing-spring` |
+**The vocabulary is two durations and one curve**, not the `--duration-*`/`--easing-*` family
+this table used to name — none of which is defined:
+
+| Token | Value | For |
+|---|---|---|
+| `--dur-micro` | `140ms` | Anything responding to a pointer: hover, press, toggle |
+| `--dur-settle` | `420ms` | Something arriving or leaving: enter, modal, route change |
+| `--ease-settle` | a `linear()` spring curve that overshoots to `1.02` | Both of the above |
+
+CSS transitions use those. **Motion (the library) does not** — springs are described in physics,
+not duration, so component animation goes through the shared presets in `lib/motion.ts`:
+`springSoft`, `fadeRise`, `staggerContainer`, `staggerItem`. Use those rather than redefining a
+transition per component, which is how a UI ends up feeling like several different products.
+
+| Element | Animation | How |
+|---|---|---|
+| Route transition | Crossfade + slight rise | `fadeRise` |
+| Card grid enter | Fade + rise, staggered | `staggerContainer` + `staggerItem` |
+| Card hover | Lift (`--lift-y: -6px`) + shadow | CSS, `--dur-micro` `--ease-settle` |
+| Button press | Scale to `0.97` | CSS, `--dur-micro` |
+| Modal open / close | Scale + fade | `springSoft` |
+| Skeleton shimmer | Gradient sweep | CSS keyframes, linear, looping |
+| Splash | Mark fades in, under 1s, skippable | `Splash.tsx` |
 
 ### What Not to Animate
 
@@ -403,15 +425,18 @@ Tailwind's JIT mode supports logical property utilities (`ms-*`, `me-*`, `ps-*`,
 
 ### Typography in RTL
 
-When `dir="rtl"`:
-- Body text uses `Noto Naskh Arabic` (loaded conditionally).
-- Headings: Playfair Display does not have Arabic glyphs — fall back to Noto Naskh Arabic for headings too in RTL mode. Do not mix the two faces in a single heading.
-- Line height increases to `1.8` for Arabic text (`--line-height-rtl: 1.8`).
-- Letter spacing is always `0` for Arabic (never apply `letter-spacing` to Arabic text).
+**English is the only locale that ships**, and no Arabic face is bundled — so there is nothing to
+configure here today, and `--line-height-rtl` was never a real token. What remains true, and what
+the rest of §9 is about, is that the **layout** must not assume a direction: use logical CSS
+properties everywhere so the day a second locale lands the work is translation, not a re-layout.
+
+If an RTL locale is ever added, it needs a bundled Naskh face (`@fontsource`, like the two we
+have), a heading fallback to it, and a looser line height for Arabic — none of which exists now.
+Do not write CSS that pretends it does.
 
 ### Icons in RTL
 
-Directional icons (arrows, chevrons, "back/forward" affordances) must be mirrored in RTL. Apply the `.icon-rtl-mirror` utility class, which applies `transform: scaleX(-1)` under `[dir="rtl"]`. Non-directional icons (the custom glyph set, status dots, check marks) are never mirrored.
+Directional icons (arrows, chevrons, "back/forward" affordances) would need mirroring in RTL. **There is no `.icon-rtl-mirror` utility** — this guide has named one for a long time and no stylesheet defines it, so a contributor adding the class gets nothing. Since English is the only locale that ships, nothing is mirrored today; whoever adds an RTL locale should add the class at that point (`[dir="rtl"] .icon-rtl-mirror { transform: scaleX(-1); }`) and leave non-directional icons — the masjid glyphs, status dots, check marks — alone.
 
 ### Layout in RTL
 
@@ -446,17 +471,32 @@ During development, check contrast with one of these methods:
 
 These combinations have been verified at both themes. Do not change the underlying token values without re-verifying.
 
-| Token pair | Dark ratio | Light ratio |
-|---|---|---|
-| `--color-text-primary` on `--color-bg-base` | 14.2:1 | 13.8:1 |
-| `--color-text-secondary` on `--color-bg-base` | 5.1:1 | 4.8:1 |
-| `--color-text-primary` on `--color-surface-raised` | 11.4:1 | 12.1:1 |
-| `--color-primary-500` text on `--color-bg-base` | 4.6:1 | 4.7:1 |
-| White text on `--color-primary-600` button | 5.2:1 | 5.2:1 |
-| `--color-text-primary` on `--color-surface-sunken` | 13.1:1 | 11.6:1 |
-| `--color-accent-500` on `--color-bg-base` | 3.2:1 | 3.1:1 (large text only) |
+Every pair below is **measured from the current `tokens.css`**, not remembered. The old table
+named six tokens that do not exist and reported gold in dark mode as 3.2:1 when it is in fact
+9.08:1 — the numbers were as invented as the names.
 
-Note: `--color-accent-500` (gold) does not meet 4.5:1 in either theme. **Do not use gold for body text or links.** Use it only for decorative highlights, active indicators (paired with an icon or shape, not text alone), and large-text contexts where 3:1 is sufficient.
+| Pair | Dark | Light |
+|---|---|---|
+| `--color-ink` on `--color-surface` | 18.16:1 | 8.87:1 |
+| `--color-ink` on `--color-surface-raised` | 16.64:1 | 9.46:1 |
+| `--color-ink-muted` on `--color-surface` | 8.50:1 | 7.11:1 |
+| `--color-ink-faint` on `--color-surface` | 3.61:1 — large text only | **2.41:1 — fails even large** |
+| `--color-primary` on `--color-surface` | 10.80:1 | 3.84:1 — large text only |
+| `--color-on-primary` on `--color-btn` (button label) | 10.47:1 | 5.93:1 |
+| `--color-gold` on `--color-surface` | 9.08:1 | **2.99:1 — fails** |
+| `--color-danger` on `--color-surface` | 7.05:1 | 4.53:1 |
+| `--color-success` on `--color-surface` | 10.15:1 | 3.09:1 — large text only |
+
+Two things follow, and they are the opposite of what this file used to say:
+
+- **Gold is fine as text in DARK and unusable in LIGHT.** Keep it to decorative highlights and
+  active indicators that are not carrying meaning by colour alone.
+- **`--color-ink-faint` is not a text colour in light mode** — at 2.41:1 it fails even the
+  large-text bar. It is for hairlines, disabled marks and icon washes.
+
+The accent is user-selectable and `applyAccent` rewrites `--color-primary`/`--color-btn` inline,
+so the primary rows move with the chosen accent. The button-label row is the one that is pinned:
+`test/theme-tokens.test.ts` recomputes every accent against its `onPrimary` and fails under 4.5:1.
 
 ---
 
@@ -484,10 +524,12 @@ This rule exists out of respect. Treat it accordingly.
 .card { background: #1C2B22; color: #E8F0EC; font-size: 14px; }
 
 /* RIGHT */
-.card { background: var(--color-surface-raised); color: var(--color-text-primary); font-size: var(--text-sm); }
+.card { background: var(--color-surface-raised); color: var(--color-ink); font-size: 0.875rem; }
 ```
 
-If a token does not exist for a value you need, add the token to `tokens.css` first, then use it. Do not introduce one-off values.
+Colours and radii always go through a token — `tokens.css` is the list, and if one is missing,
+add it there first. **Font sizes are the exception**: there is no type scale (§5), so put the size
+on a semantic class in `app.css` rather than inventing a token nothing else uses.
 
 ### Never use `left`/`right` physical CSS properties
 
@@ -525,10 +567,10 @@ Skeleton shimmers are required for content that takes more than ~200ms to load. 
 
 The reduced-motion check in `tokens.css` and in animation presets is unconditional. Do not add `!important` to override it. Do not gate it behind a feature flag. Accessibility is not optional.
 
-### Never use gold as a primary or link color
+### Never use `--color-gold` as a primary or link color
 
-`--color-accent-500` does not meet 4.5:1 contrast on most surfaces. Gold is for decoration and active-state indicators. If you find yourself reaching for gold for text or interactive affordances, you are using it wrong.
+`--color-gold` measures 9.08:1 in dark but only **2.99:1 in light**, so it fails AA on the theme half your masjids may be using and passes comfortably on the other. A colour that is readable in one theme and not the other is worse than one that fails in both, because it looks fine to whoever picked it. Gold is for decoration and active-state indicators — and an indicator must carry a shape or icon too, never colour alone.
 
 ---
 
-*Last updated: 2026-06-18. Changes to this document require explicit discussion and should be accompanied by token updates and a contrast re-verification pass.*
+*Last reviewed against the code on 2026-08-30, when the font table, type scale, glyph set, motion vocabulary, RTL typography and every contrast figure were found to describe a design system that had never been built, and were rewritten from `tokens.css`. Changes here should be accompanied by token updates and a fresh contrast pass — `test/theme-tokens.test.ts` does the accent arithmetic automatically.*

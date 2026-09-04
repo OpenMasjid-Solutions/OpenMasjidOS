@@ -50,10 +50,6 @@ export function coerceChannel(value: unknown): Channel {
   return DEFAULT_CHANNEL;
 }
 
-export function isChannel(value: unknown): value is Channel {
-  return value === 'main' || value === 'dev';
-}
-
 // ── What each channel resolves to ────────────────────────────────────────────
 
 const APPS_REPO = 'https://raw.githubusercontent.com/OpenMasjid-Solutions/OpenMasjidAPPS';

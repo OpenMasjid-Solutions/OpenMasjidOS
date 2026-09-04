@@ -57,7 +57,7 @@ function ShareOnlineChoice({
       {value && !remoteReady && (
         <p
           className="setting-row__hint"
-          style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #d4af37)' }}
+          style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}
         >
           {t('store.shareOnlineNoRemote')}{' '}
           <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>
