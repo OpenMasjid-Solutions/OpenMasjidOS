@@ -13,138 +13,50 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-**Security — found by a full audit, none of it reported from the field**
+_Nothing yet since 0.51.1._
 
-- **The File Explorer could edit the file that defines OpenMasjidOS itself.** Its sandbox protected each app's private files but not `docker-compose.yml` at the top of the data folder — the file that describes the OpenMasjidOS container, which runs with full access to the machine. Anyone signed in could rewrite it, and the installer's Update or Repair would then run it. Now refused, along with deleting or renaming an app's whole folder (which took that app's private files with it, one level up from where they were each individually protected).
-- **An app could promote itself to "Official".** If OpenMasjidOS found an app running that it had no record of, it read the app's own labels to decide whether the app was official — and an official app is public on the internet by default. Anything an app says about itself is now ignored: a recovered app is Custom and stays off the internet until you say otherwise.
-- **A web connection to an address with no app behind it was never closed.** It was left open, holding a slot, until the far end gave up — and the far end chooses. Over a remote-access link that is something a stranger can do repeatedly. Now closed immediately.
-- **Two more headers that let a caller on your network claim to be someone else** are stripped before a request reaches an app, so an app's own logs and limits see the real caller.
-- **The app-to-app connection now limits how much work an unrecognised caller can demand** before it has proved who it is.
-- **An app id that OpenMasjidOS reserves for itself is now refused at install** rather than installing and then having its files deleted underneath it.
+## 0.51.1
 
-**Fixed — things that could not recover, or that told you the same thing twice**
+A maintenance release. Most of it is work you will not see — a full review of the
+whole project turned up a set of problems before any masjid ran into them — but a
+few of the fixes are things you would have noticed.
 
-- **A WhatsApp outage could never be reported as over.** The check that spotted a dead link counted rejected messages, and that count only cleared on a successful send — but a confirmed outage stops sending. So once it had tripped, releasing your held messages simply had them held again minutes later, with nothing on screen explaining why. The evidence now expires.
-- **A failed update check was treated as "no update".** With no internet, the check quietly reported nothing pending and forgot it had already told you — so the same update was emailed again every time the connection came back.
-- **A number that was not on WhatsApp when first checked was refused for ever after**, even after joining, because the answer was remembered permanently. It now expires, and the list of remembered numbers is capped.
-- **A command sent to your server from a number that is not on your list left no trace at all.** It is now recorded in your log — still never answered, which is deliberate.
+**Things you may have run into**
 
-**Fixed — the dashboard**
+- **Buttons showed no icon until you hovered over them.** The "Update now" icon was
+  being drawn in exactly the button's own colour. Choosing any accent other than the
+  default also made light mode's buttons hard to read, because the accent changed the
+  button but not the writing on it.
+- **Dialogs could open behind a window.** If you had a log, terminal or file window
+  open and then confirmed something, the dialog appeared behind it — the screen
+  dimmed and nothing else happened, which looked like a freeze. One press of Escape
+  also used to close two things at once.
+- **Renaming a file needed a mouse.** The rename box could not be reached with the
+  keyboard. Escape now cancels a rename.
+- **WhatsApp could not be told it was working again.** After OpenMasjidOS detected
+  that your WhatsApp link had dropped, releasing your held messages simply had them
+  held again a few minutes later, with nothing on screen explaining why.
+- **Update emails could repeat.** If your internet was down when OpenMasjidOS checked
+  for an update, it treated that as "nothing new" and forgot it had already told you
+  — so the same update was emailed again once the connection returned.
+- **A phone number that was not on WhatsApp when first checked stayed refused**, even
+  after it joined.
 
-- **Dialogs opened behind windows.** A confirmation or an update dialog opened while a log, terminal or file window was on screen rendered behind it: the screen dimmed, nothing appeared, and it looked frozen.
-- **One press of Escape closed two things** — the dialog and the window behind it.
-- **Renaming a file was unreachable by keyboard**, because the editor was nested inside a button. Escape now cancels a rename.
-- Five labels used by screen readers were untranslated English.
+**Keeping your server safe**
 
-**Documentation — a full sweep against the code**
+Several ways in were closed before anyone found them. In plain terms: the file
+browser could reach the file that defines OpenMasjidOS itself, and could delete an
+app's folder wholesale; an app could describe itself as official and be published to
+the internet without being asked; and a stranger could hold connections open through
+your remote-access link. None of this was reported by a masjid — it came out of a
+review — and none of it needs anything from you beyond updating.
 
-- **THEMING.md described a design system that was never built.** It documented 28 CSS variables that do not exist — including the example contributors are told to copy — three fonts the project does not ship, four icon components that were never written, and contrast figures that were invented (it reported gold in dark mode as 3.2:1 when it is 9.08:1). Rewritten from the real files, with every contrast figure measured.
-- **ARCHITECTURE.md gave the dashboard's address as a port and hostname that have never worked**, said the file manager, terminals and restore were not built (all three ship), described the login throttle as per-IP when it cannot be, and named the wrong cookie setting.
-- **CLAUDE.md's colour palette was from an abandoned design** — emerald on charcoal, where the product is cyan on navy — and it described three settings that do not exist (a language picker, an animation toggle, an installer network step) plus Docker labels the platform never writes.
-- Corrected the Raspberry Pi guide (the installer needs `sudo`, and the command as printed would abort), a claim that every WhatsApp command asks for confirmation (starting an app does not), two "Settings → …" paths naming sections that do not exist, and two undocumented app-manifest fields.
-- Every link in every document was checked: all resolve, and all 10 external addresses are live.
+**Reading the documentation**
 
-**Removed — dead code**
-
-- Six exported functions nothing called, 18 unused interface strings (including a seven-item App Store category list for a filter that was never built), an unused CSS block, and an orphaned comment.
-
-**Added**
-
-- `test/audit-hardening.test.ts` — 15 tests, each pinning one of the above, each checked by reintroducing the bug and confirming the test fails.
-
-**Fixed — the icon on "Update now" buttons was invisible until you hovered**
-
-- **The icon was being drawn in exactly the button's own colour.** The banner that announces an update was colouring every icon inside itself, and that included the icons inside its own buttons — so the icon sat invisibly on a background of the same shade, and only appeared when hovering changed the shade underneath it. The banner now colours only its own icon, and button icons use the dark ink that is meant to sit on a coloured button.
-- **Picking any accent colour other than the default also made light mode's buttons hard to read.** Choosing an accent replaced the button's colour but not the colour of the text and icons on top of it, leaving white on a bright button — white on gold measures 1.67:1 where the accessibility standard asks for at least 4.5:1. Every accent now carries its own very dark shade for whatever sits on it, and the arithmetic is checked by the test suite, so a new accent cannot be added without one.
-
-**Added — you can now see why a public page was turned away**
-
-- **Settings → Remote access now lists recent requests your internet link refused, and why.** Every one of those refusals looked the same from outside — "Not found" and nothing else — and there was no record anywhere, so "my page says not found" was impossible to diagnose. There are three quite different reasons it can happen (nothing is published at that address, the address is one that only works on your local network, or it is an app's private area) and now you can tell which.
-- **The refusal itself is unchanged for visitors, on purpose.** Anyone on the internet still gets the same plain "not found" whatever the reason — telling them apart would let a stranger map which addresses on your server are real. The explanation is only visible to you, signed in, on your own network.
-- **Someone who mistypes your address now gets a sentence instead of a line of code.** They used to see `{"error":"Not found."}`. It now says there is no page at that address and suggests checking the link, without revealing anything about what your server does run.
-
-**Fixed — public pages briefly showing "Not found" through the internet link**
-
-- **Pages shared over your remote-access link could answer "Not found" for a few seconds, on every app at once, then work again on a retry.** The cause was OpenMasjidOS briefly failing to read Docker and treating that as "there are no apps" rather than "I could not check". It then rebuilt its list of public web addresses, found nothing to publish, and stopped answering for every app until it looked again ten seconds later. It now keeps the addresses it already had whenever it cannot read Docker, which is almost always the right answer.
-- **The same fault could have emailed you an "app went offline" alert for every single app at once**, for the same reason — every app looked stopped because nothing could be read, not because anything had stopped. That check now waits for a real reading before deciding anything is down.
-- If every app genuinely does stop being published, that is now written to the log rather than happening silently.
-
-**Fixed — WhatsApp gap reporting, after feedback from the apps**
-
-- **The record of a gap now survives being fixed.** It could only be read while the connection was still down — and re-linking the phone cleared it — so an app looking for what it had missed found nothing, which is exactly when it would look. Gaps are now kept for a week after they end.
-- **A message held during an outage keeps its record.** Records were kept for a day counting from when a message was queued, so a message held longer than that lost its record while it was still waiting to be sent, and an app asking about it was told the message was unknown. Records for messages still waiting are now kept for as long as they wait.
-- **Apps can now see exactly which messages were affected**, not only how many, so an app that keeps its own log can match them up precisely instead of guessing from a time range. The reason for the outage is included too, so an app can word its own message accurately.
-- Smaller: a "too many requests" reply from two of the app-facing endpoints now says so, instead of looking like an ordinary empty result.
-
-**Fixed — WhatsApp signing your phone out no longer goes unnoticed**
-
-- **OpenMasjidOS now checks every five minutes that WhatsApp can actually be reached**, and tells you by email, webhook and a banner on the dashboard the moment it cannot. WhatsApp sometimes signs a linked device out on its own — the same thing that happens to WhatsApp Desktop — and until now nothing noticed: your apps were told their messages had been accepted, the gateway accepted them, and they were recorded as sent while never arriving.
-- **The check does not trust the gateway's own "ready" light.** A session WhatsApp has signed out can go on reporting itself as ready, which is exactly why this went unnoticed — so the check asks the gateway something that has to reach WhatsApp instead.
-- **Messages are held instead of lost.** While the connection is down everything waits, keeping its place, and the 24-hour limit on waiting now counts only time the connection was working — so an outage over a weekend no longer quietly throws away Friday's messages.
-- **Nothing sends again until you say so.** After you re-link the phone, Settings → WhatsApp shows how many messages are waiting and which apps they came from, with **Send them now** and **Discard them**. It deliberately does not release them on its own: a big backlog going out all at once from a freshly re-linked number is the surest way to get it blocked.
-- **What was sent during the gap is reported honestly.** Messages that went out between the connection dying and this being noticed were accepted by the gateway and recorded as sent. OpenMasjidOS does not keep message contents after handing a message over, so it cannot re-send those — it now tells you the period and how many each app sent, so you can check in the app itself, and apps can look this up and re-send from their own records.
-- Smaller: the WhatsApp settings page shows how many messages are waiting in every state, not only when everything is healthy; and the server log no longer says a message was "delivered" when all that is known is that the gateway accepted it.
-
-**Fixed — from an audit of the code and the docs**
-
-- **Deleting WhatsApp could say it worked when your phone was never unlinked.** If the gateway was stopped or broken — which is a common reason to be deleting it — OpenMasjidOS could not ask WhatsApp to release the device, and then showed the ordinary success message anyway. Since the gateway is removed at that point, nothing was left that could ever unlink it, and the masjid was never told. It now says plainly when the release could not be confirmed, and tells you to remove the device on the phone yourself.
-- **That same warning used to vanish before it could be read.** It was shown inside the panel that displays your linked number — and unlinking clears that number, so the warning disappeared a moment after appearing. It is now a notice that stays put until you dismiss it.
-- **Links that said "Settings → Payments" landed on Appearance.** Splitting Settings into sections broke five links from the App Store and an app's page, which all still pointed at the top of Settings. Each now opens the section it names.
-- **"Check for updates" said you were up to date when it could not check at all.** If the server could not reach the internet, the check quietly returned "nothing new" and you got a green tick — on the one screen you would use to find out whether you are missing a security update. It now says it could not check.
-- **A failed app update could apply itself later anyway.** When an update failed to download or failed to start, the new configuration was already written to disk while the app was still recorded at its old version. Pressing Start afterwards ran the new version without going through the safety check that every install and update passes. A failed update now puts the app back exactly as it was.
-- **Documentation that no longer matched the code has been corrected.** The WhatsApp guide said the sending limits were editable in Settings, the consent screen shown before linking a phone promised limits and a gentle warm-up for new numbers, and the code's own notes described caps and cooldowns as active. All of those were removed some time ago. Everything now says what actually happens: one message at a time with a typing indicator, and no limit on how much your apps send.
-
-**Changed — Settings is no longer one long page**
-
-- **Settings now has sections down the side** — Appearance, Account, Email, WhatsApp, Alerts, Payments, Remote access, Advanced — and shows one at a time instead of stacking all eleven panels on a single page you had to scroll through to find anything. Each section has its own address, so a link can now take you straight to the right place rather than to the top of the page. On a phone or a small screen the list becomes a strip across the top that you can swipe.
-- **WhatsApp is split into Setup, Groups and Commands**, since it had grown to about a third of the whole Settings page on its own. The tabs only appear once a phone is linked, because groups and commands do not exist before that.
-
-**Added — update all your apps at once**
-
-- **When more than one app has an update waiting, there is now an "Update all" button** on the dashboard. It updates them one after another in a single window, showing progress for each, rather than making you open and watch each one in turn. They are done one at a time on purpose: updating them all at once would take your prayer display, your donations page and your kiosk down in the same moment, and pulling several downloads over one connection is not faster anyway.
-- **It checks each app actually came back**, the same as a single update does — an app that starts and then stops again is reported with the reason, instead of being counted as updated.
-
-**Changed — turning WhatsApp off, and the number you linked**
-
-- **Turning WhatsApp off now asks what you actually want.** Before, the switch just went off and quietly kept everything — your gateway key, the linked number, your approved groups and the list of people allowed to send commands all stayed on the server with nothing saying so. If you only wanted a pause, you had no way to know your setup was safe; if you thought you had removed WhatsApp, you hadn't. The switch now asks: turn it off and keep everything (so switching back on picks up exactly where you left off), or **remove the gateway and delete all of it**.
-- **Deleting really deletes.** It unlinks your phone from WhatsApp first — while the gateway is still there to do it — then removes the OpenWA app with its data and erases the gateway key, the session, your approved groups, the saved messages, the WhatsApp setting on every alert, and the list of people who could send commands. If WhatsApp can't confirm your phone was released, it says so and tells you to remove it on the phone, rather than showing a tick it can't stand behind.
-- **When a phone is linked, the panel now says so.** It used to keep showing an empty "Link your phone" box and a "Get a code" button even when a number was connected and working — which reads as though nothing happened, and invites linking a second phone over a working one. Now the linked number is shown clearly, with an **Unlink this number** button next to it for when the masjid changes handsets. Unlinking keeps your key and your groups, so linking a different phone is just one new code.
-
-**Fixed — phone numbers are readable now**
-
-- **The country list was cut off.** It showed full country names in a box too narrow for them, so anything longer than a few letters was clipped mid-word. It now shows a short country code with the dialling code — `US/CA (+1)`, `UK (+44)`, `PK (+92)` — and the full country name still appears if you hover over it.
-- **Numbers are written the way you'd write them.** A number now appears as `+1 (555) 010-1234` rather than a run of digits, everywhere the dashboard shows one back to you — the linked number, and the list of people who can send commands. Numbers outside North America keep sensible spacing rather than a made-up format, because guessing at each country's layout would make correct numbers look wrong.
-
-**Fixed — WhatsApp messages arrive promptly, and predictably**
-
-- **One message that could not go yet was stopping all the others.** The sending queue always looked at the first message in the line; if that one had to wait, it waited with it and looked again — at the same message. So a single message that was held up blocked everything behind it, from every app. Worse, a message that failed and needed retrying paused the whole queue for its retry delay — up to fifteen minutes at a time, five times over. This is why one app’s picture would never arrive while another app’s later messages did. The queue now sends the first message that *can* go, and a message that needs retrying steps aside instead of holding up the rest.
-- **All the remaining waiting has been removed.** There was a random six-to-twenty second pause between every message, a one-minute wait before the same person could be messaged again, and a **thirty-minute** wait before the same group could be posted to again — plus hourly and daily limits on group posts that a newly linked number had only a quarter of. Together those meant an announcement might arrive in an hour, or might not, with nothing telling you which. All gone.
-- **What still happens before each message:** the typing indicator, sized to the length of what is being sent. That is the only pause now, it is a few seconds, and the person receiving it can see it.
-- **Worth knowing:** nothing in OpenMasjidOS now limits how much an app sends. WhatsApp does not officially allow this kind of connection and a blocked number cannot be recovered, so what your apps send is now their responsibility rather than the platform’s.
-
-**Fixed — one app's messages no longer hide another app's**
-
-- **Asking "what happened to my message?" now works even when another app is busy.** The platform remembers the outcome of recent messages so an app can check on one it sent. That memory was a single shared list of 200, so an app sending to a large family list filled it on its own and wiped every other app's records — a donation refund, a card-reader alert — and the app that asked got "no such message" back. Each app now has its own space for its most recent 500, kept for a day, so no app can push out another's.
-- **Checking on messages no longer uses up an app's sending allowance.** Looking up an outcome costs nothing to send, but it was counted against the same per-app limit as actually messaging a phone — so an app reconciling a few hundred fee reminders ran out part-way through and stopped being able to send. Lookups now have their own separate, larger allowance.
-
-**Security — a full audit, and one serious hole closed**
-
-- **An app could have been given complete control of the server, with no warning shown.** Before installing any app, OpenMasjidOS checks its configuration for dangerous settings — mounting the server’s own control socket, or the whole filesystem — and refuses. That check could be stepped around: writing one field as a variable instead of a fixed value made the checker skip the inspection entirely, while Docker still resolved it to the dangerous setting when the app started. An app published to the store, or added from a third-party store, could have taken over the machine on the ordinary one-click install with no risk dialog at all. Now caught, along with two related tricks — one that let an app open **another app’s database**, and one that let it join **another app’s private network** and reach services never meant to leave that app.
-- **A web address written in an unusual but valid way could point the community app-store fetcher back at the server itself.** The check that blocks private addresses only recognised one spelling of them.
-- Smaller fixes: the running version was readable from the internet on one of the two listeners; one app could use up the message-sending allowance belonging to all the others; and a header a caller can invent was still being trusted on one path.
-- **Written down honestly, not quietly.** “Local network only” means “not reachable through the remote-access tunnel” — it does **not** mean the server cannot be reached from the internet if it has a public address. If your server has one, put a firewall in front of it;  now explains exactly what is and is not protected, and the README no longer claims the dashboard is never exposed.
-
-**Changed — no more hourly or daily message limit**
-
-- **The cap on how many messages you can send has been removed.** It was 12 an hour, but a newly linked number only got a quarter of that — three an hour — and replies to your own `!os` commands counted against the same allowance. In practice that meant setting WhatsApp up and then not being able to use or even test it.
-- *(Superseded later in this same cycle: the 6–20 second gap, the per-person wait and the group limits described here were removed too — see the top of this section. Kept as a record of the order things happened, not as a description of how it behaves now.)*
-
-**Fixed — WhatsApp messages that were accepted and never arrived**
-
-- **The send queue is now saved to disk.** It only ever lived in memory, so any message the pacing held — for a rate cap, for the gentle ramp on a newly linked number, or for the old quiet-hours window — was thrown away when OpenMasjidOS restarted. Nothing said so: your app was told the message had been accepted, and there was no error anywhere to contradict it. On the Development channel, which restarts often, that is how a masjid went more than a day with every message accepted and none delivered. The pacing history is saved too, so the daily and hourly limits survive a restart instead of quietly resetting.
-- **Quiet hours are gone.** There is no longer a 21:00–07:00 window that holds messages until morning. It applied to everything on the one shared queue with no way for an app to mark a message urgent — so a staff alert about a declined card was held overnight exactly like a receipt, which removes the reason anyone carries a phone for alerts. It was also being worked out in the wrong timezone: the window was really 17:00–03:00 for a masjid on US Eastern time, so an evening message was held until three in the morning. Everything else that keeps the number safe is unchanged.
-- **An app can now ask what happened to a message it sent**, instead of only being told it was accepted. Anything still waiting after a day is dropped rather than released in a burst, and reported as such.
-- **Sending to the number WhatsApp itself is linked to is refused**, with an explanation. It would only have gone to that phone’s own notes, which is not somewhere anyone reads alerts — previously it was accepted and then silently went nowhere.
+If you or a volunteer has ever read the project's own documentation, parts of it
+described software that was never built — wrong colours, wrong addresses, features
+listed as missing that have shipped for months, and settings that do not exist. It
+has been checked line by line against the code and corrected.
 
 ## 0.51.0
 
