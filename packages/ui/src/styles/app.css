@@ -1214,3 +1214,11 @@ button {
 .ds-row__note { font-size: 0.75rem; color: var(--color-ink-muted); }
 .ds-row__demo { margin-block-start: 0.5rem; display: grid; gap: 0.5rem; }
 .ds-demo-line { display: flex; align-items: center; gap: 0.6rem; }
+
+/* Radix portals every dropdown to the document root, where shadcn gives it
+   `z-50`. That is the same layer as the dock and BELOW the modal (250) and the
+   window manager (260), so a menu opened from inside either would be painted
+   behind it. Lift the portalled content above all of them — a menu belongs to
+   whatever opened it, and a menu on the page behind a modal is dismissed by the
+   modal anyway. */
+[data-slot='dropdown-menu-content'] { z-index: 300; }

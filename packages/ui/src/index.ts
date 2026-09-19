@@ -31,3 +31,13 @@ export { cn } from './lib/cn';
 export { Switch } from './components/ui/switch';
 export { Checkbox } from './components/ui/checkbox';
 export { Label } from './components/ui/label';
+export {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu';

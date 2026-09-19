@@ -63,10 +63,19 @@
     "cn",
     "Switch",
     "Checkbox",
-    "Label"
+    "Label",
+    "DropdownMenu",
+    "DropdownMenuContent",
+    "DropdownMenuGroup",
+    "DropdownMenuItem",
+    "DropdownMenuLabel",
+    "DropdownMenuSeparator",
+    "DropdownMenuShortcut",
+    "DropdownMenuTrigger"
   ],
   "primitives": [
     "checkbox",
+    "dropdown-menu",
     "label",
     "switch"
   ],

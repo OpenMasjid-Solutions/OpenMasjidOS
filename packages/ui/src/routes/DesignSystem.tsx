@@ -23,10 +23,18 @@
  * Without this page, RTL is unfalsifiable in the product.
  */
 import { useState } from 'react';
+import { ExternalLink, RotateCw, Trash2 } from 'lucide-react';
 import { Page } from '../components/Page';
 import { Checkbox } from '../components/ui/checkbox';
 import { Label } from '../components/ui/label';
 import { Switch } from '../components/ui/switch';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 
 /** One primitive, shown with a short note on what to look at. */
 function Row({ name, note, children }: { name: string; note: string; children: React.ReactNode }) {
@@ -72,6 +80,26 @@ function Specimens() {
 
       <Row name="Label" note="inherits the body face, not a Tailwind default">
         <Label>A plain label</Label>
+      </Row>
+
+      <Row name="DropdownMenu" note="arrow keys + Escape; checkmark and shortcut on the INLINE side">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="btn btn--sm">Open menu</button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="glass-raised">
+            <DropdownMenuItem>
+              <ExternalLink size={16} /> Open
+            </DropdownMenuItem>
+            <DropdownMenuItem>
+              <RotateCw size={16} /> Restart
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive">
+              <Trash2 size={16} /> Remove
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </Row>
     </>
   );

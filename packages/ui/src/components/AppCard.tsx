@@ -5,7 +5,7 @@
  * its detail page when stopped). The ⋮ menu holds the controls. Cards are
  * draggable onto the dock to pin them.
  */
-import { memo, useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { memo, useCallback, useState, type DragEvent } from 'react';
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -29,6 +29,13 @@ import { openApp } from '../lib/apps';
 import { AppIcon } from './AppIcon';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 import { AppReviewDialog } from './AppReviewDialog';
 import { LazyTerminal } from './LazyTerminal';
 import { AppLogs } from './AppLogs';
@@ -52,14 +59,12 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
   const windows = useWindows();
   const pinned = prefs.pinnedApps.includes(app.id);
 
-  const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [riskAck, setRiskAck] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Catalog apps can be updated from the store. Check on demand, then confirm.
   const checkForUpdate = useCallback(async () => {
@@ -122,14 +127,9 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
     void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
   }, [app.id, utils]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('click', onClick);
-    return () => document.removeEventListener('click', onClick);
-  }, [menuOpen]);
+  // The hand-rolled click-outside listener that used to live here is gone —
+  // Radix dismisses on outside pointerdown, on Escape, and on focus leaving,
+  // which the document-level click listener never did.
 
   const refresh = () => utils.apps.list.invalidate();
   const start = trpc.apps.start.useMutation({
@@ -169,7 +169,6 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
     }
   }, [app, navigate]);
 
-  const close = useCallback(() => setMenuOpen(false), []);
 
   return (
     <>
@@ -177,11 +176,6 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         className="app-card glass fx-glint"
         variants={staggerItem}
         draggable
-        // While the ⋮ menu is open, lift the card above the dock (it has a Motion
-        // transform = stacking context) AND drop content-visibility's paint
-        // containment, which would otherwise clip the menu where it overflows the
-        // card's box. Closed cards keep content-visibility:auto (offscreen skip).
-        style={menuOpen ? { zIndex: 200, contentVisibility: 'visible' } : undefined}
         // Motion TYPES onDragStart as its own pan-gesture handler, but at runtime
         // filterProps forwards every `onDrag*` straight to the DOM whenever
         // `draggable` is set — so this really does receive a React drag event and
@@ -213,28 +207,38 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
             </div>
           </div>
 
-          <div className="app-card__menu-wrap" ref={menuRef} onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" aria-label={t('actions.options')} onClick={() => setMenuOpen((o) => !o)}>
-              <MoreVertical size={18} />
-            </button>
-            {menuOpen && (
-              <div className="menu glass-raised app-card__menu">
+          {/* The whole card is clickable (it launches the app), so every event
+              from the menu trigger has to stop short of it. Radix renders the
+              CONTENT in a portal at the document root, which is why the old
+              `contentVisibility: 'visible'` and `zIndex: 200` workarounds on the
+              card are gone: the menu is no longer a descendant that the card's
+              paint containment could clip, or that the dock could cover. */}
+          <div className="app-card__menu-wrap" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="icon-btn" aria-label={t('actions.options')}>
+                  <MoreVertical size={18} />
+                </button>
+              </DropdownMenuTrigger>
+              {/* No `close()` on any item: Radix closes on select and returns
+                  focus to the trigger, which the hand-rolled version never did. */}
+              <DropdownMenuContent align="end" className="glass-raised" sideOffset={6}>
                 {app.running && (
-                  <button className="menu-item" onClick={() => { close(); openApp(app); }}>
+                  <DropdownMenuItem onSelect={() => openApp(app)}>
                     <ExternalLink size={16} /> {t('actions.open')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
                 {app.running ? (
                   <>
-                    <button className="menu-item" onClick={() => { close(); restart.mutate({ id: app.id }); }}>
+                    <DropdownMenuItem onSelect={() => restart.mutate({ id: app.id })}>
                       <RotateCw size={16} /> {t('actions.restart')}
-                    </button>
-                    <button className="menu-item" onClick={() => { close(); stop.mutate({ id: app.id }); }}>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => stop.mutate({ id: app.id })}>
                       <Power size={16} /> {t('actions.shutdown')}
-                    </button>
+                    </DropdownMenuItem>
                   </>
                 ) : (
-                  <button className="menu-item" onClick={() => { close(); startOrReview(); }}>
+                  <DropdownMenuItem onSelect={startOrReview}>
                     {held ? <ShieldAlert size={16} /> : <Play size={16} />}
                     {/* A refusal can never be agreed to, so offering "Start
                         anyway" would promise something the server will refuse.
@@ -244,31 +248,31 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
                       : held.kind === 'refusal'
                         ? t('appReview.whyBlocked')
                         : t('appReview.startAnyway')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
                 {webTerminal && app.running && (
-                  <button className="menu-item" onClick={() => { close(); openShell(); }}>
+                  <DropdownMenuItem onSelect={openShell}>
                     <SquareTerminal size={16} /> {t('actions.shell')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
-                <button className="menu-item" onClick={() => { close(); openLogs(); }}>
+                <DropdownMenuItem onSelect={openLogs}>
                   <ScrollText size={16} /> {t('actions.viewLogs')}
-                </button>
+                </DropdownMenuItem>
                 {app.kind === 'catalog' && (
-                  <button className="menu-item" disabled={checkingUpdate} onClick={() => { close(); void checkForUpdate(); }}>
+                  <DropdownMenuItem disabled={checkingUpdate} onSelect={() => void checkForUpdate()}>
                     <RefreshCw size={16} /> {t('appCard.checkUpdate')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
-                <button className="menu-item" onClick={() => { close(); prefsStore.togglePin(app.id); }}>
+                <DropdownMenuItem onSelect={() => prefsStore.togglePin(app.id)}>
                   {pinned ? <PinOff size={16} /> : <Pin size={16} />}
                   {pinned ? t('actions.unpin') : t('actions.pin')}
-                </button>
-                <div className="menu-sep" />
-                <button className="menu-item" style={{ color: 'var(--color-danger)' }} onClick={() => { close(); setConfirmOpen(true); }}>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setConfirmOpen(true)}>
                   <Trash2 size={16} /> {t('actions.uninstall')}
-                </button>
-              </div>
-            )}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </motion.div>
