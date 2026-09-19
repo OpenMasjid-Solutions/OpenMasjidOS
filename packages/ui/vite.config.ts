@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -9,6 +10,12 @@ import tailwindcss from '@tailwindcss/vite';
 // proxy is needed and the client uses same-origin relative URLs.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // Must mirror tsconfig.json's "@/*" path exactly. The shadcn CLI bakes
+    // `@/lib/cn` into every component it writes, so a mismatch between these
+    // two is a clean typecheck and a broken bundle (or the reverse).
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
   server: {
     port: 5173,
     proxy: {
