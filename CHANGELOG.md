@@ -13,6 +13,22 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+### Design system (in progress — Slices 1–3 of 15)
+
+Groundwork for one shared look across every OpenMasjid app. Almost none of it is visible yet,
+which is deliberate: the foundations and the safety checks go in before anything is restyled.
+
+- **One thing you will see:** in dark mode, red buttons — Remove app, and "Start anyway" on a
+  held app — now have **dark text instead of white**. White on that red measured 2.77:1, well
+  below the accessibility standard, on two of the most consequential buttons in the dashboard.
+- Everything else so far is plumbing: the component toolkit's setup, the design tokens wired
+  to it, and a shared package the other OpenMasjid apps will be able to use.
+- Automatic checks now guard the things that break quietly — right-to-left layout (so Arabic
+  and Urdu keep working), colours only ever coming from the one theme file, and text staying
+  readable on every background.
+
+*Full detail in `docs/design-system/MIGRATION.md`.*
+
 ### Security
 
 - **An app restored from a backup can no longer be started without someone agreeing to it.**

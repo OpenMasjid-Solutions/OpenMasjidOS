@@ -9,6 +9,16 @@ and primitives — see [CONSUMING.md](./CONSUMING.md).
 15 slices. Each lands on `dev` on its own, with what changed and what to test. Nothing reaches
 `master` until the whole set is done and Hasan says so.
 
+> **Every slice bumps `VERSION`.** On the Development channel the version bump IS the
+> publish (CLAUDE.md §13.4): CI tags the image from `VERSION`, and `checkForUpdate` compares
+> versions — so pushing to `dev` without bumping republishes the *same* tag and a dev box is
+> never offered the update. Slices 1–3 were pushed without a bump and were therefore
+> invisible to a box on Development until `0.51.2-dev.2`.
+
+| Ships in | Contains |
+|---|---|
+| `0.51.2-dev.2` | restore→Start security fix + Slices 1–3 |
+
 | # | Slice | Status |
 |---|---|---|
 | 1 | Foundation — shadcn init, `cn()`, CI gates | ✅ done |
