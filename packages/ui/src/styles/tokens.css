@@ -44,6 +44,12 @@
   --color-success: #34D399;
   --color-warning: #FBBF24;
   --color-danger: #F87171;
+  /* Ink for a FILLED danger button. `.btn--danger` hardcoded #fff, which on this
+     theme's #F87171 measures 2.77:1 — well under AA, on the Remove-app button and
+     the "Start anyway" consent button, i.e. the two highest-stakes clicks in the
+     product. Same shape as the accent `onPrimary` fix: a light-on-light fill needs
+     dark ink. #00131c reaches 6.84:1 here; light keeps #FFFFFF at 4.83:1. */
+  --color-on-danger: #00131c;
 
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.7);
@@ -126,6 +132,8 @@
   --color-success: #16A34A;
   --color-warning: #D97706;
   --color-danger: #DC2626;
+  /* White already passes here (4.83:1) — this theme's danger is dark enough. */
+  --color-on-danger: #FFFFFF;
 
   --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.08);
   --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.15);
@@ -174,6 +182,60 @@
   --pattern-opacity: 0.4;
 
   --geometric-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%230284C7' stroke-width='0.5' opacity='0.1'%3E%3Cpolygon points='30,4 34.5,21 51,15 39,28 56,30 39,32 51,45 34.5,39 30,56 25.5,39 9,45 21,32 4,30 21,28 9,15 25.5,21'/%3E%3Crect x='19' y='19' width='22' height='22' transform='rotate(45 30 30)'/%3E%3Cpolygon points='0,0 4.5,8 11,2 5,13 16,9 9,17 18,16 12,24 0,22'/%3E%3Cpolygon points='60,0 55.5,8 49,2 55,13 44,9 51,17 42,16 48,24 60,22'/%3E%3Cpolygon points='0,60 4.5,52 11,58 5,47 16,51 9,43 18,44 12,36 0,38'/%3E%3Cpolygon points='60,60 55.5,52 49,58 55,47 44,51 51,43 42,44 48,36 60,38'/%3E%3Cline x1='0' y1='30' x2='60' y2='30'/%3E%3Cline x1='30' y1='0' x2='30' y2='60'/%3E%3Cline x1='0' y1='0' x2='60' y2='60'/%3E%3Cline x1='60' y1='0' x2='0' y2='60'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/*
+ * shadcn semantic bridge — shared by both themes.
+ *
+ * shadcn/ui components are written against a fixed set of semantic names
+ * (`bg-background`, `text-muted-foreground`, `border-input`, `ring-ring`…), and
+ * they are not configurable per component. Rather than rename 62 tokens and
+ * 1,711 lines of CSS, this block maps those names onto the tokens we already
+ * have. Every entry is a `var()` indirection — NO literal colour is defined
+ * here, so `tokens.css` above stays the single source of truth for values.
+ *
+ * It lives in ONE un-themed block on purpose: each entry points at a token that
+ * already flips with `data-theme`, so the indirection resolves per-theme at use
+ * time. Duplicating it per theme would be two places to forget.
+ *
+ * The names are deliberately UNPREFIXED (`--primary`, `--accent`, `--border`)
+ * while ours are `--color-*`. That is what keeps them from colliding: we have a
+ * `--color-accent` meaning decorative gold, while shadcn's `accent` means the
+ * subtle background a row takes on hover. Both can exist because the names
+ * differ — but be aware that Tailwind's `bg-accent` utility means shadcn's
+ * sense, NOT our gold. Reach for `--color-gold` when you want gold.
+ *
+ * `--primary` maps to `--color-btn`, not `--color-primary`: shadcn's `primary`
+ * is the filled-button colour, and those two tokens are the same hex in dark but
+ * differ in light (#0369A1 vs #0284C7). `applyAccent` writes `--color-btn`
+ * inline at runtime, so a user-chosen accent flows through this bridge already.
+ */
+:root {
+  --background: var(--color-surface);
+  --foreground: var(--color-ink);
+  --card: var(--color-surface-raised);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-surface-overlay);
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-btn);
+  --primary-foreground: var(--color-on-primary);
+  --secondary: var(--color-surface-overlay);
+  --secondary-foreground: var(--color-ink);
+  --muted: var(--color-surface-raised);
+  --muted-foreground: var(--color-ink-muted);
+  --accent: var(--color-surface-hover);
+  --accent-foreground: var(--color-ink);
+  --destructive: var(--color-danger);
+  --destructive-foreground: var(--color-on-danger);
+  --border: var(--color-border);
+  --input: var(--color-border);
+  --ring: var(--color-primary);
+  /* 0.625rem = 10px, the radius the design system already uses for buttons. */
+  --radius: var(--radius-button);
+  /* Type aliases so index.css can map Tailwind's --font-sans/--font-display
+     without naming itself on both sides of the assignment. */
+  --font-body: var(--font-sans);
+  --font-heading: var(--font-display);
 }
 
 /* Motion bridge — shared by both themes. */

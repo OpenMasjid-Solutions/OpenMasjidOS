@@ -138,7 +138,7 @@ test('colours are defined in tokens.css and nowhere else', () => {
   ratchet(
     'raw hex colours outside tokens.css',
     found,
-    10,
+    9,
     'Add a token in styles/tokens.css (both themes) and reference it with var().',
   );
 });
@@ -201,6 +201,55 @@ test('cn() merges Tailwind classes rather than only concatenating them', () => {
   const src = code(fs.readFileSync(path.join(UI, 'lib', 'cn.ts'), 'utf8'));
   assert.match(src, /twMerge/, 'cn() must use tailwind-merge');
   assert.match(src, /twMerge\(clsx\(/, 'and it must wrap clsx, not replace it');
+});
+
+test('every Tailwind theme name resolves to a real token', () => {
+  // The failure this prevents is silent and ugly. `@theme inline` maps a
+  // Tailwind utility onto a var() reference; if the target does not exist,
+  // Tailwind still emits the utility and the browser resolves the var to
+  // nothing — so `bg-card` paints TRANSPARENT rather than erroring. A typo here
+  // is invisible in code review and only shows up as an unstyled component.
+  const index = code(fs.readFileSync(path.join(UI, 'index.css'), 'utf8'));
+  const tokens = code(fs.readFileSync(path.join(UI, 'styles', 'tokens.css'), 'utf8'));
+
+  const themeBlock = /@theme inline\s*\{([\s\S]*?)\n\}/.exec(index);
+  assert.ok(themeBlock, 'index.css must carry an @theme inline block');
+
+  // Everything the bridge in tokens.css defines, at any nesting level.
+  const defined = new Set([...tokens.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]));
+
+  const unresolved: string[] = [];
+  for (const m of themeBlock[1].matchAll(/^\s*(--[\w-]+)\s*:\s*var\((--[\w-]+)\)/gm)) {
+    if (!defined.has(m[2])) unresolved.push(`${m[1]} -> ${m[2]} (not defined in tokens.css)`);
+  }
+  assert.deepEqual(unresolved, [], 'every @theme inline target must exist');
+
+  // `inline` is the whole reason runtime theming survives. Without it Tailwind
+  // bakes the value in at build time, light mode stops switching, and a
+  // user-chosen accent can never reach a shadcn component.
+  assert.match(index, /@theme inline/, '@theme must be `inline`, not plain @theme');
+  // And no literal colour may appear here — values belong in tokens.css.
+  assert.doesNotMatch(themeBlock[1], /#[0-9a-fA-F]{3,8}\b|rgb|oklch|hsl/, 'no literal colours in @theme');
+});
+
+test('the shadcn bridge covers every name a primitive will ask for', () => {
+  // A missing name has the same transparent-render failure as above, but shows
+  // up later — when someone adds the first component that happens to use it.
+  const tokens = code(fs.readFileSync(path.join(UI, 'styles', 'tokens.css'), 'utf8'));
+  const REQUIRED = [
+    'background', 'foreground', 'card', 'card-foreground', 'popover', 'popover-foreground',
+    'primary', 'primary-foreground', 'secondary', 'secondary-foreground',
+    'muted', 'muted-foreground', 'accent', 'accent-foreground',
+    'destructive', 'destructive-foreground', 'border', 'input', 'ring', 'radius',
+  ];
+  const missing = REQUIRED.filter((n) => !new RegExp(`^\\s*--${n}\\s*:`, 'm').test(tokens));
+  assert.deepEqual(missing, [], 'shadcn semantic names missing from the bridge');
+
+  // Each must be an indirection, never a literal — one source of truth for values.
+  for (const n of REQUIRED) {
+    const decl = new RegExp(`^\\s*--${n}\\s*:\\s*([^;]+);`, 'm').exec(tokens);
+    assert.match(decl![1], /var\(--/, `--${n} must point at a token, not hold a value`);
+  }
 });
 
 test('components.json points the shadcn CLI at our real paths', () => {

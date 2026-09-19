@@ -418,9 +418,12 @@ button {
 .app-review__reasons {
   margin: 0.75rem 0;
   padding: 0.6rem 0.8rem;
-  /* --radius-button, not --radius-sm: Tailwind's default theme already defines
-     --radius-sm (0.25rem), so a `var(--radius-sm, 0.5rem)` fallback never
-     rendered and the corner silently came out at a quarter rem. */
+  /* --radius-button, not --radius-sm. Originally because Tailwind's default
+     theme defines --radius-sm (0.25rem), so a `var(--radius-sm, 0.5rem)`
+     fallback never rendered and the corner silently came out at a quarter rem.
+     Since Slice 2 we define --radius-sm ourselves as calc(--radius - 4px) = 6px,
+     so the hazard is gone — but --radius-button stays the honest name for
+     "the radius a control uses". */
   border-radius: var(--radius-button);
   background: var(--color-danger-subtle);
   color: var(--color-ink);
@@ -475,7 +478,10 @@ button {
 .btn--primary:hover::after { transform: translateX(130%); }
 .btn--ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--color-border); }
 .btn--ghost:hover { background: var(--color-surface-hover); }
-.btn--danger { background: var(--color-danger); color: #fff; }
+/* Ink comes from a token, not a literal #fff: on dark's --color-danger
+   (#F87171) white measures 2.77:1, well under AA — on the Remove-app and
+   "Start anyway" buttons. See --color-on-danger in tokens.css. */
+.btn--danger { background: var(--color-danger); color: var(--color-on-danger); }
 .btn--danger:hover { filter: brightness(1.08); }
 .btn--sm { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
 .btn--block { width: 100%; }

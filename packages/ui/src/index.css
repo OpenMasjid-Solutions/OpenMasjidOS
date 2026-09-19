@@ -1,3 +1,62 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* Copyright (C) 2026 OpenMasjid-Solutions */
 @import "tailwindcss";
+
+/*
+ * Tailwind v4 theme — the bridge between Tailwind's utility names and our
+ * design tokens.
+ *
+ * `@theme inline` is load-bearing. Without `inline`, Tailwind emits each value
+ * as a variable on :root and bakes it into the utility, which would FREEZE the
+ * theme at build time: `bg-background` would be a fixed dark hex, light mode
+ * would not switch it, and a user-chosen accent (applyAccent writes
+ * --color-btn inline on <html> at runtime) could never reach it. With `inline`,
+ * Tailwind emits no variable and the utility carries the var() reference
+ * straight through — `.bg-background { background-color: var(--background) }` —
+ * so data-theme and the runtime accent both keep working exactly as today.
+ *
+ * NO colour values appear here. Every name resolves to the shadcn semantic
+ * bridge in styles/tokens.css, which in turn resolves to a real token. That
+ * keeps one source of truth for values and satisfies the design gate that says
+ * colours live in tokens.css and nowhere else.
+ *
+ * Nothing renders differently for having this block: no Tailwind utility class
+ * is used anywhere in the app yet. It exists so the shadcn primitives added
+ * from Slice 5 onward land already themed.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* The radius ladder every shadcn component uses. Derived from one value so
+     changing --radius in tokens.css moves the whole set together. */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Type: the same two self-hosted families the rest of the app already uses,
+     so a shadcn component and a hand-written panel set type identically.
+     Routed through --font-body/--font-heading rather than written as
+     `--font-sans: var(--font-sans)`, which names itself on both sides and reads
+     as circular even though `inline` mode makes it resolve. */
+  --font-sans: var(--font-body);
+  --font-display: var(--font-heading);
+}
