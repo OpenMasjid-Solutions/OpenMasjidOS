@@ -403,6 +403,37 @@ button {
 }
 .tag--official { background: var(--color-primary-subtle); color: var(--color-primary); }
 .tag--custom { background: var(--color-gold-subtle); color: var(--color-gold); }
+.tag--review { background: var(--color-danger-subtle); color: var(--color-danger-ink); }
+
+/* ── Held-for-review app ────────────────────────────────────────────────── */
+/* An app whose compose arrived via a restore and did not pass the risk gate.
+   The findings are quoted from the gate, so they are set apart from our own
+   prose — an admin is being asked to agree to them and needs to see where they
+   end. Not monospaced: they are sentences ("Volume "x" attaches to another
+   OpenMasjid app's data"), not code, and a mono face made them read as an error
+   dump rather than as something to weigh. */
+.app-review__panel {
+  border-inline-start: 3px solid var(--color-danger);
+}
+.app-review__reasons {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.8rem;
+  /* --radius-button, not --radius-sm: Tailwind's default theme already defines
+     --radius-sm (0.25rem), so a `var(--radius-sm, 0.5rem)` fallback never
+     rendered and the corner silently came out at a quarter rem. */
+  border-radius: var(--radius-button);
+  background: var(--color-danger-subtle);
+  color: var(--color-ink);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  /* Logical, so the bullets sit on the correct side in RTL. */
+  padding-inline-start: 1.75rem;
+  list-style: disc;
+}
+.app-review__reasons li + li { margin-block-start: 0.35rem; }
+/* A gate finding can name a long volume or host path; wrap rather than
+   overflow the dialog. */
+.app-review__reasons li { overflow-wrap: anywhere; }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 .btn {

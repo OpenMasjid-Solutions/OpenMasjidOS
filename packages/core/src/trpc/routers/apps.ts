@@ -17,6 +17,7 @@ import {
   restartApp,
   removeApp,
   checkCatalogUpdate,
+  AppNeedsReviewError,
 } from '../../apps/manager';
 
 // App ids are used as filesystem segments + compose project names, so they are
@@ -28,6 +29,18 @@ async function wrap<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
+    // A held app is not a server fault — it is the platform asking a question,
+    // and it must reach the dashboard as one so the UI can offer the
+    // acknowledgement instead of showing "something went wrong". A refusal is
+    // FORBIDDEN because no amount of agreeing will change it; anything else is
+    // PRECONDITION_FAILED, the same code the paste-a-compose installer uses for
+    // exactly this consent step.
+    if (err instanceof AppNeedsReviewError) {
+      throw new TRPCError({
+        code: err.refusal ? 'FORBIDDEN' : 'PRECONDITION_FAILED',
+        message: err.message,
+      });
+    }
     throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
   }
 }
@@ -78,12 +91,17 @@ export const appsRouter = router({
     return out;
   }),
 
-  start: protectedProcedure.input(idInput).mutation(({ input }) =>
-    wrap(async () => {
-      await startApp(input.id);
-      return { ok: true };
-    }),
-  ),
+  // `acknowledgeRisk` is the admin's explicit consent for an app being held for
+  // review after a restore. Absent = no consent, which is the only safe default:
+  // this is the click that runs an unvetted compose as root with the Docker socket.
+  start: protectedProcedure
+    .input(z.object({ id: appId, acknowledgeRisk: z.boolean().optional() }))
+    .mutation(({ input }) =>
+      wrap(async () => {
+        await startApp(input.id, input.acknowledgeRisk ?? false);
+        return { ok: true };
+      }),
+    ),
 
   stop: protectedProcedure.input(idInput).mutation(({ input }) =>
     wrap(async () => {

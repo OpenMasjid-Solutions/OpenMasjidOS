@@ -10,6 +10,8 @@ import type { AppRouter } from '@openmasjid/core';
 export type RouterOutputs = inferRouterOutputs<AppRouter>;
 
 export type InstalledApp = RouterOutputs['apps']['list'][number];
+/** Why an app is held for review (null on the row when it is free to start). */
+export type AppReview = NonNullable<InstalledApp['review']>;
 export type CatalogApp = RouterOutputs['store']['catalog'][number];
 export type CommunityApp = RouterOutputs['community']['apps'][number];
 export type StatsSnapshot = RouterOutputs['stats']['get'];

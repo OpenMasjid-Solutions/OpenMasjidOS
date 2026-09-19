@@ -40,6 +40,7 @@ import { getSettings } from '../settings/store';
 import type { Channel } from '../system/channel';
 import type {
   AppMeta,
+  AppReview,
   InstalledApp,
   CatalogApp,
   DeclaredAlert,
@@ -730,6 +731,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       fabric: meta.sso === true || meta.notify === true,
       managed: isPlatformManaged(meta.id),
       exposed: isExposedMeta(meta),
+      review: meta.review ?? null,
       ...openTarget(meta, disc?.ports ?? []),
     });
   }
@@ -778,6 +780,11 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // other app: a recovered catalog app stays reachable, a recovered
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
+      // A recovered orphan has no compose file of ours to have vetted, and it is
+      // ALREADY running — holding it for a review we never performed would show
+      // the admin a finding that does not exist. It starts un-held, exactly as
+      // before; what keeps it honest is that it can never claim to be "Official".
+      review: null,
       ...openTarget(recovered, disc.ports),
     });
   }
@@ -991,15 +998,26 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
     // stack through the SAME risk gate a fresh install uses. We never auto-start
     // a dangerous compose (privileged, host namespaces, socket/sensitive binds…)
     // that a crafted backup could smuggle in without the usual consent (audit).
+    //
+    // The verdict is PERSISTED (`AppMeta.review`), not just printed. Declining to
+    // auto-start it here and then forgetting was the whole bug: restore writes
+    // apps/ to disk ungated, so once this stream closed the app was an ordinary
+    // Stopped card and its Start button ran the unvetted compose as root with the
+    // Docker socket — host root, with no warning at the moment of the click.
+    // `reviewCompose` also CLEARS a stale review when the compose now passes.
+    //
+    // Its own try/catch, and FAIL CLOSED: an unexpected throw here (an I/O
+    // error, an unwritable meta.json) used to abort the whole loop, which left
+    // every app after this one in the list unreviewed and unheld — one crafted
+    // entry early in the alphabet would have disarmed the gate for the rest.
+    let review: AppReview | null;
     try {
-      const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
-      const blocking = [...refusals, ...dangers];
-      if (blocking.length > 0) {
-        onLine(`  (not started — needs review: ${blocking[0]})`);
-        continue;
-      }
+      review = reviewCompose(id);
     } catch (err) {
-      onLine(`  (not started — couldn't check it safely: ${(err as Error).message})`);
+      review = { kind: 'unreadable', reasons: [(err as Error).message], at: new Date().toISOString() };
+    }
+    if (review) {
+      onLine(`  (not started — needs review: ${review.reasons[0]})`);
       continue;
     }
     // Migration fix: a backup restored onto a NEW machine carries the old
@@ -1140,7 +1158,138 @@ export function reconcilePublicUrls(): string[] {
   return changed;
 }
 
-export async function startApp(id: string): Promise<void> {
+/**
+ * Thrown when an app is held for review and something asked to start it anyway.
+ * A distinct type so each caller can say the right thing: the dashboard offers
+ * the acknowledgement, WhatsApp explicitly cannot (see `startApp`).
+ */
+export class AppNeedsReviewError extends Error {
+  readonly review: AppReview;
+  /** True when the finding can never be acknowledged, however emphatically. */
+  readonly refusal: boolean;
+  constructor(review: AppReview) {
+    super(review.reasons[0] ?? 'This app needs to be looked at before it can start.');
+    this.name = 'AppNeedsReviewError';
+    this.review = review;
+    this.refusal = review.kind === 'refusal';
+  }
+}
+
+/** Two verdicts are the same only if BOTH the kind and every reason match. */
+function sameReview(a: AppReview | null | undefined, b: AppReview | null): boolean {
+  if (!a || !b) return !a && !b;
+  return a.kind === b.kind && a.reasons.length === b.reasons.length && a.reasons.every((r, i) => r === b.reasons[i]);
+}
+
+/** The verdict for an app whose own record we cannot read. */
+const unreadableMeta = (at: string): AppReview => ({
+  kind: 'unreadable',
+  reasons: ["We couldn't read this app's record, so we couldn't check what it does."],
+  at,
+});
+
+/**
+ * Re-run the install-time risk gate over an app's on-disk compose and record the
+ * verdict on its meta. Returns the review when it is blocked, else null (having
+ * CLEARED any stale review, so an app fixed by a legitimate update or reinstall
+ * stops being held).
+ *
+ * Called wherever a compose arrives from outside our control — today that is
+ * `reupAllApps`, i.e. every restore. A file we cannot even read is treated as
+ * blocking: "couldn't check it" is not "it is fine" (CLAUDE.md §15's rule that a
+ * failure to ask records nothing applies here as a refusal to proceed).
+ */
+export function reviewCompose(id: string): AppReview | null {
+  const at = new Date().toISOString();
+
+  // Compute the verdict FIRST, from the compose alone, and never let meta.json
+  // decide whether the gate runs. meta.json arrives in the SAME backup as the
+  // compose, so making it a precondition hands the attacker an off switch: the
+  // first cut of this function opened with `loadMeta(id); if (!meta) return null`,
+  // which meant one unparseable byte in an attacker-supplied meta.json produced
+  // "no finding" and `reupAllApps` then AUTO-STARTED the unvetted stack — worse
+  // than the hole this whole change exists to close.
+  let review: AppReview | null = null;
+  try {
+    const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
+    // A refusal outranks a danger: the app can never be started, so the admin
+    // must not be shown a tickbox. Dangers are still listed, because if the
+    // refusal is ever removed they are what remains to agree to.
+    if (refusals.length > 0) review = { kind: 'refusal', reasons: [...refusals, ...dangers], at };
+    else if (dangers.length > 0) review = { kind: 'danger', reasons: dangers, at };
+  } catch (err) {
+    review = { kind: 'unreadable', reasons: [(err as Error).message], at };
+  }
+
+  const meta = loadMeta(id);
+  if (!meta) {
+    // Nowhere to persist it. Say so instead of implying there was no finding —
+    // an app whose own record is unreadable is held on that ground alone.
+    log.warn(`App ${id}: meta.json is unreadable; holding the app rather than trusting it.`);
+    return review ?? unreadableMeta(at);
+  }
+  // The persisted record is what every downstream decision reads (the start
+  // guard, the acknowledgement, the tRPC status code) — and it came out of the
+  // same backup, so the freshly COMPUTED verdict always wins. Comparing only the
+  // reason text let a pre-seeded `refusal: false` survive a genuine refusal and
+  // turn a never-acknowledgeable finding into a tickbox the admin could clear.
+  if (!sameReview(meta.review, review)) saveMeta({ ...meta, review: review ?? undefined });
+  return review;
+}
+
+/**
+ * Why this app must not be started, or null when it is free to go.
+ *
+ * Consulted inside `startApp` and `restartApp` rather than at each of their
+ * callers. The bug this closes existed because a verdict was computed in one
+ * place and acted on nowhere; putting the check at the four call sites (tRPC,
+ * WhatsApp `!os start`, and the exposure toggle twice) would be the same mistake
+ * with more steps — the fifth caller is always the one that gets forgotten.
+ *
+ * BOTH functions, not just `startApp`: `composeRestart` starts a stopped
+ * container, so "restart" is a start path. `stopApp` is deliberately NOT guarded
+ * — stopping a held app is exactly what you want to be able to do.
+ */
+export function startBlockedReason(id: string): AppReview | null {
+  const meta = loadMeta(id);
+  if (meta) return meta.review ?? null;
+  // FAIL CLOSED when the record exists but will not parse: meta.json is now
+  // security state, it arrives in the backup, and "we couldn't read it" must
+  // never read as "there is nothing to worry about" (§15's rule, applied to a
+  // file rather than to Docker). A record that is absent entirely is a different
+  // thing — the app is not installed — and is left to the caller's own error path.
+  if (fs.existsSync(metaPath(id))) return unreadableMeta(new Date().toISOString());
+  return null;
+}
+
+/** Record the admin's explicit "I understand the risk" for a held app, freeing
+ *  it to start. Refusals are NEVER acknowledgeable — the same rule the custom
+ *  (paste-a-compose) installer applies, for the same reason: a stack reaching
+ *  into another app's data cannot be consented into safety. */
+export function acknowledgeReview(id: string): void {
+  const meta = loadMeta(id);
+  if (!meta?.review) return;
+  if (meta.review.kind === 'refusal') throw new AppNeedsReviewError(meta.review);
+  log.warn(`App ${id}: admin acknowledged a held compose — ${meta.review.reasons.join('; ')}`);
+  saveMeta({ ...meta, review: undefined });
+}
+
+/**
+ * Start an app.
+ *
+ * `acknowledgeRisk` is the admin's explicit consent, and ONLY the dashboard
+ * passes it. A WhatsApp `!os start` deliberately cannot: possession of a phone
+ * already authorises a lot (§13.2b-iii), and consenting to a `privileged: true`
+ * compose on a daemon running as root with the Docker socket is not something a
+ * chat message should be able to do. That path gets the refusal and a pointer to
+ * the dashboard, which is where a person can actually read what they are agreeing to.
+ */
+export async function startApp(id: string, acknowledgeRisk = false): Promise<void> {
+  const held = startBlockedReason(id);
+  if (held) {
+    if (!acknowledgeRisk || held.kind === 'refusal') throw new AppNeedsReviewError(held);
+    acknowledgeReview(id);
+  }
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
   if (fs.existsSync(composePath(id))) {
@@ -1156,6 +1305,14 @@ export async function stopApp(id: string): Promise<void> {
 }
 
 export async function restartApp(id: string): Promise<void> {
+  // `docker compose restart` STARTS a stopped container, so this is a start path
+  // too — it simply doesn't re-read the compose file. Guarding only `startApp`
+  // left `!os restart` able to run a held app from the very phone that is
+  // deliberately not allowed to consent to one, using the neighbouring verb.
+  // There is no `acknowledgeRisk` here on purpose: agreeing is Start's job, and
+  // a Restart that silently doubled as consent would be the same trap again.
+  const held = startBlockedReason(id);
+  if (held) throw new AppNeedsReviewError(held);
   suppressOfflineAlert(id); // brief intended downtime
   await composeRestart(projectOf(id));
 }
@@ -1470,6 +1627,11 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     // The app now tracks the selected channel. Written on every update so a switch
     // converges: once each app has been through here, none are pending.
     channel,
+    // This compose is FRESH catalogue data that has just been through the risk
+    // gate above and then actually started, so any review held against the file
+    // it replaced no longer describes anything on disk. Leaving a stale hold here
+    // would make "update the app" the one fix an admin cannot apply.
+    review: undefined,
   });
 
   // Start (or tear down) the per-app HTTPS proxy to match the new state.

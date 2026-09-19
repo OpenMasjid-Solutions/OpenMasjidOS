@@ -21,6 +21,7 @@ import {
   Trash2,
   ScrollText,
   SquareTerminal,
+  ShieldAlert,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { usePrefs, prefsStore } from '../lib/prefs';
@@ -28,6 +29,7 @@ import { openApp } from '../lib/apps';
 import { AppIcon } from './AppIcon';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
+import { AppReviewDialog } from './AppReviewDialog';
 import { LazyTerminal } from './LazyTerminal';
 import { AppLogs } from './AppLogs';
 import { AppUpdate } from './AppUpdate';
@@ -52,6 +54,8 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [riskAck, setRiskAck] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string } | null>(null);
@@ -128,9 +132,25 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
   }, [menuOpen]);
 
   const refresh = () => utils.apps.list.invalidate();
-  const start = trpc.apps.start.useMutation({ onSuccess: refresh });
+  const start = trpc.apps.start.useMutation({
+    onSuccess: () => {
+      refresh();
+      setReviewOpen(false);
+      setRiskAck(false);
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
   const stop = trpc.apps.stop.useMutation({ onSuccess: refresh });
   const restart = trpc.apps.restart.useMutation({ onSuccess: refresh });
+
+  // An app held for review after a restore never starts from a plain click. Its
+  // compose was written to disk by the restore WITHOUT passing the risk gate, so
+  // this is the point at which a person has to read what it asks for and agree.
+  const held = app.review;
+  const startOrReview = useCallback(() => {
+    if (held) setReviewOpen(true);
+    else start.mutate({ id: app.id });
+  }, [held, start, app.id]);
   const remove = trpc.apps.remove.useMutation({
     onSuccess: () => {
       refresh();
@@ -182,6 +202,14 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
             <div className="app-meta">
               <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
               <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
+              {/* A held app looks exactly like an ordinary stopped one without
+                  this, which is precisely how its Start button became a way to
+                  run an unvetted compose. Say so on the card face. */}
+              {held && (
+                <span className="tag tag--review" title={held.reasons.join('\n')}>
+                  {t(held.kind === 'refusal' ? 'appReview.badgeRefused' : 'appReview.badge')}
+                </span>
+              )}
             </div>
           </div>
 
@@ -206,8 +234,16 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
                     </button>
                   </>
                 ) : (
-                  <button className="menu-item" onClick={() => { close(); start.mutate({ id: app.id }); }}>
-                    <Play size={16} /> {t('actions.start')}
+                  <button className="menu-item" onClick={() => { close(); startOrReview(); }}>
+                    {held ? <ShieldAlert size={16} /> : <Play size={16} />}
+                    {/* A refusal can never be agreed to, so offering "Start
+                        anyway" would promise something the server will refuse.
+                        Offer the explanation instead. */}
+                    {!held
+                      ? t('actions.start')
+                      : held.kind === 'refusal'
+                        ? t('appReview.whyBlocked')
+                        : t('appReview.startAnyway')}
                   </button>
                 )}
                 {webTerminal && app.running && (
@@ -270,6 +306,23 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
           </div>
         )}
       </Modal>
+
+      {/* Closing must clear the tick, exactly as the removal dialog does — a
+          checkbox left on from a previous app would put an unvetted, root-capable
+          stack one click away in a dialog the admin believes they see fresh. */}
+      <AppReviewDialog
+        open={reviewOpen}
+        appName={app.name}
+        review={held}
+        pending={start.isPending}
+        acknowledged={riskAck}
+        onAcknowledgedChange={setRiskAck}
+        onConfirm={() => start.mutate({ id: app.id, acknowledgeRisk: true })}
+        onClose={() => {
+          setReviewOpen(false);
+          setRiskAck(false);
+        }}
+      />
 
       <Modal open={!!updateInfo} onClose={() => setUpdateInfo(null)} title={t('appCard.updateTitle', { name: app.name })}>
         <p>{t('appCard.updateBody', { current: updateInfo?.current ?? '', latest: updateInfo?.latest ?? '' })}</p>

@@ -245,6 +245,46 @@ export interface AppMeta {
    * needing a channel switch it does not actually need.
    */
   channel?: 'main' | 'dev';
+  /**
+   * Set when this app's compose failed the risk gate and NO human has agreed to
+   * it since. The app must not start until an admin acknowledges it.
+   *
+   * This field exists because a restore writes `apps/` straight to disk without
+   * passing `compose-validate` (`system/restore.ts` rmSync + renameSync). The
+   * gate ran afterwards in `reupAllApps`, which correctly refused to auto-start
+   * a dangerous stack — and then threw the verdict away, leaving an ordinary
+   * Stopped card whose Start button ran the unvetted compose as root with the
+   * Docker socket. Persisting the verdict is what turns "we declined to start
+   * it once" into "nobody starts it until someone looks".
+   *
+   * `undefined` means no gate has ever objected — the grandfathered state, and
+   * the right default: every path that CAN object now writes this field, so
+   * absence is genuinely "no finding", not "never asked".
+   */
+  review?: AppReview;
+}
+
+/**
+ * Why an app is held for review.
+ *
+ * `kind` decides whether consent is even possible, so it is a field of its own
+ * rather than something inferred from the text:
+ *  - `danger`     — powerful permissions the admin MAY agree to (as at install).
+ *  - `refusal`    — reaching into another app's data. NEVER acknowledgeable.
+ *  - `unreadable` — we could not check it at all. Acknowledgeable, because a
+ *                   masjid must not be locked out permanently by our own parser,
+ *                   but the wording must say plainly that nothing was verified.
+ */
+export interface AppReview {
+  kind: 'danger' | 'refusal' | 'unreadable';
+  /**
+   * EVERY blocking finding, in the gate's own words — not just the first.
+   * Agreeing to one of five risks is not agreeing to the app, and a dialog that
+   * shows one of them is asking for consent the admin has not actually given.
+   */
+  reasons: string[];
+  /** ISO timestamp of the check that recorded this. */
+  at: string;
 }
 
 /** What the dashboard sees for each installed app. */
@@ -279,4 +319,10 @@ export interface InstalledApp {
    * using them directly breaks the invariant the platform is maintaining on their behalf.
    */
   managed: boolean;
+  /**
+   * Why this app is held for review, or null when it is free to start. Mirrors
+   * `AppMeta.review` (see there for why it exists). The dashboard shows a badge
+   * and puts an explicit risk acknowledgement in front of Start.
+   */
+  review: AppReview | null;
 }

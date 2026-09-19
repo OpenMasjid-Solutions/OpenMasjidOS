@@ -199,6 +199,23 @@
     "community": "Community",
     "custom": "Custom"
   },
+  "appReview": {
+    "badge": "Needs review",
+    "badgeRefused": "Can't be started",
+    "panelTitle": "This app needs a look before it can start",
+    "panelTitleRefused": "This app can't be started",
+    "title": "Start {{name}}?",
+    "refusedTitle": "{{name}} can't be started",
+    "bodyDanger": "This app came back in a restore, and it asks for permissions that most apps don't need. OpenMasjidOS hasn't started it, because those permissions would give it a lot of control over this machine.",
+    "bodyRefusal": "This app came back in a restore, and it tries to open another app's data. OpenMasjidOS never allows that — not even if you agree to it — so this app can't be started.",
+    "bodyUnreadable": "This app came back in a restore, but OpenMasjidOS couldn't read its setup file, so there was no way to check what it does. It hasn't been started.",
+    "refusedNext": "If you still need this app, ask whoever gave you the backup for a version that doesn't reach into other apps. You can remove it from the ⋯ menu.",
+    "provenance": "If you know where this backup came from and you trust it, you can start the app. If you're not sure, leave it off and ask whoever gave you the backup.",
+    "ack": "I understand the risk and want to start it anyway.",
+    "startAnyway": "Start anyway",
+    "whyBlocked": "Why it can't start",
+    "starting": "Starting the app…"
+  },
   "appCard": {
     "removeTitle": "Remove {{name}}?",
     "removeBody": "This turns the app off and removes it from your dashboard.",

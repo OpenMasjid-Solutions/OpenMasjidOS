@@ -13,7 +13,81 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-_Nothing yet since 0.51.1._
+### Security
+
+- **An app restored from a backup can no longer be started without someone agreeing to it.**
+  A restore writes `apps/` straight to disk **without** passing the install-time risk gate
+  (`system/restore.ts` `rmSync` + `renameSync`). The gate ran afterwards in `reupAllApps`,
+  which correctly refused to auto-start a dangerous stack — and then threw the verdict away,
+  leaving an ordinary Stopped card whose Start button ran the unvetted compose. The core runs
+  as root with the Docker socket, so a `privileged: true` smuggled into a handed-over backup
+  was host root, with no warning at the moment of the click. The same ungated entry was
+  reachable from `!os start` over WhatsApp and from the exposure toggle.
+  - The verdict is now **persisted** (`AppMeta.review` = `{kind, reasons[], at}`) and cleared
+    again whenever a compose passes, so a legitimate update or a corrected file is a way out
+    rather than a dead end.
+  - `startApp` **and `restartApp`** consult the guard themselves rather than each of their
+    callers. Both, because `docker compose restart` starts a *stopped* container — so
+    "restart" is a start path, and guarding only `startApp` left `!os restart` as a way round
+    `!os start`. `stopApp` is deliberately not guarded.
+  - Refusals (reaching into another app's `omos-*` volume) stay **never acknowledgeable**;
+    a `danger` an app was legitimately installed with stays startable, as before.
+  - **WhatsApp cannot acknowledge.** Possession of a phone must not be enough to consent to a
+    root-capable compose, so `!os start` reports the hold and points at the dashboard.
+  - Honest residual: an app restored by an **older** build carries no marker and stays
+    startable; it gains one the next time a restore runs.
+- New `test/app-review-gate.test.ts` (21 tests, registered, all eight defects below
+  mutation-checked — each bug reintroduced, the test confirmed failing, then restored).
+
+### Fixed during review of the above
+
+An adversarial review of the first cut found four real defects in it, including one that made
+things **worse** than the bug being fixed. Recorded because they are the interesting part:
+
+- **The gate could be switched off by the attacker.** `reviewCompose` began with
+  `loadMeta(id); if (!meta) return null` — and `meta.json` arrives in the *same* backup as the
+  compose. One unparseable byte therefore produced "no finding", and the restore went on to
+  **auto-start** the privileged stack, needing no click at all. The compose is now checked
+  first and independently; `startBlockedReason` fails closed on the same input.
+- **A pre-seeded verdict could downgrade a refusal to a tickbox.** The write was skipped when
+  the reason *text* matched, so a crafted `kind: 'danger'` survived a real refusal. The
+  computed verdict now always wins (kind and every reason compared).
+- **`restartApp` was an unguarded start path** (above).
+- **A throw in the review loop disarmed the gate for every later app.** Each app's review is
+  now its own try/catch, failing closed.
+- Also: only the first finding was persisted, so "I understand the risk" collected consent for
+  a fraction of it; the dialog offered a tickbox for refusals, which the server always
+  refuses, leaving the admin in a loop; and the body text claimed an app "asks for powerful
+  permissions" even when the truth was that we could not parse the file at all.
+- One of the *tests* had the same flaw it was written to catch: it matched
+  `startApp(target.id)` as a substring of `restartApp(target.id)`, so it could never fire.
+
+### Docs
+
+- **`CLAUDE.md` §15: three claims corrected.** Each asserted a containment that does not hold,
+  which is worse than a documented gap because it is what stops anyone re-examining it.
+  - The `startApp` bullet said restore passes the compose gate. It does not (above).
+  - The "could not ask Docker" bullet said the lossy `listInstalled()` feeds only display
+    paths. `system/address-monitor.ts` and `restoreAppProxies` both still **decide** from it —
+    now recorded as open, rather than implied fixed by a count.
+  - The Stripe bullet said a per-app account binding "changes the app-facing Fabric contract"
+    and needs a coordinated cross-repo change. An **admin-recorded** binding is purely
+    platform-side and changes nothing an app calls; only a manifest-declared one would.
+    That framing is what has deferred the gap since 2026-07-30.
+
+### UI
+
+- Apps held for review carry a tag on the card and a panel on their page listing **every**
+  thing the app asked for, in the gate's own words. Start opens a confirmation that has to be
+  ticked — one shared `AppReviewDialog`, because a consent step that differed between the two
+  Start buttons would be a security difference decided by which one the admin happened to press.
+- An app that can **never** start (it reaches into another app's data) says so instead: the
+  tag reads "Can't be started", the action reads "Why it can't start", and the dialog explains
+  and offers only Close. There is no tickbox, because ticking it could never have worked.
+- New `--color-danger-subtle` and `--color-danger-ink` tokens in both themes. The ink is
+  separate because the themes need different answers: on the wash, dark's `#F87171` measures
+  4.99–6.19:1 but light's `#DC2626` only 3.84–4.19:1, under AA for the tag's small bold text.
+  Light now uses `#B91C1C` (5.14–5.61:1).
 
 ## 0.51.1
 

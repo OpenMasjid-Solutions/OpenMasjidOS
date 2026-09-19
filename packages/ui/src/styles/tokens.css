@@ -26,6 +26,14 @@
   --color-accent: #F59E0B;
   --color-gold: #F59E0B;
   --color-gold-subtle: rgba(245, 158, 11, 0.1);
+  /* Subtle danger wash, same recipe as the primary/gold subtles above. Used
+     behind the "needs review" tag and panel on an app held after a restore.
+     `--color-danger-ink` is the TEXT colour on that wash, and is a separate
+     token because the two themes need different answers: measured on the wash
+     over each surface, dark's #F87171 reaches 4.99–6.19:1, while light's
+     #DC2626 only reaches 3.84–4.19:1 — under AA for the 10.9px bold tag. */
+  --color-danger-subtle: rgba(248, 113, 113, 0.12);
+  --color-danger-ink: #F87171;
 
   --color-ink: #F4F7FB;
   --color-ink-muted: #9FACC2;
@@ -105,6 +113,9 @@
   --color-accent: #D97706;
   --color-gold: #D97706;
   --color-gold-subtle: rgba(217, 119, 6, 0.08);
+  --color-danger-subtle: rgba(220, 38, 38, 0.09);
+  /* Red-700, not --color-danger's red-600: 5.14–5.61:1 on the wash. */
+  --color-danger-ink: #B91C1C;
 
   --color-ink: #0C4A6E;
   --color-ink-muted: #475569;

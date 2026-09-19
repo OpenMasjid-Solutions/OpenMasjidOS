@@ -20,6 +20,7 @@ import { log } from '../logger';
 import { maskDigits } from '../util/phone';
 import { collectStats } from '../stats/collector';
 import {
+  AppNeedsReviewError,
   checkCatalogUpdate,
   listInstalled,
   restartApp,
@@ -401,6 +402,17 @@ async function runOsVerb(command: CommandEntry, target: { id: string; name: stri
       // admin into retrying the very thing that is already running.
       log.warn(`WhatsApp commands: "${command.id}" from ${maskDigits(ctx.digits)} — refused (already running).`);
       return ctx.reply(say.busy(err.message));
+    }
+    if (err instanceof AppNeedsReviewError) {
+      // Deliberately NOT offerable over WhatsApp. Consenting to a compose that
+      // asked for powerful permissions is a decision someone has to read first,
+      // and the core runs as root with the Docker socket — so possession of a
+      // phone must not be enough to make it. Say what is wrong and where to go.
+      log.warn(`WhatsApp commands: "${command.id}" on ${target.id} — held for review.`);
+      return ctx.reply(
+        `I can't start ${target.name} yet. It asks for powerful permissions, so someone ` +
+          'needs to look at it and agree on the dashboard first.',
+      );
     }
     log.warn(`WhatsApp commands: "${command.id}" on ${target.id} failed — ${(err as Error).message}`);
     return ctx.reply(`I couldn't ${command.id} ${target.name}. Have a look on the dashboard.`);
