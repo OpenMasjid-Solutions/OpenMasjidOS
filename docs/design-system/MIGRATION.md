@@ -13,7 +13,7 @@ and primitives — see [CONSUMING.md](./CONSUMING.md).
 |---|---|---|
 | 1 | Foundation — shadcn init, `cn()`, CI gates | ✅ done |
 | 2 | `theme.css` — tokens mapped to Tailwind v4 `@theme` | ✅ done |
-| 3 | `@openmasjid/ui` package contract + `ui-manifest.json` | ⬜ |
+| 3 | `@openmasjid/ui` package contract + `ui-manifest.json` | ✅ done |
 | 4 | `/design-system` gallery — light+dark, LTR+RTL | ⬜ |
 | 5 | Primitives A — Button, Card, Input, Label | ⬜ |
 | 6 | Primitives B — Dialog, Dropdown, Tooltip, Popover | ⬜ |
@@ -146,3 +146,60 @@ So **danger buttons in dark mode now have dark text instead of white.** That is 
    identical to before. Any other visual difference is a bug in this slice.
 3. `npm run lint` → clean. `npm run build` → clean.
 4. `wsl -d Ubuntu -e bash -lc 'bash ~/omos-sync.sh && cd ~/omos && npm run test'` → 632 pass.
+
+---
+
+## Slice 3 — Package contract
+
+**Shipped.** No visual change. `packages/ui` now has a public surface other apps can consume,
+carved out of the app it also contains.
+
+**Added**
+- `src/styles/design-system.css` — the whole design system in one import, in the one order that
+  works. **OpenMasjidOS now imports this instead of its own list**, so the path other apps
+  depend on is exercised by every build here. An export nobody dogfoods is an export nobody
+  tests, and a gate enforces the dogfooding.
+- `src/index.ts` — the code barrel. Exports `cn` and nothing else yet, which is honest: the
+  primitives land in Slices 5–10 and motion in Slice 11.
+- `ui-manifest.json` — the machine-readable contract: entry points, stylesheet order, semantic
+  token names, exports, primitives, and the gate budgets.
+- `exports` map in `package.json` — four subpaths, **no wildcard**. The dashboard's own
+  entry points (`main.tsx`, `App.tsx`, `routes/`, the tRPC client, the window manager) stay
+  internal; they are OpenMasjidOS features, not a design system.
+
+**Changed**
+- The five gate budgets now **read from `ui-manifest.json`** instead of being written in the
+  test. Two copies of a number is one place to forget, and the manifest is the file a
+  downstream app reads — so it is the one that has to be right.
+- `main.tsx` imports the aggregate rather than six separate stylesheets.
+
+**Proving the aggregate is equivalent.** Switching the import graph changed the built CSS from
+49,188 to 48,070 bytes, which is not "no change" and needed explaining. Diffed at rule level:
+the differences are purely Lightning CSS optimising harder now that it sees one document —
+`#FFFFFF`→`#fff`, `U+0460`→`U+460`, whitespace. At selector level exactly three differ, all
+equivalent: an `@supports` condition with its two operands swapped, and `.scene--image:before`
++ `:after` merged into one rule. **No rule lost, 1,118 bytes saved.**
+
+**Six new gates** (all mutation-checked): stylesheet order matches the manifest; OpenMasjidOS
+dogfoods the aggregate; every manifest token exists in the bridge; `index.ts` and
+`manifest.exports` agree; `components/ui/` and `manifest.primitives` agree (empty until Slice
+5, and the thing that stops a component being installed and never recorded); and the exports
+map has no wildcard and leaks no internals.
+
+**One bug worth recording.** Appending the tests via a shell heredoc silently ate a backslash:
+`\s` became `\s`, which inside a template literal collapses to a literal `s`, so the regex was
+`^s*--backgrounds*:` and could never match. The test failed loudly here — but the same mangling
+in a `doesNotMatch` would have passed forever. The project handoff already warns that heredocs
+mangle backslashes; **write test files with the Write tool, not by appending through a shell.**
+
+**Verification:** lint clean · build clean · **638/638** in WSL (632 + 6).
+
+### What to test
+
+1. `npm run dev` → dashboard **visually identical**, fonts included. The font loading path
+   changed (JS import → CSS `@import`), so specifically check that Inter and Space Grotesk
+   still render — headings should be Space Grotesk, body Inter, not a system fallback.
+2. Dark/light, all five accents, all nine wallpapers — unchanged.
+3. `npm run build` → clean, and `packages/ui/dist/assets/*.css` should be ~48 KB.
+4. `wsl -d Ubuntu -e bash -lc 'bash ~/omos-sync.sh && cd ~/omos && npm run test'` → 638 pass.
+5. *Optional:* open `packages/ui/ui-manifest.json` — that is the contract other apps read.

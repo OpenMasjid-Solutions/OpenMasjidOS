@@ -7,9 +7,9 @@
 the Website. OpenMasjidOS is the reference implementation; this page is how you get the same
 look without re-deciding anything.
 
-> **Status: not ready to consume yet.** The package contract lands in Slice 3 and the
-> primitives in Slices 5–11. This page is written as those land so nobody has to reverse
-> engineer it later. Follow [MIGRATION.md](./MIGRATION.md) for what is actually available.
+> **Status: the contract exists (Slice 3); the primitives do not yet (Slices 5–11).**
+> You can adopt the theme today. `cn` is the only code export so far. Check
+> [MIGRATION.md](./MIGRATION.md) before planning around anything else.
 
 ---
 
@@ -19,6 +19,51 @@ look without re-deciding anything.
 2. You import one stylesheet. You do not define colours, fonts or radii anywhere in your app.
 3. You use the logical direction utilities. A CI gate enforces it.
 4. If shadcn has a primitive, you use it. You do not write your own.
+
+## How to adopt it
+
+```ts
+// your app's entry point — one import, and the order inside is handled for you
+import '@openmasjid/ui/styles.css';
+
+// code
+import { cn } from '@openmasjid/ui';
+```
+
+That single stylesheet pulls in, in the one order that works: the two self-hosted font
+families, Tailwind + the `@theme` bridge, the tokens, then the glass and component layers.
+**Order is load-bearing and silent when wrong** — `tokens.css` must load after Tailwind or
+Tailwind's own `:root` output wins and your app renders the wrong theme with no error
+anywhere. That is exactly why it is one file and not a list you copy.
+
+OpenMasjidOS imports this same file, so the path you depend on is exercised by every build of
+the reference app rather than only by whoever adopts it first.
+
+### What you may import
+
+| Subpath | What |
+|---|---|
+| `@openmasjid/ui` | code — `cn` today, primitives and motion as they land |
+| `@openmasjid/ui/styles.css` | the whole design system, correctly ordered |
+| `@openmasjid/ui/tokens.css` | tokens only, if you genuinely need them alone |
+| `@openmasjid/ui/ui-manifest.json` | the machine-readable contract (below) |
+
+**There is no wildcard subpath and there will not be one.** Deep imports into `src/` are not
+supported: they would make our file layout part of your build, so a rename here would break six
+repos at once. A gate refuses to add one.
+
+The OpenMasjidOS dashboard's own entry points — `main.tsx`, `App.tsx`, `routes/`, the tRPC
+client, the window manager, the preference store — are deliberately **not** exported. They are
+OpenMasjidOS features, not a design system; exporting them would hand your app a desktop
+metaphor it never asked for.
+
+### `ui-manifest.json` — the contract
+
+`packages/ui/ui-manifest.json` is authoritative and machine-readable: entry points, the
+stylesheet order, the semantic token names, what is exported, which primitives exist, and the
+gate budgets. The gates **read their budgets from it** rather than keeping their own copy, so
+the published contract and the enforced behaviour cannot drift. Read it to find out what this
+design system guarantees; a CI check in your app can read it too.
 
 ## What you must not do
 

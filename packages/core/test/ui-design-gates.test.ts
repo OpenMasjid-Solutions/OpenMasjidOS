@@ -32,6 +32,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const UI = path.join(__dirname, '..', '..', 'ui', 'src');
+const PKG = path.join(__dirname, '..', '..', 'ui');
+
+/**
+ * `ui-manifest.json` is the authoritative contract, and the budgets below are
+ * read FROM it rather than duplicated here. Two copies of the same number is two
+ * places to update and one place to forget — and the manifest is the file a
+ * downstream app reads to learn what this design system guarantees, so it is
+ * the one that has to be right.
+ */
+const manifest = JSON.parse(fs.readFileSync(path.join(PKG, 'ui-manifest.json'), 'utf8'));
+const budget: Record<string, number> = manifest.gateBudgets;
 
 /** Every file under packages/ui/src with one of these extensions. */
 function walk(dir: string, exts: string[], out: string[] = []): string[] {
@@ -66,7 +77,7 @@ function ratchet(name: string, found: string[], budget: number, hint: string): v
   if (n < budget) {
     assert.fail(
       `${name}: down to ${n} from a budget of ${budget} — nice. ` +
-        `Lower the budget in test/ui-design-gates.test.ts to ${n} so it cannot creep back.`,
+        `Lower it to ${n} in packages/ui/ui-manifest.json (gateBudgets) so it cannot creep back.`,
     );
   }
 }
@@ -88,7 +99,7 @@ test('no physical-direction Tailwind utilities, ever', () => {
   ratchet(
     'physical Tailwind utilities',
     found,
-    0,
+    budget.physicalTailwindUtilities,
     'Use the logical form instead: ms-/me- (not ml-/mr-), ps-/pe- (not pl-/pr-), ' +
       'start-/end- (not left-/right-), text-start/text-end, border-s/border-e, rounded-s/rounded-e.',
   );
@@ -118,7 +129,7 @@ test('physical-direction CSS properties stay at their known four', () => {
   ratchet(
     'physical-direction CSS/inline properties',
     found,
-    4,
+    budget.physicalCssProperties,
     'Use logical properties: inset-inline-start, margin-inline, padding-inline, ' +
       'border-inline, text-align: start|end.',
   );
@@ -138,7 +149,7 @@ test('colours are defined in tokens.css and nowhere else', () => {
   ratchet(
     'raw hex colours outside tokens.css',
     found,
-    9,
+    budget.rawHexOutsideTokens,
     'Add a token in styles/tokens.css (both themes) and reference it with var().',
   );
 });
@@ -156,7 +167,7 @@ test('the type stack is set in tokens.css and inherited everywhere else', () => 
   ratchet(
     'hardcoded font stacks outside tokens.css',
     found,
-    3,
+    budget.fontStacksOutsideTokens,
     'Add a --font-* token in tokens.css and use var(--font-mono) / var(--font-sans).',
   );
 });
@@ -175,7 +186,7 @@ test('keyframes stay where they are and do not multiply', () => {
   ratchet(
     '@keyframes definitions',
     found,
-    5,
+    budget.keyframes,
     'Prefer a shared preset from lib/motion.ts. If a keyframe is genuinely needed, ' +
       'it must also be disabled under prefers-reduced-motion in the same file.',
   );
@@ -262,4 +273,80 @@ test('components.json points the shadcn CLI at our real paths', () => {
   // every added component imports a module that does not exist.
   assert.equal(cfg.aliases.utils, '@/lib/cn');
   assert.equal(cfg.iconLibrary, 'lucide', 'lucide-react is already a dependency');
+});
+
+// ── The package contract ───────────────────────────────────────────────────
+
+test('the manifest describes the real stylesheet order', () => {
+  // Order is load-bearing and silent when wrong: tokens.css must come AFTER
+  // Tailwind or its :root output wins, and the app renders the wrong theme with
+  // no error anywhere. The manifest is what a downstream app reads, so it has to
+  // match the file OpenMasjidOS actually loads.
+  const css = fs.readFileSync(path.join(UI, 'styles', 'design-system.css'), 'utf8');
+  const actual = [...css.matchAll(/@import\s+"([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(actual, manifest.stylesheetOrder, 'design-system.css order must match the manifest');
+});
+
+test('OpenMasjidOS loads the same stylesheet it asks other apps to load', () => {
+  // An export nobody dogfoods is an export nobody tests. If the dashboard kept
+  // its own list of stylesheets, the aggregate could rot for months and the
+  // first app to adopt it would find out.
+  const main = code(fs.readFileSync(path.join(UI, 'main.tsx'), 'utf8'));
+  assert.match(main, /import '\.\/styles\/design-system\.css'/, 'main.tsx must import the aggregate');
+  for (const sheet of ['tokens.css', 'glass.css', 'app.css']) {
+    assert.doesNotMatch(
+      main,
+      new RegExp(`import '\\./styles/${sheet.replace('.', '\\.')}'`),
+      `main.tsx must not import ${sheet} separately — the aggregate owns the order`,
+    );
+  }
+});
+
+test('the manifest lists exactly the semantic tokens the bridge defines', () => {
+  const tokens = code(fs.readFileSync(path.join(UI, 'styles', 'tokens.css'), 'utf8'));
+  const missing = manifest.theme.semanticTokens.filter(
+    (n: string) => !new RegExp(`^\\s*--${n}\\s*:`, 'm').test(tokens),
+  );
+  assert.deepEqual(missing, [], 'manifest names a semantic token the bridge does not define');
+});
+
+test('the manifest lists exactly what index.ts exports', () => {
+  // Drift here is how a downstream app imports something that is not there, or
+  // stops importing something we still maintain. Both are cheap to prevent.
+  const index = code(fs.readFileSync(path.join(UI, 'index.ts'), 'utf8'));
+  const named = new Set<string>();
+  for (const m of index.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop()!.trim();
+      if (name) named.add(name);
+    }
+  }
+  assert.deepEqual([...named].sort(), [...manifest.exports].sort(), 'index.ts and manifest.exports disagree');
+});
+
+test('the manifest lists exactly the primitives on disk', () => {
+  // Empty until Slice 5. From then on this is what stops a component being
+  // installed by the CLI and never recorded in the contract.
+  const dir = path.join(UI, 'components', 'ui');
+  const onDisk = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((f) => f.endsWith('.tsx')).map((f) => f.replace(/\.tsx$/, '')).sort()
+    : [];
+  assert.deepEqual(onDisk, [...manifest.primitives].sort(), 'components/ui and manifest.primitives disagree');
+});
+
+test('the package exports a surface, not its internals', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, '@openmasjid/ui');
+  assert.equal(pkg.exports['.'], manifest.entry.index);
+  assert.equal(pkg.exports['./styles.css'], manifest.entry.styles);
+  // The dashboard's own entry points must never become importable: they are
+  // OpenMasjidOS features, and exporting them would hand every other app a
+  // desktop metaphor, a window manager and a tRPC client it did not ask for.
+  const surface = JSON.stringify(pkg.exports);
+  for (const internal of ['main.tsx', 'App.tsx', 'routes/', 'lib/trpc', 'components/Windows']) {
+    assert.doesNotMatch(surface, new RegExp(internal.replace('/', '\/')), `${internal} must stay internal`);
+  }
+  // No wildcard subpath: `"./*": "./src/*"` would re-open every deep import and
+  // make our file layout part of six other repos' build.
+  assert.ok(!Object.keys(pkg.exports).some((k) => k.includes('*')), 'no wildcard export subpaths');
 });

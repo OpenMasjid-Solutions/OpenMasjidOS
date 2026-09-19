@@ -2,12 +2,11 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import '@fontsource-variable/inter';
-import '@fontsource-variable/space-grotesk';
-import './index.css';
-import './styles/tokens.css';
-import './styles/glass.css';
-import './styles/app.css';
+// The whole design system, in the one order that works. Deliberately the SAME
+// entry point every other OpenMasjid app imports (`@openmasjid/ui/styles.css`),
+// so the path they depend on is exercised by every build of this app rather
+// than only by whoever adopts it first.
+import './styles/design-system.css';
 import './lib/i18n';
 import { prefsStore } from './lib/prefs';
 import { installCursorFx } from './lib/cursorFx';

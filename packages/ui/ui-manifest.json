@@ -1,0 +1,73 @@
+{
+  "_comment": [
+    "The machine-readable contract for @openmasjid/ui. This file is AUTHORITATIVE:",
+    "packages/core/test/ui-design-gates.test.ts reads it and checks the code against it,",
+    "rather than the two carrying separate copies of the same numbers.",
+    "A downstream app can read it to learn what the design system guarantees.",
+    "Update it in the same commit as the change it describes."
+  ],
+  "manifestVersion": 1,
+  "package": "@openmasjid/ui",
+  "basis": {
+    "components": "shadcn/ui",
+    "primitives": "radix-ui",
+    "css": "tailwindcss@4",
+    "icons": "lucide-react",
+    "note": "React Bits Pro was evaluated and rejected on licensing — see docs/design-system/PREREQUISITES.md §1"
+  },
+  "entry": {
+    "index": "./src/index.ts",
+    "styles": "./src/styles/design-system.css"
+  },
+  "stylesheetOrder": [
+    "@fontsource-variable/inter",
+    "@fontsource-variable/space-grotesk",
+    "../index.css",
+    "./tokens.css",
+    "./glass.css",
+    "./app.css"
+  ],
+  "theme": {
+    "radius": "var(--radius-button)",
+    "defaultScheme": "dark",
+    "accent": {
+      "light": "#0284C7",
+      "dark": "#22D3EE",
+      "runtime": "applyAccent writes --color-primary, --color-btn and --color-on-primary inline on <html>, which beats the stylesheet. Never assume the stylesheet value is the live one."
+    },
+    "semanticTokens": [
+      "background",
+      "foreground",
+      "card",
+      "card-foreground",
+      "popover",
+      "popover-foreground",
+      "primary",
+      "primary-foreground",
+      "secondary",
+      "secondary-foreground",
+      "muted",
+      "muted-foreground",
+      "accent",
+      "accent-foreground",
+      "destructive",
+      "destructive-foreground",
+      "border",
+      "input",
+      "ring",
+      "radius"
+    ]
+  },
+  "exports": ["cn"],
+  "primitives": [],
+  "wrappers": [],
+  "motion": [],
+  "gateBudgets": {
+    "_comment": "Each is the current measured count. Ratchets: exceeding one is a regression, going under asks you to lower it here so the win cannot be spent again.",
+    "physicalTailwindUtilities": 0,
+    "physicalCssProperties": 4,
+    "rawHexOutsideTokens": 9,
+    "fontStacksOutsideTokens": 3,
+    "keyframes": 5
+  }
+}
