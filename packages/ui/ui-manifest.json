@@ -13,7 +13,8 @@
     "primitives": "radix-ui",
     "css": "tailwindcss@4",
     "icons": "lucide-react",
-    "note": "React Bits Pro was evaluated and rejected on licensing — see docs/design-system/PREREQUISITES.md §1"
+    "note": "React Bits Pro was evaluated and rejected on licensing — see docs/design-system/PREREQUISITES.md §1",
+    "classMerge": "cn (shadcn) — replaces clsx + tailwind-merge; lib/cn.ts is the swap seam"
   },
   "entry": {
     "index": "./src/index.ts",
@@ -58,8 +59,17 @@
       "radius"
     ]
   },
-  "exports": ["cn"],
-  "primitives": [],
+  "exports": [
+    "cn",
+    "Switch",
+    "Checkbox",
+    "Label"
+  ],
+  "primitives": [
+    "checkbox",
+    "label",
+    "switch"
+  ],
   "wrappers": [],
   "motion": [],
   "gateBudgets": {

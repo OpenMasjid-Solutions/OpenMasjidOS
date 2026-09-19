@@ -86,8 +86,21 @@ function ratchet(name: string, found: string[], budget: number, hint: string): v
 
 test('no physical-direction Tailwind utilities, ever', () => {
   // Zero today and must stay zero: nothing is grandfathered, so every hit is new.
+  // `translate-x` and friends were NOT in the first version of this list, and
+  // the very first primitive installed slipped past because of it: shadcn's
+  // Switch moves its thumb with `translate-x-[calc(100%-2px)]`. In RTL the
+  // track mirrors (flex follows `dir`) so the thumb starts at the right edge,
+  // and a positive translateX then walks it straight out of the track. Nothing
+  // about that reads as wrong in the source — which is the whole argument for
+  // checking utilities mechanically rather than by eye.
+  // The `:` in the prefix set is load-bearing. Tailwind variants prefix the
+  // utility (`hover:ml-4`, `data-[state=checked]:translate-x-2`), so a pattern
+  // that only accepts whitespace or a quote before the utility misses every
+  // conditional one — which is most of them in a generated component. The first
+  // version of this regex did exactly that and reported a clean zero on a file
+  // containing two physical translates.
   const PHYSICAL =
-    /(?:^|[\s"'`{(])((?:ml|mr|pl|pr|border-l|border-r|rounded-l|rounded-r|rounded-tl|rounded-tr|rounded-bl|rounded-br)-[a-z0-9.[\]/-]+|(?:left|right)-[a-z0-9.[\]/-]+|text-left|text-right|float-left|float-right)(?=[\s"'`})]|$)/g;
+    /(?:^|[\s"'`{(:])(-?(?:ml|mr|pl|pr|border-l|border-r|rounded-l|rounded-r|rounded-tl|rounded-tr|rounded-bl|rounded-br|translate-x|inset-x|space-x|divide-x|scroll-ml|scroll-mr|scroll-pl|scroll-pr)-[a-z0-9.[\]()%+*/_-]+|-?(?:left|right)-[a-z0-9.[\]/-]+|text-left|text-right|float-left|float-right)(?=[\s"'`})]|$)/g;
   const found: string[] = [];
   for (const f of walk(UI, ['.tsx', '.ts'])) {
     const src = code(fs.readFileSync(f, 'utf8'));
@@ -206,12 +219,23 @@ test('the @/ alias is declared identically in tsconfig and vite', () => {
 });
 
 test('cn() merges Tailwind classes rather than only concatenating them', () => {
-  // With plain clsx, `cn('px-4', props.className)` emits both classes and the
-  // winner is decided by stylesheet order, not by the caller — so a wrapper's
-  // override silently does nothing. twMerge is what makes the wrapper layer work.
-  const src = code(fs.readFileSync(path.join(UI, 'lib', 'cn.ts'), 'utf8'));
-  assert.match(src, /twMerge/, 'cn() must use tailwind-merge');
-  assert.match(src, /twMerge\(clsx\(/, 'and it must wrap clsx, not replace it');
+  // BEHAVIOURAL, not structural. This used to grep for `twMerge(clsx(...))`,
+  // which stopped being true the moment the implementation changed to shadcn's
+  // `cn` package — and a gate that breaks when you swap an implementation is
+  // testing the implementation, not the guarantee. What actually matters is
+  // that a later utility beats an earlier one: with plain concatenation
+  // `cn('px-4', props.className)` emits BOTH and stylesheet order picks the
+  // winner, so a wrapper's override silently does nothing.
+  const { cn } = require('../../ui/src/lib/cn') as { cn: (...a: unknown[]) => string };
+
+  assert.equal(cn('px-4', 'px-2'), 'px-2', 'a later utility must win outright');
+  assert.equal(cn('p-2', 'px-4').split(' ').length, 2, 'non-conflicting utilities both survive');
+  // Our hand-written BEM names are not Tailwind and must pass through untouched
+  // — the two systems coexist for the whole migration.
+  assert.match(cn('glass-raised', 'app-card'), /glass-raised/);
+  assert.match(cn('glass-raised', 'app-card'), /app-card/);
+  // Conditionals, the clsx half of the contract.
+  assert.equal(cn('a', false && 'b', undefined, 'c'), 'a c');
 });
 
 test('every Tailwind theme name resolves to a real token', () => {
@@ -276,6 +300,34 @@ test('components.json points the shadcn CLI at our real paths', () => {
 });
 
 // ── The package contract ───────────────────────────────────────────────────
+
+test("Tailwind's dark: variant is wired to our theme, not the OS preference", () => {
+  // Out of the box `dark:` means `prefers-color-scheme`. We theme with
+  // `data-theme` on <html>. Without the remap, every shadcn component that
+  // ships a `dark:` utility follows the OPERATING SYSTEM and ignores the choice
+  // the admin made in Settings — a masjid on a light laptop who picks Dark gets
+  // light switches on a dark dashboard, and nothing in the source looks wrong.
+  // Deleting the remap is therefore a silent, whole-product regression, which
+  // is why it is pinned rather than left to review.
+  const index = code(fs.readFileSync(path.join(UI, 'index.css'), 'utf8'));
+  const variant = /@custom-variant\s+dark\s*\(([^;]*)\);/.exec(index);
+  assert.ok(variant, 'index.css must redefine the dark variant');
+  assert.match(variant[1], /data-theme/, 'it must key off data-theme');
+  assert.match(variant[1], /light/, 'and mirror tokens.css: dark unless explicitly light');
+  assert.doesNotMatch(variant[1], /prefers-color-scheme/, 'never the OS preference');
+
+  // Belt and braces: if a primitive ships `dark:` utilities, the remap has to
+  // be there. Counting them makes the dependency explicit rather than implied.
+  const dir = path.join(UI, 'components', 'ui');
+  if (!fs.existsSync(dir)) return;
+  const usesDark = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.tsx'))
+    .filter((f) => /\bdark:/.test(fs.readFileSync(path.join(dir, f), 'utf8')));
+  if (usesDark.length > 0) {
+    assert.ok(variant, `${usesDark.join(', ')} ship dark: utilities and depend on the remap`);
+  }
+});
 
 test('the manifest describes the real stylesheet order', () => {
   // Order is load-bearing and silent when wrong: tokens.css must come AFTER

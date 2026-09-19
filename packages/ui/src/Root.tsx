@@ -21,6 +21,9 @@ const AppDetail = lazy(() => import('./routes/AppDetail').then((m) => ({ default
 const Files = lazy(() => import('./routes/Files').then((m) => ({ default: m.Files })));
 const Settings = lazy(() => import('./routes/Settings').then((m) => ({ default: m.Settings })));
 const NotFound = lazy(() => import('./routes/NotFound').then((m) => ({ default: m.NotFound })));
+// The primitive gallery. Lazy like every other non-Dashboard route, so it costs
+// nothing on the path a masjid actually uses.
+const DesignSystem = lazy(() => import('./routes/DesignSystem').then((m) => ({ default: m.DesignSystem })));
 
 export function Root() {
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
@@ -51,6 +54,7 @@ export function Root() {
               and an error message can all send someone straight to the right place
               instead of to the top of a long page. */}
           <Route path="/settings/:section" element={<Settings />} />
+          <Route path="/design-system" element={<DesignSystem />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

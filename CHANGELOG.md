@@ -13,7 +13,7 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-### Design system (in progress — Slices 1–3 of 15)
+### Design system (in progress — Slices 1–4 of 8)
 
 Groundwork for one shared look across every OpenMasjid app. Almost none of it is visible yet,
 which is deliberate: the foundations and the safety checks go in before anything is restyled.
@@ -26,6 +26,12 @@ which is deliberate: the foundations and the safety checks go in before anything
 - Automatic checks now guard the things that break quietly — right-to-left layout (so Arabic
   and Urdu keep working), colours only ever coming from the one theme file, and text staying
   readable on every background.
+
+- There is now a **Design system** page at `/design-system` showing every shared control in
+  dark and light and in both left-to-right and right-to-left, so a layout problem can be seen
+  in one place instead of hunted through the app.
+- The first three shared controls (a switch, a checkbox and a label) are in place. Nothing in
+  the dashboard uses them yet.
 
 *Full detail in `docs/design-system/MIGRATION.md`.*
 

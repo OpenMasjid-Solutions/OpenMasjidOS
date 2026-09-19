@@ -1162,3 +1162,55 @@ button {
     background: var(--glass-bg-inset);
   }
 }
+
+/* ── shadcn primitives: direction corrections ───────────────────────────── */
+/* Upstream shadcn moves the Switch thumb with a PHYSICAL `translate-x`. In RTL
+   the track mirrors (flex follows `dir`), so the thumb starts at the inline
+   end and a positive translateX walks it out of the track entirely. The two
+   utilities are removed from components/ui/switch.tsx and the travel happens
+   here instead — still a transform, so still compositor-cheap, but with a sign
+   that follows the writing direction. `translate` (not `transform`) so it
+   composes with anything Radix sets. */
+[data-slot='switch-thumb'] { translate: 0 0; }
+[data-slot='switch'][data-state='checked'] [data-slot='switch-thumb'] {
+  translate: calc(100% - 2px) 0;
+}
+[dir='rtl'] [data-slot='switch'][data-state='checked'] [data-slot='switch-thumb'] {
+  translate: calc(-100% + 2px) 0;
+}
+
+/* ── Design-system gallery (/design-system) ─────────────────────────────── */
+.ds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+.ds-pane {
+  /* Each pane carries its own data-theme, so it must paint its own background
+     rather than letting the page's theme show through. */
+  background: var(--color-surface);
+  color: var(--color-ink);
+  padding: 1rem 1.1rem;
+}
+.ds-pane__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-block-end: 0.9rem;
+  padding-block-end: 0.5rem;
+  border-block-end: 1px solid var(--color-border);
+  font-family: var(--font-display);
+  text-transform: capitalize;
+}
+.ds-pane__dir {
+  font-size: 0.75rem;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ds-row { margin-block-end: 1rem; }
+.ds-row__meta { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: baseline; }
+.ds-row__name { font-size: 0.85rem; color: var(--color-primary); }
+.ds-row__note { font-size: 0.75rem; color: var(--color-ink-muted); }
+.ds-row__demo { margin-block-start: 0.5rem; display: grid; gap: 0.5rem; }
+.ds-demo-line { display: flex; align-items: center; gap: 0.6rem; }

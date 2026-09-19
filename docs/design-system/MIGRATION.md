@@ -21,21 +21,23 @@ and primitives — see [CONSUMING.md](./CONSUMING.md).
 
 | # | Slice | Status |
 |---|---|---|
-| 1 | Foundation — shadcn init, `cn()`, CI gates | ✅ done |
-| 2 | `theme.css` — tokens mapped to Tailwind v4 `@theme` | ✅ done |
-| 3 | `@openmasjid/ui` package contract + `ui-manifest.json` | ✅ done |
-| 4 | `/design-system` gallery — light+dark, LTR+RTL | ⬜ |
-| 5 | Primitives A — Button, Card, Input, Label | ⬜ |
-| 6 | Primitives B — Dialog, Dropdown, Tooltip, Popover | ⬜ |
-| 7 | Primitives C — Select, Checkbox, Switch, Textarea, RadioGroup | ⬜ |
-| 8 | Data — Table, Badge, Skeleton, Separator, ScrollArea | ⬜ |
-| 9 | Feedback — Toast, Alert, Progress | ⬜ |
-| 10 | Navigation — Tabs, Breadcrumb, Command (⌘K) | ⬜ |
-| 11 | Motion vocabulary | ⬜ |
-| 12 | Migrate Dashboard + AppCard + Dock | ⬜ |
-| 13 | Migrate Settings part 1 | ⬜ |
-| 14 | Migrate Settings part 2 + Store/AppDetail/Files | ⬜ |
-| 15 | Auth/first-run, dead-code sweep, downstream docs | ⬜ |
+| 1 | Foundation — shadcn init, `cn()`, CI gates | ✅ `dev.2` |
+| 2 | Theme bridge — tokens on Tailwind v4 `@theme` | ✅ `dev.2` |
+| 3 | `@openmasjid/ui` package contract + manifest | ✅ `dev.2` |
+| 4 | `/design-system` gallery + Switch, Checkbox, Label | ✅ `dev.3` |
+| 5 | Select, Popover, Tooltip | ⬜ |
+| 6 | **Dialog** — replaces the bespoke `Modal` | ⬜ |
+| 7 | Command palette (⌘K) | ⬜ |
+| 8 | Publish the package + migrate the other apps | ⬜ |
+
+> **Scope was cut from 15 slices to 8 on 2026-09-19.** React Bits Pro was the source of
+> ~300 prebuilt *screens*; shadcn/ui gives ~50 *primitives*, so hand-composing 279 screens
+> got more expensive, not less — while the audits showed all seven repos **already share the
+> same palette**, having copied it from each other. The real problem was never that the apps
+> look different; it is that there are seven copies of the same CSS that drift. So the
+> remaining slices do the two things that still pay: replace hand-rolled controls with
+> accessible ones, and make the other apps consume this package instead of copying it.
+> The 279 working screens are left alone.
 
 ---
 

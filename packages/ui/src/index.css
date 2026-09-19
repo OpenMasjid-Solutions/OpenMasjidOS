@@ -3,6 +3,23 @@
 @import "tailwindcss";
 
 /*
+ * Point Tailwind's `dark:` variant at OUR theme switch.
+ *
+ * Out of the box `dark:` means `prefers-color-scheme: dark` (or a `.dark`
+ * class). We theme with `data-theme` on <html>, set by `applyTheme` in
+ * lib/prefs.ts. Left alone, every shadcn component that ships a `dark:` utility
+ * — the Switch does — would follow the OPERATING SYSTEM's preference and ignore
+ * the choice the admin actually made in Settings. A masjid on a light laptop
+ * who picks Dark would get light switches on a dark dashboard, and nothing in
+ * the code would look wrong.
+ *
+ * The condition mirrors tokens.css exactly: dark is the default, and light only
+ * applies when explicitly asked for. That also covers the first paint, before
+ * the pre-hydration script has set the attribute at all.
+ */
+@custom-variant dark (&:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *));
+
+/*
  * Tailwind v4 theme — the bridge between Tailwind's utility names and our
  * design tokens.
  *

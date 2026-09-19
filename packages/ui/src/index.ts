@@ -24,3 +24,10 @@
  */
 
 export { cn } from './lib/cn';
+
+// Primitives. Exported one at a time as each is added and checked in all four
+// panes of /design-system (light+dark x LTR+RTL), never in a batch — the RTL
+// bug in the very first one shipped was invisible in review.
+export { Switch } from './components/ui/switch';
+export { Checkbox } from './components/ui/checkbox';
+export { Label } from './components/ui/label';
