@@ -26,7 +26,7 @@ and primitives — see [CONSUMING.md](./CONSUMING.md).
 | 3 | `@openmasjid/ui` package contract + manifest | ✅ `dev.2` |
 | 4 | `/design-system` gallery + Switch, Checkbox, Label | ✅ `dev.3` |
 | 5 | DropdownMenu + both hand-rolled menus migrated | ✅ `dev.4` |
-| 6 | **Dialog** — replaces the bespoke `Modal` | ⬜ |
+| 6 | **Dialog** — `Modal` rewritten on Radix, 25 instances, no call-site edits | ✅ `dev.5` |
 | 7 | Command palette (⌘K) | ⬜ |
 | 8 | Publish the package + migrate the other apps | ⬜ |
 

@@ -85,8 +85,30 @@ test('"already running" is reported as information, never as a failure', () => {
 
 test('the update dialog and window cannot be dismissed while running', () => {
   const modal = codeOf('ui/src/components/Modal.tsx');
-  assert.match(modal, /locked \? undefined : onClose/, 'the backdrop must not close a locked dialog');
-  assert.match(modal, /if \(!open \|\| locked\) return/, 'Escape must not close a locked dialog');
+  // RE-PINNED against the Radix implementation (v0.51.2-dev.5). Same three
+  // guarantees, different mechanism: the hand-rolled backdrop onClick and the
+  // window keydown listener are gone, and Radix owns both dismissal routes.
+  //
+  // `onOpenChange` is the funnel every close passes through, so the `!locked`
+  // guard there is the backstop. The two preventDefaults stop Radix deciding to
+  // close in the first place: onInteractOutside covers pointer-down-outside and
+  // focus-outside, onEscapeKeyDown covers the key.
+  assert.match(
+    modal,
+    /if \(!next && !locked\) onClose\(\)/,
+    'no close path may fire while locked',
+  );
+  assert.match(
+    modal,
+    /onEscapeKeyDown=\{locked \? refuse : undefined\}/,
+    'Escape must not close a locked dialog',
+  );
+  assert.match(
+    modal,
+    /onInteractOutside=\{locked \? refuse : undefined\}/,
+    'an outside click must not close a locked dialog',
+  );
+  assert.match(modal, /const refuse = \(e: Event\) => e\.preventDefault\(\)/, 'and refuse must preventDefault');
   assert.match(modal, /\{!locked && \(/, 'the X must be absent while locked');
 
   // `modal={false}` must never appear. It is the obvious-looking way to keep our

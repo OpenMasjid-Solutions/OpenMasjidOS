@@ -75,6 +75,7 @@
   ],
   "primitives": [
     "checkbox",
+    "dialog",
     "dropdown-menu",
     "label",
     "switch"

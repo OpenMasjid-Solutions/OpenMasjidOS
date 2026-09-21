@@ -9,7 +9,8 @@
     "working": "Just a moment…",
     "starting": "Starting…",
     "sessionClosed": "Session closed",
-    "clock": "Clock"
+    "clock": "Clock",
+    "dialog": "Dialog"
   },
   "nav": {
     "dashboard": "Dashboard",

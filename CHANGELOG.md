@@ -13,7 +13,7 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-### Design system (in progress — Slices 1–5 of 8)
+### Design system (in progress — Slices 1–6 of 8)
 
 Groundwork for one shared look across every OpenMasjid app. Almost none of it is visible yet,
 which is deliberate: the foundations and the safety checks go in before anything is restyled.
@@ -31,6 +31,10 @@ which is deliberate: the foundations and the safety checks go in before anything
   dark and light and in both left-to-right and right-to-left, so a layout problem can be seen
   in one place instead of hunted through the app.
 - The first shared controls are in place (a switch, a checkbox, a label and a menu).
+- **Every dialog now keeps the keyboard inside it.** This matters most during an update: the
+  dialog that says "do not interrupt" could be tabbed out of, and pressing Enter on something
+  behind it navigated away and dismissed it mid-update. It cannot be now. Closing a dialog
+  also puts the keyboard back on whatever opened it.
 - **The two menus in the dashboard — the ⋮ on each app card and the account menu at the top
   right — now work properly with a keyboard.** Arrow keys move between items, Escape closes,
   and the focus ring comes back to the button you opened it from. Screen readers announce them

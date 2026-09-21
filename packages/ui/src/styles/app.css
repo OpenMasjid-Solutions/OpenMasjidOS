@@ -1222,3 +1222,4 @@ button {
    whatever opened it, and a menu on the page behind a modal is dismissed by the
    modal anyway. */
 [data-slot='dropdown-menu-content'] { z-index: 300; }
+.ds-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-block-end: 1rem; }

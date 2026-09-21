@@ -62,9 +62,17 @@ test('dialogs are portalled to the body, so a page animation cannot clip them', 
   // were sized and clipped to the page's content box: backdrop over part of the screen,
   // dialog off-centre and half hidden. A portal is the only fix that does not depend on
   // knowing every animated ancestor.
+  // RE-PINNED against the Radix implementation (v0.51.2-dev.5). The hand-rolled
+  // `createPortal(…, document.body)` is gone; `DialogPortal` does the same job
+  // and defaults to document.body. The guarantee is unchanged — what must never
+  // come back is a dialog rendered inline inside the transformed route wrapper.
   const src = codeOf('ui/src/components/Modal.tsx');
-  assert.match(src, /createPortal\(/, 'the modal must render through a portal');
-  assert.match(src, /document\.body,?\s*\)/, 'and specifically into document.body');
+  assert.match(src, /<DialogPortal\b/, 'the modal must render through a portal');
+  assert.doesNotMatch(
+    src,
+    /container=/,
+    'and it must stay on document.body — a container prop would put it back inside the page',
+  );
   // Every dialog in the app builds on this one component, so this covers all of them.
   const shared = codeOf('ui/src/components/ConfirmDialog.tsx');
   assert.match(shared, /from '\.\/Modal'/, 'ConfirmDialog must keep building on Modal');
