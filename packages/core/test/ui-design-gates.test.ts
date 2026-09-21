@@ -301,6 +301,56 @@ test('components.json points the shadcn CLI at our real paths', () => {
 
 // ── The package contract ───────────────────────────────────────────────────
 
+test('a bare directional slide utility is caught; a side-paired one is not', () => {
+  // GATE GAP. The main regex requires the physical token to be preceded by
+  // whitespace, a quote, a brace or a colon — so in `slide-in-from-left-2` the
+  // `left-2` sits behind a hyphen and is invisible to it. A whole family of
+  // direction-named utilities could therefore land unnoticed.
+  //
+  // But they are not all wrong. shadcn pairs them with Radix's `data-side`,
+  // which Radix computes from MEASURED placement — so
+  // `data-[side=left]:slide-in-from-right-2` is geometrically correct in both
+  // writing directions and must not be "fixed". A bare `slide-in-from-left-2`
+  // with no side pairing is a real RTL bug. This gate distinguishes the two
+  // rather than raising the budget or renaming something that was right.
+  const found: string[] = [];
+  for (const f of walk(UI, ['.tsx'])) {
+    const src = code(fs.readFileSync(f, 'utf8'));
+    for (const m of src.matchAll(/(\S*)slide-in-from-(left|right)-[\w.[\]]+/g)) {
+      if (/data-\[side=(left|right|top|bottom)\]:$/.test(m[1])) continue; // resolved side — correct
+      found.push(`${rel(f)}:${src.slice(0, m.index).split('\n').length}  ${m[0]}`);
+    }
+  }
+  assert.deepEqual(found, [], 'an unpaired directional slide utility will mirror wrongly in RTL');
+});
+
+test('no animation utility is used while no animation plugin is installed', () => {
+  // `animate-in`, `fade-in-0`, `zoom-in-95` and the slide family come from
+  // tw-animate-css / tailwindcss-animate. Neither is installed here, so those
+  // class names compile to NOTHING — the component renders with a hard cut and
+  // the source reads as though it animates. That is live inert code, and it has
+  // been sitting in the tree since the DropdownMenu landed.
+  //
+  // Either declare a plugin or delete the classes. This gate refuses the state
+  // where the classes are present and the plugin is not, in both directions.
+  const pkg = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8'));
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  const hasPlugin = Object.keys(deps).some((d) => /tw-animate-css|tailwindcss-animate/.test(d));
+
+  const users: string[] = [];
+  for (const f of walk(UI, ['.tsx'])) {
+    const src = code(fs.readFileSync(f, 'utf8'));
+    if (/\banimate-(in|out)\b/.test(src)) users.push(rel(f));
+  }
+  if (!hasPlugin) {
+    assert.deepEqual(
+      users,
+      [],
+      'these use animate-in/animate-out with no plugin declared, so the classes do nothing',
+    );
+  }
+});
+
 test("Tailwind's dark: variant is wired to our theme, not the OS preference", () => {
   // Out of the box `dark:` means `prefers-color-scheme`. We theme with
   // `data-theme` on <html>. Without the remap, every shadcn component that

@@ -10,6 +10,17 @@
  * logical forms if this file is ever regenerated; `ui-design-gates` holds the
  * physical-utility budget at 0, so a plain `shadcn add dropdown-menu` will fail
  * the build rather than quietly undo this.
+ *
+ * LOCAL EDIT (dead classes): upstream also ships 20 animation utilities —
+ * `animate-in`, `fade-in-0`, `zoom-in-95`, `slide-in-from-*`. They come from
+ * tw-animate-css / tailwindcss-animate, neither of which is installed here, so
+ * they compiled to NOTHING: the menu had a hard cut while the source read as
+ * though it animated. They are removed rather than made to work, because the
+ * hand-rolled menu this replaced had no transition either (so nothing
+ * regressed) and because this project's motion vocabulary is Motion springs
+ * (CLAUDE.md §14), not a second CSS animation system. If menu motion is wanted
+ * later that is a deliberate choice, not a side effect of a CLI default.
+ * `ui-design-gates` refuses `animate-in` while no plugin is declared.
  */
 import * as React from "react"
 import { cn } from "cn"
@@ -52,7 +63,7 @@ function DropdownMenuContent({
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         className={cn(
-          "z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-start-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+          "z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md",
           className
         )}
         {...props}
@@ -240,7 +251,7 @@ function DropdownMenuSubContent({
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
       className={cn(
-        "z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-start-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        "z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg",
         className
       )}
       {...props}

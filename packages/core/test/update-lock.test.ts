@@ -89,6 +89,21 @@ test('the update dialog and window cannot be dismissed while running', () => {
   assert.match(modal, /if \(!open \|\| locked\) return/, 'Escape must not close a locked dialog');
   assert.match(modal, /\{!locked && \(/, 'the X must be absent while locked');
 
+  // `modal={false}` must never appear. It is the obvious-looking way to keep our
+  // own backdrop when this component moves onto Radix Dialog, and it silently
+  // removes the FOCUS TRAP as well — which is not a nicety here, it is the other
+  // half of the lock. Nothing in this UI traps focus today (three autoFocus hits,
+  // zero tabIndex, zero inert), so while a locked update dialog is up, Tab walks
+  // out to the Dock's NavLink; Enter then changes route, unmounts the page, and
+  // takes the locked dialog with it — mid core update, the exact thing `locked`
+  // exists to prevent. Passing `modal={false}` also makes Radix render no overlay
+  // at all. The lock must come from controlled `open` plus preventDefault on the
+  // dismissal handlers, never from turning modality off.
+  // The lookbehind matters: `\bmodal=` also matches inside `aria-modal="true"`,
+  // because a hyphen counts as a word boundary. Same trap that turned
+  // `slide-in-from-left-2` into a non-existent class earlier in this migration.
+  assert.doesNotMatch(modal, /(?<![-\w])modal=/, 'Modal must never pass Radix a `modal` prop');
+
   // The core updater locks until it is done.
   assert.match(codeOf('ui/src/components/UpdateModal.tsx'), /locked=\{phase !== 'done'\}/);
 

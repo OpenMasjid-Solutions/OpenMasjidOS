@@ -241,6 +241,16 @@ test('one Escape closes one thing', () => {
   const counter = modal.slice(start, modal.indexOf('}, [open]);', start));
   assert.ok(counter.includes('openModals += 1'), 'located the counting effect');
   assert.doesNotMatch(counter, /locked/, 'the counter must not skip locked modals');
+
+  // BOTH DIRECTIONS. This test asserted only the increment for a long time, which
+  // left the quieter half of the invariant unguarded: an implementation that
+  // increments and never decrements passes it green, and an over-count means
+  // `anyModalOpen()` stays true for the life of the page, so Escape silently
+  // stops closing windows — permanently, with no console output, on a dashboard
+  // that may be wall-mounted for weeks. Losing or relocating the cleanup is the
+  // single most likely accident when this effect is moved, so it is pinned here.
+  assert.ok(counter.includes('return () =>'), 'the counting effect must return a cleanup');
+  assert.ok(counter.includes('openModals -= 1'), 'and that cleanup must decrement');
 });
 
 test('the file rename editor is not nested inside a button', () => {
