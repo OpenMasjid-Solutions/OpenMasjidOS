@@ -28,6 +28,7 @@ import { ChannelMigrate } from '../components/ChannelMigrate';
 import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
+import { CheckboxField } from '../components/CheckboxField';
 
 // IANA zones for the clock picker, when the browser exposes them.
 const TIMEZONES: string[] = (() => {
@@ -1997,20 +1998,14 @@ function WhatsAppPanel() {
         title={t('settings.whatsappOffTitle')}
       >
         <p style={{ margin: 0 }}>{t('settings.whatsappOffBody')}</p>
-        <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', margin: '1rem 0' }}>
-          <input
-            type="checkbox"
-            style={{ marginBlockStart: '0.2rem' }}
-            checked={deleteAll}
-            onChange={(e) => setDeleteAll(e.target.checked)}
-          />
+        <CheckboxField id="wa-delete-all" checked={deleteAll} onChange={setDeleteAll} align="start">
           <span>
             {t('settings.whatsappOffDelete')}
             <span className="hint" style={{ display: 'block' }}>
               {t('settings.whatsappOffDeleteHint')}
             </span>
           </span>
-        </label>
+        </CheckboxField>
         {/* Only when it is actually about to happen. A permanent warning next to an
             unticked box is noise; next to a ticked one it is the last thing read. */}
         {deleteAll && (

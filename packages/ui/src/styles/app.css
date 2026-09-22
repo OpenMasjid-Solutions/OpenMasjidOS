@@ -476,6 +476,16 @@ button {
   pointer-events: none;
 }
 .btn--primary:hover::after { transform: translateX(130%); }
+/* The sweep travels with the reading direction, so in RTL it runs right-to-left
+   and the gradient is mirrored about the vertical (115deg -> 245deg) to keep the
+   bright leading edge at the front of the travel. Purely cosmetic — a sheen is
+   not an affordance — but a highlight moving against the text reads as wrong,
+   and it costs two rules. */
+[dir="rtl"] .btn--primary::after {
+  background: linear-gradient(245deg, transparent 35%, rgba(255, 255, 255, 0.45) 50%, transparent 65%);
+  transform: translateX(130%);
+}
+[dir="rtl"] .btn--primary:hover::after { transform: translateX(-130%); }
 .btn--ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--color-border); }
 .btn--ghost:hover { background: var(--color-surface-hover); }
 /* Ink comes from a token, not a literal #fff: on dark's --color-danger
@@ -546,7 +556,15 @@ button {
   background: #fff;
   transition: transform var(--dur-settle) var(--ease-settle);
 }
+/* The thumb is positioned with `inset-inline-start` (logical, correct) but was
+   moved with `transform: translateX(+1.2rem)`, which is PHYSICAL. In RTL the
+   thumb starts at the inline end — the right edge — and translating right again
+   walked it straight out of the track. Exactly the bug shadcn's own Switch
+   shipped with, in our own component, across 17 toggles in Settings and on the
+   app page. Kept as a transform rather than animating `inset` so it stays on
+   the compositor; only the sign follows the writing direction. */
 .toggle.is-on::after { transform: translateX(1.2rem); }
+[dir="rtl"] .toggle.is-on::after { transform: translateX(-1.2rem); }
 [dir="rtl"] .toggle.is-on::after { transform: translateX(-1.2rem); }
 
 .setting-row {
@@ -1223,3 +1241,9 @@ button {
    modal anyway. */
 [data-slot='dropdown-menu-content'] { z-index: 300; }
 .ds-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-block-end: 1rem; }
+
+/* A checkbox and its label. `align=start` for labels long enough to wrap, so
+   the box sits with the first line instead of the paragraph's middle. */
+.check-field { display: flex; gap: 0.5rem; align-items: center; margin-block: 1rem; }
+.check-field[data-align='start'] { align-items: flex-start; }
+.check-field[data-align='start'] [data-slot='checkbox'] { margin-block-start: 0.2rem; }

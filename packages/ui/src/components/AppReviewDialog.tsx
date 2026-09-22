@@ -23,6 +23,7 @@
 import { useTranslation } from 'react-i18next';
 import { Modal } from './Modal';
 import type { AppReview } from '../lib/types';
+import { CheckboxField } from './CheckboxField';
 
 /** The body text differs per kind: telling someone their app "asks for powerful
  *  permissions" when in truth we could not parse the file at all is simply untrue. */
@@ -84,14 +85,14 @@ export function AppReviewDialog({
       ) : (
         <>
           <p>{t('appReview.provenance')}</p>
-          <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', margin: '1rem 0' }}>
-            <input
-              type="checkbox"
-              checked={acknowledged}
-              onChange={(e) => onAcknowledgedChange(e.target.checked)}
-            />
+          <CheckboxField
+            id="app-review-ack"
+            checked={acknowledged}
+            onChange={onAcknowledgedChange}
+            align="start"
+          >
             {t('appReview.ack')}
-          </label>
+          </CheckboxField>
           {pending ? (
             <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <span className="spinner" /> {t('appReview.starting')}

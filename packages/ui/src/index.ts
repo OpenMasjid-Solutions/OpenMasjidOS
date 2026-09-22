@@ -41,3 +41,6 @@ export {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu';
+
+// Wrappers: our own components, composing the primitives above.
+export { CheckboxField } from './components/CheckboxField';

@@ -43,6 +43,7 @@ import { AppUpdate } from './AppUpdate';
 import { useWindows } from './Windows';
 import { staggerItem } from '../lib/motion';
 import type { InstalledApp } from '../lib/types';
+import { CheckboxField } from './CheckboxField';
 
 const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
   catalog: { cls: 'tag--official', key: 'tags.official' },
@@ -290,10 +291,9 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         title={t('appCard.removeTitle', { name: app.name })}
       >
         <p>{t('appCard.removeBody')}</p>
-        <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', margin: '1rem 0' }}>
-          <input type="checkbox" checked={deleteData} onChange={(e) => setDeleteData(e.target.checked)} />
+        <CheckboxField id={`rm-data-${app.id}`} checked={deleteData} onChange={setDeleteData}>
           {t('appCard.removeData')}
-        </label>
+        </CheckboxField>
         {remove.isPending ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span className="spinner" /> {t('appCard.removing')}

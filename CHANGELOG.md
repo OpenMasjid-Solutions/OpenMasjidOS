@@ -13,7 +13,7 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
-### Design system (in progress — Slices 1–6 of 8)
+### Design system (in progress — Slices 1–7 of 8)
 
 Groundwork for one shared look across every OpenMasjid app. Almost none of it is visible yet,
 which is deliberate: the foundations and the safety checks go in before anything is restyled.
@@ -31,6 +31,11 @@ which is deliberate: the foundations and the safety checks go in before anything
   dark and light and in both left-to-right and right-to-left, so a layout problem can be seen
   in one place instead of hunted through the app.
 - The first shared controls are in place (a switch, a checkbox, a label and a menu).
+- **Every tickbox in the dashboard now matches the rest of it** — they were the browser's own
+  grey-and-white boxes before, which looked different on every computer. The two that matter
+  most are the ones confirming you want to delete an app's data or remove WhatsApp entirely.
+- Fixed a switch that slid out of its own track when the dashboard is set to a right-to-left
+  language. It affected every switch in Settings.
 - **Every dialog now keeps the keyboard inside it.** This matters most during an update: the
   dialog that says "do not interrupt" could be tabbed out of, and pressing Enter on something
   behind it navigated away and dismissed it mid-update. It cannot be now. Closing a dialog

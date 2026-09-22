@@ -301,6 +301,52 @@ test('components.json points the shadcn CLI at our real paths', () => {
 
 // ── The package contract ───────────────────────────────────────────────────
 
+test('every translateX in CSS has a direction-aware counterpart', () => {
+  // THE BLIND SPOT THAT HID A REAL BUG. The physical-CSS gate looks for
+  // `left:`, `margin-left` and friends — it has never looked at `transform`.
+  // `.toggle.is-on::after { transform: translateX(1.2rem) }` therefore sat at a
+  // clean zero while being straightforwardly broken in RTL: the thumb is
+  // positioned with `inset-inline-start`, so in Arabic it starts at the right
+  // edge and a positive translateX walks it out of the track. Seventeen toggles
+  // in Settings and on the app page, and the same mistake shadcn's own Switch
+  // arrived with.
+  //
+  // There is no logical `translate`, so the rule cannot be "never use it" — it
+  // is "if you move something along the inline axis, say what happens in RTL".
+  // A rule is satisfied by a `[dir="rtl"]` (or `[dir='rtl']`) override for the
+  // same selector. `translateX(-50%)` and `translateX(50%)` are exempt: those
+  // are self-centring, which is symmetric and direction-neutral.
+  const offenders: string[] = [];
+  for (const f of walk(UI, ['.css'])) {
+    const src = code(fs.readFileSync(f, 'utf8'));
+    const rtlOverrides = new Set(
+      [...src.matchAll(/\[dir=["']rtl["']\]\s*([^{]+)\{/g)].map((m) => m[1].trim().replace(/\s+/g, ' ')),
+    );
+    // Split on '}' rather than matching whole rules. A global regex that
+    // required a closing brace BEFORE each selector consumed the brace that
+    // ended the previous rule, so it only ever saw alternate rules — and duly
+    // reported one of this file's two `.btn--primary` sweeps while missing the
+    // other. Splitting cannot skip a rule.
+    for (const chunk of src.split('}')) {
+      const brace = chunk.indexOf('{');
+      if (brace < 0) continue;
+      const selector = chunk.slice(0, brace).split(/[{;]/).pop()!.trim().replace(/\s+/g, ' ');
+      if (!selector || selector.startsWith('@')) continue;
+      if (/\[dir=["']rtl["']\]/.test(selector)) continue; // it IS the override
+      const tx = /translateX\(\s*(-?[\d.]+)([a-z%]*)/.exec(chunk.slice(brace));
+      if (!tx) continue;
+      if (tx[2] === '%' && Math.abs(Number(tx[1])) === 50) continue; // self-centring
+      if (rtlOverrides.has(selector)) continue;
+      offenders.push(`${rel(f)}  ${selector}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'these translate along the inline axis with no [dir="rtl"] counterpart, so they mirror wrongly',
+  );
+});
+
 test('a bare directional slide utility is caught; a side-paired one is not', () => {
   // GATE GAP. The main regex requires the physical token to be preceded by
   // whitespace, a quote, a brace or a colon — so in `slide-in-from-left-2` the

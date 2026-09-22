@@ -17,6 +17,7 @@ import { MasjidScene } from '../components/Glyphs';
 import { useToast } from '../components/ToastProvider';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import type { CatalogApp } from '../lib/types';
+import { CheckboxField } from '../components/CheckboxField';
 
 export function Store() {
   const { t } = useTranslation();
@@ -271,20 +272,14 @@ function InstallModal({
       ))}
       {wantsTunnel && (
         <div className="glass-inset panel" style={{ marginBlockEnd: '1rem' }}>
-          <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
-            <input
-              type="checkbox"
-              checked={expose}
-              onChange={(e) => setExpose(e.target.checked)}
-              style={{ marginBlockStart: '0.25rem' }}
-            />
+          <CheckboxField id="store-expose" checked={expose} onChange={setExpose} align="start">
             <span>
               <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
               <span className="setting-row__hint" style={{ display: 'block' }}>
                 {t('store.shareOnlineHint', { name: app.name })}
               </span>
             </span>
-          </label>
+          </CheckboxField>
           {expose && !remoteReady && (
             <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}>
               {t('store.shareOnlineNoRemote')}{' '}

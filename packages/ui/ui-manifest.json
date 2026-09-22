@@ -71,7 +71,8 @@
     "DropdownMenuLabel",
     "DropdownMenuSeparator",
     "DropdownMenuShortcut",
-    "DropdownMenuTrigger"
+    "DropdownMenuTrigger",
+    "CheckboxField"
   ],
   "primitives": [
     "checkbox",
@@ -80,7 +81,9 @@
     "label",
     "switch"
   ],
-  "wrappers": [],
+  "wrappers": [
+    "CheckboxField"
+  ],
   "motion": [],
   "gateBudgets": {
     "_comment": "Each is the current measured count. Ratchets: exceeding one is a regression, going under asks you to lower it here so the win cannot be spent again.",

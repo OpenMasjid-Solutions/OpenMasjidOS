@@ -18,6 +18,7 @@ import { PortConflicts, initialRemap } from '../components/PortConflicts';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import type { CommunityApp } from '../lib/types';
+import { CheckboxField } from '../components/CheckboxField';
 
 /**
  * The "share this over the internet" question, asked identically on both
@@ -40,20 +41,14 @@ function ShareOnlineChoice({
   const remoteReady = cf.data?.enabled === true && Boolean(cf.data?.domain);
   return (
     <div className="glass-inset panel" style={{ marginBlock: '1rem' }}>
-      <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
-        <input
-          type="checkbox"
-          checked={value}
-          onChange={(e) => onChange(e.target.checked)}
-          style={{ marginBlockStart: '0.25rem' }}
-        />
+      <CheckboxField id="custom-expose" checked={value} onChange={onChange} align="start">
         <span>
           <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
           <span className="setting-row__hint" style={{ display: 'block' }}>
             {t('custom.shareOnlineHint', { name })}
           </span>
         </span>
-      </label>
+      </CheckboxField>
       {value && !remoteReady && (
         <p
           className="setting-row__hint"
@@ -405,10 +400,9 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
             <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
               {dangers.map((d, i) => <li key={i}>{d}</li>)}
             </ul>
-            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}>
-              <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            <CheckboxField id="custom-risk-ack" checked={ack} onChange={setAck}>
               {t('custom.riskAck')}
-            </label>
+            </CheckboxField>
           </div>
         )}
 

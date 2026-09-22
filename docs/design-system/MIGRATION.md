@@ -27,7 +27,7 @@ and primitives — see [CONSUMING.md](./CONSUMING.md).
 | 4 | `/design-system` gallery + Switch, Checkbox, Label | ✅ `dev.3` |
 | 5 | DropdownMenu + both hand-rolled menus migrated | ✅ `dev.4` |
 | 6 | **Dialog** — `Modal` rewritten on Radix, 25 instances, no call-site edits | ✅ `dev.5` |
-| 7 | Command palette (⌘K) | ⬜ |
+| 7 | Toggle RTL fix + Checkbox/Label consumers | ✅ `dev.6` |
 | 8 | Publish the package + migrate the other apps | ⬜ |
 
 > **Scope was cut from 15 slices to 8 on 2026-09-19.** React Bits Pro was the source of
