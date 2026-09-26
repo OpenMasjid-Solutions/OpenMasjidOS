@@ -1244,6 +1244,9 @@ button {
 
 /* A checkbox and its label. `align=start` for labels long enough to wrap, so
    the box sits with the first line instead of the paragraph's middle. */
+/* 1rem block margin is the default because three of the six call sites had it
+   inline; the two that sit inside an already-spaced panel pass `flush`. */
 .check-field { display: flex; gap: 0.5rem; align-items: center; margin-block: 1rem; }
+.check-field[data-flush] { margin-block: 0; }
 .check-field[data-align='start'] { align-items: flex-start; }
 .check-field[data-align='start'] [data-slot='checkbox'] { margin-block-start: 0.2rem; }

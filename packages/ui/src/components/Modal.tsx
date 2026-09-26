@@ -123,10 +123,21 @@ export function Modal({ open, onClose, title, wide, locked, children }: ModalPro
   // they are all controlled by an `open` prop — so its default would focus
   // nothing and leave the keyboard at the top of the document. Capture what was
   // focused when the dialog opened and put it back ourselves.
+  //
+  // CAPTURED DURING RENDER, NOT IN AN EFFECT, and that is the whole point. React
+  // flushes effects bottom-up, and Radix's FocusScope is a DESCENDANT of this
+  // component — so by the time a `useEffect` here ran, the focus trap had
+  // already moved focus into the dialog and we captured an element inside it.
+  // Restoring that on close is a `.focus()` on a detached node: silently
+  // nothing, which is the failure mode this project keeps finding. During
+  // render the DOM has not been touched yet, so `document.activeElement` is
+  // still the button the admin actually pressed.
   const returnFocusTo = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (open) returnFocusTo.current = document.activeElement as HTMLElement | null;
-  }, [open]);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) {
+    returnFocusTo.current = document.activeElement as HTMLElement | null;
+  }
+  wasOpen.current = open;
 
   const refuse = (e: Event) => e.preventDefault();
 

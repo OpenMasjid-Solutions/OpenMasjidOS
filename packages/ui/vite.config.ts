@@ -33,6 +33,14 @@ export default defineConfig({
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
           motion: ['motion'],
+          // The shadcn primitives' shared machinery — focus scope, dismissable
+          // layer, presence, portal, roving focus. It is ~44 kB gzipped and it
+          // changes only when a primitive is added, so keeping it out of the
+          // entry chunk stops every app-code edit re-downloading it. Tree
+          // shaking does work here (Accordion, Slider, Tabs, Tooltip, Popover
+          // and Toast are all absent from the build) — this is what the five
+          // primitives we DO use actually cost.
+          radix: ['radix-ui'],
           query: ['@trpc/client', '@trpc/server', '@trpc/react-query', '@tanstack/react-query'],
           i18n: ['i18next', 'react-i18next'],
         },

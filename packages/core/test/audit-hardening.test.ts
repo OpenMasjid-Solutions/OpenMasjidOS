@@ -253,6 +253,60 @@ test('one Escape closes one thing', () => {
   assert.ok(counter.includes('openModals -= 1'), 'and that cleanup must decrement');
 });
 
+test('the dialog captures the element to refocus DURING RENDER, not in an effect', () => {
+  // Radix restores focus to its Trigger on close; none of our 25 dialogs use a
+  // Trigger (they are all controlled by an `open` prop), so Modal captures and
+  // restores the previously-focused element itself.
+  //
+  // The capture must not live in an effect. React flushes effects bottom-up and
+  // Radix's FocusScope is a DESCENDANT of Modal, so an effect here runs AFTER
+  // the focus trap has already moved focus into the dialog — capturing an
+  // element inside it. Restoring that on close is `.focus()` on a detached
+  // node: silently nothing, with code that reads exactly right. It shipped that
+  // way in the first cut and no test noticed, which is why this one exists.
+  const modal = readUi('components', 'Modal.tsx');
+
+  // Every useEffect body in the file, matched by brace depth so a nested block
+  // cannot end the slice early.
+  const bodies: string[] = [];
+  for (const m of modal.matchAll(/useEffect\(\(\) => \{/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    for (; i < modal.length && depth > 0; i++) {
+      if (modal[i] === '{') depth++;
+      else if (modal[i] === '}') depth--;
+    }
+    bodies.push(modal.slice(m.index!, i));
+  }
+  assert.ok(bodies.length > 0, 'Modal must still have at least the counting effect');
+  for (const body of bodies) {
+    assert.doesNotMatch(
+      body,
+      /document\.activeElement/,
+      'reading document.activeElement in an effect captures the dialog, not the opener',
+    );
+  }
+  // And it really is done on the false -> true transition during render.
+  assert.match(
+    modal,
+    /if \(open && !wasOpen\.current\)/,
+    'the capture must key off the open transition, during render',
+  );
+  assert.match(modal, /onCloseAutoFocus/, 'and be put back when the dialog closes');
+});
+
+test('a checkbox field gets a unique id unless one is given', () => {
+  // AppReviewDialog is rendered once PER APP CARD, so a literal id there put the
+  // same id/htmlFor pair on screen as many times as the masjid has apps. Only
+  // one is mounted at a time today, so it was latent — but a duplicate id makes
+  // `htmlFor` resolve to whichever came first in the DOM, and that is not a
+  // thing to leave in a consent dialog.
+  const field = readUi('components', 'CheckboxField.tsx');
+  assert.match(field, /useId\(\)/, 'CheckboxField must be able to generate its own id');
+  assert.match(field, /id \?\? auto/, 'an explicit id still wins');
+  assert.match(field, /htmlFor=\{fieldId\}/, 'and the label must point at the one actually used');
+});
+
 test('the file rename editor is not nested inside a button', () => {
   // An <input> and two <button>s inside a <button> is invalid HTML, and browsers do
   // not reliably focus interactive content inside a button — the confirm and cancel

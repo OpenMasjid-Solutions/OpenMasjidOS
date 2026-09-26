@@ -85,8 +85,10 @@ export function AppReviewDialog({
       ) : (
         <>
           <p>{t('appReview.provenance')}</p>
+          {/* No literal id: this dialog renders once per app card, so a fixed
+              one put the same id/htmlFor pair on screen as many times as the
+              masjid has apps. CheckboxField generates a unique one. */}
           <CheckboxField
-            id="app-review-ack"
             checked={acknowledged}
             onChange={onAcknowledgedChange}
             align="start"

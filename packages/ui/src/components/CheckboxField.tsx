@@ -22,7 +22,7 @@
  * `align="start"` is for a label long enough to wrap, so the box lines up with
  * the first line rather than floating in the vertical middle of a paragraph.
  */
-import { type ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
 
@@ -32,27 +32,42 @@ export function CheckboxField({
   onChange,
   disabled,
   align = 'center',
+  flush,
   children,
 }: {
-  id: string;
+  /**
+   * Optional. When omitted a unique one is generated, which is what most
+   * callers should do: `AppReviewDialog` is rendered once PER APP CARD, so a
+   * literal id there put the same `id`/`htmlFor` pair on screen as many times
+   * as the masjid has apps. Only one is mounted at a time today — the dialog
+   * renders nothing while closed — so it was latent rather than broken, but a
+   * duplicate id makes `htmlFor` resolve to whichever came first in the DOM,
+   * and that is not a thing to leave lying around in a consent dialog.
+   */
+  id?: string;
   checked: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
   /** `start` when the label wraps; `center` for a single line. */
   align?: 'center' | 'start';
+  /** No outer margin, for a field that already sits in a spaced container. */
+  flush?: boolean;
   children: ReactNode;
 }) {
+  const auto = useId();
+  const fieldId = id ?? auto;
+
   return (
-    <div className="check-field" data-align={align}>
+    <div className="check-field" data-align={align} data-flush={flush ? '' : undefined}>
       <Checkbox
-        id={id}
+        id={fieldId}
         checked={checked}
         disabled={disabled}
         // Radix models a third, indeterminate state; none of our ticks use it,
         // so anything that is not exactly `true` is off.
         onCheckedChange={(next) => onChange(next === true)}
       />
-      <Label htmlFor={id} className="text-base leading-normal font-normal">
+      <Label htmlFor={fieldId} className="text-base leading-normal font-normal">
         {children}
       </Label>
     </div>

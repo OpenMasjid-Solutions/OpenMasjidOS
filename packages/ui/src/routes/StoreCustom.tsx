@@ -41,7 +41,7 @@ function ShareOnlineChoice({
   const remoteReady = cf.data?.enabled === true && Boolean(cf.data?.domain);
   return (
     <div className="glass-inset panel" style={{ marginBlock: '1rem' }}>
-      <CheckboxField id="custom-expose" checked={value} onChange={onChange} align="start">
+      <CheckboxField id="custom-expose" checked={value} onChange={onChange} align="start" flush>
         <span>
           <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
           <span className="setting-row__hint" style={{ display: 'block' }}>

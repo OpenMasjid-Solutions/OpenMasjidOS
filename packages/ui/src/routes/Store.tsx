@@ -272,7 +272,7 @@ function InstallModal({
       ))}
       {wantsTunnel && (
         <div className="glass-inset panel" style={{ marginBlockEnd: '1rem' }}>
-          <CheckboxField id="store-expose" checked={expose} onChange={setExpose} align="start">
+          <CheckboxField id="store-expose" checked={expose} onChange={setExpose} align="start" flush>
             <span>
               <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
               <span className="setting-row__hint" style={{ display: 'block' }}>
