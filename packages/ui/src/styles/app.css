@@ -1250,3 +1250,32 @@ button {
 .check-field[data-flush] { margin-block: 0; }
 .check-field[data-align='start'] { align-items: flex-start; }
 .check-field[data-align='start'] [data-slot='checkbox'] { margin-block-start: 0.2rem; }
+
+/* ── shadcn DropdownMenu, wearing this product's clothes ─────────────────── */
+/* The primitive ships its own design system: `border` + `rounded-md` + `p-1`
+   for the panel and `px-2 py-1.5 text-sm` for the items. Ours is `.menu` /
+   `.menu-item` — 0.4rem panel padding, a --radius-card corner, roomier rows.
+   When the two hand-rolled menus moved onto Radix they kept `.glass-raised`
+   (so the glass and the corner survived) but LOST `.menu` and `.menu-item`,
+   which is why the rows tightened and a second 1px edge appeared inside
+   `.glass-raised::after`'s ring.
+   Restyled here, against the data-slot attributes, rather than by editing
+   components/ui/dropdown-menu.tsx — so `shadcn add dropdown-menu` stays
+   re-runnable and the fix cannot be clobbered by a regeneration. */
+[data-slot='dropdown-menu-content'] {
+  min-width: 14rem;
+  padding: 0.4rem;
+  /* .glass-raised::after already draws the edge; shadcn's `border` put a
+     second one just inside it. */
+  border-style: none;
+}
+[data-slot='dropdown-menu-item'] {
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.55rem;
+  font-size: 0.9rem;
+  color: var(--color-ink);
+}
+[data-slot='dropdown-menu-item'][data-variant='destructive'] { color: var(--color-danger); }
+[data-slot='dropdown-menu-separator'] { margin-block: 0.3rem; background: var(--color-border); }
+[data-slot='dropdown-menu-label'] { padding: 0.45rem 0.6rem; color: var(--color-ink-muted); }

@@ -15,6 +15,12 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 ### Design system (in progress)
 
+- The ⋮ menu on an app card and the account menu got their spacing and edges back — they had
+  picked up the component toolkit's own look when they moved onto it, so the rows sat tighter
+  and there was a faint double edge around the panel.
+- A shell window now fills its window properly instead of leaving a band of empty space when
+  you make it bigger.
+
 Groundwork for one shared look across every OpenMasjid app. Almost none of it is visible yet,
 which is deliberate: the foundations and the safety checks go in before anything is restyled.
 

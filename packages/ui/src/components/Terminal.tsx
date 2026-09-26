@@ -84,5 +84,17 @@ export function Terminal({ wsPath }: { wsPath: string }) {
     };
   }, [wsPath]);
 
-  return <div ref={ref} className="glass-inset" style={{ width: '100%', height: '60vh', padding: '0.5rem' }} />;
+  // Fills whatever it is put in, rather than a hardcoded 60vh. A window can be
+  // resized and maximised, and 60vh was right for neither end: in a maximised
+  // shell it left a band of empty glass under the terminal, and on a short
+  // laptop viewport it overflowed `.win-body` and produced a scrollbar around a
+  // pane that already scrolls itself. `min-height` keeps it usable if a parent
+  // ever gives it no definite height.
+  return (
+    <div
+      ref={ref}
+      className="glass-inset"
+      style={{ width: '100%', height: '100%', minHeight: '18rem', padding: '0.5rem' }}
+    />
+  );
 }
