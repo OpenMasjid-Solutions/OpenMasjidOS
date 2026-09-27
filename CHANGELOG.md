@@ -13,6 +13,16 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+### Remote administration (in progress — not switched on yet)
+
+Groundwork for managing OpenMasjidOS from outside the masjid, over the same secure tunnel your
+apps already use. **Nothing is reachable from the internet yet** — this is the sign-in security
+that has to exist first, and it will stay off until you turn it on.
+
+- Two-step sign-in is ready: either an authenticator app on your phone, or a code emailed to
+  you. A set of one-time backup codes comes with it, in case you lose the phone.
+- A code can only be used once, even within the minute it is valid for.
+
 ### Design system (in progress)
 
 - The ⋮ menu on an app card and the account menu got their spacing and edges back — they had
