@@ -3,8 +3,10 @@
 
 # Remote administration over the tunnel — design and progress
 
-**Status: in progress.** The second factor is built and wired into sign-in (`0.51.2-dev.10`). Nothing is exposed yet — the tunnel still refuses the dashboard exactly as
-before. Slices 2–4 below are not written.
+**Status: in progress.** The second factor is built and wired into sign-in (`0.51.2-dev.10`).
+**Nothing is exposed yet** — tRPC lives on the TLS listener and the tunnel reaches the front
+door, so `ctx.viaTunnel` is false for every real request today and the tunnel refuses the
+dashboard exactly as before. Slices 3 and 4 are not written.
 
 ---
 
@@ -66,20 +68,25 @@ and `util/net.ts` already carries the note about why a source-address check cann
 
 ## The second factor applies to OUTSIDE connections only
 
-Hasan's call, and the right one for a masjid: a volunteer on the masjid's own network must not
-be locked out of the dashboard by a phone they left at home. So  demands a second factor
-when  is true, and not otherwise.
+A masjid volunteer on the masjid's own network must not be locked out of the dashboard by a
+phone they left at home. So `login` demands a second factor when `ctx.viaTunnel` is true, and
+not otherwise.
 
-**Be honest about what that buys.**  is sound for traffic that really came through
-the tunnel — Cloudflare sets  at its edge and a client cannot strip it. It **cannot**
-tell the LAN from the internet on a box whose ports 80/443 are directly reachable: a public-IP
-VPS, or a router forwarding them. Such a request carries no Cloudflare headers and looks exactly
-like the office laptop, so it would skip the second factor entirely. §15 already says this about
-the LAN-only guard and  records why a source-address check cannot fix it (Docker
-SNATs everything to the bridge gateway).
+**Be honest about what that buys, because it is weaker than it sounds.** `viaTunnel` is sound
+for traffic that really came through the tunnel — Cloudflare sets `cf-ray` at its edge and a
+client cannot strip it. It **cannot** tell the LAN from the internet on a box whose ports
+80/443 are directly reachable: a public-IP VPS, or a router forwarding them. Such a request
+carries no Cloudflare headers and looks exactly like the office laptop, so it would **skip the
+second factor entirely**. `CLAUDE.md` §15 already says this about the LAN-only guard, and
+`util/net.ts` records why a source-address check cannot fix it — Docker SNATs every inbound
+connection to the bridge gateway, so a peer check answers "private" for the internet.
 
 So this protects **the door being deliberately opened**. It is not a substitute for a firewall
-on a directly-reachable host, and  has to keep saying so.
+or a bind address on a directly-reachable host, and `docs/SECURITY.md` has to keep saying so.
+
+> If that residual bothers you, the fix is a setting — "require the second factor everywhere"
+> — rather than a cleverer detector. There is no header that distinguishes a LAN client from
+> the internet on this network layout; that is the finding `util/net.ts` exists to record.
 
 ## Second factors
 
