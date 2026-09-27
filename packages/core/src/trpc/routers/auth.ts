@@ -27,6 +27,22 @@ import {
   destroyAllSessions,
 } from '../../auth/sessions';
 import { toDigits } from '../../notify/whatsapp';
+import { sendEmail } from '../../notify/email';
+import { log } from '../../logger';
+import {
+  availableFactors,
+  issueEmailCode,
+  twoFactorActive,
+  verifySecondFactor,
+  type SecondFactorKind,
+} from '../../auth/twofactor';
+import {
+  CHALLENGE_MAX_ATTEMPTS,
+  claimChallenge,
+  consumeChallenge,
+  createChallenge,
+  noteFailedAttempt,
+} from '../../auth/login-challenge';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -162,9 +178,153 @@ export const authRouter = router({
       }
       consecutiveFailures = 0;
       cooldownUntil = 0;
+
+      /**
+       * THE SECOND FACTOR IS REQUIRED ON TUNNEL TRAFFIC ONLY, at Hasan's
+       * direction: a volunteer on the masjid's own network should not be locked
+       * out of the dashboard by a phone they left at home.
+       *
+       * Be clear about what that does and does not buy, because the honest
+       * statement is weaker than it sounds. `viaTunnel` is a deny-list on a
+       * header Cloudflare sets at its edge; it is sound for traffic that really
+       * came through the tunnel. It cannot tell the LAN from the internet on a
+       * box whose ports 80/443 are directly reachable — a public-IP VPS, or a
+       * router forwarding them — because such a request carries no Cloudflare
+       * headers and looks exactly like the office laptop. CLAUDE.md §15 already
+       * says this about the LAN-only guard, and `util/net.ts` records why a
+       * source-address check cannot fix it (Docker SNATs everything to the
+       * bridge gateway).
+       *
+       * So: this protects the tunnel, which is the door being deliberately
+       * opened. It is not a substitute for a firewall on a directly-reachable
+       * host, and docs/SECURITY.md must keep saying so.
+       */
+      if (ctx.viaTunnel) {
+        // Fail CLOSED. If a tunnel request reaches the login at all and no second
+        // factor is enrolled, refuse — rather than handing out a session because
+        // the feature that was supposed to gate this is half-configured. The
+        // setting that opens the door will require enrolment first (Slice 3);
+        // this is the backstop for every path that does not go through it.
+        if (!twoFactorActive()) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Signing in from outside the masjid needs two-step sign-in set up first.',
+          });
+        }
+        const challenge = createChallenge(input.username, {
+          viaTunnel: true,
+          remoteIp: ctx.remoteIp,
+        });
+        // No session, no cookie. The caller holds an opaque id, not credentials.
+        return {
+          authenticated: false as const,
+          username: input.username,
+          csrf: null,
+          needsSecondFactor: true as const,
+          challenge,
+          factors: availableFactors(),
+        };
+      }
+
       const { token, csrf } = createSession(input.username);
       ctx.setSessionCookie?.(token);
-      return { authenticated: true, username: input.username, csrf };
+      return {
+        authenticated: true as const,
+        username: input.username,
+        csrf,
+        needsSecondFactor: false as const,
+        challenge: null,
+        factors: [] as SecondFactorKind[],
+      };
+    }),
+
+  /**
+   * Finish a sign-in that was held for a second factor.
+   *
+   * Deliberately a `publicProcedure`: there is no session yet, that is the whole
+   * point. What stands in for one is the challenge — single-use, ten minutes,
+   * five attempts, and bound to the origin it was issued to so a sign-in cannot
+   * be started on one side of the boundary and finished on the other.
+   */
+  completeLogin: publicProcedure
+    .input(z.object({ challenge: z.string().min(1), code: z.string().trim().min(1).max(32) }))
+    .mutation(async ({ input, ctx }) => {
+      const origin = { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp };
+      const claim = claimChallenge(input.challenge, origin);
+      if (!claim.ok) {
+        // One message for every reason. An unknown id, an expired one and one
+        // being moved between origins are the same sentence to the caller —
+        // there is nothing useful to learn from the difference.
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'That sign-in attempt has expired. Please start again.',
+        });
+      }
+
+      const result = verifySecondFactor(input.code);
+      if (!result.ok) {
+        noteFailedAttempt(input.challenge);
+        // A replay is logged distinctly — an operator reading this can tell
+        // "they typed it twice" from "someone is working through codes" — but
+        // the admin sees one message either way.
+        if (result.reason === 'replayed') {
+          log.warn('Two-step sign-in: a code was re-used. Refused.');
+        }
+        await wait(Math.min(CHALLENGE_MAX_ATTEMPTS * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That code is not right. Please try again.' });
+      }
+
+      consumeChallenge(input.challenge);
+      const { token, csrf } = createSession(claim.username);
+      ctx.setSessionCookie?.(token);
+      log.info(`Two-step sign-in completed using ${result.used}.`);
+      return { authenticated: true as const, username: claim.username, csrf };
+    }),
+
+  /**
+   * Send the emailed code for a held sign-in.
+   *
+   * The challenge must already exist, so this cannot be used to make the server
+   * send mail to the admin without first knowing the password. The per-minute
+   * limit lives in `auth/twofactor.ts` and is an email-bomb guard as much as a
+   * brute-force one.
+   */
+  sendLoginEmailCode: publicProcedure
+    .input(z.object({ challenge: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const claim = claimChallenge(input.challenge, { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp });
+      if (!claim.ok) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'That sign-in attempt has expired. Please start again.',
+        });
+      }
+      if (!availableFactors().includes('email')) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Emailed codes are not switched on.' });
+      }
+      const to = getAdminEmail();
+      if (!to) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'There is no email address on the account.' });
+      }
+      const issued = issueEmailCode();
+      if ('retryAfterMs' in issued) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'A code was just sent. Please check your email, or wait a moment before asking for another.',
+        });
+      }
+      const sent = await sendEmail(
+        {
+          to,
+          subject: 'Your OpenMasjidOS sign-in code',
+          text: `Your sign-in code is ${issued.code}. It expires in 10 minutes.\n\nIf you did not try to sign in, someone has your password — change it as soon as you can.`,
+        },
+        'omos:platform',
+      );
+      if (!sent.sent) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: "We couldn't send that code. Please try the authenticator app instead." });
+      }
+      return { sent: true as const };
     }),
 
   /** Sign out: drop this session and clear the cookie. */

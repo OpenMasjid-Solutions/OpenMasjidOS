@@ -17,6 +17,7 @@ import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify'
 import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, CSRF_HEADER, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
+import { isViaTunnel } from '../system/via-tunnel';
 import { observeDashboardHost } from '../system/platform-address';
 
 const COOKIE_OPTS = {
@@ -57,6 +58,12 @@ export interface Context {
   /** Host header (how the client reached the platform) — used to derive the
    *  base URL injected into installed apps for the OpenMasjidOS Fabric (SSO). */
   host: string | null;
+  /** Did this request arrive through the Cloudflare tunnel? Decided once, by the
+   *  shared detector, so no router re-derives it (see the value's comment). */
+  viaTunnel: boolean;
+  /** Cloudflare's client IP, and only over the tunnel — off-tunnel the header is
+   *  attacker-supplied. This is what lets remote sign-in have a per-IP lockout. */
+  remoteIp: string | null;
   setSessionCookie?: (token: string) => void;
   clearSessionCookie?: () => void;
 }
@@ -77,6 +84,13 @@ function parseCookie(header: string | undefined, name: string): string | null {
     }
   }
   return null;
+}
+
+/** A header can arrive as a list (duplicated by a proxy); take the first hop. */
+function firstHeader(v: string | string[] | undefined): string | undefined {
+  if (v == null) return undefined;
+  const first = Array.isArray(v) ? v[0] : v;
+  return first?.split(',')[0]?.trim() || undefined;
 }
 
 export function createContext({ req, res }: CreateFastifyContextOptions): Context {
@@ -132,6 +146,28 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
     isWebSocket: isWebSocketUpgrade(req),
     ip: req.ip,
     host: req.headers?.host ?? null,
+    /**
+     * Did this request arrive through the Cloudflare tunnel? Computed HERE, once,
+     * from the shared detector — no router re-derives it. This codebase has twice
+     * shipped a hand-rolled copy of this check that disagreed with the real one
+     * (§15's raw-vs-decoded bullet), and a second factor that is required or not
+     * depending on which copy answered is not a second factor.
+     */
+    viaTunnel: isViaTunnel(req),
+    /**
+     * The real client address, and ONLY when the request came over the tunnel.
+     *
+     * Cloudflare sets `cf-connecting-ip` at its edge and a tunnel client cannot
+     * forge it — the same property that makes `cf-ray` usable. That is what lets
+     * remote sign-in have a genuine PER-IP lockout, where the LAN cannot: Docker's
+     * port publishing SNATs every LAN client to the bridge gateway, so there they
+     * all look identical (see `util/net.ts`).
+     *
+     * Null off the tunnel, deliberately. Off-tunnel the header is attacker-supplied,
+     * and trusting it would hand any LAN client a way to walk past a per-IP counter
+     * by varying one header.
+     */
+    remoteIp: isViaTunnel(req) ? (firstHeader(req.headers?.['cf-connecting-ip']) ?? null) : null,
     setSessionCookie: canMutateCookies ? (t: string) => res.setCookie(COOKIE_NAME, t, COOKIE_OPTS) : undefined,
     clearSessionCookie: canMutateCookies ? () => res.clearCookie(COOKIE_NAME, { path: '/' }) : undefined,
   };

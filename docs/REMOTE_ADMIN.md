@@ -3,8 +3,7 @@
 
 # Remote administration over the tunnel — design and progress
 
-**Status: in progress.** The cryptographic core and its state are done and tested
-(`0.51.2-dev.9`). Nothing is exposed yet — the tunnel still refuses the dashboard exactly as
+**Status: in progress.** The second factor is built and wired into sign-in (`0.51.2-dev.10`). Nothing is exposed yet — the tunnel still refuses the dashboard exactly as
 before. Slices 2–4 below are not written.
 
 ---
@@ -65,6 +64,23 @@ On the LAN it is an attacker-supplied header and must be ignored entirely. Trust
 unconditionally would hand any LAN client a way to evade the counter by varying one header —
 and `util/net.ts` already carries the note about why a source-address check cannot work here.
 
+## The second factor applies to OUTSIDE connections only
+
+Hasan's call, and the right one for a masjid: a volunteer on the masjid's own network must not
+be locked out of the dashboard by a phone they left at home. So  demands a second factor
+when  is true, and not otherwise.
+
+**Be honest about what that buys.**  is sound for traffic that really came through
+the tunnel — Cloudflare sets  at its edge and a client cannot strip it. It **cannot**
+tell the LAN from the internet on a box whose ports 80/443 are directly reachable: a public-IP
+VPS, or a router forwarding them. Such a request carries no Cloudflare headers and looks exactly
+like the office laptop, so it would skip the second factor entirely. §15 already says this about
+the LAN-only guard and  records why a source-address check cannot fix it (Docker
+SNATs everything to the bridge gateway).
+
+So this protects **the door being deliberately opened**. It is not a substitute for a firewall
+on a directly-reachable host, and  has to keep saying so.
+
 ## Second factors
 
 Two, both implemented in Slice 1:
@@ -92,7 +108,7 @@ freeze the account.
 | # | Slice | State |
 |---|---|---|
 | 1 | TOTP + emailed codes + enrolment state, with the replay guard | ✅ `dev.9` |
-| 2 | Wire the second factor into login (LAN first — still nothing exposed) | ⬜ |
+| 2 | The second factor wired into login, tunnel-only | ✅ `dev.10` |
 | 3 | The exposure itself: serve the dashboard on the front door behind the setting, per-IP lockout, rewrite §15 | ⬜ |
 | 4 | Settings UI: enrolment, backup codes, the on/off switch and its warnings | ⬜ |
 
