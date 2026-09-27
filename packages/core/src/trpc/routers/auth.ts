@@ -44,6 +44,12 @@ import {
   noteFailedAttempt,
 } from '../../auth/login-challenge';
 import { twoFactorRouter } from './twofactor';
+import {
+  clearIpFailures,
+  ipLockedOut,
+  ipLockoutRemaining,
+  noteIpFailure,
+} from '../../auth/ip-lockout';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -113,6 +119,22 @@ export const authRouter = router({
     // Same rule as the email: a phone number is personal data, so it is surfaced only
     // to a signed-in session, never to a visitor sitting on the login screen.
     phone: ctx.username ? getAdminPhone() : null,
+    /**
+     * Is this session being used from OUTSIDE the masjid?
+     *
+     * The UI needs it because some of the dashboard genuinely is not there over
+     * the tunnel: the File Explorer, the terminals and backup/restore are
+     * registered on the LAN listener alone and stay that way
+     * (`system/remote-admin.ts` LAN_ONLY_FEATURES says why for each). Without
+     * this the remote dashboard would show those buttons and then fail on them,
+     * which reads as "the masjid's server is broken" rather than "that one is
+     * only available on site".
+     *
+     * Presentation only. Nothing is authorised on the strength of it — every
+     * one of those features is refused server-side by not being routed here at
+     * all, which is a far stronger guarantee than a hidden button.
+     */
+    remote: ctx.viaTunnel,
   })),
 
   /**
@@ -158,6 +180,19 @@ export const authRouter = router({
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
+      // PER-IP lockout, for tunnel traffic only. This is the one place the
+      // platform can tell clients apart: Cloudflare sets CF-Connecting-IP at its
+      // edge and a tunnel client cannot forge it, whereas on the LAN every
+      // client is SNATed to the bridge gateway and they all look identical
+      // (auth/ip-lockout.ts, util/net.ts). Checked FIRST, so a guesser is
+      // refused without occupying the verify mutex or spending an argon2 hash.
+      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
+        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
+        });
+      }
       // Opt-in hard cooldown (exposed instances): reject fast without occupying
       // the verify mutex or spending an argon2 hash.
       if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
@@ -168,6 +203,7 @@ export const authRouter = router({
       }
       const ok = await verifyCredentials(input.username, input.password);
       if (!ok) {
+        noteIpFailure(ctx.remoteIp);
         consecutiveFailures += 1;
         if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) {
           cooldownUntil = Date.now() + LOCKOUT_MS;
@@ -179,6 +215,10 @@ export const authRouter = router({
       }
       consecutiveFailures = 0;
       cooldownUntil = 0;
+      // A correct password clears the address's history. The second factor still
+      // has to pass, and its failures are counted separately below — but someone
+      // who knows the password is not who this counter is aimed at.
+      clearIpFailures(ctx.remoteIp);
 
       /**
        * THE SECOND FACTOR IS REQUIRED ON TUNNEL TRAFFIC ONLY, at Hasan's
@@ -250,6 +290,16 @@ export const authRouter = router({
   completeLogin: publicProcedure
     .input(z.object({ challenge: z.string().min(1), code: z.string().trim().min(1).max(32) }))
     .mutation(async ({ input, ctx }) => {
+      // The second factor is six digits, so it is the CHEAPER target of the two
+      // and must not be the one left uncounted. Same per-IP bound as the
+      // password step, checked before the challenge is even looked up.
+      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
+        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
+        });
+      }
       const origin = { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp };
       const claim = claimChallenge(input.challenge, origin);
       if (!claim.ok) {
@@ -265,6 +315,7 @@ export const authRouter = router({
       const result = verifySecondFactor(input.code);
       if (!result.ok) {
         noteFailedAttempt(input.challenge);
+        noteIpFailure(ctx.remoteIp);
         // A replay is logged distinctly — an operator reading this can tell
         // "they typed it twice" from "someone is working through codes" — but
         // the admin sees one message either way.
@@ -276,6 +327,7 @@ export const authRouter = router({
       }
 
       consumeChallenge(input.challenge);
+      clearIpFailures(ctx.remoteIp);
       const { token, csrf } = createSession(claim.username);
       ctx.setSessionCookie?.(token);
       log.info(`Two-step sign-in completed using ${result.used}.`);

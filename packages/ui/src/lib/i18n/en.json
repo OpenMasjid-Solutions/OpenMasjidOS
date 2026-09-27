@@ -849,7 +849,25 @@
       "download": "Download",
       "fileHeader": "OpenMasjidOS backup codes. Each one can be used once to sign in if you lose your phone. Keep this file somewhere safe.",
       "codesReplaced": "Any backup codes you had before have stopped working. If you wrote the old ones down, replace them with these."
-    }
+    },
+    "cfRemoteAdmin": "Manage OpenMasjidOS from outside",
+    "cfRemoteAdminHint": "Open this dashboard from anywhere, not just on the masjid’s network. You will be asked for a code from your phone every time.",
+    "cfRemoteAdminNeeds2fa": "Set up two-step sign-in first. Without it, a password alone would be the only thing between your server and the internet.",
+    "cfRemoteAdminNeedsTunnel": "Turn on remote access above first, so there is an internet link to reach the dashboard through.",
+    "cfRemoteAdminStalled": "Switched on, but not working: two-step sign-in has been turned off, so the dashboard has closed itself to the internet again.",
+    "cfRemoteAdminSetUp2fa": "Set up two-step sign-in",
+    "cfRemoteAdminAt": "Your dashboard is reachable at {{url}}",
+    "cfRemoteAdminOn": "Your dashboard can now be opened from outside the masjid.",
+    "cfRemoteAdminOff": "Your dashboard is back to the masjid’s network only.",
+    "cfRemoteAdminAskTitle": "Open your dashboard to the internet?",
+    "cfRemoteAdminAskBody": "After this, {{url}} will show your sign-in page to anyone on the internet who knows the address. That is the point — but it is worth being sure.",
+    "cfRemoteAdminAsk1": "Signing in from outside will always need a code from your phone as well as your password. That is what is really protecting this.",
+    "cfRemoteAdminAsk2": "Too many wrong tries from one place will lock that place out for a while. It cannot lock you out from somewhere else.",
+    "cfRemoteAdminAsk3": "Files, terminals and backups stay on the masjid’s network only — they are not available from outside, by design.",
+    "cfRemoteAdminAskLan": "Nothing changes for anyone using the dashboard at the masjid.",
+    "cfRemoteAdminAskConfirm": "Yes, open it",
+    "remoteOnlyLan": "Only available at the masjid",
+    "remoteOnlyLanHint": "This one stays on the masjid’s own network, even with remote management on. Open the dashboard there to use it."
   },
   "update": {
     "title": "Updating OpenMasjidOS",

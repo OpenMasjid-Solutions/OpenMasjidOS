@@ -8,7 +8,7 @@
  *   - the built React UI as static files, with SPA fallback to index.html
  */
 import fs from 'node:fs';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
@@ -28,8 +28,9 @@ import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
 import { noteRefusal } from './system/tunnel-refusals';
-import { registerFabricTunnelGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
-import { registerStaticUI } from './api/static-ui';
+import { registerFabricTunnelGuard, isViaTunnel, isViaTunnelHeaders, urlHasPrefix } from './system/via-tunnel';
+import { registerStaticUI, registerStaticFiles, spaFallback } from './api/static-ui';
+import { remoteAdminEnabled, isDashboardPath } from './system/remote-admin';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
@@ -266,11 +267,31 @@ async function main() {
   // request to the HTTPS dashboard. So browsers are forced to HTTPS while apps and
   // the healthcheck keep working — and a bare URL still leads somewhere.
   async function startHttpFront(): Promise<void> {
+    // NOTE ON `bodyLimit`: this listener keeps Fastify's 1 MB default while the
+    // dashboard listener allows 25 MB, and now that the same tRPC router is
+    // served on both, that is a real difference. It is kept deliberately: this
+    // is the listener facing the internet, and the smaller bound is the safer
+    // one to have there. Nothing in the dashboard sends more than a few KB
+    // through tRPC — the big uploads (a masjid logo, a restore archive) are
+    // multipart routes registered on the LAN listener alone and are not exposed
+    // here at all, and `wallpaperImage` is a URL rather than an inlined image.
+    // If a remote mutation ever fails on size, raise it for /trpc specifically
+    // rather than for the whole front door.
     const front = Fastify({ maxParamLength: 5000 });
     await front.register(fastifyCookie);
     // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
     // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
-    attachIngress(front);
+    //
+    // `allowUpgrade` is the ONLY way a non-app WebSocket survives this listener,
+    // and it is deliberately narrow: the dashboard's own tRPC socket, over the
+    // tunnel, while remote administration is on. Anything wider abandons sockets
+    // that nothing will answer (system/ingress.ts says why that matters).
+    attachIngress(front, {
+      allowUpgrade: (req) =>
+        isViaTunnelHeaders(req.headers) &&
+        remoteAdminEnabled() &&
+        urlHasPrefix(req.url ?? '', '/trpc'),
+    });
     // LAN-only guard for the SECRET-GATED Fabric routes (incl. the app-to-app
     // broker at /api/fabric/app/*). App backends always call these server-to-server
     // over the LAN base URL, never through the public tunnel. The not-found handler
@@ -313,7 +334,106 @@ async function main() {
       return { ready: await dockerReachable() };
     });
     registerFabric(front);
+
+    // ── Remote administration: the dashboard over the tunnel ─────────────────
+    //
+    // THE GATE RUNS BEFORE THE DASHBOARD ROUTES EXIST AS FAR AS A CALLER IS
+    // CONCERNED. Registering tRPC and the built UI on this listener makes them
+    // matchable routes, and a matched route skips the not-found handler below —
+    // the same property that made the Fabric routes need an explicit guard
+    // (CLAUDE.md §15). So the gate is an onRequest hook, added AFTER the Fabric
+    // guard so that guard still wins, and it answers all three cases itself
+    // rather than hoping something downstream does.
+    //
+    // Both no-change cases are preserved exactly:
+    //   - LAN traffic on this plain-HTTP port still 308s to the HTTPS dashboard,
+    //     so nothing starts serving the admin UI over unencrypted HTTP on the
+    //     masjid's own network;
+    //   - tunnel traffic with the feature off still 404s AND still records a
+    //     refusal, so "Recently turned away" keeps working.
+    /** 308 a browser to the HTTPS dashboard. Shared, because two places need it
+     *  and they must not drift. */
+    const toHttps = (req: FastifyRequest, reply: FastifyReply) => {
+      const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
+      if (!host) return reply.code(400).send({ error: 'Bad request.' });
+      const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
+      return reply.code(308).redirect(`https://${target}${req.url}`);
+    };
+
+    front.addHook('onRequest', (req, reply, done) => {
+      if (!isDashboardPath(req.url)) return done(); // /api/*, app paths, unknown
+      if (!isViaTunnel(req)) {
+        // LAN, on the plain-HTTP front door. REDIRECT HERE, do not fall through.
+        //
+        // This used to be `done()`, on the reasoning that the not-found handler
+        // below would redirect it — which was true right up until this listener
+        // started registering the dashboard's own routes. A REGISTERED route
+        // skips the not-found handler (the same property that makes the Fabric
+        // routes need an explicit guard), so `GET /` matched @fastify/static and
+        // was served index.html over plain HTTP on the masjid's LAN. Nothing in
+        // the unit tests saw it: the front door they build to exercise this gate
+        // has no static route, so the fall-through still reached the handler
+        // there. A smoke test against the real daemon is what found it.
+        return toHttps(req, reply);
+      }
+      if (remoteAdminEnabled()) return done(); // allowed → the real routes
+      const ref = noteRefusal(
+        req.url,
+        {
+          host: String(req.headers.host ?? ''),
+          method: req.method,
+          cfRay: String(req.headers['cf-ray'] ?? ''),
+          accept: String(req.headers.accept ?? ''),
+          agent: String(req.headers['user-agent'] ?? ''),
+        },
+        'lan-only-route',
+      );
+      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+    });
+
+    // Same CSRF defence the TLS listener applies to /trpc. Not "also" — this
+    // listener is the one facing the internet, so if either copy were going to be
+    // missing it is the one that must not be.
+    //
+    // ADDED BEFORE THE ROUTES IT PROTECTS, deliberately. Fastify binds a route's
+    // hook chain when the route is registered, so a hook added afterwards can
+    // silently not apply to it — and "the guard is there but never runs" is the
+    // exact failure shape CLAUDE.md §15 records for `discoverApps`'s unreachable
+    // try/catch. Nothing here relies on working out which way Fastify resolves it.
+    front.addHook('onRequest', async (req, reply) => {
+      if (urlHasPrefix(req.url, '/trpc') && !isWebSocketUpgrade(req) && !isAllowedOrigin(req)) {
+        return reply.code(403).send({ error: 'This request came from an unexpected place.' });
+      }
+    });
+
+    // The security headers the TLS listener sets. A dashboard reachable from the
+    // internet without them would be framable by any site that guessed the
+    // masjid's hostname.
+    front.addHook('onSend', async (_req, reply, payload) => {
+      reply.header('X-Frame-Options', 'SAMEORIGIN');
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Referrer-Policy', 'no-referrer');
+      if (!reply.getHeader('content-security-policy')) {
+        reply.header('Content-Security-Policy', "frame-ancestors 'self'");
+      }
+      return payload;
+    });
+
+    // The dashboard itself. Registered unconditionally — the gate above decides
+    // per request, because the setting can change without a restart and a
+    // restart-time decision would mean an admin toggling it saw nothing happen.
+    await front.register(fastifyWebsocket);
+    await front.register(fastifyTRPCPlugin, trpcPluginOptions);
+    const frontUI = await registerStaticFiles(front, UI_DIR);
+    const frontSpa = spaFallback(frontUI);
+
     front.setNotFoundHandler((req, reply) => {
+      // The SPA fallback, but ONLY for a request the gate above already allowed:
+      // a tunnel request, for a dashboard path, with the feature on. Everything
+      // else falls through to the refusal + redirect behaviour below unchanged.
+      if (isViaTunnel(req) && remoteAdminEnabled() && isDashboardPath(req.url)) {
+        if (frontSpa(req, reply)) return;
+      }
       // Traffic that arrived through the Cloudflare tunnel for a non-app path: don't
       // 308-redirect (it would loop the tunnel) and don't expose the dashboard —
       // just 404. The admin UI stays LAN-only; only app paths are public.
@@ -367,10 +487,7 @@ async function main() {
         }
         return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
       }
-      const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
-      if (!host) return reply.code(400).send({ error: 'Bad request.' });
-      const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
-      return reply.code(308).redirect(`https://${target}${req.url}`);
+      return toHttps(req, reply);
     });
     await front.listen({ host: HOST, port: PORT });
   }

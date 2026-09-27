@@ -588,6 +588,28 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **This is monitoring, not payment processing** — it stays inside §4's "payment-agnostic" rule. The platform creates no charges and moves no money; it reads dispute status with credentials it already holds, exactly as the existing green/red Stripe status dot does.
 - Rules that must not regress: **state is PERSISTED** (`config/stripe-disputes.json`) because a chargeback is a one-shot event — in-memory tracking would re-alert every open dispute on each restart; a **failure to reach Stripe records NOTHING** (treating "couldn't ask" as "none" would mark unseen chargebacks as seen and lose them permanently) and never alerts; **first run** absorbs settled history silently but DOES alert anything still `needs_response`, because doing nothing loses that money by default; and **>5 new disputes in one poll become one grouped alert**, since card-testing fraud can otherwise flood the inbox. Amounts respect zero-/two-/three-decimal currencies (JPY, KWD) — dividing by 100 regardless would misreport a Gulf masjid's KWD by 10x.
 
+### 13.2e Remote administration (Settings → Remote access, v0.51.2)
+
+- **Serving the DASHBOARD over the Cloudflare tunnel, not just app paths.** Off by default, and absent from every
+  `settings.json` written before it existed, so an upgrade can never publish a masjid's dashboard. The address is the
+  root of the tunnel hostname the masjid already uses — `https://omos.example.org/` — because apps are routed by first
+  path segment and the root was free. No Cloudflare change is needed; the single existing route already points there.
+- **Three conditions, all re-read per request** (`system/remote-admin.ts` `remoteAdminEnabled()`): the tunnel is on,
+  the switch is on, and a second factor is enrolled. That last one is the point — an admin who turns two-step sign-in
+  off closes this door in the same action, rather than leaving a password-only admin dashboard on the internet. The
+  switch and the effect can therefore disagree, so `cloudflare.status` reports `remoteAdmin` (the setting) **and**
+  `remoteAdminActive` (what is actually happening) and Settings says so out loud; showing only the switch would be a
+  screen that lies.
+- **Turning it on is a dialog, not a toggle that fires.** It is the one control on that page whose effect is outside the
+  building, and the dialog says plainly that the sign-in page will answer to anyone on the internet who knows the
+  address. It also states what the second factor is really protecting, rather than listing reassurances.
+- **Files, terminals and backup/restore stay LAN-only** (`LAN_ONLY_FEATURES`) — see §15 for why each. The UI hides
+  them on a remote session (`auth.me` → `remote`), but that is presentation: the control is that those routes are
+  not registered on the tunnel-facing listener at all.
+- **What the masjid sees when it is off must not change**, including the refusal record. `system/tunnel-refusals.ts`
+  is what an admin reads when a public page 404s, and a gate that refused dashboard paths silently would have taken it
+  away for exactly the addresses people mistype.
+
 ### 13.4 Update channel (Stable / Development)
 - **ONE global setting** (`updateChannel: 'main' | 'dev'`, default `'main'`) governs the OS, the App Store catalogue **and every installed app together**. Never a mix; no per-app override in v1. `system/channel.ts` is the single place that turns a channel into concrete targets:
 
@@ -769,7 +791,47 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - **Every listener that serves `/api/fabric` must carry `registerFabricTunnelGuard`** (v0.45.0) — the TLS dashboard server as well as the HTTP front door. `test/fabric-lan-only.test.ts` pins this structurally.
 - **Every path comparison against a request URL matches the DECODED path, not the raw text** (v0.46.0). The router dispatches on the percent-decoded path, so a guard that compared `req.url` verbatim was walked past with `/api/%66abric/app/…` — raw text that doesn't start with `/api/fabric` but still reached the app-to-app broker. `matchesSecretRoute` and `isFabricSubpath` now test the raw **and** `decodedPath()` spellings and fail closed; `decodedPath` resolves escape-by-escape so one malformed `%zz` can't throw the comparison away. `isViaTunnel` likewise compares the first `x-forwarded-proto` hop trimmed + lowercased (`"HTTPS"`, `"https,http"`, and a duplicated header all count). Never reintroduce a raw-string `startsWith` on a URL in a security check.
 - **A backup must never report success it can't back** (v0.45.0). `backupStream()` returns `{ stream, done }`; a volume that fails to archive fails the whole backup (its partial file is deleted), the outer tar's exit code flows through `done`, and a failure destroys the stream. `runBackup` requires `upload.ok && archive.ok` **before** recording success and **before** `pruneOld` — pruning on an unverified result is how repeated silent failures evict every good archive. One backup at a time (`BackupBusyError` → 409); manual download and scheduler share one staging path. Restore stops apps before refilling volumes and reports per-volume failures. In `tarVolume`, a staging **write** failure is tracked separately from the container's exit code (`writeFailed`, v0.46.0) — the two are independent, and folding it in with `code ??= -1` silently reported success whenever `docker run` had already exited 0 (i.e. ENOSPC on the final flush, the likeliest real failure). **Known-open, and NOT covered by `ok`:** volumes are tarred live, and a torn SQLite/WAL capture still exits tar 0 — so `ok: true` is not proof the databases inside will open. That fix is app-side (`VACUUM INTO` snapshots in each app); don't add a platform-side check that only looks like it covers it. The archive is also unencrypted (`rclone crypt` is the real fix).
-- **The Cloudflare tunnel exposes ONLY app paths.** The dashboard, tRPC, and the **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance`, `/api/public/logo`, and the three root icon aliases `/favicon.ico`, `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png` (low-sensitivity presentation assets — the icons serve the SAME already-public logo bytes, raster-only so no SVG-script vector, and exist because a phone asks for them at the root of any site it is asked to bookmark). Five routes, not two: count them here whenever one is added, because a registered route skips the front-door `notFoundHandler` and is therefore reachable over the tunnel by construction. Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
+- **The Cloudflare tunnel exposes app paths, and — only when the admin switches it on — the dashboard.** The **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only unconditionally, and so do `/api/health` and `/api/ready`. This bullet opened with "the tunnel exposes ONLY app paths" until v0.51.2, and that half is now a setting (`system/remote-admin.ts`, §13.2e) rather than an invariant. **The Fabric half did not move and must not**: those routes carry every app’s 256-bit secret and every configured Stripe live key, and `registerFabricTunnelGuard` runs on both listeners regardless of what remote administration is set to. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance`, `/api/public/logo`, and the three root icon aliases `/favicon.ico`, `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png` (low-sensitivity presentation assets — the icons serve the SAME already-public logo bytes, raster-only so no SVG-script vector, and exist because a phone asks for them at the root of any site it is asked to bookmark). Five routes, not two: count them here whenever one is added, because a registered route skips the front-door `notFoundHandler` and is therefore reachable over the tunnel by construction. Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
+
+  - **Remote administration re-checks its preconditions on EVERY request, and that is the property that matters.**
+    `remoteAdminEnabled()` is true only when the tunnel is on, the admin switched remote administration on, AND a second
+    factor is enrolled — all three re-read per request, never captured when the switch was flipped. So turning two-step
+    sign-in off closes this door in the same action, without the admin having to know the two settings are connected;
+    otherwise the result is a password-only admin dashboard on the public internet with nothing on screen saying so.
+    `login` also refuses tunnel traffic outright when no factor is enrolled, as the backstop for any path that does not
+    come through here.
+  - **What is served over the tunnel is an ALLOW-LIST, not "everything that is not an app".** `isDashboardPath` claims
+    `/`, `/trpc`, `/assets`, the built UI's root files and the UI's own routes, and nothing else — in particular
+    nothing under `/api`. Two reasons: the published surface is what was decided rather than whatever happens to be
+    registered, and every other address goes on being refused, so `system/tunnel-refusals.ts` stays the diagnostic it
+    was instead of every mistyped app path silently showing a donor the admin sign-in page. `test/remote-admin.test.ts`
+    reads `Root.tsx` and fails if a UI route is added that the list does not cover.
+  - **A REGISTERED ROUTE SKIPS THE NOT-FOUND HANDLER, and that is how this feature broke the LAN on its first cut.**
+    The front door's `notFoundHandler` was what 308-redirected plain-HTTP LAN traffic to the HTTPS dashboard. The moment
+    `@fastify/static` was registered on that listener, `GET /` matched a real route, skipped the handler, and served
+    the dashboard over unencrypted HTTP on the masjid's own network. The gate now redirects LAN traffic itself rather
+    than falling through. **The unit tests did not catch it** — the front door they build to exercise the gate had no
+    static route, so the fall-through still reached the handler there; a smoke test against the real daemon found it.
+    Any test that mirrors this listener must register a route at `/`, or it is not testing the thing that breaks.
+  - **The dashboard's WebSocket is the ONE non-app upgrade allowed through, and the allowance must stay narrow.**
+    `attachIngress`'s `upgrade` handler destroys every socket that is not an app path, deliberately: an abandoned
+    upgrade gets no response and no close, so it holds a file descriptor until the peer gives up — an unauthenticated
+    resource lever against a daemon running as root with the Docker socket. `allowUpgrade` carves out `/trpc`, over
+    the tunnel, with the feature on. Widening it to "is anything registered here" would abandon sockets nothing answers.
+  - **Files, terminals and backup/restore are NOT exposed** (`LAN_ONLY_FEATURES`). Not an oversight: the File Explorer
+    browses the directory that holds the admin password hash, the Stripe keys and the TLS private key; terminals are a
+    root shell; a backup archive is every secret the platform holds, unencrypted. They are refused by not being
+    registered on that listener at all — the UI hiding them is presentation, not the control.
+  - **Per-IP lockout is the one thing that gets BETTER over the tunnel** (`auth/ip-lockout.ts`). Cloudflare sets
+    `CF-Connecting-IP` at its edge and a tunnel client cannot forge it, so remote sign-ins can be rate-limited per
+    address where LAN ones cannot (Docker SNATs every LAN client to the bridge gateway — `util/net.ts`). **The address
+    is trusted only when `isViaTunnel` is already true**; `trpc/context.ts` passes `null` otherwise, because
+    off-tunnel the header is attacker-supplied and honouring it would be both a bypass and a way to lock out someone
+    else's address. The map is bounded: it is keyed by something the internet chooses.
+  - **A session created over the tunnel gets a `Secure` cookie**, decided per response rather than per process. The
+    default stays off for LAN sessions because an app on a plain-HTTP port needs the forwarded cookie for SSO; a session
+    for a hostname that resolves on the public internet is the one that must never be sent in clear. They cannot
+    collide — the tunnel hostname and the LAN address are separate origins with separate cookie jars.
   - **"LAN-only" means "refused over the tunnel", NOT "only reachable from the LAN" — do not write it as the stronger claim.** The guard is a deny-list on a header signal, and it is sound in the direction that matters (a tunnel client cannot strip `cf-ray`, which Cloudflare sets at its edge). But `HOST` is `0.0.0.0` and the compose publishes 80/443, so on a **directly reachable host** — a public-IP VPS, or a router forwarding those ports — requests arrive with no Cloudflare headers and nothing distinguishes the internet from the office laptop. Those routes, and the login page, are then internet-facing.
   - **A source-address check is NOT the fix, and adding one would be a regression.** With Docker's default `userland-proxy=true`, `docker-proxy` re-originates every inbound connection from the bridge gateway: measured on a real daemon, an app container, host-network cloudflared, and a client from **outside the host entirely** all present `172.17.0.1`. So a peer check would answer "private" for the internet — an allow-list in appearance that admits everyone. `util/net.ts` carries the full note and `test/ip-private.test.ts` fails the build if `peerIsPrivate` reappears; the same SNAT fact is why the login lockout cannot be per-IP (`trpc/routers/auth.ts`). The real mitigations are a firewall and a bind address, documented for the operator in `docs/SECURITY.md` → *What "LAN-only" means, exactly*.
   - What holds regardless of network position: **no route grants a session, skips a password, or relaxes CSRF because a request looks local** — every use of `isViaTunnel` is a route guard, never an authn/authz decision — and every `/api/fabric/*` route independently requires the 256-bit per-app secret **and** the declared capability. Reaching a Fabric route is not using it.

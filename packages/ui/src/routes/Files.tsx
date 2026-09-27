@@ -45,7 +45,13 @@ export function Files() {
   const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const list = trpc.files.list.useQuery({ path });
+  // Bookmarked, or typed. The route resolves over the tunnel (it is in the
+  // dashboard allow-list so it does not 404), but the data routes behind it are
+  // registered on the LAN listener alone — so say so rather than firing a query
+  // that will fail and showing a raw error where a folder list belongs.
+  const me = trpc.auth.me.useQuery();
+  const remote = me.data?.remote === true;
+  const list = trpc.files.list.useQuery({ path }, { enabled: !remote });
   const refresh = () => utils.files.list.invalidate();
 
   const mkdir = trpc.files.mkdir.useMutation({
@@ -93,6 +99,20 @@ export function Files() {
 
   const segments = path === '/' ? [] : path.replace(/^\//, '').split('/');
   const crumbPath = (i: number) => '/' + segments.slice(0, i + 1).join('/');
+
+  if (remote) {
+    return (
+      <Page>
+        <header className="page-head">
+          <h1 className="page-title">{t('files.title')}</h1>
+          <p className="page-sub">{t('settings.remoteOnlyLan')}</p>
+        </header>
+        <section className="glass-raised panel">
+          <p>{t('settings.remoteOnlyLanHint')}</p>
+        </section>
+      </Page>
+    );
+  }
 
   return (
     <Page>

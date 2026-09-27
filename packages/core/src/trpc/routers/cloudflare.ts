@@ -28,6 +28,10 @@ import {
   startApp,
 } from '../../apps/manager';
 import { PORT } from '../../config';
+import { remoteAdminEnabled, remoteAdminBlockedReason, LAN_ONLY_FEATURES } from '../../system/remote-admin';
+import { twoFactorActive } from '../../auth/twofactor';
+import { clearAllIpFailures } from '../../auth/ip-lockout';
+import { log } from '../../logger';
 
 /** After a tunnel/domain/path/exposure change, refresh each app's
  *  OPENMASJID_PUBLIC_URL and reup the ones that changed so the container + ingress
@@ -40,7 +44,30 @@ async function reconcileAndReup(): Promise<void> {
 
 async function status() {
   const cf = getSettings().cloudflare;
-  return { enabled: cf.enabled, domain: cf.domain, hasToken: hasToken(), running: await cloudflaredRunning() };
+  return {
+    enabled: cf.enabled,
+    domain: cf.domain,
+    hasToken: hasToken(),
+    running: await cloudflaredRunning(),
+    /** The admin's setting. NOT the same as whether it is in effect — see below. */
+    remoteAdmin: Boolean(cf.remoteAdmin),
+    /**
+     * Whether the dashboard is ACTUALLY being served over the tunnel right now.
+     *
+     * Reported separately from the switch because they can disagree, and the one
+     * case where they do is the one worth showing: turning two-step sign-in off
+     * closes this door automatically (`remoteAdminEnabled` re-reads it per
+     * request). Showing only the switch would tell a masjid their dashboard is
+     * published when it is not, which is the less alarming of the two directions
+     * but still a screen that lies.
+     */
+    remoteAdminActive: remoteAdminEnabled(),
+    /** Why it cannot be switched on, so Settings can say so before it is pressed. */
+    remoteAdminBlocked: remoteAdminBlockedReason(),
+    twoFactor: twoFactorActive(),
+    /** What is deliberately unavailable remotely, for the UI to explain. */
+    lanOnly: [...LAN_ONLY_FEATURES],
+  };
 }
 
 export const cloudflareRouter = router({
@@ -139,9 +166,56 @@ export const cloudflareRouter = router({
       return status();
     }),
 
+  /**
+   * Publish the DASHBOARD over the tunnel, not just app paths.
+   *
+   * Refused unless two-step sign-in is enrolled. That is not a nicety: with no
+   * second factor this would be a password-only admin dashboard on the public
+   * internet, and `login` already fails closed on tunnel traffic in that state —
+   * so allowing the switch would produce a published address that refuses every
+   * sign-in, which looks like a broken masjid rather than a refused one.
+   *
+   * The check is repeated at REQUEST time in `remoteAdminEnabled()`, so removing
+   * the second factor later closes this door in the same action rather than
+   * leaving the switch on and unenforced.
+   */
+  setRemoteAdmin: protectedProcedure
+    .input(z.object({ enabled: z.boolean() }))
+    .mutation(async ({ input }) => {
+      if (input.enabled) {
+        if (!twoFactorActive()) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Set up two-step sign-in first, in Settings → Account. Signing in from outside needs it.',
+          });
+        }
+        if (!getSettings().cloudflare.enabled) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Turn remote access on first, so there is an internet link to reach the dashboard through.',
+          });
+        }
+      }
+      updateCloudflare({ remoteAdmin: input.enabled });
+      // Switching it off drops the per-address failure history with it: those
+      // records exist only for tunnel sign-ins, and keeping them would mean an
+      // address stayed locked out of a door that no longer exists.
+      if (!input.enabled) clearAllIpFailures();
+      log.warn(
+        input.enabled
+          ? 'Remote administration is ON — the dashboard is now served over the Cloudflare tunnel.'
+          : 'Remote administration is OFF — the dashboard is LAN-only again.',
+      );
+      return status();
+    }),
+
   clear: protectedProcedure.mutation(async () => {
     await clearTunnel();
-    updateCloudflare({ enabled: false });
+    // Removing the tunnel removes the only way in from outside, so the setting
+    // goes with it rather than lying dormant and switching itself back on with
+    // the next tunnel the masjid configures.
+    updateCloudflare({ enabled: false, remoteAdmin: false });
+    clearAllIpFailures();
     await reconcileAndReup(); // remote access off → clear every app's public URL
     return status();
   }),

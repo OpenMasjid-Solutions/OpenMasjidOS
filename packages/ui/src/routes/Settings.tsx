@@ -297,6 +297,13 @@ export function Settings() {
   const utils = trpc.useUtils();
   // An unknown or missing section falls back rather than 404s: a stale bookmark from
   // before a section was renamed should land somewhere useful, not on an error.
+  // Is this session from outside the masjid? A few controls below reach routes
+  // that are registered on the LAN listener alone and are deliberately not
+  // published over the tunnel (system/remote-admin.ts LAN_ONLY_FEATURES). They
+  // are refused server-side by not existing there; this just stops the screen
+  // offering a button that cannot work.
+  const meQuery = trpc.auth.me.useQuery();
+  const remoteSession = meQuery.data?.remote === true;
   const { section: sectionParam } = useParams();
   const section: SectionId = isSectionId(sectionParam) ? sectionParam : DEFAULT_SECTION;
   const show = (id: SectionId) => section === id;
@@ -647,8 +654,9 @@ export function Settings() {
           <div className="setting-row">
             <div className="setting-row__text">
               <div className="setting-row__title">{t('settings.rootTerminalOpen')}</div>
+              {remoteSession && <div className="setting-row__hint">{t('settings.remoteOnlyLanHint')}</div>}
             </div>
-            <button className="btn" onClick={openRootTerminal}>
+            <button className="btn" disabled={remoteSession} onClick={openRootTerminal}>
               <SquareTerminal size={15} /> {t('settings.rootTerminalOpen')}
             </button>
           </div>
@@ -711,12 +719,15 @@ export function Settings() {
             {/* The downloaded file is unencrypted and carries everything — say so
                 here too, not only on the off-site panel. */}
             <div className="setting-row__hint">{t('settings.backupContentsBody')}</div>
+            {remoteSession && <div className="setting-row__hint">{t('settings.remoteOnlyLanHint')}</div>}
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <a className="btn" href={withKey('/api/backup')}>
-              <Download size={15} /> {t('settings.downloadBackup')}
-            </a>
-            <button className="btn" disabled={restoreUploading} onClick={() => restoreInput.current?.click()}>
+            {!remoteSession && (
+              <a className="btn" href={withKey('/api/backup')}>
+                <Download size={15} /> {t('settings.downloadBackup')}
+              </a>
+            )}
+            <button className="btn" disabled={restoreUploading || remoteSession} onClick={() => restoreInput.current?.click()}>
               <Upload size={15} /> {restoreUploading ? t('settings.restoreUploading') : t('settings.restore')}
             </button>
             <input
@@ -3423,6 +3434,18 @@ function CloudflarePanel() {
     onSuccess: (r) => { utils.cloudflare.routes.invalidate(); toast(t('settings.cfPathSaved', { path: r.path }), 'success'); },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
   });
+  // Publishing the DASHBOARD, as opposed to an app. Turning it on opens a
+  // confirmation first — this is the one switch on the page whose effect is
+  // outside the masjid's building, so it must not happen on a single stray click.
+  const [remoteAdminAsk, setRemoteAdminAsk] = useState(false);
+  const setRemoteAdmin = trpc.cloudflare.setRemoteAdmin.useMutation({
+    onSuccess: (r) => {
+      refresh();
+      setRemoteAdminAsk(false);
+      toast(r.remoteAdminActive ? t('settings.cfRemoteAdminOn') : t('settings.cfRemoteAdminOff'), 'success');
+    },
+    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+  });
   const setExposed = trpc.cloudflare.setExposed.useMutation({
     onSuccess: (r) => {
       utils.cloudflare.routes.invalidate();
@@ -3483,6 +3506,47 @@ function CloudflarePanel() {
           <button className="btn" disabled={clear.isPending} onClick={() => clear.mutate()}>
             <Trash2 size={15} /> {t('settings.cfClear')}
           </button>
+        )}
+      </div>
+
+      {/* Managing OpenMasjidOS itself from outside — a much bigger step than sharing
+          an app, so it says what it means and refuses until two-step sign-in exists.
+          `remoteAdminActive` rather than the switch: the two disagree when the second
+          factor is removed, and the screen must not claim the dashboard is published
+          when the platform has already closed it. */}
+      <div style={{ marginBlockStart: '0.9rem', borderBlockStart: '1px solid var(--color-border)', paddingBlockStart: '0.8rem' }}>
+        <div className="setting-row">
+          <div className="setting-row__text">
+            <div className="setting-row__title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <StatusDot online={cf.remoteAdmin ? cf.remoteAdminActive : undefined} />
+              {t('settings.cfRemoteAdmin')}
+            </div>
+            <div className="setting-row__hint">
+              {cf.remoteAdminBlocked === 'no-two-factor'
+                ? t('settings.cfRemoteAdminNeeds2fa')
+                : cf.remoteAdminBlocked === 'no-tunnel'
+                  ? t('settings.cfRemoteAdminNeedsTunnel')
+                  : cf.remoteAdmin && !cf.remoteAdminActive
+                    ? t('settings.cfRemoteAdminStalled')
+                    : t('settings.cfRemoteAdminHint')}
+            </div>
+          </div>
+          <Toggle
+            checked={cf.remoteAdmin}
+            disabled={setRemoteAdmin.isPending || (!cf.remoteAdmin && cf.remoteAdminBlocked !== null)}
+            onChange={(v) => (v ? setRemoteAdminAsk(true) : setRemoteAdmin.mutate({ enabled: false }))}
+            label={t('settings.cfRemoteAdmin')}
+          />
+        </div>
+        {cf.remoteAdminBlocked === 'no-two-factor' && (
+          <NavLink to="/settings/account" className="btn" style={{ marginBlockStart: '0.5rem' }}>
+            <ShieldCheck size={15} /> {t('settings.cfRemoteAdminSetUp2fa')}
+          </NavLink>
+        )}
+        {cf.remoteAdminActive && (
+          <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
+            {t('settings.cfRemoteAdminAt', { url: `https://${cf.domain}/` })}
+          </p>
         )}
       </div>
 
@@ -3572,6 +3636,36 @@ function CloudflarePanel() {
 
       </details>
       <TunnelRefusals />
+
+      {/* Turning remote administration ON. A dialog rather than a toggle that just
+          fires, because the effect is outside the building: after this, the
+          masjid's sign-in page answers to anyone on the internet who knows the
+          address. It says that plainly, and it says what two-step sign-in is
+          actually protecting, rather than listing reassurances. */}
+      <Modal
+        open={remoteAdminAsk}
+        onClose={() => setRemoteAdminAsk(false)}
+        title={t('settings.cfRemoteAdminAskTitle')}
+      >
+        <p>{t('settings.cfRemoteAdminAskBody', { url: `https://${cf.domain}/` })}</p>
+        <ul style={{ margin: '0.85rem 0', paddingInlineStart: '1.1rem', display: 'grid', gap: '0.4rem' }}>
+          <li>{t('settings.cfRemoteAdminAsk1')}</li>
+          <li>{t('settings.cfRemoteAdminAsk2')}</li>
+          <li>{t('settings.cfRemoteAdminAsk3')}</li>
+        </ul>
+        <p className="setting-row__hint">{t('settings.cfRemoteAdminAskLan')}</p>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '1rem' }}>
+          <button
+            className="btn btn--primary"
+            disabled={setRemoteAdmin.isPending}
+            onClick={() => setRemoteAdmin.mutate({ enabled: true })}
+          >
+            <Globe size={15} />{' '}
+            {setRemoteAdmin.isPending ? t('common.working') : t('settings.cfRemoteAdminAskConfirm')}
+          </button>
+          <button className="btn" onClick={() => setRemoteAdminAsk(false)}>{t('common.cancel')}</button>
+        </div>
+      </Modal>
     </section>
   );
 }

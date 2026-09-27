@@ -40,6 +40,9 @@ export function Dock() {
   const [dropHint, setDropHint] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
+  // Whether this session came from outside the masjid — some of the dock is not
+  // available there (see the Files link below).
+  const me = trpc.auth.me.useQuery();
   // Same rule as the dashboard grid: an app the platform drives is not pinnable, because
   // it is not somewhere the masjid goes (see apps/managed.ts).
   const apps = (appsQuery.data ?? []).filter((a) => !a.managed);
@@ -89,7 +92,16 @@ export function Dock() {
         label={t('nav.store')}
         onPrefetch={() => void utils.store.catalog.prefetch()}
       />
-      <DockLink to="/files" icon={<FolderOpen size={20} />} label={t('nav.files')} />
+      {/* The File Explorer is one of the few things that genuinely is not there
+          over the tunnel: it browses the data directory, which is also where the
+          platform keeps the admin password hash, the Stripe keys and the TLS
+          private key (CLAUDE.md §15). Its routes are registered on the LAN
+          listener alone, so remotely this icon would lead somewhere that errors.
+          Hiding it is presentation; the real refusal is that the route is not
+          published at all. */}
+      {!me.data?.remote && (
+        <DockLink to="/files" icon={<FolderOpen size={20} />} label={t('nav.files')} />
+      )}
       <DockLink to="/settings" icon={<SettingsIcon size={20} />} label={t('nav.settings')} />
 
       {pinnedApps.length > 0 && <span className="dock-divider" aria-hidden="true" />}

@@ -218,7 +218,24 @@ function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): voi
  * Wire path-based app proxying onto the HTTP front door. App paths are hijacked +
  * proxied; everything else falls through to the front door's own routes.
  */
-export function attachIngress(front: FastifyInstance): void {
+export function attachIngress(
+  front: FastifyInstance,
+  opts: {
+    /**
+     * Does something ELSE on this listener own this WebSocket upgrade?
+     *
+     * Only the dashboard's own tRPC socket, and only while remote administration
+     * is on. It exists because the `upgrade` handler below destroys every socket
+     * that is not an app path — deliberately, see the comment there — and the
+     * dashboard's live subscriptions are not an app path. Answering `true` means
+     * "leave it alone, the WebSocket plugin will take it": if that is ever true
+     * for a path nothing handles, the socket is abandoned rather than closed,
+     * which is the exact resource leak the destroy is there to prevent. So this
+     * predicate must stay narrower than the set of routes that exist.
+     */
+    allowUpgrade?: (req: IncomingMessage) => boolean;
+  } = {},
+): void {
   void rebuild();
   const timer = setInterval(() => void rebuild(), 10_000);
   timer.unref?.();
@@ -251,13 +268,19 @@ export function attachIngress(front: FastifyInstance): void {
     const seg = firstSegment(req.url ?? '');
     const port = seg ? routes.get(seg) : undefined;
     if (port == null) {
-      // DESTROY it, never just return. Nothing else on this listener handles
-      // `upgrade`, so an abandoned socket gets no response and no close — it sits
-      // open holding a file descriptor until the peer gives up, and the peer is
-      // the one choosing. On the tunnel-facing front door that is an
-      // unauthenticated resource-exhaustion lever against a daemon running as root
-      // with the Docker socket, obtained by opening WebSockets at any path that is
-      // not an app.
+      // Not an app path. ONE thing else on this listener may own it: the
+      // dashboard's tRPC socket, while remote administration is on. Ask first —
+      // and only then leave the socket alone for the WebSocket plugin, whose
+      // `upgrade` listener runs after this one.
+      if (opts.allowUpgrade?.(req)) return;
+      // Otherwise DESTROY it, never just return. If nothing handles `upgrade`,
+      // an abandoned socket gets no response and no close — it sits open holding
+      // a file descriptor until the peer gives up, and the peer is the one
+      // choosing. On the tunnel-facing front door that is an unauthenticated
+      // resource-exhaustion lever against a daemon running as root with the
+      // Docker socket, obtained by opening WebSockets at any path that is not an
+      // app. That is why `allowUpgrade` is a narrow allow-list and not "is
+      // anything registered here".
       socket.destroy();
       return;
     }

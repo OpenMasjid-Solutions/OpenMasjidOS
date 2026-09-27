@@ -18,12 +18,24 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 - Updated four bundled libraries to pick up security fixes, including the one that sends your
   email. Nothing about how OpenMasjidOS works changes.
 
-### Remote administration (in progress — not switched on yet)
+### Remote administration
 
-Groundwork for managing OpenMasjidOS from outside the masjid, over the same secure tunnel your
-apps already use. **Nothing is reachable from the internet yet** — this is the sign-in security
-that has to exist first, and it will stay off until you turn it on.
+Manage OpenMasjidOS from outside the masjid, over the same secure tunnel your apps already use.
+**Off by default.** Turn it on in Settings → Remote access, once two-step sign-in is set up.
 
+- **Your dashboard can now be opened from anywhere**, at the same web address your apps use —
+  `https://your-domain/`. You do not add anything in Cloudflare: the route you already have
+  covers it.
+- **It will not switch on without two-step sign-in**, and it switches itself back off if you ever
+  remove it. A password on its own is not enough to put a masjid's server on the internet, and the
+  screen tells you if the two ever disagree rather than quietly claiming to be on.
+- **Too many wrong sign-ins from one place lock that place out** for a while. This only works from
+  outside, where we can tell one visitor from another — and it can never lock you out from
+  somewhere else, which is exactly why it is safe to switch on here and not on your own network.
+- **Files, terminals and backups stay at the masjid.** They are not available from outside at all,
+  on purpose: between them they reach every password and key the server holds. The dashboard hides
+  them when you are away rather than offering a button that fails.
+- **Nothing changes for anyone at the masjid.** Same address, same sign-in, no extra code.
 - **You can set two-step sign-in up now**, in Settings → Account. Scan the square code with
   an authenticator app on your phone — Google Authenticator, Authy, 1Password and most
   password managers all work — or type the key in by hand if there is no camera to hand.

@@ -3,16 +3,10 @@
 
 # Remote administration over the tunnel — design and progress
 
-**Status: in progress.** The second factor is built, wired into sign-in, and now has a screen
-an admin can actually use (`0.51.2-dev.12`). **Nothing is exposed yet** — tRPC lives on the TLS
-listener and the tunnel reaches the front door, so `ctx.viaTunnel` is false for every real
-request today and the tunnel refuses the dashboard exactly as before. Slice 3, the one that
-opens the door, is not written.
-
-That ordering is deliberate and worth stating plainly: an admin can set up two-step sign-in
-today, scan the QR, save their backup codes and confirm the whole thing works, and their
-dashboard behaves identically afterwards. Nothing about how they sign in on the LAN changes,
-now or when Slice 3 lands.
+**Status: shipped, off by default** (`0.51.2-dev.13`). Settings → Remote access has the switch;
+it refuses to turn on until two-step sign-in is enrolled, and it stops taking effect if that is
+ever removed. With it off, nothing about this platform's behaviour differs from before the feature
+existed — including the refusal records that make a wrong public address diagnosable.
 
 ---
 
@@ -123,7 +117,7 @@ freeze the account.
 | 1 | TOTP + emailed codes + enrolment state, with the replay guard | ✅ `dev.9` |
 | 2 | The second factor wired into login, tunnel-only | ✅ `dev.10` |
 | 4 | Settings UI: enrolment with a QR, backup codes, the sudo rule; the login screen's code step | ✅ `dev.12` |
-| 3 | The exposure itself: serve the dashboard on the front door behind the setting, per-IP lockout, rewrite §15 | ⬜ |
+| 3 | The exposure itself: the dashboard on the front door behind the setting, per-IP lockout, §15 rewritten | ✅ `dev.13` |
 
 Slice 3 is the one that carries the risk, and it is last on purpose: everything before it is
 provable in isolation, and none of it changes what the internet can reach. Slice 4 was taken
@@ -194,3 +188,63 @@ token-coloured one would be near-invisible to a camera on the dark theme.
   phone they left at home. So `login` demands the second factor when `ctx.viaTunnel` is true
   and not otherwise, and the honest limits of that signal are set out above.
 - **QR codes: yes, and server-side.** See the section above.
+
+
+## What Slice 3 actually changed, and the one thing it broke on the way
+
+`system/remote-admin.ts` is the single decider (`remoteAdminEnabled()`) and the single statement of
+which paths the dashboard owns (`isDashboardPath`). Both are security decisions, and this codebase
+has twice shipped a second, subtly different copy of a check like that.
+
+The front door now registers tRPC and the built UI, behind an `onRequest` gate that runs after the
+Fabric guard. Three cases, and two of them are "exactly as before":
+
+| | before | now |
+|---|---|---|
+| LAN, plain HTTP | 308 → HTTPS | 308 → HTTPS |
+| tunnel, feature off | 404 + refusal recorded | 404 + refusal recorded |
+| tunnel, feature on | 404 | the dashboard |
+
+**The regression, worth recording because the unit tests could not see it.** The front door's
+`notFoundHandler` was what redirected plain-HTTP LAN traffic to HTTPS. The moment `@fastify/static`
+was registered on that listener, `GET /` matched a real route, skipped the handler, and served the
+dashboard **unencrypted on the masjid's own LAN**. The gate redirects LAN traffic itself now. The
+tests missed it because the front door they build to exercise the gate had no static route, so the
+fall-through still reached the handler there; a smoke test against the real daemon found it in one
+line. `test/remote-admin.test.ts` now registers `/` and `/assets/index.js` in its mirror, and
+mutation-checking confirms removing the redirect fails it.
+
+### Verified against the real daemon, not only the mirror
+
+```
+=== feature OFF (the default) ===        === feature ON ===
+LAN  /                 308               LAN  /                 308
+LAN  /api/health       200               TUN  /                 200
+TUN  /                 404               TUN  /settings/account 200
+TUN  /trpc/auth.me     404               TUN  /trpc/auth.me     200
+TUN  /api/health       404               TUN  /api/health       404
+TUN  /api/fabric/site  404               TUN  /api/fabric/site  404
+                                         TUN  /api/auth/session 404
+                                         TUN  /nosuchapp        404
+```
+
+WebSocket upgrades, which curl cannot distinguish from a destroyed socket:
+
+```
+feature ON   TUN ws /trpc         HTTP/1.1 101 Switching Protocols
+feature ON   LAN ws /trpc         destroyed
+feature ON   TUN ws /nosuchthing  destroyed
+feature OFF  TUN ws /trpc         destroyed
+```
+
+Every refused upgrade is **closed**, never abandoned — an abandoned one holds a file descriptor
+until the peer gives up, which is an unauthenticated resource lever on a root daemon.
+
+## Still true, and still the honest limit
+
+`viaTunnel` is sound for traffic that really came through Cloudflare. It **cannot** tell the LAN
+from the internet on a box whose ports 80/443 are directly reachable — a public-IP VPS, or a
+router forwarding them. Such a request carries no Cloudflare headers, so it is treated as LAN: it
+would be 308'd to the HTTPS dashboard and would **not** be asked for a second factor. That is the
+same residual `docs/SECURITY.md` records for the LAN-only guard, and the mitigations are the same
+ones: a firewall and a bind address. A source-address check cannot fix it (`util/net.ts`).

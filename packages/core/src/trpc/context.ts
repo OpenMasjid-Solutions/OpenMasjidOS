@@ -43,6 +43,25 @@ const COOKIE_OPTS = {
   maxAge: Math.floor(SESSION_TTL_MS / 1000),
 };
 
+/**
+ * Cookie options for THIS request.
+ *
+ * `Secure` is opt-in and off by default for the reason above — an app on a plain
+ * HTTP port needs the forwarded session cookie for SSO. But a session created
+ * over the tunnel is a different situation entirely: it reached us through
+ * Cloudflare, so the browser is on HTTPS, there is no plain-HTTP app on that
+ * origin to keep working, and a session cookie for a hostname that resolves on
+ * the public internet is exactly the one that must never be sent in clear.
+ *
+ * Per-response rather than per-process, because one daemon issues both kinds and
+ * they are genuinely different. They do not collide: the tunnel hostname and the
+ * LAN address are separate origins with separate cookie jars, so marking one
+ * Secure cannot strand the other.
+ */
+function cookieOptsFor(req: { headers?: NodeJS.Dict<string | string[]> }) {
+  return { ...COOKIE_OPTS, secure: COOKIE_OPTS.secure || isViaTunnel(req as never) };
+}
+
 export interface Context {
   username: string | null;
   sessionToken: string | null;
@@ -168,7 +187,9 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
      * by varying one header.
      */
     remoteIp: isViaTunnel(req) ? (firstHeader(req.headers?.['cf-connecting-ip']) ?? null) : null,
-    setSessionCookie: canMutateCookies ? (t: string) => res.setCookie(COOKIE_NAME, t, COOKIE_OPTS) : undefined,
+    setSessionCookie: canMutateCookies
+      ? (t: string) => res.setCookie(COOKIE_NAME, t, cookieOptsFor(req))
+      : undefined,
     clearSessionCookie: canMutateCookies ? () => res.clearCookie(COOKIE_NAME, { path: '/' }) : undefined,
   };
 }
