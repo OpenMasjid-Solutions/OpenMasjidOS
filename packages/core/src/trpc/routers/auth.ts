@@ -43,6 +43,7 @@ import {
   createChallenge,
   noteFailedAttempt,
 } from '../../auth/login-challenge';
+import { twoFactorRouter } from './twofactor';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -388,4 +389,11 @@ export const authRouter = router({
       ctx.setSessionCookie?.(token);
       return { ok: true, csrf };
     }),
+
+  /**
+   * Managing the second factor (Settings → Account). Nested here because it is
+   * part of signing in; its own file because every mutation in it re-proves the
+   * admin, and that argument is long enough to want room to state.
+   */
+  twoFactor: twoFactorRouter,
 });

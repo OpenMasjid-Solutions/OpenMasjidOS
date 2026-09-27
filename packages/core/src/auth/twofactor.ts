@@ -47,6 +47,27 @@ export const EMAIL_CODE_MAX_ATTEMPTS = 5;
 export const EMAIL_CODE_MIN_INTERVAL_MS = 60 * 1000;
 /** How many backup codes are issued at enrolment. */
 export const BACKUP_CODE_COUNT = 10;
+/**
+ * How long a scanned-but-unconfirmed secret stays confirmable, and how many
+ * wrong codes it survives.
+ *
+ * BOTH OF THESE CLOSE A REAL HOLE, not a theoretical one. `confirmEnrolment`
+ * deliberately does not ask for the password — the pending secret was minted
+ * behind one moments earlier and is worthless to anyone who did not receive it.
+ * That reasoning is sound for the secret, and it was wrong about what confirming
+ * HANDS BACK: the ten backup codes, each of which authorises a sign-in.
+ *
+ * So the attack was: an admin starts enrolment and closes the tab, leaving a
+ * pending secret on disk; someone who has reached an authenticated dashboard but
+ * does NOT have the password then guesses six digits against it. They never
+ * learn the secret — they do not need to. They get the backup codes.
+ *
+ * A guess is worth about 3 in a million (the verification window accepts three
+ * steps), which is nothing at five tries and quite a lot at a million. The cap
+ * makes it five, and the TTL removes the stale tab that is the precondition.
+ */
+export const PENDING_TTL_MS = 15 * 60 * 1000;
+export const PENDING_MAX_ATTEMPTS = 5;
 
 export type SecondFactorKind = 'totp' | 'email';
 
@@ -72,6 +93,10 @@ export interface TwoFactorConfig {
   lastCounter?: number;
   /** A secret minted by `beginEnrolment` and not yet proved. */
   pendingTotpSecret?: string;
+  /** When it was minted — it stops being confirmable after `PENDING_TTL_MS`. */
+  pendingTotpAt?: number;
+  /** Wrong codes against it so far. At `PENDING_MAX_ATTEMPTS` it is discarded. */
+  pendingTotpAttempts?: number;
   /** Emailed codes are allowed as a second factor. Needs a configured provider. */
   emailEnabled?: boolean;
   pendingEmail?: PendingEmailCode;
@@ -104,8 +129,24 @@ export function availableFactors(): SecondFactorKind[] {
   return out;
 }
 
+/**
+ * Is there a pending enrolment that could still be confirmed?
+ *
+ * A PURE PREDICATE — it applies the TTL without deleting anything. A status read
+ * must not mutate security state as a side effect; `confirmEnrolment` is where
+ * an expired secret is actually dropped. (This repo has made the opposite
+ * mistake before: `hasPending` in the WhatsApp command gate tested for presence
+ * without applying its TTL, and an ignored prompt held the prefix exemption open
+ * for ever.)
+ */
+function pendingIsLive(c: TwoFactorConfig, nowMs: number): boolean {
+  if (!c.pendingTotpSecret) return false;
+  if (c.pendingTotpAt === undefined || nowMs - c.pendingTotpAt > PENDING_TTL_MS) return false;
+  return (c.pendingTotpAttempts ?? 0) < PENDING_MAX_ATTEMPTS;
+}
+
 /** Status for the dashboard. Deliberately returns NO secret and NO code. */
-export function twoFactorStatus(): {
+export function twoFactorStatus(nowMs: number = Date.now()): {
   active: boolean;
   totp: boolean;
   email: boolean;
@@ -117,7 +158,7 @@ export function twoFactorStatus(): {
     active: twoFactorActive(),
     totp: Boolean(c.totpSecret && c.totpConfirmedAt),
     email: Boolean(c.emailEnabled),
-    enrolmentPending: Boolean(c.pendingTotpSecret),
+    enrolmentPending: pendingIsLive(c, nowMs),
     backupCodesRemaining: (c.backupCodes ?? []).filter((b) => !b.usedAt).length,
   };
 }
@@ -132,12 +173,25 @@ export function twoFactorStatus(): {
  * Calling this again before confirming replaces the pending secret, which is the
  * behaviour you want: an admin who lost the first QR just asks for another.
  */
-export function beginEnrolment(account: string, issuer = 'OpenMasjidOS'): { secret: string; uri: string } {
+export function beginEnrolment(
+  account: string,
+  issuer = 'OpenMasjidOS',
+  nowMs: number = Date.now(),
+): { secret: string; uri: string } {
   const cfg = load();
   const secret = generateSecret();
   cfg.pendingTotpSecret = secret;
+  cfg.pendingTotpAt = nowMs;
+  cfg.pendingTotpAttempts = 0;
   save(cfg);
   return { secret, uri: otpauthUri({ secretBase32: secret, account, issuer }) };
+}
+
+/** Forget a pending enrolment. Used when it expires, burns out, or is replaced. */
+function dropPending(cfg: TwoFactorConfig): void {
+  cfg.pendingTotpSecret = undefined;
+  cfg.pendingTotpAt = undefined;
+  cfg.pendingTotpAttempts = undefined;
 }
 
 /**
@@ -150,8 +204,28 @@ export function beginEnrolment(account: string, issuer = 'OpenMasjidOS'): { secr
 export function confirmEnrolment(code: string, nowMs: number = Date.now()): string[] | null {
   const cfg = load();
   if (!cfg.pendingTotpSecret) return null;
+
+  // Expired, or guessed at too many times. Either way the pending secret goes:
+  // starting again costs the admin one button press, and it is the only thing
+  // that bounds a search for the six digits that would hand over the backup
+  // codes (see PENDING_TTL_MS for the full reasoning).
+  const at = cfg.pendingTotpAt;
+  const expired = at === undefined || nowMs - at > PENDING_TTL_MS;
+  const burned = (cfg.pendingTotpAttempts ?? 0) >= PENDING_MAX_ATTEMPTS;
+  if (expired || burned) {
+    dropPending(cfg);
+    save(cfg);
+    return null;
+  }
+
   const counter = verifyTotp(cfg.pendingTotpSecret, code, nowMs);
-  if (counter === null) return null;
+  if (counter === null) {
+    // Counted BEFORE returning, so a flood burns the enrolment rather than
+    // getting unlimited tries at it — the same shape as the emailed code.
+    cfg.pendingTotpAttempts = (cfg.pendingTotpAttempts ?? 0) + 1;
+    save(cfg);
+    return null;
+  }
 
   const plain = Array.from({ length: BACKUP_CODE_COUNT }, () => newBackupCode());
   cfg.totpSecret = cfg.pendingTotpSecret;
@@ -159,7 +233,7 @@ export function confirmEnrolment(code: string, nowMs: number = Date.now()): stri
   // Spend the step that proved it, so the very code used to enrol cannot then
   // be replayed to sign in.
   cfg.lastCounter = counter;
-  cfg.pendingTotpSecret = undefined;
+  dropPending(cfg);
   cfg.backupCodes = plain.map((p) => ({ hash: sha256(p) }));
   save(cfg);
   return plain;

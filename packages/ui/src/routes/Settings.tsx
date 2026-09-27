@@ -29,6 +29,7 @@ import { useWindows } from '../components/Windows';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import { CheckboxField } from '../components/CheckboxField';
+import { TwoFactorPanel } from '../components/TwoFactorPanel';
 
 // IANA zones for the clock picker, when the browser exposes them.
 const TIMEZONES: string[] = (() => {
@@ -565,8 +566,15 @@ export function Settings() {
         </>
       )}
 
-      {/* Account */}
-      {show('account') && <ChangePassword />}
+      {/* Account — who you are, and how you prove it */}
+      {show('account') && (
+        <>
+          <ChangePassword />
+          {/* Two-step sign-in. Below the password because that is the order an
+              admin sets them up in, and because it is meaningless without one. */}
+          <TwoFactorPanel />
+        </>
+      )}
 
       {/* Email provider (SMTP / Resend, shared with apps via the Fabric) */}
       {show('email') && <EmailPanel />}

@@ -10,7 +10,12 @@
     "starting": "Starting…",
     "sessionClosed": "Session closed",
     "clock": "Clock",
-    "dialog": "Dialog"
+    "dialog": "Dialog",
+    "continue": "Continue",
+    "copy": "Copy",
+    "done": "Done",
+    "turnOn": "Turn on",
+    "turnOff": "Turn off"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -98,7 +103,16 @@
     "resetIntro": "You'll need terminal access to the machine running OpenMasjidOS — at it directly or over SSH. Then run:",
     "resetCmd": "docker exec -it openmasjid-core node packages/core/dist/reset-password.js",
     "resetOutro": "Then come back here and sign in. Your apps and data are untouched.",
-    "resetClose": "Got it"
+    "resetClose": "Got it",
+    "twoFactor": {
+      "title": "One more step",
+      "subtitle": "You're signing in from outside the masjid, so we need a code as well.",
+      "code": "Code",
+      "hint": "From your authenticator app — or one of your backup codes.",
+      "emailSent": "We've sent a code to the email address on your account. It's good for ten minutes.",
+      "emailMe": "Email me a code instead",
+      "startOver": "Start again"
+    }
   },
   "dashboard": {
     "greeting": {
@@ -791,7 +805,51 @@
     "cfRefusalRef": "Reference",
     "cfRefusalRay": "Cloudflare",
     "cfRefusalPage": "Opening a page",
-    "cfRefusalData": "Loading data"
+    "cfRefusalData": "Loading data",
+    "twoFactor": {
+      "title": "Two-step sign-in",
+      "intro": "When someone signs in from outside the masjid, ask for a code from your phone as well as your password.",
+      "notSetUp": "Not set up yet. Until it is, signing in from outside the masjid isn't allowed at all.",
+      "setUp": "Set up two-step sign-in",
+      "setUpTitle": "Set up two-step sign-in",
+      "setUpIntro": "First, let's check it's you.",
+      "currentCode": "Code from your authenticator app",
+      "currentCodeHint": "A backup code works here too.",
+      "scanIntro": "Scan this with an authenticator app on your phone. Google Authenticator, Authy, 1Password and most password managers all work.",
+      "qrLabel": "Setup code for your authenticator app",
+      "manualKey": "Or type this key in by hand",
+      "manualKeyHint": "Your app will show this as “{{account}}”.",
+      "enterCode": "Now enter the six-digit code it shows",
+      "turnOn": "Turn on two-step sign-in",
+      "appTitle": "Authenticator app",
+      "appOn": "On. You'll be asked for a code when you sign in from outside the masjid.",
+      "replace": "Use a different phone",
+      "backupTitle": "Backup codes",
+      "backupLeft_zero": "None left. Make a new set now, or you'll have no way back in if you lose your phone.",
+      "backupLeft_one": "1 of {{total}} left. Worth making a new set soon.",
+      "backupLeft_other": "{{count}} of {{total}} left.",
+      "newCodes": "New backup codes",
+      "newCodesTitle": "Make new backup codes",
+      "newCodesBody": "This replaces every code you have now. The old ones stop working straight away.",
+      "emailTitle": "Emailed codes",
+      "emailHint": "Also accept a code sent to your email address — handy when your phone isn't to hand, but only as safe as your mailbox.",
+      "emailUnavailable": "Set up an email provider in Settings → Email first, so codes have somewhere to go.",
+      "emailOnTitle": "Allow emailed codes",
+      "emailOnBody": "We'll send a six-digit code to the address on your account when you sign in from outside the masjid.",
+      "emailOffTitle": "Stop allowing emailed codes",
+      "emailOffBody": "From now on, only your authenticator app or a backup code will work.",
+      "turnOff": "Turn off two-step sign-in",
+      "turnOffTitle": "Turn off two-step sign-in",
+      "turnOffBody": "Signing in from outside the masjid will stop working altogether. Signing in here, on the masjid's own network, is unaffected.",
+      "turnedOff": "Two-step sign-in is off.",
+      "codesTitle": "Save your backup codes",
+      "codesIntro": "Each one works once, if you ever lose your phone. This is the only time they'll be shown, so keep them somewhere safe and away from this computer.",
+      "codesSaved": "I've saved these somewhere safe",
+      "copied": "Backup codes copied.",
+      "download": "Download",
+      "fileHeader": "OpenMasjidOS backup codes. Each one can be used once to sign in if you lose your phone. Keep this file somewhere safe.",
+      "codesReplaced": "Any backup codes you had before have stopped working. If you wrote the old ones down, replace them with these."
+    }
   },
   "update": {
     "title": "Updating OpenMasjidOS",

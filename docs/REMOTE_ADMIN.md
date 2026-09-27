@@ -3,10 +3,16 @@
 
 # Remote administration over the tunnel — design and progress
 
-**Status: in progress.** The second factor is built and wired into sign-in (`0.51.2-dev.10`).
-**Nothing is exposed yet** — tRPC lives on the TLS listener and the tunnel reaches the front
-door, so `ctx.viaTunnel` is false for every real request today and the tunnel refuses the
-dashboard exactly as before. Slices 3 and 4 are not written.
+**Status: in progress.** The second factor is built, wired into sign-in, and now has a screen
+an admin can actually use (`0.51.2-dev.12`). **Nothing is exposed yet** — tRPC lives on the TLS
+listener and the tunnel reaches the front door, so `ctx.viaTunnel` is false for every real
+request today and the tunnel refuses the dashboard exactly as before. Slice 3, the one that
+opens the door, is not written.
+
+That ordering is deliberate and worth stating plainly: an admin can set up two-step sign-in
+today, scan the QR, save their backup codes and confirm the whole thing works, and their
+dashboard behaves identically afterwards. Nothing about how they sign in on the LAN changes,
+now or when Slice 3 lands.
 
 ---
 
@@ -116,24 +122,75 @@ freeze the account.
 |---|---|---|
 | 1 | TOTP + emailed codes + enrolment state, with the replay guard | ✅ `dev.9` |
 | 2 | The second factor wired into login, tunnel-only | ✅ `dev.10` |
+| 4 | Settings UI: enrolment with a QR, backup codes, the sudo rule; the login screen's code step | ✅ `dev.12` |
 | 3 | The exposure itself: serve the dashboard on the front door behind the setting, per-IP lockout, rewrite §15 | ⬜ |
-| 4 | Settings UI: enrolment, backup codes, the on/off switch and its warnings | ⬜ |
 
 Slice 3 is the one that carries the risk, and it is last on purpose: everything before it is
-provable in isolation, and none of it changes what the internet can reach.
+provable in isolation, and none of it changes what the internet can reach. Slice 4 was taken
+ahead of it so the factor can be set up, scanned and verified before anything depends on it —
+the alternative is an admin meeting enrolment for the first time on the same day the dashboard
+becomes reachable from the internet.
+
+## A session is not enough to change how you sign in
+
+Every mutation in `trpc/routers/twofactor.ts` re-proves the password, and once a factor is
+active, the current second factor as well. The reasoning is worth repeating here because the
+obvious threat is the wrong one.
+
+**Turning 2FA off is not the attack.** With no factor enrolled, `login` refuses tunnel traffic
+outright (it fails closed), so an attacker who switches it off has shut their own door.
+
+**Re-enrolment is the attack.** Reach an authenticated dashboard — a stolen cookie, a borrowed
+unlocked laptop, a password reused from somewhere else — mint a fresh secret into your own
+authenticator, and you can now sign in from anywhere in the world, indefinitely, through the
+front door. The admin's password still works. Nothing on screen looks different.
+
+The two checks cover different halves of that, which is why neither is sufficient alone:
+
+| | blocks |
+|---|---|
+| Password | a session with no password behind it (stolen cookie, XSS, an unlocked laptop) |
+| Current second factor | a password with no phone behind it — the LAN case, where a password is the whole of sign-in |
+
+A code spent this way is **spent**: `verifySecondFactor` advances the replay guard on success,
+so the code that authorised a change cannot then be replayed to sign in. The way back when a
+phone is genuinely lost is a backup code — accepted anywhere a TOTP code is — or `install.sh`
+→ *Reset sign-in*, which needs physical access to the box.
+
+## Where the QR is drawn, and why it is not in the browser
+
+`auth/qr.ts` encodes the `otpauth://` URI server-side with `qrcode-generator` (MIT, no
+dependencies of its own, ships its own types) and returns a **grid of bits**. The UI draws that
+as a single SVG path.
+
+Three reasons it is not a browser dependency:
+
+- **It is testable here.** `packages/ui` has no test runner, so an encoder in the bundle could
+  not be checked at all — and a QR that encodes the wrong string looks exactly like one that
+  encodes the right string. `test/qr.test.ts` checks the finder patterns, the timing patterns
+  and the version chosen against the spec's own capacity table, and pins the exact grid for a
+  fixed input.
+- **`@openmasjid/ui` is a design system other apps consume.** A QR encoder is not a design
+  system, and putting it there would make every app in the fleet carry it.
+- **The result is data, not markup.** No `dangerouslySetInnerHTML` anywhere near the sign-in
+  flow.
+
+Two details that are easy to get wrong and are pinned by tests: the payload must be **ASCII**
+(the library's default byte conversion is Shift_JIS — UTF-8 is a separate entry point — so a
+non-ASCII character would scan to mojibake, and `qrMatrix` throws rather than encoding it), and
+the code is drawn **black on white in both themes**, because a QR is read by contrast and a
+token-coloured one would be near-invisible to a camera on the dark theme.
 
 ## Open decisions
 
-- **QR codes need a dependency.** An `otpauth://` URI is a QR code in every authenticator's
-  flow, and QR encoding is Reed-Solomon — not something to hand-roll next to a login. Slice 4
-  can ship manual entry (the base32 key, grouped and copyable) with no dependency, or take
-  `qrcode` / `qrcode.react` — already used in OpenMasjidDonations and OpenMasjidCompanion, so
-  it is a known quantity in this fleet. Manual entry on a phone is poor UX; this is worth one
-  small dependency, but `CLAUDE.md` §19 says ask first.
-- **Does enrolled 2FA apply on the LAN too?** Current intent: yes — once enrolled it is
-  required everywhere, because "the LAN session is weaker than the remote one" is a distinction
-  nobody will remember at 11pm. Break-glass is the backup codes and the installer's *Reset
-  sign-in*.
 - **The session cookie's `Secure` flag** is opt-in and off by default, because an app served
   over plain HTTP needs the forwarded session cookie. A tunnel-origin session should set it;
   that means the flag becomes per-response rather than per-process. Slice 3.
+
+## Settled
+
+- **Does enrolled 2FA apply on the LAN too? No** — Hasan's call, and the reason is the right
+  one: a volunteer on the masjid's own network must not be locked out of the dashboard by a
+  phone they left at home. So `login` demands the second factor when `ctx.viaTunnel` is true
+  and not otherwise, and the honest limits of that signal are set out above.
+- **QR codes: yes, and server-side.** See the section above.

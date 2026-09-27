@@ -70,6 +70,7 @@ test('NO PANEL WAS ORPHANED by the split', () => {
   const panels = [
     'BrandingPanel',
     'ChangePassword',
+    'TwoFactorPanel',
     'NotificationsPanel',
     'EmailPanel',
     'WhatsAppPanel',

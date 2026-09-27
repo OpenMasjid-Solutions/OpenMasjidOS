@@ -24,9 +24,22 @@ Groundwork for managing OpenMasjidOS from outside the masjid, over the same secu
 apps already use. **Nothing is reachable from the internet yet** — this is the sign-in security
 that has to exist first, and it will stay off until you turn it on.
 
-- Two-step sign-in is ready: either an authenticator app on your phone, or a code emailed to
-  you. A set of one-time backup codes comes with it, in case you lose the phone.
+- **You can set two-step sign-in up now**, in Settings → Account. Scan the square code with
+  an authenticator app on your phone — Google Authenticator, Authy, 1Password and most
+  password managers all work — or type the key in by hand if there is no camera to hand.
+- Ten one-time **backup codes** come with it, for the day the phone is lost or replaced. They
+  are shown once and only once, so that window will not close until you have ticked that they
+  are saved; there are Copy and Download buttons beside them.
+- A code emailed to you can be allowed as a second way in. It needs an email provider set up
+  first, because a code that cannot be delivered is a lockout with extra steps.
+- Changing any of this asks for your password **and** a current code. That is not box-ticking:
+  it is what stops someone who reaches an already-signed-in dashboard from quietly pointing
+  two-step sign-in at their own phone and keeping a way in from anywhere.
 - A code can only be used once, even within the minute it is valid for.
+- **Nothing about signing in changes today.** On the masjid's own network you sign in exactly
+  as before, and that stays true after this feature is finished — the extra code is only ever
+  asked for on connections from outside, so a volunteer who left their phone at home is never
+  locked out of the dashboard in the building.
 
 ### Design system (in progress)
 

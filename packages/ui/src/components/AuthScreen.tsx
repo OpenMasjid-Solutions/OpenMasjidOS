@@ -80,25 +80,55 @@ export function AuthScreen({
   const login = trpc.auth.login.useMutation();
   const busy = setup.isPending || login.isPending;
 
+  /**
+   * A sign-in the server is holding for a second factor.
+   *
+   * The password is NOT kept while this is set — the challenge stands in for it,
+   * which is the whole reason `login-challenge.ts` exists. Nothing on this
+   * screen has to remember credentials to finish signing in.
+   */
+  const [challenge, setChallenge] = useState<{ id: string; factors: readonly string[] } | null>(null);
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError('');
     try {
-      let res;
       if (setupRequired) {
         if (password.length < MIN_PW) return setError(t('auth.passwordTooShort'));
         if (password !== confirm) return setError(t('auth.passwordsMismatch'));
-        res = await setup.mutateAsync({ name, email, password });
-      } else {
-        res = await login.mutateAsync({ username, password });
+        const res = await setup.mutateAsync({ name, email, password });
+        // Persist the dashboard key BEFORE the gate re-renders, so the first
+        // authenticated calls carry it.
+        setCsrf(res.csrf);
+        onAuthed();
+        return;
       }
-      // Persist the dashboard key BEFORE the gate re-renders, so the first
-      // authenticated calls carry it.
+      const res = await login.mutateAsync({ username, password });
+      if (res.needsSecondFactor) {
+        // No session and no cookie yet — only an opaque id. Drop the password.
+        setChallenge({ id: res.challenge, factors: res.factors });
+        setPassword('');
+        return;
+      }
       setCsrf(res.csrf);
       onAuthed();
     } catch (err) {
       setError((err as Error).message || t('auth.genericError'));
     }
+  }
+
+  if (challenge) {
+    return (
+      <SecondFactorScreen
+        challenge={challenge.id}
+        factors={challenge.factors}
+        onDone={onAuthed}
+        onStartOver={() => {
+          setChallenge(null);
+          setError('');
+        }}
+      />
+    );
   }
 
   return (
@@ -284,6 +314,128 @@ export function AuthScreen({
       </Modal>
 
       <RestoreModal open={restoreOpen} onClose={() => setRestoreOpen(false)} />
+    </div>
+  );
+}
+
+/**
+ * The second step of a sign-in from outside the masjid.
+ *
+ * Only reached when the server held the sign-in, which today means the request
+ * arrived through the Cloudflare tunnel (`routers/auth.ts` explains why it is
+ * tunnel-only, and how much weaker that is than it sounds). On the LAN this
+ * screen never appears, so a volunteer who left their phone at home is not
+ * locked out of the masjid's own dashboard.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: it does not say which factor failed, how
+ * many attempts remain, or whether the challenge expired versus never existed.
+ * The server answers all of those with one sentence; repeating more than it
+ * said would hand a stranger a map.
+ */
+function SecondFactorScreen({
+  challenge,
+  factors,
+  onDone,
+  onStartOver,
+}: {
+  challenge: string;
+  factors: readonly string[];
+  onDone: () => void;
+  onStartOver: () => void;
+}) {
+  const { t } = useTranslation();
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [emailed, setEmailed] = useState(false);
+
+  const complete = trpc.auth.completeLogin.useMutation();
+  const sendCode = trpc.auth.sendLoginEmailCode.useMutation();
+  const canEmail = factors.includes('email');
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await complete.mutateAsync({ challenge, code });
+      setCsrf(res.csrf);
+      onDone();
+    } catch (err) {
+      setCode('');
+      setError((err as Error).message || t('auth.genericError'));
+    }
+  }
+
+  async function emailMe() {
+    setError('');
+    try {
+      await sendCode.mutateAsync({ challenge });
+      setEmailed(true);
+    } catch (err) {
+      setError((err as Error).message || t('auth.genericError'));
+    }
+  }
+
+  return (
+    <div className="auth-wrap">
+      <motion.div className="auth-card glass-raised" variants={fadeRise} initial="initial" animate="animate">
+        <div className="auth-logo">
+          <MasjidMark size={48} />
+        </div>
+        <h1 className="page-title" style={{ textAlign: 'center', fontSize: '1.5rem' }}>
+          {t('auth.twoFactor.title')}
+        </h1>
+        <p className="page-sub" style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+          {t('auth.twoFactor.subtitle')}
+        </p>
+
+        <form onSubmit={submit}>
+          <div className="field">
+            <label className="label" htmlFor="second-factor">
+              {t('auth.twoFactor.code')}
+            </label>
+            <input
+              id="second-factor"
+              className="input glass-inset"
+              // `one-time-code` is what lets a phone offer the code from the
+              // notification. Not `numeric`, because a backup code is letters.
+              autoComplete="one-time-code"
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              required
+            />
+            <span className="hint">{t('auth.twoFactor.hint')}</span>
+          </div>
+
+          {emailed && <p className="hint">{t('auth.twoFactor.emailSent')}</p>}
+          {error && <p className="form-error">{error}</p>}
+
+          <button type="submit" className="btn btn--primary btn--block" disabled={complete.isPending || !code.trim()}>
+            {complete.isPending ? t('auth.working') : t('auth.signIn')}
+          </button>
+        </form>
+
+        {canEmail && (
+          <button
+            type="button"
+            className="btn btn--ghost btn--block"
+            style={{ marginTop: '0.6rem' }}
+            disabled={sendCode.isPending}
+            onClick={emailMe}
+          >
+            {sendCode.isPending ? t('auth.working') : t('auth.twoFactor.emailMe')}
+          </button>
+        )}
+
+        <button
+          type="button"
+          className="btn btn--ghost btn--block"
+          style={{ marginTop: '0.6rem', border: 'none', color: 'var(--color-ink-muted)' }}
+          onClick={onStartOver}
+        >
+          {t('auth.twoFactor.startOver')}
+        </button>
+      </motion.div>
     </div>
   );
 }
