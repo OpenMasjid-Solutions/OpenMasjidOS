@@ -36,6 +36,16 @@ Manage OpenMasjidOS from outside the masjid, over the same secure tunnel your ap
   on purpose: between them they reach every password and key the server holds. The dashboard hides
   them when you are away rather than offering a button that fails.
 - **Nothing changes for anyone at the masjid.** Same address, same sign-in, no extra code.
+
+**Fixed, from a report on a real masjid's server:** signing in from outside could get stuck saying
+*"That sign-in attempt has expired"* when it plainly had not.
+
+- After five wrong codes the sign-in really was finished — but the screen kept offering **Sign in**,
+  which could no longer work, and said the attempt had expired rather than saying why. It now takes
+  you back to the password step and tells you what happened.
+- A wrong code now says **how many tries you have left**, so running out is not a surprise.
+- If a code keeps being refused because the **server's clock is wrong**, it says so, and by how much.
+  A wrong clock and a mistyped code look identical while you are typing, and the fixes are opposite.
 - **You can set two-step sign-in up now**, in Settings → Account. Scan the square code with
   an authenticator app on your phone — Google Authenticator, Authy, 1Password and most
   password managers all work — or type the key in by hand if there is no camera to hand.

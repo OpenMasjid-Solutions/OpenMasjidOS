@@ -116,12 +116,35 @@ export function claimChallenge(
   return { ok: true, username: c.username };
 }
 
-/** Record a wrong second factor. Destroys the challenge once the cap is reached. */
+/**
+ * Record a wrong second factor.
+ *
+ * DELIBERATELY DOES NOT DELETE at the cap, and that is a fix rather than an
+ * oversight. It used to, which made `claimChallenge`'s `too-many-attempts`
+ * branch dead code: the entry was already gone, so the next attempt came back
+ * `unknown` and the admin was told their sign-in had "expired" seconds after
+ * starting it. Keeping the spent challenge until `claimChallenge` sees it means
+ * they get told what actually happened. It grants nothing — a claim with the
+ * attempts spent is refused — and `claimChallenge` deletes it at that point, so
+ * nothing lingers beyond one more request or the TTL sweep, whichever is first.
+ */
 export function noteFailedAttempt(id: string): void {
   const c = pending.get(id);
   if (!c) return;
   c.attempts += 1;
-  if (c.attempts >= CHALLENGE_MAX_ATTEMPTS) pending.delete(id);
+}
+
+/**
+ * Wrong codes still allowed against this challenge. 0 when it is spent or gone.
+ *
+ * Surfaced to the admin, because "that code is not right" with no sense of how
+ * much rope is left is what let someone walk into the wall above without ever
+ * seeing it coming.
+ */
+export function attemptsLeft(id: string): number {
+  const c = pending.get(id);
+  if (!c) return 0;
+  return Math.max(0, CHALLENGE_MAX_ATTEMPTS - c.attempts);
 }
 
 /** Spend a challenge. Single use — a completed sign-in cannot be replayed. */

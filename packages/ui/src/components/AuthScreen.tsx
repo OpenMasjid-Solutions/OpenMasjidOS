@@ -123,9 +123,11 @@ export function AuthScreen({
         challenge={challenge.id}
         factors={challenge.factors}
         onDone={onAuthed}
-        onStartOver={() => {
+        onStartOver={(reason) => {
           setChallenge(null);
-          setError('');
+          // Carried over, so the password screen explains why they are back on
+          // it. Landing there with no message reads as the app losing its place.
+          setError(reason ?? '');
         }}
       />
     );
@@ -341,7 +343,8 @@ function SecondFactorScreen({
   challenge: string;
   factors: readonly string[];
   onDone: () => void;
-  onStartOver: () => void;
+  /** Back to the password step. The reason is shown there, not lost. */
+  onStartOver: (reason?: string) => void;
 }) {
   const { t } = useTranslation();
   const [code, setCode] = useState('');
@@ -357,6 +360,18 @@ function SecondFactorScreen({
     setError('');
     try {
       const res = await complete.mutateAsync({ challenge, code });
+      if (res.restart) {
+        // The challenge is spent or gone. Take them back to the password step
+        // CARRYING THE REASON, rather than leaving them here.
+        //
+        // This is the bug that reached a masjid: five wrong codes destroyed the
+        // challenge, every press afterwards said "that sign-in attempt has
+        // expired" — seconds after starting, which they knew was untrue — and
+        // the primary button stayed "Sign in", an action that could no longer
+        // succeed. The screen invited exactly the thing that could never work.
+        onStartOver(res.message ?? t('auth.genericError'));
+        return;
+      }
       setCsrf(res.csrf);
       onDone();
     } catch (err) {
@@ -431,7 +446,10 @@ function SecondFactorScreen({
           type="button"
           className="btn btn--ghost btn--block"
           style={{ marginTop: '0.6rem', border: 'none', color: 'var(--color-ink-muted)' }}
-          onClick={onStartOver}
+          // Wrapped, not passed directly: `onStartOver` takes an optional reason
+          // now, so handing it the click event straight would put a React
+          // SyntheticEvent where the explanation goes.
+          onClick={() => onStartOver()}
         >
           {t('auth.twoFactor.startOver')}
         </button>

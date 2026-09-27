@@ -42,6 +42,7 @@ import {
   consumeChallenge,
   createChallenge,
   noteFailedAttempt,
+  attemptsLeft,
 } from '../../auth/login-challenge';
 import { twoFactorRouter } from './twofactor';
 import {
@@ -303,13 +304,38 @@ export const authRouter = router({
       const origin = { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp };
       const claim = claimChallenge(input.challenge, origin);
       if (!claim.ok) {
-        // One message for every reason. An unknown id, an expired one and one
-        // being moved between origins are the same sentence to the caller —
-        // there is nothing useful to learn from the difference.
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'That sign-in attempt has expired. Please start again.',
-        });
+        /**
+         * THE CHALLENGE IS GONE, SO SAY SO AS A STATE CHANGE RATHER THAN AN ERROR.
+         *
+         * This used to throw "That sign-in attempt has expired. Please start
+         * again." for all four reasons, and it produced a genuine dead end that
+         * reached a masjid. Five wrong codes destroyed the challenge; every
+         * attempt afterwards said "expired" — seconds after starting, which the
+         * admin knew was untrue — while the primary button on screen stayed
+         * "Sign in", an action that could never again succeed. They pressed it
+         * repeatedly, which is exactly what the screen invited.
+         *
+         * So `restart` is returned rather than thrown: the UI can act on it and
+         * take them back to the password step, instead of parsing a sentence.
+         * "Too many tries" is told apart from the rest because it is the one the
+         * admin can do something about, and it discloses nothing — reaching here
+         * at all required holding a challenge, which required the password. The
+         * other three stay merged on the original reasoning: an unknown id, a
+         * genuinely expired one and one being moved between origins have nothing
+         * useful to tell them apart for whoever is asking.
+         */
+        const tooMany = claim.reason === 'too-many-attempts';
+        log.warn(`Two-step sign-in could not be completed: ${claim.reason}.`);
+        return {
+          authenticated: false as const,
+          restart: true as const,
+          username: null,
+          csrf: null,
+          triesLeft: 0,
+          message: tooMany
+            ? 'Too many wrong codes. Start again and sign in from the beginning.'
+            : 'That sign-in attempt is no longer valid. Please start again.',
+        };
       }
 
       const result = verifySecondFactor(input.code);
@@ -322,8 +348,45 @@ export const authRouter = router({
         if (result.reason === 'replayed') {
           log.warn('Two-step sign-in: a code was re-used. Refused.');
         }
+        const left = attemptsLeft(input.challenge);
+        /**
+         * A DRIFTED SERVER CLOCK AND A MISTYPED CODE LOOK IDENTICAL, and they
+         * have opposite fixes. `clockSkewSteps` searches a far wider window than
+         * we accept and reports what it finds — the code is still refused — so
+         * an admin whose box drifted is told the one thing that explains it
+         * rather than watching five correct codes be rejected. The HTTP Date
+         * header already states this server's clock, so this discloses nothing.
+         */
+        let skewNote = '';
+        if (result.skewSteps != null && Math.abs(result.skewSteps) >= 2) {
+          const mins = Math.round((Math.abs(result.skewSteps) * 30) / 60);
+          const dir = result.skewSteps < 0 ? 'fast' : 'slow';
+          skewNote =
+            mins >= 1
+              ? ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`
+              : ` That code would have been right if this server's clock were correct — it is about half a minute ${dir}.`;
+          log.warn(
+            `Two-step sign-in: a code was refused, but it matches ${result.skewSteps} step(s) away. This server's clock is probably wrong.`,
+          );
+        }
         await wait(Math.min(CHALLENGE_MAX_ATTEMPTS * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
-        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That code is not right. Please try again.' });
+        if (left <= 0) {
+          // The attempt that used up the last try. Send them back now rather
+          // than letting the NEXT press discover it — that press is the one
+          // that used to report "expired" and strand them.
+          return {
+            authenticated: false as const,
+            restart: true as const,
+            username: null,
+            csrf: null,
+            triesLeft: 0,
+            message: `That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`,
+          };
+        }
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: `That code is not right — ${left} ${left === 1 ? 'try' : 'tries'} left.${skewNote}`,
+        });
       }
 
       consumeChallenge(input.challenge);
@@ -331,7 +394,14 @@ export const authRouter = router({
       const { token, csrf } = createSession(claim.username);
       ctx.setSessionCookie?.(token);
       log.info(`Two-step sign-in completed using ${result.used}.`);
-      return { authenticated: true as const, username: claim.username, csrf };
+      return {
+        authenticated: true as const,
+        restart: false as const,
+        username: claim.username,
+        csrf,
+        triesLeft: CHALLENGE_MAX_ATTEMPTS,
+        message: null,
+      };
     }),
 
   /**

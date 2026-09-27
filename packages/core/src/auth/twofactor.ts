@@ -35,7 +35,14 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
-import { generateSecret, otpauthUri, timingSafeEqualString, verifyTotp, TOTP_STEP_SECONDS } from './totp';
+import {
+  clockSkewSteps,
+  generateSecret,
+  otpauthUri,
+  timingSafeEqualString,
+  verifyTotp,
+  TOTP_STEP_SECONDS,
+} from './totp';
 
 const FILE = path.join(CONFIG_DIR, 'twofactor.json');
 
@@ -252,7 +259,18 @@ function newBackupCode(): string {
 
 export type VerifyResult =
   | { ok: true; used: 'totp' | 'backup' | 'email' }
-  | { ok: false; reason: 'bad-code' | 'replayed' | 'expired' | 'too-many-attempts' | 'not-enrolled' };
+  | {
+      ok: false;
+      reason: 'bad-code' | 'replayed' | 'expired' | 'too-many-attempts' | 'not-enrolled';
+      /**
+       * Set when the submitted code WOULD have been right had this server's
+       * clock been this many 30-second steps different. Diagnostic only — the
+       * code is still refused. A drifted clock and a mistyped code look
+       * identical to the person typing and have opposite fixes, and without
+       * this the admin has no reason to suspect the one that explains it.
+       */
+      skewSteps?: number;
+    };
 
 /**
  * Check a submitted second factor against everything enrolled.
@@ -323,7 +341,10 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
     save(cfg);
   }
 
-  return { ok: false, reason: 'bad-code' };
+  // Nothing matched. Before giving up, work out whether the TOTP code was right
+  // and this server's CLOCK is wrong — the one failure the admin cannot guess at.
+  const skew = cfg.totpSecret && cfg.totpConfirmedAt ? clockSkewSteps(cfg.totpSecret, code, nowMs) : null;
+  return skew === null ? { ok: false, reason: 'bad-code' } : { ok: false, reason: 'bad-code', skewSteps: skew };
 }
 
 // ── emailed codes ──────────────────────────────────────────────────────────

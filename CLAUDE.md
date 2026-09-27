@@ -606,6 +606,22 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Files, terminals and backup/restore stay LAN-only** (`LAN_ONLY_FEATURES`) — see §15 for why each. The UI hides
   them on a remote session (`auth.me` → `remote`), but that is presentation: the control is that those routes are
   not registered on the tunnel-facing listener at all.
+- **A SPENT SIGN-IN MUST SEND THE ADMIN BACK, NOT SIT ON A BUTTON THAT CANNOT WORK** (v0.51.2-dev.14).
+  `completeLogin` threw one sentence — *"That sign-in attempt has expired. Please start again."* — for all four
+  `claimChallenge` refusals. Five wrong codes destroyed the challenge, so every press afterwards said "expired" seconds
+  after starting, which the admin knew was untrue, while the primary button stayed **Sign in**: an action that could
+  never again succeed. They pressed it repeatedly, because that is what the screen invited. It reached a masjid.
+  Now: a dead challenge is a **returned** `restart: true` rather than a thrown error, so the UI takes them back to the
+  password step carrying the reason; a wrong code says **how many tries are left**, so the wall at five is visible
+  before it arrives; and `noteFailedAttempt` no longer deletes at the cap — it used to, which made
+  `claimChallenge`'s `too-many-attempts` branch dead code and is why the message was wrong in the first place.
+  "Too many tries" is told apart because reaching it required holding a real challenge, i.e. the password; the other
+  three stay merged on the original reasoning that there is nothing useful to learn from the difference.
+- **A DRIFTED SERVER CLOCK AND A MISTYPED CODE ARE INDISTINGUISHABLE TO THE PERSON TYPING**, and have opposite fixes.
+  `clockSkewSteps` searches a far wider window than `verifyTotp` accepts and reports the offset; **the code is still
+  refused** — nothing may call it to decide whether someone gets in. Without it an admin whose box drifted watches
+  five correct codes be rejected with no reason to suspect the one thing that explains it. It discloses nothing: the
+  HTTP `Date` header already states this server's clock to anyone who asks.
 - **What the masjid sees when it is off must not change**, including the refusal record. `system/tunnel-refusals.ts`
   is what an admin reads when a public page 404s, and a gate that refused dashboard paths silently would have taken it
   away for exactly the addresses people mistype.

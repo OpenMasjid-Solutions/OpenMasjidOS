@@ -155,10 +155,9 @@ test('a challenge is single use — a completed sign-in cannot be replayed', asy
   const { challenge, secret } = await startTunnelLogin(T);
   const { caller } = call(TUNNEL);
   await caller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) });
-  await assert.rejects(
-    () => caller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now() + 30_000) }),
-    (e: Error) => /expired|start again/i.test(e.message),
-  );
+  const again = await caller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now() + 30_000) });
+  assert.equal(again.authenticated, false);
+  assert.equal(again.restart, true, 'a spent challenge must send the caller back to the start');
 });
 
 test('A CHALLENGE CANNOT CROSS THE BOUNDARY IT WAS ISSUED ON', async () => {
@@ -167,36 +166,82 @@ test('A CHALLENGE CANNOT CROSS THE BOUNDARY IT WAS ISSUED ON', async () => {
   // completing a tunnel challenge from a LAN foothold that proved nothing.
   const { challenge, secret } = await startTunnelLogin(T);
   const { caller: lanCaller, cookieSet } = call(LAN);
-  await assert.rejects(
-    () => lanCaller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) }),
-    (e: Error) => /expired|start again/i.test(e.message),
-  );
-  assert.equal(cookieSet(), false);
+  const crossed = await lanCaller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) });
+  assert.equal(crossed.authenticated, false);
+  assert.equal(crossed.restart, true);
+  assert.equal(cookieSet(), false, 'NO COOKIE — this is the whole point');
   // And it is destroyed, not merely refused — a challenge someone is moving
   // between origins does not get left lying around for another attempt.
   const { caller: back } = call(TUNNEL);
-  await assert.rejects(() => back.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) }));
+  const retry = await back.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) });
+  assert.equal(retry.authenticated, false);
 });
 
-test('a wrong code costs an attempt, and the challenge burns out', async () => {
+test('a wrong code SAYS HOW MANY TRIES ARE LEFT', async () => {
+  // Without a count, the wall at five arrives with no warning — which is how
+  // the dead end below was walked into.
+  const { challenge } = await startTunnelLogin(T);
+  const { caller } = call(TUNNEL);
+  await assert.rejects(
+    () => caller.completeLogin({ challenge, code: '000000' }),
+    (e: Error) => /\b4 tries left/.test(e.message),
+    'the first wrong code should say four are left',
+  );
+  await assert.rejects(
+    () => caller.completeLogin({ challenge, code: '000000' }),
+    (e: Error) => /\b3 tries left/.test(e.message),
+  );
+});
+
+test('THE DEAD END: running out of tries must not leave the admin on "expired"', async () => {
+  // THE BUG THAT REACHED A MASJID. Five wrong codes destroyed the challenge, and
+  // every press afterwards answered "that sign-in attempt has expired" — seconds
+  // after starting it, which the admin knew was untrue — while the primary
+  // button on screen stayed "Sign in", an action that could never again succeed.
+  // They pressed it repeatedly, because that is what the screen invited.
+  //
+  // Two things must hold now: the LAST wrong try itself reports restart (rather
+  // than the NEXT press discovering it), and the reason says what happened.
   const { challenge, secret } = await startTunnelLogin(T);
   const { caller } = call(TUNNEL);
-  for (let i = 0; i < lc.CHALLENGE_MAX_ATTEMPTS; i++) {
+  for (let i = 0; i < lc.CHALLENGE_MAX_ATTEMPTS - 1; i++) {
     await assert.rejects(() => caller.completeLogin({ challenge, code: '000000' }), `attempt ${i + 1}`);
   }
-  // Even the right code no longer works: the challenge is gone.
+  const last = await caller.completeLogin({ challenge, code: '000000' });
+  assert.equal(last.restart, true, 'the final wrong try must send them back, not throw');
+  assert.match(String(last.message), /last try|start again/i);
+
+  // And the right code afterwards also says start again, naming the real reason
+  // rather than claiming a fresh sign-in expired.
+  const after = await caller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) });
+  assert.equal(after.restart, true);
+  assert.match(String(after.message), /too many wrong codes/i, 'it must not say "expired" when it was not');
+});
+
+test('a CLOCK-SKEWED code is refused, but the admin is told why', async () => {
+  // A drifted server clock and a mistyped code are identical to the person
+  // typing and have opposite fixes. Without this an admin watches five correct
+  // codes be rejected with no reason to suspect the one thing that explains it.
+  const { challenge, secret } = await startTunnelLogin(T);
+  const { caller } = call(TUNNEL);
+  // A code from five minutes ago: far outside the ±1 step accept window.
+  const stale = totpLib.totp(secret, Date.now() - 5 * 60_000);
   await assert.rejects(
-    () => caller.completeLogin({ challenge, code: totpLib.totp(secret, Date.now()) }),
-    (e: Error) => /expired|start again/i.test(e.message),
+    () => caller.completeLogin({ challenge, code: stale }),
+    (e: Error) => /clock/i.test(e.message) && /not right/i.test(e.message),
+    'a refused-but-explicable code must name the clock',
   );
 });
 
-test('an unknown or expired challenge answers identically to a wrong one', async () => {
+test('an unknown challenge asks the caller to start again', async () => {
   const { caller } = call(TUNNEL);
-  await assert.rejects(
-    () => caller.completeLogin({ challenge: 'not-a-real-challenge', code: '123456' }),
-    (e: Error) => /expired|start again/i.test(e.message),
-  );
+  const res = await caller.completeLogin({ challenge: 'not-a-real-challenge', code: '123456' });
+  assert.equal(res.authenticated, false);
+  assert.equal(res.restart, true);
+  // Still merged with a genuinely expired one: there is nothing useful to learn
+  // from the difference, and it is one fewer oracle. Only "too many tries" is
+  // told apart, and reaching that requires having held a real challenge.
+  assert.doesNotMatch(String(res.message), /too many/i);
 });
 
 // ── the challenge store itself ─────────────────────────────────────────────

@@ -188,3 +188,31 @@ export function otpauthUri(opts: {
   });
   return `otpauth://totp/${label}?${params.toString()}`;
 }
+
+/**
+ * How far out this server's clock would have to be for `code` to be the right
+ * one, in 30-second steps — or null if the code is simply wrong.
+ *
+ * A DIAGNOSTIC, NEVER AN ACCEPTANCE PATH. It searches a much wider window than
+ * `verifyTotp` accepts and reports what it finds; the code is still refused.
+ * The distinction matters enough to say twice: nothing may call this to decide
+ * whether someone gets in.
+ *
+ * It exists because a wrong clock and a wrong code are indistinguishable to the
+ * person typing, and they have opposite fixes. An admin whose server drifted
+ * three minutes sees "that code is not right" five times, burns their sign-in
+ * attempt, and has no reason to suspect the one thing that would explain it.
+ * The HTTP `Date` header already states this server's clock to anyone who asks,
+ * so reporting the offset discloses nothing new.
+ */
+export function clockSkewSteps(
+  secretBase32: string,
+  code: string,
+  nowMs: number = Date.now(),
+  maxSteps = 40, // ±20 minutes: wide enough for a real drift, cheap enough to run on a failure
+): number | null {
+  const matched = verifyTotp(secretBase32, code, nowMs, { window: maxSteps });
+  if (matched === null) return null;
+  const current = Math.floor(Math.floor(nowMs / 1000) / TOTP_STEP_SECONDS);
+  return matched - current;
+}
