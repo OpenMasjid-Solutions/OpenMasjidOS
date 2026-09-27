@@ -13,6 +13,11 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+### Security and dependencies
+
+- Updated four bundled libraries to pick up security fixes, including the one that sends your
+  email. Nothing about how OpenMasjidOS works changes.
+
 ### Remote administration (in progress — not switched on yet)
 
 Groundwork for managing OpenMasjidOS from outside the masjid, over the same secure tunnel your
