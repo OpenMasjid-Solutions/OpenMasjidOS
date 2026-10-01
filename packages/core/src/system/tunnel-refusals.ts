@@ -41,7 +41,14 @@ export type RefusalReason =
   /** A platform route that is LAN-only by design (dashboard, tRPC, health, Fabric). */
   | 'lan-only-route'
   /** An exposed app's own `/fabric/*` space, which is LAN-only. */
-  | 'app-fabric-lan-only';
+  | 'app-fabric-lan-only'
+  /**
+   * The dashboard, asked for over plain http:// with no tunnel hostname set in
+   * Settings — so there is no https address to upgrade the visitor to, and serving
+   * the sign-in page in clear is not an option. Its own reason because the fix is
+   * different: set the domain, or use the https:// address.
+   */
+  | 'plain-http-no-host';
 
 export interface Refusal {
   at: number;

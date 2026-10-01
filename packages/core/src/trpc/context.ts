@@ -17,7 +17,7 @@ import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify'
 import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, CSRF_HEADER, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
-import { isViaTunnel } from '../system/via-tunnel';
+import { isViaTunnel, visitorScheme } from '../system/via-tunnel';
 import { observeDashboardHost } from '../system/platform-address';
 
 const COOKIE_OPTS = {
@@ -47,19 +47,37 @@ const COOKIE_OPTS = {
  * Cookie options for THIS request.
  *
  * `Secure` is opt-in and off by default for the reason above — an app on a plain
- * HTTP port needs the forwarded session cookie for SSO. But a session created
- * over the tunnel is a different situation entirely: it reached us through
- * Cloudflare, so the browser is on HTTPS, there is no plain-HTTP app on that
- * origin to keep working, and a session cookie for a hostname that resolves on
- * the public internet is exactly the one that must never be sent in clear.
+ * HTTP port needs the forwarded session cookie for SSO. A session created by a
+ * visitor who reached Cloudflare over HTTPS is the exception: there is no
+ * plain-HTTP app on that origin to keep working, and a session cookie for a
+ * hostname that resolves on the public internet must never travel in clear.
+ *
+ * BOTH conditions, and the second one is the bug this replaced. It used to be
+ * `isViaTunnel(req)` alone, with a comment asserting "it reached us through
+ * Cloudflare, so the browser is on HTTPS". That inference is false: Cloudflare
+ * stamps `cf-ray` on a plain `http://` visit too, and terminating TLS at its edge
+ * says nothing about the visitor→edge leg. A browser REJECTS a `Secure` cookie
+ * delivered over plain HTTP, so a remote sign-in over `http://` finished its
+ * second factor and bounced straight back to the sign-in screen. (The front door
+ * now upgrades such a visit to HTTPS before it ever gets here, but the cookie
+ * rule must be right on its own rather than relying on that.)
+ *
+ *  - `cf-ray`, not `isViaTunnel`: `isViaTunnel` is ALSO true for a bare
+ *    `x-forwarded-proto: https`, which a masjid's own LAN reverse proxy sends. A
+ *    Secure cookie there lands on the LAN hostname, overwrites the non-Secure one
+ *    in the same cookie jar, and silently ends SSO for every plain-HTTP app on the
+ *    box. That trade-off is the operator's to make, via OPENMASJID_SECURE_COOKIE.
+ *  - `visitorScheme === 'https'`, not "not http": unknown is not HTTPS.
  *
  * Per-response rather than per-process, because one daemon issues both kinds and
- * they are genuinely different. They do not collide: the tunnel hostname and the
- * LAN address are separate origins with separate cookie jars, so marking one
- * Secure cannot strand the other.
+ * they are genuinely different. The tunnel hostname and the LAN address are
+ * separate origins with separate cookie jars, so marking one Secure cannot strand
+ * the other.
  */
 function cookieOptsFor(req: { headers?: NodeJS.Dict<string | string[]> }) {
-  return { ...COOKIE_OPTS, secure: COOKIE_OPTS.secure || isViaTunnel(req as never) };
+  const h = req.headers ?? {};
+  const httpsTunnelVisitor = Boolean(h['cf-ray']) && visitorScheme(h) === 'https';
+  return { ...COOKIE_OPTS, secure: COOKIE_OPTS.secure || httpsTunnelVisitor };
 }
 
 export interface Context {

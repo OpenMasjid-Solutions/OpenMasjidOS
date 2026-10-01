@@ -90,10 +90,18 @@ function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
 }
 
 let routes = new Map<string, number>(); // path segment → app HTTP port
+/** Set only by `__setRoutesForTests`, so a background rebuild cannot race a test's
+ *  table — checked both before and after rebuild's one await. */
+let pinnedForTests = false;
 
 async function rebuild(): Promise<void> {
+  if (pinnedForTests) return;
   try {
     const { apps, discoveryOk } = await listInstalledWithHealth();
+    // Checked again AFTER the await: a rebuild already waiting on Docker when the
+    // routes were pinned would otherwise replace them when Docker answered. That is
+    // what happened on any machine where Docker is reachable — CI included.
+    if (pinnedForTests) return;
     // THE BUG THIS GUARD EXISTS FOR. A Docker hiccup used to arrive as a perfectly
     // well-formed list of apps that all happened to have no ports, so every app was
     // dropped below and this table went empty — and every visitor to the masjid's public
@@ -126,6 +134,13 @@ async function rebuild(): Promise<void> {
     // Reached only if something OTHER than Docker readability threw.
     log.warn('Ingress: rebuild failed; keeping the previous app routes.', err);
   }
+}
+
+/** Test seam: route path segments to ports without Docker, and stop the periodic
+ *  rebuild from replacing them. Never called by the daemon. */
+export function __setRoutesForTests(next: Record<string, number>): void {
+  pinnedForTests = true;
+  routes = new Map(Object.entries(next));
 }
 
 /** Is the OS actually routing this app's public path to it right now? The Fabric
@@ -222,18 +237,22 @@ export function attachIngress(
   front: FastifyInstance,
   opts: {
     /**
-     * Does something ELSE on this listener own this WebSocket upgrade?
+     * Take ownership of a non-app WebSocket upgrade, or decline it.
      *
-     * Only the dashboard's own tRPC socket, and only while remote administration
-     * is on. It exists because the `upgrade` handler below destroys every socket
-     * that is not an app path — deliberately, see the comment there — and the
-     * dashboard's live subscriptions are not an app path. Answering `true` means
-     * "leave it alone, the WebSocket plugin will take it": if that is ever true
-     * for a path nothing handles, the socket is abandoned rather than closed,
-     * which is the exact resource leak the destroy is there to prevent. So this
-     * predicate must stay narrower than the set of routes that exist.
+     * Return true ONLY after actually handling the socket (completing the
+     * handshake). Anything declined is destroyed below. This listener is the ONE
+     * owner of every upgrade on the front door, and that is the fix for a bug: the
+     * first version registered @fastify/websocket here too, which attaches its own
+     * `upgrade` listener and routes EVERY upgrade through Fastify. An app's socket
+     * was then handled twice — piped to the app by this listener, AND run through
+     * the ingress onRequest hook as a plain HTTP proxy — so the client got the
+     * app's page injected into its WebSocket stream and the connection died. Every
+     * app using live sockets over the tunnel was broken by it.
+     *
+     * The previous hook here, `allowUpgrade`, meant "leave this alone for another
+     * listener". There is no other listener any more, by design.
      */
-    allowUpgrade?: (req: IncomingMessage) => boolean;
+    claimUpgrade?: (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => boolean;
   } = {},
 ): void {
   void rebuild();
@@ -268,19 +287,17 @@ export function attachIngress(
     const seg = firstSegment(req.url ?? '');
     const port = seg ? routes.get(seg) : undefined;
     if (port == null) {
-      // Not an app path. ONE thing else on this listener may own it: the
-      // dashboard's tRPC socket, while remote administration is on. Ask first —
-      // and only then leave the socket alone for the WebSocket plugin, whose
-      // `upgrade` listener runs after this one.
-      if (opts.allowUpgrade?.(req)) return;
-      // Otherwise DESTROY it, never just return. If nothing handles `upgrade`,
-      // an abandoned socket gets no response and no close — it sits open holding
-      // a file descriptor until the peer gives up, and the peer is the one
-      // choosing. On the tunnel-facing front door that is an unauthenticated
-      // resource-exhaustion lever against a daemon running as root with the
-      // Docker socket, obtained by opening WebSockets at any path that is not an
-      // app. That is why `allowUpgrade` is a narrow allow-list and not "is
-      // anything registered here".
+      // Not an app path. ONE thing may claim it: the dashboard's own tRPC socket,
+      // when the front-door gate would let that request through.
+      if (opts.claimUpgrade?.(req, socket, head)) return;
+      // Otherwise DESTROY it, never just return. An abandoned socket gets no
+      // response and no close — it holds a file descriptor until the peer gives
+      // up, and the peer is the one choosing. On the tunnel-facing front door that
+      // is an unauthenticated resource-exhaustion lever against a daemon running
+      // as root with the Docker socket. Destroying is also what keeps a refused
+      // upgrade from being answered with a keep-alive HTTP response on a socket
+      // whose parser has already detached — which cloudflared would return to its
+      // connection pool and then hand the next visitor, who would get no answer.
       socket.destroy();
       return;
     }

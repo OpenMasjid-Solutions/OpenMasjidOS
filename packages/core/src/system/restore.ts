@@ -15,7 +15,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../config';
 import { streamSpawn, recreateCore } from '../docker/update';
-import { reupAllApps, stopAllApps } from '../apps/manager';
+import { reupAllApps, stopAllApps, invalidateFabricIndex } from '../apps/manager';
+import { endAllSessionsAtNextBoot } from '../auth/sessions';
+import { holdForRestore } from '../auth/store';
+import { withUpdateLock, isUpdating, UpdateBusyError } from './update-lock';
 
 export const RESTORE_PATH = path.join(DATA_DIR, '.restore.tar.gz');
 const STAGING_DIR = path.join(DATA_DIR, '.restore-staging');
@@ -141,7 +144,21 @@ async function restoreVolumes(
       const child = spawn('docker', ['run', '--rm', '-i', '-v', `${vol}:/to`, VOL_IMAGE, 'tar', '-xzf', '-', '-C', '/to']);
       child.on('error', () => resolve(false));
       child.on('close', (code) => resolve(code === 0));
-      fs.createReadStream(path.join(volDir, f)).pipe(child.stdin);
+      // A file that cannot be read fails THIS volume. With no handler, its error went
+      // to the process-wide handler, stdin was never ended, and `tar -xzf -` waited
+      // for the rest of an archive that was never coming — the whole restore hung
+      // with every app it had stopped still down.
+      child.stdin.on('error', () => {});
+      const src = fs.createReadStream(path.join(volDir, f));
+      src.on('error', () => {
+        // End tar's INPUT: a truncated archive makes it exit non-zero, which fires
+        // 'close'. A signal alone does not — `docker run -i` forwards SIGTERM to the
+        // container, where tar runs as PID 1 with no handler and ignores it. SIGKILL
+        // ends the client if nothing else has.
+        child.stdin.end();
+        setTimeout(() => child.kill('SIGKILL'), 10_000).unref();
+      });
+      src.pipe(child.stdin);
     });
     if (ok) {
       restored++;
@@ -153,9 +170,40 @@ async function restoreVolumes(
   return { restored, failed };
 }
 
-/** Extract the backup, validate the result, move it into place, restart apps,
- *  recreate the core. Streams progress through onLine. */
+const RESTORE_BUSY = 'A restore is already running. It will finish on its own — please wait for it.';
+
+/** Is a restore running right now? The upload route refuses while one is, because a
+ *  new upload would overwrite the archive the running restore is reading. */
+export function restoreInProgress(): boolean {
+  return isUpdating('restore');
+}
+
+/**
+ * Extract the backup, validate the result, move it into place, restart apps,
+ * recreate the core. Streams progress through onLine.
+ *
+ * ONE AT A TIME, enforced here rather than by the dialog. Nothing stopped a second
+ * restore: close the progress window, pick a file again, and a second run started
+ * over the first — its own start wiped the first's staging directory (so the
+ * first's next volume read failed and, before the handler above, hung for ever),
+ * and its `finally` released the account store the first was still holding. Same
+ * lesson, and the same lock, as system/update-lock.ts: the server is the first line
+ * of defence, the locked dialog the second.
+ */
 export async function runRestore(onLine: (s: string) => void): Promise<void> {
+  try {
+    await withUpdateLock('restore', RESTORE_BUSY, () => restoreOnce(onLine));
+  } catch (err) {
+    // Information, not a failure: calling it "failed" pushes an admin into retrying.
+    if (err instanceof UpdateBusyError) {
+      onLine(RESTORE_BUSY);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function restoreOnce(onLine: (s: string) => void): Promise<void> {
   if (!fs.existsSync(RESTORE_PATH)) {
     onLine('No backup file was found. Please upload one and try again.');
     return;
@@ -164,6 +212,7 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
   // A finally guarantees the staging tree + uploaded archive are removed even on
   // a mid-extract failure (e.g. an ENOSPC from a too-large archive), so a failed
   // restore never leaves a partial tree wasting disk.
+  let releaseHold: (() => void) | null = null;
   try {
     onLine('Checking your backup…');
     const tooLarge = await archiveTooLarge();
@@ -201,6 +250,10 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
 
     onLine('');
     onLine('Restoring your settings and app data…');
+    // From here until this process is replaced, the admin store keeps serving the
+    // identity the restore started with, and refuses writes — auth.json does not
+    // exist at all between the remove and the rename below (auth/store.ts says why).
+    releaseHold = holdForRestore();
     let moved = 0;
     // config/ + apps/ are filesystem trees moved into the data dir. volumes/ is
     // handled separately (restored into Docker volumes), not moved here.
@@ -212,6 +265,22 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
       fs.renameSync(src, dest); // same filesystem → atomic
       moved++;
     }
+
+    // Every app's Fabric key just changed underneath the cache that resolves them.
+    // `saveMeta` invalidates that cache on each write, but this replaced `apps/`
+    // wholesale without going through it — so the platform went on matching sign-in
+    // checks against the PRE-restore keys while the restored apps presented the
+    // backup's. Every SSO check then failed as "unrecognised app", and every app
+    // asked the admin for its own password, until something else happened to clear
+    // the cache. Same symptom as the session bugs in auth/sessions.ts, different door.
+    if (moved > 0) invalidateFabricIndex();
+
+    // And every sign-in session ends — at the NEXT boot, not now. A restore always
+    // ended every session when they lived in memory, because it ends by restarting
+    // the core. Ending them HERE (the first fix) signed the admin out part-way
+    // through, and the dashboard then unmounted the window reporting whether the
+    // restore worked. The marker makes the new core start clean instead.
+    if (moved > 0) endAllSessionsAtNextBoot();
 
     // Restore each app's Docker volume (its real data — SQLite db, uploads, …)
     // BEFORE starting apps, so `compose up` finds the populated volumes.
@@ -250,6 +319,12 @@ export async function runRestore(onLine: (s: string) => void): Promise<void> {
     }
     onLine('The dashboard is restarting now — this page will reconnect automatically.');
   } finally {
+    // Every exit — success (the core is about to be replaced), a failure before the
+    // swap (nothing changed), or after it (the restored files are now the truth) —
+    // lets the admin store pick up whatever is on disk. Never left held: a held
+    // store refuses every account change. Only THIS run's hold, and only if it took
+    // one: a run that stopped before the swap has nothing to release.
+    releaseHold?.();
     try {
       fs.rmSync(STAGING_DIR, { recursive: true, force: true });
     } catch {

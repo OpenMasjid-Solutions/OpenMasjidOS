@@ -3366,7 +3366,9 @@ function TunnelRefusals() {
               {r.path}
             </code>
             <span style={{ flex: '0 0 auto' }}>
-              {r.reason === 'no-app-at-path'
+              {r.reason === 'plain-http-no-host'
+                ? t('settings.cfRefusalPlainHttp')
+                : r.reason === 'no-app-at-path'
                 ? t('settings.cfRefusalNoApp')
                 : r.reason === 'app-fabric-lan-only'
                   ? t('settings.cfRefusalAppFabric')

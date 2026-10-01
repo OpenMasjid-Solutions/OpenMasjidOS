@@ -867,7 +867,8 @@
     "cfRemoteAdminAskLan": "Nothing changes for anyone using the dashboard at the masjid.",
     "cfRemoteAdminAskConfirm": "Yes, open it",
     "remoteOnlyLan": "Only available at the masjid",
-    "remoteOnlyLanHint": "This one stays on the masjid’s own network, even with remote management on. Open the dashboard there to use it."
+    "remoteOnlyLanHint": "This one stays on the masjid’s own network, even with remote management on. Open the dashboard there to use it.",
+    "cfRefusalPlainHttp": "Opened over http:// with no domain set above. Set the domain, or use the https:// address."
   },
   "update": {
     "title": "Updating OpenMasjidOS",

@@ -22,11 +22,16 @@ const SRC = path.join(import.meta.dirname, '..', 'src', 'api', 'fabric.ts');
 const src = fs.readFileSync(SRC, 'utf8');
 
 test('the read tier is decided from the method AND both path spellings', () => {
-  const fn = src.slice(
-    src.indexOf('function isReadOnlyFabricRoute'),
-    src.indexOf('const fabricHits'),
-  );
-  assert.ok(fn.length > 0, 'isReadOnlyFabricRoute not found');
+  // Sliced to the function's OWN closing brace, not to whatever happens to follow
+  // it. This used to slice up to `const fabricHits`, and when new code (the SSO
+  // budget, which also calls resolveDotSegments and decodedPath) landed in between,
+  // the slice silently grew to include it — so a reverted raw-text classifier would
+  // still have passed every assertion below. A review found it; nothing failed.
+  const start = src.indexOf('function isReadOnlyFabricRoute');
+  assert.ok(start >= 0, 'isReadOnlyFabricRoute not found');
+  const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
+  assert.ok(fn.length > 0 && fn.length < 800, `expected just the one function, got ${fn.length} chars`);
+  assert.equal(fn.match(/\bfunction\b/g)?.length, 1, 'the slice must contain exactly one function');
 
   // GET-only is the load-bearing half: every sending route is a POST.
   assert.ok(/method\.toUpperCase\(\)\s*!==\s*'GET'/.test(fn), 'the read tier must be GET-only');

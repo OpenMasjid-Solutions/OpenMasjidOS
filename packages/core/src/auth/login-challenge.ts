@@ -41,6 +41,8 @@ interface Challenge {
   viaTunnel: boolean;
   /** Cloudflare's client IP when over the tunnel; null otherwise. */
   remoteIp: string | null;
+  /** Fingerprint of the password hash the password was verified against. */
+  cred: string;
   expiresAt: number;
   attempts: number;
 }
@@ -54,7 +56,7 @@ function sweep(now: number): void {
 /** Mint a challenge for a username whose password has just been verified. */
 export function createChallenge(
   username: string,
-  origin: { viaTunnel: boolean; remoteIp: string | null },
+  origin: { viaTunnel: boolean; remoteIp: string | null; cred?: string },
   nowMs: number = Date.now(),
 ): string {
   sweep(nowMs);
@@ -64,6 +66,9 @@ export function createChallenge(
     username,
     viaTunnel: origin.viaTunnel,
     remoteIp: origin.remoteIp,
+    // Absent only for direct callers (tests). An empty credential never matches a
+    // real fingerprint, so such a challenge can never complete into a session.
+    cred: origin.cred ?? '',
     expiresAt: nowMs + CHALLENGE_TTL_MS,
     attempts: 0,
   });
@@ -71,7 +76,7 @@ export function createChallenge(
 }
 
 export type ClaimResult =
-  | { ok: true; username: string }
+  | { ok: true; username: string; cred: string }
   | { ok: false; reason: 'unknown' | 'expired' | 'wrong-origin' | 'too-many-attempts' };
 
 /**
@@ -113,7 +118,7 @@ export function claimChallenge(
     pending.delete(id);
     return { ok: false, reason: 'too-many-attempts' };
   }
-  return { ok: true, username: c.username };
+  return { ok: true, username: c.username, cred: c.cred };
 }
 
 /**

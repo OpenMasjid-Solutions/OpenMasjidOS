@@ -26,7 +26,27 @@ const NotFound = lazy(() => import('./routes/NotFound').then((m) => ({ default: 
 const DesignSystem = lazy(() => import('./routes/DesignSystem').then((m) => ({ default: m.DesignSystem })));
 
 export function Root() {
-  const me = trpc.auth.me.useQuery(undefined, { retry: false });
+  /**
+   * Re-checked whenever the admin comes back to this tab, and every minute while
+   * they are on it. It used to be fetched ONCE, on mount — `refetchOnWindowFocus`
+   * is off globally (App.tsx) — so a tab left open went on drawing the signed-in
+   * shell long after the server had forgotten the session. Every Open button on it
+   * then handed the app a dead cookie; the app said "sign in through your
+   * dashboard"; the admin came back here, saw themselves signed in, pressed Open
+   * again, and got the same answer. A loop with no way out from inside it.
+   *
+   * `'always'`, not `true`. `true` honours the global 30s `staleTime`, so coming
+   * back within half a minute — which is exactly what someone does after an app
+   * tells them to "press Open from the dashboard" — would skip the check and send
+   * the same dead cookie again. A refetch with data already present does not show
+   * the splash or remount the sign-in screen, so a two-step sign-in in progress
+   * (with the admin away in their authenticator app) keeps its place.
+   */
+  const me = trpc.auth.me.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: 'always',
+    refetchInterval: 60_000,
+  });
   const utils = trpc.useUtils();
   const reload = () => utils.auth.me.invalidate();
 

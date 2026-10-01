@@ -27,6 +27,47 @@ function forwardedProtoIsHttps(value: string | string[] | undefined): boolean {
   return first.split(',')[0]!.trim().toLowerCase() === 'https';
 }
 
+/**
+ * Which scheme the VISITOR used to reach Cloudflare — or null if nothing says.
+ *
+ * NOT the same question as `isViaTunnel`, and conflating them shipped a bug.
+ * `isViaTunnel` is true whenever Cloudflare's `cf-ray` is present, which it is on
+ * a plain `http://` visit too: Cloudflare terminating TLS at its edge says nothing
+ * about the visitor→edge leg. A session cookie was marked `Secure` on that signal,
+ * and a browser REJECTS a `Secure` cookie delivered over plain HTTP — so a remote
+ * sign-in over `http://` completed its second factor and landed back on the sign-in
+ * screen, every time.
+ *
+ * `cf-visitor` FIRST, `x-forwarded-proto` only as a fallback. `cf-visitor` is
+ * Cloudflare's dedicated statement of the visitor's scheme, and nothing between
+ * cloudflared and the core has a reason to touch it. `x-forwarded-proto` is the
+ * header every reverse proxy rewrites with ITS OWN incoming scheme — nginx's
+ * `proxy_set_header X-Forwarded-Proto $scheme` turns Cloudflare's `https` into
+ * `http` for anyone who puts a proxy behind the tunnel. Trusting it first made
+ * every HTTPS visit look like plain HTTP there, and the upgrade redirect then
+ * pointed the browser at the very URL it was already on, for ever.
+ *
+ * Null when neither speaks, and callers must treat null as "do not know" — never
+ * as either answer, because both answers lead to an action (a redirect, a Secure
+ * flag).
+ */
+export function visitorScheme(headers: NodeJS.Dict<string | string[]>): 'https' | 'http' | null {
+  const cv = headers['cf-visitor'];
+  const raw = Array.isArray(cv) ? cv[0] : cv;
+  if (typeof raw === 'string') {
+    try {
+      const scheme = (JSON.parse(raw) as { scheme?: unknown }).scheme;
+      if (scheme === 'https' || scheme === 'http') return scheme;
+    } catch {
+      /* a malformed header says nothing; fall through to x-forwarded-proto */
+    }
+  }
+  const fp = headers['x-forwarded-proto'];
+  const first = (Array.isArray(fp) ? fp[0] : fp)?.split(',')[0]?.trim().toLowerCase();
+  if (first === 'https' || first === 'http') return first;
+  return null;
+}
+
 /** True when the request reached us through the Cloudflare tunnel (not the LAN). */
 export function isViaTunnel(req: FastifyRequest): boolean {
   return Boolean(req.headers['cf-ray']) || forwardedProtoIsHttps(req.headers['x-forwarded-proto']);
@@ -119,6 +160,42 @@ export function matchesSecretRoute(url: string): boolean {
 export function urlHasPrefix(url: string, prefix: string): boolean {
   const raw = url.split('?')[0]!.split('#')[0]!;
   return [raw, decodedPath(url)].some((p) => p.startsWith(prefix));
+}
+
+/**
+ * Refuse any request whose target is not a path — the FIRST hook on both listeners.
+ *
+ * HTTP allows other request-target forms: absolute (`GET http://host/trpc/x`) and
+ * asterisk (`GET *`). The router accepts them — find-my-way rewrites an absolute
+ * target to its path — but every guard here reads `req.url` and asks what its first
+ * segment is. For `http://host/trpc/x` that segment is `http:`, so the front-door
+ * gate, the LAN-only Fabric guard and the CSRF check all saw "not mine" and let it
+ * through to a route that was very much theirs. A review found it with a crafted
+ * request straight to port 80.
+ *
+ * Not reachable through the tunnel — Cloudflare and cloudflared always send a path —
+ * and a client that can reach port 80 directly can also reach 443, where it gets
+ * more than this would have given it. So this is closing a spelling, not a door. It
+ * is closed anyway because every guard in this codebase assumes a path, and "the
+ * guard is right for every spelling it was written for" is how three of them were
+ * walked past before (CLAUDE.md §15). Browsers, proxies and cloudflared only ever
+ * send a path to an origin, so nothing real is refused.
+ */
+export function registerOriginFormGuard(server: FastifyInstance): void {
+  server.addHook('onRequest', (req, reply, done) => {
+    if (req.url.startsWith('/')) return done();
+    // A WebSocket upgrade is CLOSED, never answered. On the dashboard listener
+    // @fastify/websocket routes upgrades through these hooks, and only destroys the
+    // socket from its own hook — which a reply from here runs before. So a 400 left
+    // the socket open for good, even after the client hung up: every refused upgrade
+    // an unauthenticated descriptor, on a daemon running as root. A review found it.
+    if (req.raw.headers.upgrade) {
+      reply.hijack();
+      req.raw.socket.destroy();
+      return;
+    }
+    return reply.code(400).send({ error: 'Bad request.' });
+  });
 }
 
 export function registerFabricTunnelGuard(server: FastifyInstance): void {

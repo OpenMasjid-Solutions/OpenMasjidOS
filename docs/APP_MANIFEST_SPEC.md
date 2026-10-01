@@ -145,7 +145,8 @@ installed app validate (or impersonate) the session as another.
     reverse-proxy/multi-host setups. An app must not let this be set by anyone but the platform.
   - `OPENMASJID_APP_SECRET` — a random per-app secret. **Treat it as a credential** (don't log/expose
     it). Injected only for `sso: true` apps.
-- The session cookie (`omos_session`, HttpOnly, **SameSite=Lax**, non-Secure) is sent by the browser to
+- The session cookie (`omos_session`, HttpOnly, **SameSite=Lax**, non-Secure on the LAN — `Secure` only for a
+  session created over an HTTPS remote-access visit, which has no plain-HTTP app on its origin) is sent by the browser to
   the app when the admin opens it. It is `Lax` (not `Strict`) on purpose: the dashboard is HTTPS but
   most apps are HTTP, so clicking **Open** is a cross-scheme top-level navigation that browsers treat
   as cross-site — `Strict` would withhold the cookie on that first open (SSO would only work after a
@@ -159,6 +160,20 @@ installed app validate (or impersonate) the session as another.
   **and** the secret matches a known SSO-capable app; otherwise `{ "authenticated": false }`. Treat
   `username` as an untrusted display string (cap/escape it). If `authenticated`, treat the request as
   signed-in; otherwise fall back to the app's own login.
+- **A `429` means the platform could not answer — it is NOT a sign-out.** It carries
+  `{ "authenticated": false, "retryable": true }` and a `Retry-After` header. `authenticated:false` is kept
+  so an app that reads only that field still fails closed, which is correct and which some apps rely on for
+  security (refusing a local-password claim while the platform is reachable). But an app that can tell the
+  difference should show a gentle "Connecting to OpenMasjidOS…" and ask again after `Retry-After`, rather
+  than "sign in through your dashboard" — that message sends the admin to do something they have already
+  done. Since platform 0.51.2 the sign-in check has its own budget and should not be refused in normal use.
+- **Send ONLY those two headers.** Do not relay the incoming request's headers to the platform. An app reached
+  through the remote-access tunnel receives `x-forwarded-proto: https` and Cloudflare's `cf-ray`; forwarded
+  to `/api/auth/session`, either one makes the platform treat the call as internet traffic and refuse it
+  (that route is local-network only), which reads as "not signed in".
+- **Platform sessions survive a platform restart** (since 0.51.2). Before that, every OpenMasjidOS update
+  silently invalidated the admin's session while the browser kept the cookie for a week, so a fresh SSO
+  check after an update could fail with the dashboard still looking signed in.
 - This call is **server→server** (app backend → platform). `/api/auth/session` is **not** CORS-enabled
   on purpose, so a cross-origin page can't read someone's auth status. It **fails closed**: a missing/
   garbage/revoked cookie, or a missing/unknown app secret, returns `authenticated:false`. Never trust a

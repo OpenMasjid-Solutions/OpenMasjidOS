@@ -25,6 +25,8 @@ import {
   createSession,
   destroySession,
   destroyAllSessions,
+  credentialFingerprint,
+  freshCredential,
 } from '../../auth/sessions';
 import { toDigits } from '../../notify/whatsapp';
 import { sendEmail } from '../../notify/email';
@@ -43,6 +45,7 @@ import {
   createChallenge,
   noteFailedAttempt,
   attemptsLeft,
+  clearChallenges,
 } from '../../auth/login-challenge';
 import { twoFactorRouter } from './twofactor';
 import {
@@ -76,7 +79,14 @@ let verifyGate: Promise<void> = Promise.resolve();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function verifyCredentials(username: string, password: string): Promise<boolean> {
+/**
+ * Check a username + password, and report WHICH password hash it was checked
+ * against. The caller must confirm that hash is still current before minting a
+ * session (see `freshCredential` in auth/sessions.ts): argon2 is awaited, and a
+ * password change landing during that await would otherwise mint a session bound
+ * to the NEW password for someone who only knew the old one.
+ */
+async function verifyCredentials(username: string, password: string): Promise<{ ok: boolean; cred: string }> {
   let release!: () => void;
   const prev = verifyGate;
   verifyGate = new Promise<void>((r) => (release = r));
@@ -92,8 +102,11 @@ async function verifyCredentials(username: string, password: string): Promise<bo
       (adminEmail != null && adminEmail !== '' && id.toLowerCase() === adminEmail.toLowerCase());
     // Always run argon2 verify (even for a wrong identifier) so response timing
     // doesn't reveal whether it was correct.
-    const okPass = await verifyPassword(getPasswordHash() ?? '', password);
-    return okUser && okPass;
+    // Read FRESH, and captured before the await: this is the hash the password is
+    // being checked against, and the one the resulting session must be bound to.
+    const hash = getPasswordHash({ fresh: true });
+    const okPass = await verifyPassword(hash ?? '', password);
+    return { ok: okUser && okPass, cred: credentialFingerprint(hash) };
   } finally {
     release();
   }
@@ -169,7 +182,7 @@ export const authRouter = router({
     if (!createAdminIfUnset({ username: input.name, email: input.email, name: input.name, passwordHash: hash })) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
-    const { token, csrf } = createSession(input.name);
+    const { token, csrf } = createSession(input.name, credentialFingerprint(hash));
     ctx.setSessionCookie?.(token);
     return { authenticated: true, username: input.name, csrf };
   }),
@@ -202,7 +215,12 @@ export const authRouter = router({
           message: 'Too many attempts. Please wait a minute and try again.',
         });
       }
-      const ok = await verifyCredentials(input.username, input.password);
+      const verified = await verifyCredentials(input.username, input.password);
+      // A password that was right when checked but has been CHANGED since (during
+      // argon2) is not a valid sign-in now. Treated exactly as a wrong password.
+      // Read FRESH: the throttled copy can still be the old hash for a second after
+      // the installer's Reset sign-in replaced it from another process.
+      const ok = verified.ok && verified.cred === freshCredential();
       if (!ok) {
         noteIpFailure(ctx.remoteIp);
         consecutiveFailures += 1;
@@ -253,7 +271,11 @@ export const authRouter = router({
             message: 'Signing in from outside the masjid needs two-step sign-in set up first.',
           });
         }
+        // The challenge carries the credential the password was verified against,
+        // so completing it after a password change cannot mint a session bound to
+        // the NEW password (completeLogin checks it).
         const challenge = createChallenge(input.username, {
+          cred: verified.cred,
           viaTunnel: true,
           remoteIp: ctx.remoteIp,
         });
@@ -268,7 +290,8 @@ export const authRouter = router({
         };
       }
 
-      const { token, csrf } = createSession(input.username);
+      // Bound to the hash that was VERIFIED, not re-read: see createSession.
+      const { token, csrf } = createSession(input.username, verified.cred);
       ctx.setSessionCookie?.(token);
       return {
         authenticated: true as const,
@@ -389,9 +412,23 @@ export const authRouter = router({
         });
       }
 
+      // The password changed while this sign-in waited for its second factor (up to
+      // ten minutes). The password it proved is no longer the password: start again.
+      if (claim.cred !== freshCredential()) {
+        consumeChallenge(input.challenge);
+        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
+        return {
+          authenticated: false as const,
+          restart: true as const,
+          username: null,
+          csrf: null,
+          triesLeft: 0,
+          message: 'Your password was changed while you were signing in. Please start again.',
+        };
+      }
       consumeChallenge(input.challenge);
       clearIpFailures(ctx.remoteIp);
-      const { token, csrf } = createSession(claim.username);
+      const { token, csrf } = createSession(claim.username, claim.cred);
       ctx.setSessionCookie?.(token);
       log.info(`Two-step sign-in completed using ${result.used}.`);
       return {
@@ -501,13 +538,27 @@ export const authRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const ok = await verifyPassword(getPasswordHash() ?? '', input.currentPassword);
+      // Captured before the await, and compared again after it: two changes racing
+      // (or a reset made by the installer meanwhile) must not both go through.
+      const hash = getPasswordHash({ fresh: true });
+      const ok = await verifyPassword(hash ?? '', input.currentPassword);
       if (!ok) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Your current password is incorrect.' });
       }
-      updatePasswordHash(await hashPassword(input.newPassword));
+      const nextHash = await hashPassword(input.newPassword);
+      if (getPasswordHash({ fresh: true }) !== hash) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Your password was changed somewhere else a moment ago. Please sign in again.',
+        });
+      }
+      updatePasswordHash(nextHash);
       destroyAllSessions();
-      const { token, csrf } = createSession(ctx.username);
+      // A remote sign-in waiting for its second factor proved the OLD password.
+      // completeLogin would refuse it anyway (the credential no longer matches);
+      // clearing it here means it is gone rather than merely refused.
+      clearChallenges();
+      const { token, csrf } = createSession(ctx.username, credentialFingerprint(nextHash));
       ctx.setSessionCookie?.(token);
       return { ok: true, csrf };
     }),

@@ -14,7 +14,7 @@ import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { isConfigured } from '../auth/store';
 import { wsAuthed, requestCsrfOk } from './ws-auth';
 import { isAllowedWsOrigin, isAllowedOrigin } from '../util/origin';
-import { RESTORE_PATH, quickCheckArchive, runRestore } from '../system/restore';
+import { RESTORE_PATH, quickCheckArchive, runRestore, restoreInProgress } from '../system/restore';
 import { log } from '../logger';
 
 function authed(req: FastifyRequest): boolean {
@@ -43,6 +43,11 @@ export function registerRestore(server: FastifyInstance): void {
     if (isConfigured()) {
       if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
       if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
+    }
+    // The running restore is reading this very file. Writing over it mid-run is how a
+    // second restore used to start on top of the first (system/restore.ts says more).
+    if (restoreInProgress()) {
+      return reply.code(409).send({ error: 'A restore is already running. Please wait for it to finish.' });
     }
     try {
       const file = await req.file();

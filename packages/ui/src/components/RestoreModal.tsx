@@ -43,8 +43,19 @@ export function RestoreModal({ open, onClose }: { open: boolean; onClose: () => 
   }
 
   return (
-    <Modal open={open} onClose={onClose} wide title={t('restore.title')}>
+    // Locked while the restore is streaming, like UpdateModal. Closing it and picking a
+    // file again used to start a second restore over the first; the server refuses
+    // that now (system/restore.ts), and this stops the admin reaching for it. Only
+    // while 'running': once the stream ends the restore has finished on the server,
+    // and a restore that FAILED never restarts the core, so waiting for one would
+    // hold the dialog shut for minutes over nothing.
+    <Modal open={open} onClose={onClose} wide locked={phase === 'running'} title={t('restore.title')}>
       {open && <LogStream wsPath="/api/restore/run" onClosed={onClosed} />}
+      {phase === 'running' && (
+        <p className="hint" style={{ marginTop: '0.6rem' }}>
+          {t('update.dontClose')}
+        </p>
+      )}
       <div style={{ marginTop: '0.85rem', minHeight: '2rem' }}>
         {phase === 'restarting' && (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

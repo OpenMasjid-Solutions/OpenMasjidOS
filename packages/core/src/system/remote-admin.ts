@@ -40,7 +40,89 @@
  */
 import { getSettings } from '../settings/store';
 import { twoFactorActive } from '../auth/twofactor';
-import { decodedPath, resolveDotSegments } from './via-tunnel';
+import { decodedPath, isViaTunnelHeaders, resolveDotSegments, visitorScheme } from './via-tunnel';
+
+/** What the HTTP front door does with a request, before any route sees it. */
+export type FrontDoorDecision =
+  /** Not a dashboard path, or a permitted tunnel visit: let the real routes answer. */
+  | { kind: 'pass' }
+  /** LAN traffic on the plain-HTTP port: 308 to the HTTPS dashboard, as always. */
+  | { kind: 'lan-https' }
+  /** A tunnel visitor on plain http://: 308 to the same path on OUR https hostname. */
+  | { kind: 'upgrade'; to: string }
+  /** Refused, with the refusal recorded for "Recently turned away" under `reason`. */
+  | { kind: 'refuse'; reason: 'lan-only-route' | 'plain-http-no-host' };
+
+/**
+ * The front door's gate, as one pure function.
+ *
+ * Pure so the tests can drive the REAL decision. The first version had this logic
+ * inline in index.ts and a hand-built copy in the tests — and the copy had already
+ * drifted (it had no upgrade branch) by the time a review looked. A registered
+ * route skips the not-found handler, so this gate is the only thing standing
+ * between the internet and the dashboard routes on this listener; it must be the
+ * thing under test, not a description of it.
+ *
+ * The plain-http:// tunnel case is an UPGRADE, not service. Serving it put the
+ * admin password and the second-factor code on the public internet in clear
+ * between the browser and Cloudflare's edge — and the session cookie, rightly
+ * Secure there, would be discarded by the browser anyway, so sign-in could never
+ * stick. The rules, each closing a specific failure:
+ *  - Only on an EXPLICIT http signal. Unknown is served rather than redirected, so
+ *    a proxy that strips the scheme header can never trap the dashboard in a loop
+ *    (and `visitorScheme` reads cf-visitor first, so one that REWRITES
+ *    x-forwarded-proto cannot either).
+ *  - Always to OUR configured hostname, whatever the request's Host says. The
+ *    target never comes from the request, so this cannot be an open redirect; the
+ *    first version ALSO required Host to equal ours, which protected nothing and
+ *    meant a second hostname routed to the tunnel was served in clear.
+ *  - No configured hostname means nowhere safe to send them: refuse rather than
+ *    serve the sign-in page in clear. The admin reaches it over https:// instead.
+ */
+export function frontDoorDecision(
+  url: string,
+  headers: NodeJS.Dict<string | string[]>,
+  ctx: { viaTunnel: boolean; remoteAdminEnabled: boolean; configuredHost: string },
+): FrontDoorDecision {
+  // `touches`, not `isDashboardPath`: the gate must look at a request if ANY spelling
+  // could reach a dashboard route. See touchesDashboardPath for the bypass this closes.
+  if (!touchesDashboardPath(url)) return { kind: 'pass' }; // /api/*, app paths, unknown
+  if (!ctx.viaTunnel) return { kind: 'lan-https' };
+  if (!ctx.remoteAdminEnabled) return { kind: 'refuse', reason: 'lan-only-route' };
+  if (visitorScheme(headers) !== 'http') return { kind: 'pass' };
+  const ours = ctx.configuredHost.trim().toLowerCase();
+  // `url` is a request target and always starts with '/'. Anything else is not
+  // something to concatenate onto a scheme and a host.
+  if (!ours || !url.startsWith('/') || url.startsWith('//')) return { kind: 'refuse', reason: 'plain-http-no-host' };
+  return { kind: 'upgrade', to: `https://${ours}${url}` };
+}
+
+/**
+ * Should the front door take this WebSocket upgrade as the dashboard's own socket?
+ *
+ * The ingress listener owns every upgrade on the front door and destroys anything
+ * it is not told to keep (system/ingress.ts says why). This is the one thing it is
+ * told to keep, and the rule is: the dashboard's tRPC socket, over the tunnel, and
+ * only when `frontDoorDecision` — the very function the HTTP gate calls — would let
+ * the same request through.
+ *
+ * Asking the gate rather than re-deriving it is the point. The first version
+ * checked "tunnel + feature on + /trpc" by hand, so an upgrade the gate would have
+ * refused (no hostname) or redirected (plain http://) was claimed anyway and then
+ * answered with an HTTP response on a socket nothing would ever close.
+ *
+ * `trpc` must be the first segment of some spelling, not merely a prefix of it:
+ * `/trpcx` is not the dashboard socket and is declined, which destroys it.
+ */
+export function claimsDashboardSocket(
+  url: string,
+  headers: NodeJS.Dict<string | string[]>,
+  ctx: { remoteAdminEnabled: boolean; configuredHost: string },
+): boolean {
+  if (!isViaTunnelHeaders(headers)) return false;
+  if (!spellings(url).some((p) => firstSegment(p) === 'trpc')) return false;
+  return frontDoorDecision(url, headers, { viaTunnel: true, ...ctx }).kind === 'pass';
+}
 
 /**
  * May the dashboard be served over the tunnel right now?
@@ -114,15 +196,44 @@ function firstSegment(path: string): string {
  * the secret-gated ones are refused by a guard that runs before this one.
  */
 export function isDashboardPath(url: string): boolean {
+  const sp = spellings(url);
+  if (sp.some((p) => p.startsWith('/api/') || p === '/api')) return false;
+  return sp.every(spellingIsDashboard);
+}
+
+/**
+ * Could the router send this request to a dashboard route under ANY spelling?
+ *
+ * THE GATE'S QUESTION, and it is not `isDashboardPath`'s. That one decides whether
+ * to SERVE the SPA and must fail closed by requiring EVERY spelling to agree. This
+ * one decides whether the gate APPLIES, and must fail closed the other way: if any
+ * spelling is a dashboard path, the gate looks at it.
+ *
+ * One predicate used to answer both, and an adversarial review found what that cost.
+ * `/%74rpc/auth.me` has a raw first segment of `%74rpc`, so `every` said "not a
+ * dashboard path", the gate waved it through — and the router, which matches the
+ * DECODED path, delivered it to tRPC. Proved against the real daemon: the whole
+ * dashboard API answered over the tunnel with remote administration switched OFF.
+ * The comment above `isDashboardPath` described this exact failure as the thing
+ * `every` prevents; for the gate, `every` was the thing that caused it.
+ *
+ * No /api exclusion here, deliberately: a spelling that starts with /api but
+ * resolves to a dashboard path must still be gated. The /api routes keep their own
+ * guards, which run first.
+ */
+export function touchesDashboardPath(url: string): boolean {
+  return spellings(url).some(spellingIsDashboard);
+}
+
+function spellings(url: string): string[] {
   const raw = url.split('?')[0]!.split('#')[0]!;
-  const spellings = [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))];
-  if (spellings.some((p) => p.startsWith('/api/') || p === '/api')) return false;
-  return spellings.every((p) => {
-    if (p === '/' || p === '') return true;
-    if (DASHBOARD_ROOT_FILES.includes(p)) return true;
-    const seg = firstSegment(p);
-    return (DASHBOARD_SEGMENTS as readonly string[]).includes(seg);
-  });
+  return [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))];
+}
+
+function spellingIsDashboard(p: string): boolean {
+  if (p === '/' || p === '') return true;
+  if (DASHBOARD_ROOT_FILES.includes(p)) return true;
+  return (DASHBOARD_SEGMENTS as readonly string[]).includes(firstSegment(p));
 }
 
 /**

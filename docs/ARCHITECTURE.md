@@ -19,7 +19,12 @@ packages/ui     React 18 + Vite + Tailwind v4 + Motion dashboard
 - **API:** tRPC over HTTP for queries/mutations, and **tRPC over WebSocket** for
   live subscriptions (system stats stream every ~2s). Both share the `/trpc`
   prefix via `@trpc/server/adapters/fastify` with `useWSS: true` +
-  `@fastify/websocket`.
+  `@fastify/websocket` — on the HTTPS dashboard listener. The plain-HTTP front
+  door (port 80, where the tunnel lands) is different: `@fastify/websocket` must
+  NOT be registered there, because it claims every upgrade and broke every app's
+  live socket over the tunnel. tRPC there is `useWSS: false`, and the ingress's
+  upgrade listener hands the dashboard socket to tRPC's own handler only when
+  `claimsDashboardSocket` says the gate would pass it (CLAUDE.md §15).
 - **End-to-end types:** the UI imports only the `AppRouter` **type** from the
   core (`import type`). No server runtime ever reaches the browser bundle. UI
   view-models are derived with `inferRouterOutputs` — never hand-duplicated.
@@ -31,8 +36,14 @@ packages/ui     React 18 + Vite + Tailwind v4 + Motion dashboard
   reported "where available" (null otherwise). Disk reports the filesystem
   backing the mounted data dir.
 - **Auth:** argon2id hashing (via `@node-rs/argon2`) + a random session token in
-  an HTTP-only, **SameSite=Lax** cookie. Sessions are in-memory, so a core restart
-  signs everyone out.
+  an HTTP-only, **SameSite=Lax** cookie. Sessions are **persisted**
+  (`config/sessions.json`) so a restart does not sign anyone out — when they were
+  in memory, every update silently invalidated the admin's cookie and apps then
+  refused single sign-on. Each session is bound to a fingerprint of the password
+  hash that was actually verified, so any password change or reset (even from the
+  installer, a separate process the daemon notices within a second) ends every
+  older session; a restore ends them all at the next boot. CLAUDE.md §9 has the
+  rules and the failures behind each.
   - **Lax, not Strict, deliberately.** The dashboard is HTTPS but apps are served
     over HTTP, so clicking "Open" is a cross-scheme top-level navigation that
     browsers treat as cross-site. Strict withholds the cookie there and breaks SSO

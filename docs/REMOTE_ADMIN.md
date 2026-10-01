@@ -175,13 +175,15 @@ non-ASCII character would scan to mojibake, and `qrMatrix` throws rather than en
 the code is drawn **black on white in both themes**, because a QR is read by contrast and a
 token-coloured one would be near-invisible to a camera on the dark theme.
 
-## Open decisions
-
-- **The session cookie's `Secure` flag** is opt-in and off by default, because an app served
-  over plain HTTP needs the forwarded session cookie. A tunnel-origin session should set it;
-  that means the flag becomes per-response rather than per-process. Slice 3.
-
 ## Settled
+
+- **The session cookie's `Secure` flag is decided per response.** On for a session issued to an
+  HTTPS tunnel visitor (`cf-ray` present AND `visitorScheme` says `https`), off on the LAN, where
+  an app served over plain HTTP needs the forwarded cookie for single sign-on. "Came through the
+  tunnel" is NOT the condition: Cloudflare stamps `cf-ray` on a plain `http://` visit too, a
+  browser throws away a `Secure` cookie delivered over plain HTTP, and one build that keyed it on
+  `isViaTunnel` bounced every remote sign-in back to the sign-in screen. A plain `http://` tunnel
+  visit to the dashboard is now 308'd to `https://` on the configured hostname instead of served.
 
 - **Does enrolled 2FA apply on the LAN too? No** — Hasan's call, and the reason is the right
   one: a volunteer on the masjid's own network must not be locked out of the dashboard by a
@@ -239,6 +241,50 @@ feature OFF  TUN ws /trpc         destroyed
 
 Every refused upgrade is **closed**, never abandoned — an abandoned one holds a file descriptor
 until the peer gives up, which is an unauthenticated resource lever on a root daemon.
+
+## What the second review found (dev.15), and both were shipped in dev.13–14
+
+**1. With the feature OFF, the dashboard API answered over the tunnel to an encoded address.**
+The gate asked `isDashboardPath`, which needs EVERY spelling of the path to be a dashboard path.
+That is the right rule for deciding to *serve* — and the wrong one for deciding whether the gate
+*looks at all*. `/%74rpc/auth.me` has the raw first segment `%74rpc`, so the gate said "not mine"
+and let it through, and Fastify, which routes on the decoded path, delivered it to tRPC. The gate
+now asks `touchesDashboardPath` (ANY spelling); serving still requires `isDashboardPath`.
+`/%74rpc/auth.me` answered 200 with the feature off before the fix. Measured against the real
+built daemon after it:
+
+```
+feature OFF                                 feature ON
+TUN  /trpc/auth.me           404            TUN        /%74rpc/auth.me     200
+TUN  /%74rpc/auth.me         404            TUN (http) /%74rpc/auth.me     308 → https://omos.example.org/…
+TUN  /tr%70c/auth.me         404            TUN        /api/%66abric/site  404
+TUN  /%74rpc%2Fauth.me       404            LAN        /trpc/auth.me       308 → https://<lan>/…
+TUN  /api/../trpc/auth.me    404
+TUN  /x/../trpc/auth.me      404            sockets, feature ON
+TUN  /as%73ets/x.js          404            TUN        ws /trpc     101, and a real tRPC query answered
+TUN  /%73ettings             404            TUN        ws /%74rpc   101
+LAN  /%74rpc/auth.me         308 → https    TUN (http) ws /trpc     destroyed
+                                            LAN        ws /trpc     destroyed
+sockets, feature OFF                        TUN        ws /trpcx    destroyed
+TUN  ws /trpc                destroyed      TUN        ws /settings destroyed
+TUN  ws /%74rpc              destroyed
+```
+
+Every refusal above was recorded for "Recently turned away".
+
+**2. Every app's live connection over the tunnel was broken.** `@fastify/websocket` had been
+registered on the front door to carry the dashboard's socket. It routes *every* upgrade through
+Fastify, so an app's socket was piped to the app by the ingress AND proxied as an ordinary HTTP
+request by the ingress's hook — the browser got an HTTP response inside its WebSocket stream and
+the connection died. The plugin is gone from that listener; the ingress is the one upgrade owner
+and hands the dashboard's socket to tRPC's own handler when `claimsDashboardSocket` agrees, which
+asks the same `frontDoorDecision` the HTTP gate does. `test/front-door-websocket.test.ts` drives
+real sockets through the real ingress against a real upstream app. **The app-socket half was not
+re-run against the real daemon**: the test machine has no Docker, so the daemon's ingress has no
+app routes to send a socket to. The behavioural test is the evidence for that half.
+
+The same review found three ways a sign-in could outlive a password change; those are recorded in
+CLAUDE.md §9 (*the binding comes from the password that was proved*), not here.
 
 ## Still true, and still the honest limit
 

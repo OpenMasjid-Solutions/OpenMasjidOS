@@ -109,6 +109,7 @@ function isReadOnlyFabricRoute(method: string, url: string): boolean {
   const resolved = resolveDotSegments(decodedPath(url)).toLowerCase();
   return READ_ONLY_ROUTES.some((r) => raw.startsWith(r) && resolved.startsWith(r));
 }
+
 const fabricHits = new Map<string, { count: number; resetAt: number }>();
 
 function hit(key: string, max: number): boolean {
@@ -130,6 +131,108 @@ function fabricRateOk(ip: string): boolean {
   return hit(`ip:${ip}`, RATE_MAX);
 }
 
+/**
+ * Single sign-on introspection has a budget of its OWN, and that is a bug fix.
+ *
+ * It used to be priced as a SEND. The central hook charged `GET /api/auth/session`
+ * to the same 120/min per-app bucket as every email, WhatsApp message, alert and
+ * broker call that app makes — and the handler ALSO charged it to the coarse
+ * per-IP bucket, which on this platform is one bucket for the whole box (every app
+ * reaches the core through Docker's published port and presents the same peer
+ * address; see the RATE_MAX comment). Five apps inside their own 120/min, or one
+ * app polling WhatsApp outcomes as the platform asks it to, emptied that bucket.
+ *
+ * Either refusal answered the sign-in check with something every app reads as
+ * "the platform is up and you are NOT signed in" — and every OpenMasjid app then
+ * refuses its own password recovery, because the platform was reachable. So a
+ * Students roster run could make the Donations app ask the admin for a password
+ * they may never have set, for up to a minute, with no log line anywhere. That
+ * reached a masjid as "it randomly asks for the control panel password".
+ *
+ * An SSO check is a Map lookup and a constant-time compare with no outbound
+ * effect and no ban risk. It gets its own counter (so it cannot starve or be
+ * starved by anything else), a ceiling far above any real use, and an IDENTIFIED
+ * caller is not charged to the shared per-IP tier at all — that tier exists to
+ * bound an unauthenticated flood, and a request carrying a valid 256-bit app
+ * secret is not one.
+ */
+const RATE_MAX_APP_SSO = 1200;
+const SSO_PATH = '/api/auth/session';
+
+/**
+ * Is this request the SSO introspection route, under EVERY spelling the router
+ * might resolve? `every`, not `some`: the generous budget is granted only when the
+ * raw and decoded spellings both resolve exactly to the SSO path, so a spelling
+ * that disagrees falls back to the tight send budget rather than borrowing the
+ * loose one (§15: a security comparison must not trust one spelling).
+ */
+function isSsoIntrospection(method: string, url: string): boolean {
+  const m = method.toUpperCase();
+  if (m !== 'GET' && m !== 'HEAD') return false;
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  return [resolveDotSegments(raw), resolveDotSegments(decodedPath(url))].every((p) => p === SSO_PATH);
+}
+
+/**
+ * Why an SSO check said no, logged at most once a minute per reason and app.
+ *
+ * Every failing exit from `/api/auth/session` used to be silent (or at `debug`),
+ * while the succeeding one logged at `info` — so the one outcome an admin would
+ * need to diagnose left no trace, and this bug could not be found from the log.
+ * Throttled because an unauthenticated flood would otherwise write a line per
+ * request. Never logs a cookie or a secret.
+ */
+const ssoRefusalLogged = new Map<string, number>();
+function noteSsoRefusal(reason: string, appId: string | null, detail: string): void {
+  const key = `${reason}:${appId ?? '-'}`;
+  const now = Date.now();
+  const last = ssoRefusalLogged.get(key) ?? 0;
+  if (now - last < 60_000) return;
+  ssoRefusalLogged.set(key, now);
+  if (ssoRefusalLogged.size > 500) ssoRefusalLogged.clear();
+  log.warn(`Single sign-on refused${appId ? ` for app "${appId}"` : ''}: ${detail}`);
+}
+
+/** The body + header for a refused-for-load SSO check. See the handler. */
+function ssoRateLimited(reply: FastifyReply) {
+  return reply
+    .code(429)
+    .header('retry-after', String(Math.ceil(RATE_WINDOW_MS / 1000)))
+    .send({ authenticated: false, retryable: true });
+}
+
+/** Test seam: forget every rate-limit window. Never called by the daemon. */
+export function __resetFabricRateForTests(): void {
+  fabricHits.clear();
+  ssoRefusalLogged.clear();
+  ssoSuccess.clear();
+}
+
+/**
+ * A successful SSO check, logged at most once a minute per app with a count.
+ *
+ * It was one INFO line per success. That was bounded only because SSO used to be
+ * capped at the app's 120/min send budget — the very cap that locked admins out.
+ * With its own, far larger budget, an app that checks on every request would write
+ * thousands of lines a minute into a Docker log nothing rotates, on an SD card.
+ */
+const ssoSuccess = new Map<string, { since: number; count: number }>();
+function noteSsoSuccess(appId: string): void {
+  const now = Date.now();
+  const e = ssoSuccess.get(appId);
+  if (!e) {
+    ssoSuccess.set(appId, { since: now, count: 0 });
+    log.info(`SSO introspection: app "${appId}" validated a session.`);
+    return;
+  }
+  e.count += 1;
+  if (now - e.since >= 60_000) {
+    log.info(`SSO introspection: app "${appId}" validated ${e.count} more session check(s) in the last minute.`);
+    ssoSuccess.set(appId, { since: now, count: 0 });
+  }
+  if (ssoSuccess.size > 500) ssoSuccess.clear();
+}
+
 export function registerFabric(server: FastifyInstance): void {
   /**
    * The per-app rate tier, applied centrally.
@@ -145,6 +248,9 @@ export function registerFabric(server: FastifyInstance): void {
    */
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
+    // SSO introspection is priced in its own handler, on its own counter — never on
+    // this app's send budget (see RATE_MAX_APP_SSO for the outage that caused).
+    if (isSsoIntrospection(req.method, req.url)) return done();
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
     if (app) {
@@ -168,17 +274,62 @@ export function registerFabric(server: FastifyInstance): void {
   // cookie, from validating (or impersonating) the session as another app. The
   // token is read ONLY from the cookie, never a query/header/body. Not CORS-enabled.
   server.get('/api/auth/session', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ authenticated: false });
-    const username = getSessionUser(req.cookies?.[COOKIE_NAME]);
-    if (!username) return { authenticated: false };
+    // Identify FIRST, then price. An identified app pays its own SSO counter; only an
+    // unidentified caller pays the shared per-IP tier, which exists to bound exactly
+    // that — an unauthenticated flood. Charging an identified app's sign-in check to
+    // a bucket every app on the box shares is how one busy app locked the admin out
+    // of another (RATE_MAX_APP_SSO).
     const presented = req.headers['x-openmasjid-app-secret'];
     const app = findFabricApp(typeof presented === 'string' ? presented : null);
-    if (!app || !app.sso) {
-      // Valid session, but the caller didn't prove a known SSO-capable identity.
-      log.debug('SSO introspection denied: missing or unrecognised app secret.');
+    if (app) {
+      if (!hit(`appsso:${app.id}`, RATE_MAX_APP_SSO)) {
+        noteSsoRefusal('rate-app', app.id, 'this app is checking sign-ins unusually often; refused for up to a minute.');
+        // `authenticated:false` stays, so an app that only reads that field behaves as
+        // it always has (it fails closed). `retryable` + Retry-After are the new,
+        // additive signal that this was load, not a sign-out.
+        return ssoRateLimited(reply);
+      }
+    } else if (!fabricRateOk(req.ip)) {
+      noteSsoRefusal('rate-ip', null, 'too many unidentified sign-in checks; refused for up to a minute.');
+      return ssoRateLimited(reply);
+    }
+
+    const cookie = req.cookies?.[COOKIE_NAME];
+    const username = getSessionUser(cookie);
+    if (!username) {
+      // The diagnostic that was missing. A cookie the platform does not recognise is
+      // the signature of an expired session or one lost before sessions persisted —
+      // and it is the SAME answer an app turns into "sign in through your dashboard".
+      if (cookie) {
+        noteSsoRefusal(
+          'stale-cookie',
+          app?.id ?? null,
+          'the browser sent a sign-in the platform does not recognise (expired, or signed out elsewhere). Signing in to the dashboard again fixes it.',
+        );
+      }
       return { authenticated: false };
     }
-    log.info(`SSO introspection: app "${app.id}" validated a session.`);
+    if (!app) {
+      // Valid session, but the caller did not prove who it is.
+      noteSsoRefusal(
+        'unknown-app',
+        null,
+        'an app presented a missing or unrecognised app key. Updating or reinstalling the app re-issues it.',
+      );
+      return { authenticated: false };
+    }
+    if (!app.sso) {
+      // Identified, but holds its key for another capability. A different problem
+      // with a different fix, so a different line — and it names the app, which the
+      // core knows. Reinstalling would not help: the key is fine.
+      noteSsoRefusal(
+        'no-sso-capability',
+        app.id,
+        'this app is not set up for single sign-on (its manifest does not ask for it), so it cannot share the dashboard sign-in.',
+      );
+      return { authenticated: false };
+    }
+    noteSsoSuccess(app.id);
     return { authenticated: true, username };
   });
 

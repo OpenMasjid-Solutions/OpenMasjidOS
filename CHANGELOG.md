@@ -13,6 +13,96 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+### Signing in to apps
+
+- **Opening an app from the dashboard signs you in reliably now.** Sometimes an app would ask for
+  a password instead, tell you to "press the app from the OS" — which you just had — and then refuse
+  its own password too, leaving no way in. There were four separate reasons, all fixed:
+  - **Updating or restarting OpenMasjidOS signed you out without telling you.** Your browser kept
+    you signed in for a week, but the server forgot you on every restart, so the next app you
+    opened was handed a sign-in that no longer worked. You now stay signed in across updates.
+  - **A busy app could block the sign-in check.** If an app had just sent a lot of messages, or
+    another app was busy, the check that signs you in could be turned away for up to a minute.
+    It now has room of its own, so nothing else can crowd it out.
+  - **The dashboard didn't notice when you had been signed out**, so pressing Open again just
+    repeated the problem. It now checks whenever you come back to it, and asks you to sign in
+    again if you need to — after which opening the app works.
+  - **After restoring a backup**, apps could fail to sign in until something else was changed.
+- When a sign-in check does fail, OpenMasjidOS now writes down why, so it can be looked into
+  instead of guessed at.
+- **Signing in from outside the masjid over a plain address** (`http://`) now switches to the
+  secure `https://` address automatically. Before, your password could travel unencrypted, and
+  the sign-in would not stick anyway.
+- **Resetting your password with the installer now takes effect straight away.** Before, the old
+  password kept working — and anyone already signed in stayed signed in — until the dashboard
+  restarted at the very end of the reset, after every app had been reinstalled. That gap was the
+  one moment a reset exists to close.
+- **Changing your password now also cancels any sign-in that was half-way through.** A sign-in
+  waiting for its two-step code, or one being checked at the instant the password changed, used to
+  be allowed to finish with the old password.
+- **Two password changes at the same moment** no longer both go through. The second is told the
+  password was just changed somewhere else, instead of quietly replacing the first.
+- **Restoring a backup no longer signs you out part-way through**, which used to close the window
+  showing whether the restore worked. You are asked to sign in again once it has finished.
+- **Only one restore can run at a time**, and its window stays open until it has finished.
+  Closing it and choosing a file again used to start a second restore over the first, which
+  could leave every app switched off.
+- **If the disk is full when you change your password, nothing changes.** Before, the change
+  failed but half-happened: you were signed out, your old password was refused, and the new one
+  stopped working after a restart.
+- **Remote access fixes for Development builds 13 and 14:**
+  - With remote access switched **off**, parts of the dashboard could still be reached from the
+    internet by writing its address in an unusual way. They can't any more.
+  - Apps that keep a live connection open (live displays, anything that updates without
+    refreshing) stopped working over your public address. They work again.
+
+**Technical detail** (for whoever cuts the release):
+
+- Sessions are bound to the password that was **proved**, not the password current when the
+  session is written: `verifyCredentials` captures the hash before argon2 and returns its
+  fingerprint, `login` refuses if it no longer matches, a tunnel challenge carries it and
+  `completeLogin` refuses a stale one with `restart: true`. `changePassword` re-reads after
+  hashing (CONFLICT on a concurrent change) and clears pending challenges.
+- `auth/store.ts` re-reads `auth.json` when its inode/mtime/size changes — at most once a second,
+  and always before a password check or a write. Only a good read is adopted; a missing or damaged
+  file never re-opens first-run setup. A restore holds the store and refuses account writes.
+- A restore leaves `config/sessions.reset`; the next boot starts with no sessions.
+- The front-door gate decides whether to look at a request with `touchesDashboardPath` (ANY
+  spelling); serving still needs `isDashboardPath` (EVERY spelling). `/%74rpc/auth.me` reached
+  tRPC over the tunnel with the feature off, because one predicate answered both questions.
+- `@fastify/websocket` is no longer registered on the HTTP front door; it routed every upgrade
+  through Fastify, so app sockets were handled twice. The ingress listener is the one upgrade
+  owner and claims the dashboard socket via `claimsDashboardSocket`, which asks the same
+  `frontDoorDecision` the HTTP gate does.
+- A third review: `createSession(username, cred)` now takes the fingerprint of the hash that was
+  verified (or just set) instead of reading the current one, and the checks after argon2 and
+  after a second factor read FRESH (`freshCredential`) — the throttled copy could be a second
+  stale after a reset written by another process. `requireSudo` (the two-step settings'
+  password re-check) reads fresh and re-compares after argon2, like sign-in.
+- `auth/store.ts` writes first and only then updates memory, so a failed write (ENOSPC) leaves
+  memory and disk agreeing; a read that failed at boot is retried rather than trusted for the
+  life of the process; the restore hold is owned per restore (`holdForRestore` returns its
+  release) instead of one shared flag.
+- Restore is single-flight on the server (`withUpdateLock('restore')`), the upload refuses with
+  409 while one runs, the restore dialog is locked while streaming, and a volume archive that
+  cannot be read now fails that volume instead of hanging the restore.
+- Both listeners refuse a request target that is not a path (`registerOriginFormGuard`).
+  `GET http://host/trpc/x` was routed to `/trpc/x` while every guard read its first segment as
+  `http:`. Not reachable through the tunnel; closed because every guard assumes a path.
+- The ingress test pin is re-checked after rebuild's await. On CI, where Docker answers, a
+  rebuild already in flight replaced the pinned routes and the WebSocket test failed.
+- A fourth review: the request-target guard CLOSES a refused WebSocket upgrade instead of
+  answering 400 — on the dashboard listener `@fastify/websocket` only destroys the socket from
+  its own hook, so the 400 left it open for good; a password file that cannot be read is no
+  longer treated as a password change (sessions are held, not honoured and not discarded, until
+  it reads again, and the boot load retries the read first); an unreadable volume archive ends
+  tar's input (`docker run -i` forwards SIGTERM to a PID-1 tar that ignores it);
+  `createSession`'s credential is a required parameter; the WebSocket test measures the server
+  side with a raw socket rather than the `ws` client, which hides a server that answers and
+  leaves the connection open.
+- New tests: `credential-binding.test.ts` (which now drives the real `reset-password` tool
+  through its prompts), `front-door-websocket.test.ts`.
+
 ### Security and dependencies
 
 - Updated four bundled libraries to pick up security fixes, including the one that sends your

@@ -71,8 +71,14 @@ const BAD_PASSWORD = 'That password is not right.';
  * proved a great deal more than a guesser has.
  */
 async function requireSudo(input: { password: string; code?: string }): Promise<void> {
-  const ok = await verifyPassword(getPasswordHash() ?? '', input.password);
-  if (!ok) throw new TRPCError({ code: 'UNAUTHORIZED', message: BAD_PASSWORD });
+  // FRESH, and compared again after argon2 — the same rule as signing in. A reset
+  // made by the installer a moment ago must already refuse the old password here,
+  // and a change landing during the verify must not let the old one through.
+  const hash = getPasswordHash({ fresh: true });
+  const ok = await verifyPassword(hash ?? '', input.password);
+  if (!ok || getPasswordHash({ fresh: true }) !== hash) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: BAD_PASSWORD });
+  }
 
   if (!twoFactorActive()) return; // nothing enrolled yet — there is no code to ask for
   if (!input.code) {

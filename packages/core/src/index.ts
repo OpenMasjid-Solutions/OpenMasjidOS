@@ -13,6 +13,8 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
 import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
+import { getWSConnectionHandler } from '@trpc/server/adapters/ws';
+import { WebSocketServer } from 'ws';
 
 import { HOST, PORT, TLS_PORT, UI_DIR, CONFIG_DIR, APPS_DIR } from './config';
 import { VERSION } from './version';
@@ -25,12 +27,12 @@ import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
 import { backupStream, backupFilename, BackupBusyError } from './system/backup';
 import { startBackupScheduler } from './system/backup-upload';
-import { ensureCloudflared } from './system/cloudflared';
+import { ensureCloudflared, publicHost } from './system/cloudflared';
 import { attachIngress } from './system/ingress';
 import { noteRefusal } from './system/tunnel-refusals';
-import { registerFabricTunnelGuard, isViaTunnel, isViaTunnelHeaders, urlHasPrefix } from './system/via-tunnel';
+import { registerFabricTunnelGuard, registerOriginFormGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI, registerStaticFiles, spaFallback } from './api/static-ui';
-import { remoteAdminEnabled, isDashboardPath } from './system/remote-admin';
+import { remoteAdminEnabled, isDashboardPath, frontDoorDecision, claimsDashboardSocket } from './system/remote-admin';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
@@ -113,6 +115,8 @@ async function main() {
     server = buildServer(null);
   }
 
+  // First hook of all: every guard below reads the request target as a path.
+  registerOriginFormGuard(server);
   await server.register(fastifyCookie);
   await server.register(fastifyWebsocket);
   await server.register(fastifyMultipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
@@ -278,19 +282,52 @@ async function main() {
     // If a remote mutation ever fails on size, raise it for /trpc specifically
     // rather than for the whole front door.
     const front = Fastify({ maxParamLength: 5000 });
+    // First hook of all, before the ingress and every guard: each reads the request
+    // target as a path, and a target that is not one walked past them.
+    registerOriginFormGuard(front);
     await front.register(fastifyCookie);
     // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
     // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
     //
-    // `allowUpgrade` is the ONLY way a non-app WebSocket survives this listener,
+    // `claimUpgrade` is the ONLY way a non-app WebSocket survives this listener,
     // and it is deliberately narrow: the dashboard's own tRPC socket, over the
     // tunnel, while remote administration is on. Anything wider abandons sockets
     // that nothing will answer (system/ingress.ts says why that matters).
+    //
+    // The dashboard's live-data socket on THIS listener is handled here, by hand,
+    // rather than by @fastify/websocket. That plugin claims every upgrade on the
+    // server it is registered on, which broke every app's WebSocket over the tunnel
+    // (system/ingress.ts, `claimUpgrade`, says how). The handler is tRPC's own — the
+    // same `getWSConnectionHandler` the fastify adapter uses on the TLS listener —
+    // so the socket behaves identically on both.
+    const dashboardWss = new WebSocketServer({ noServer: true });
+    const onDashboardSocket = getWSConnectionHandler({
+      wss: dashboardWss,
+      router: appRouter,
+      // The same logging the TLS listener's adapter does. Not spread from
+      // `trpcPluginOptions`: that `onError` is typed for a Fastify request, and on
+      // this path tRPC hands it a raw IncomingMessage. It only reads path + error.
+      onError({ path, error }) {
+        log.error(`tRPC error${path ? ` on "${path}"` : ''}: ${error.message}`);
+      },
+      // The fastify-typed context function, given the raw IncomingMessage the WS
+      // path always receives. That is what the TLS listener passes it too, and
+      // createContext handles it (see its `req.query` note). The cast is only the
+      // adapter's option type differing from fastify's.
+      createContext: (o) => createContext(o as never),
+    });
     attachIngress(front, {
-      allowUpgrade: (req) =>
-        isViaTunnelHeaders(req.headers) &&
-        remoteAdminEnabled() &&
-        urlHasPrefix(req.url ?? '', '/trpc'),
+      claimUpgrade: (req, socket, head) => {
+        // The SAME decision the HTTP gate makes (system/remote-admin.ts says why).
+        // Declining is not "leave it": the ingress destroys anything not claimed.
+        const ok = claimsDashboardSocket(req.url ?? '', req.headers, {
+          remoteAdminEnabled: remoteAdminEnabled(),
+          configuredHost: publicHost(),
+        });
+        if (!ok) return false;
+        dashboardWss.handleUpgrade(req, socket, head, (ws) => onDashboardSocket(ws, req));
+        return true;
+      },
     });
     // LAN-only guard for the SECRET-GATED Fabric routes (incl. the app-to-app
     // broker at /api/fabric/app/*). App backends always call these server-to-server
@@ -361,34 +398,44 @@ async function main() {
     };
 
     front.addHook('onRequest', (req, reply, done) => {
-      if (!isDashboardPath(req.url)) return done(); // /api/*, app paths, unknown
-      if (!isViaTunnel(req)) {
-        // LAN, on the plain-HTTP front door. REDIRECT HERE, do not fall through.
-        //
-        // This used to be `done()`, on the reasoning that the not-found handler
-        // below would redirect it — which was true right up until this listener
-        // started registering the dashboard's own routes. A REGISTERED route
-        // skips the not-found handler (the same property that makes the Fabric
-        // routes need an explicit guard), so `GET /` matched @fastify/static and
-        // was served index.html over plain HTTP on the masjid's LAN. Nothing in
-        // the unit tests saw it: the front door they build to exercise this gate
-        // has no static route, so the fall-through still reached the handler
-        // there. A smoke test against the real daemon is what found it.
-        return toHttps(req, reply);
+      // ONE pure decision, shared with the tests (system/remote-admin.ts says why the
+      // first version's hand-built test copy could not be trusted).
+      const d = frontDoorDecision(req.url, req.headers, {
+        viaTunnel: isViaTunnel(req),
+        remoteAdminEnabled: remoteAdminEnabled(),
+        configuredHost: publicHost(),
+      });
+      switch (d.kind) {
+        case 'pass':
+          return done();
+        case 'lan-https':
+          // LAN, on the plain-HTTP front door. REDIRECT HERE, do not fall through.
+          //
+          // This used to fall through, on the reasoning that the not-found handler
+          // below would redirect it — true until this listener started registering
+          // the dashboard's own routes. A REGISTERED route skips the not-found
+          // handler, so `GET /` matched @fastify/static and was served index.html
+          // over plain HTTP on the masjid's LAN. A smoke test against the real
+          // daemon found it; the unit tests' copy of this gate had no static route.
+          return toHttps(req, reply);
+        case 'upgrade':
+          // A tunnel visitor on plain http:// is upgraded, never served in clear.
+          return reply.code(308).redirect(d.to);
+        case 'refuse': {
+          const ref = noteRefusal(
+            req.url,
+            {
+              host: String(req.headers.host ?? ''),
+              method: req.method,
+              cfRay: String(req.headers['cf-ray'] ?? ''),
+              accept: String(req.headers.accept ?? ''),
+              agent: String(req.headers['user-agent'] ?? ''),
+            },
+            d.reason,
+          );
+          return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+        }
       }
-      if (remoteAdminEnabled()) return done(); // allowed → the real routes
-      const ref = noteRefusal(
-        req.url,
-        {
-          host: String(req.headers.host ?? ''),
-          method: req.method,
-          cfRay: String(req.headers['cf-ray'] ?? ''),
-          accept: String(req.headers.accept ?? ''),
-          agent: String(req.headers['user-agent'] ?? ''),
-        },
-        'lan-only-route',
-      );
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
     });
 
     // Same CSRF defence the TLS listener applies to /trpc. Not "also" — this
@@ -422,8 +469,9 @@ async function main() {
     // The dashboard itself. Registered unconditionally — the gate above decides
     // per request, because the setting can change without a restart and a
     // restart-time decision would mean an admin toggling it saw nothing happen.
-    await front.register(fastifyWebsocket);
-    await front.register(fastifyTRPCPlugin, trpcPluginOptions);
+    // HTTP only. The WebSocket half is handled above, in the ingress listener — NOT
+    // by registering @fastify/websocket here, which would claim every app's upgrade.
+    await front.register(fastifyTRPCPlugin, { ...trpcPluginOptions, useWSS: false });
     const frontUI = await registerStaticFiles(front, UI_DIR);
     const frontSpa = spaFallback(frontUI);
 

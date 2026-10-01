@@ -54,7 +54,7 @@ const STEP_MS = 30_000;
 
 /** A caller with a genuine session and its dashboard key — what the UI has. */
 function signedIn() {
-  const { token, csrf } = sessions.createSession('admin');
+  const { token, csrf } = sessions.createSession('admin', sessions.currentCredential());
   return authRouter.createCaller({
     username: 'admin',
     sessionToken: token,

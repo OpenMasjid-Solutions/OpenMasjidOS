@@ -33,7 +33,7 @@ import { createRequire } from 'node:module';
 const req = createRequire(__filename);
 process.env.OPENMASJID_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-ws-'));
 
-const { createSession } = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
+const { createSession, currentCredential } = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
 const { router, protectedProcedure } = req('../src/trpc/trpc') as typeof import('../src/trpc/trpc');
 
 /** A router with one protected procedure, using the REAL protectedProcedure. */
@@ -63,7 +63,7 @@ async function call(ctx: Ctx): Promise<{ ok: boolean; error?: string }> {
 
 test('a valid session WITHOUT the dashboard key is refused over WebSocket', async () => {
   // This is the vulnerability. Before the fix this call SUCCEEDED.
-  const s = createSession('admin');
+  const s = createSession('admin', currentCredential());
   const r = await call({ username: 'admin', sessionToken: s.token, csrf: null, isWebSocket: true });
   assert.equal(r.ok, false, 'cookie-only must not reach a protected procedure over WS');
   assert.match(r.error ?? '', /sign in/i);
@@ -71,13 +71,13 @@ test('a valid session WITHOUT the dashboard key is refused over WebSocket', asyn
 
 test('a valid session WITH the dashboard key is allowed over WebSocket', async () => {
   // The dashboard itself must keep working — live stats ride this transport.
-  const s = createSession('admin');
+  const s = createSession('admin', currentCredential());
   const r = await call({ username: 'admin', sessionToken: s.token, csrf: s.csrf, isWebSocket: true });
   assert.equal(r.ok, true, `the real dashboard must still connect: ${r.error ?? ''}`);
 });
 
 test('the HTTP transport still requires the key, as it always did', async () => {
-  const s = createSession('admin');
+  const s = createSession('admin', currentCredential());
   const without = await call({ username: 'admin', sessionToken: s.token, csrf: null, isWebSocket: false });
   assert.equal(without.ok, false);
   const with_ = await call({ username: 'admin', sessionToken: s.token, csrf: s.csrf, isWebSocket: false });
@@ -86,14 +86,14 @@ test('the HTTP transport still requires the key, as it always did', async () => 
 
 test("another session's key does not authorise this session", async () => {
   // verifyCsrf must bind the key to the token, not merely check it is non-empty.
-  const a = createSession('admin');
-  const b = createSession('admin');
+  const a = createSession('admin', currentCredential());
+  const b = createSession('admin', currentCredential());
   const r = await call({ username: 'admin', sessionToken: a.token, csrf: b.csrf, isWebSocket: true });
   assert.equal(r.ok, false, "a key from a different session must not be accepted");
 });
 
 test('a garbage or empty key is refused on both transports', async () => {
-  const s = createSession('admin');
+  const s = createSession('admin', currentCredential());
   for (const csrf of ['', '   ', 'not-the-key', 'null', 'undefined']) {
     for (const isWebSocket of [true, false]) {
       const r = await call({ username: 'admin', sessionToken: s.token, csrf, isWebSocket });

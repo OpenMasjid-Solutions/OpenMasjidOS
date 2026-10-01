@@ -201,6 +201,48 @@ async function stageVolumes(): Promise<{ any: boolean }> {
  * ends. Throws BackupBusyError if one is already running, or a friendly Error if
  * the app data couldn't be staged in full (nothing is streamed in that case).
  */
+/**
+ * The `tar` arguments for a backup. Exported so a test can run them through the
+ * real `tar` binary rather than checking the order by reading this file.
+ *
+ * Sign-in sessions are left OUT of every backup (auth/sessions.ts says why: a bearer
+ * credential, an unencrypted archive, and a restore that would otherwise sign the
+ * admin out at some unpredictable later moment).
+ *
+ * The `--exclude` MUST come before the paths. In GNU tar ≥1.29 — which is the `tar`
+ * the runtime image installs (`apk add … tar` in the Dockerfile) — exclusion options
+ * are POSITIONAL and affect only the operands that follow them, so the natural-looking
+ * spot at the end of this array would exclude nothing and print a warning nobody
+ * reads. `test/session-persistence.test.ts` archives a real directory with these
+ * exact arguments and lists what came out.
+ */
+export function backupTarArgs(haveVolumes: boolean): string[] {
+  const targets: string[] = [];
+  for (const dir of ['config', 'apps']) {
+    if (fs.existsSync(`${DATA_DIR}/${dir}`)) targets.push(dir);
+  }
+  const args = [
+    '-czf',
+    '-',
+    // ANCHORED, and switched back off straight after. GNU tar matches exclusion
+    // patterns ANYWHERE in a member name by default, so a bare
+    // `--exclude=config/sessions.json` also silently dropped any app's own
+    // `apps/<id>/config/sessions.json` — app data, missing from a backup that
+    // reported success. The anchoring options are positional too.
+    '--anchored',
+    '--exclude=config/sessions.json',
+    // The atomic-write temp file holds the same tokens and lingers after a failed
+    // write (auth/sessions.ts removes it, best-effort — this is the backstop).
+    '--exclude=config/sessions.json.tmp',
+    '--no-anchored',
+    '-C',
+    DATA_DIR,
+    ...(targets.length > 0 ? targets : ['.']),
+  ];
+  if (haveVolumes) args.push('-C', STAGING, 'volumes');
+  return args;
+}
+
 export async function backupStream(): Promise<BackupHandle> {
   if (running) throw new BackupBusyError();
   running = true;
@@ -214,12 +256,7 @@ export async function backupStream(): Promise<BackupHandle> {
     throw err;
   }
 
-  const targets: string[] = [];
-  for (const dir of ['config', 'apps']) {
-    if (fs.existsSync(`${DATA_DIR}/${dir}`)) targets.push(dir);
-  }
-  const args = ['-czf', '-', '-C', DATA_DIR, ...(targets.length > 0 ? targets : ['.'])];
-  if (haveVolumes) args.push('-C', STAGING, 'volumes');
+  const args = backupTarArgs(haveVolumes);
 
   const child = spawn('tar', args);
   const stream = child.stdout as Readable;
