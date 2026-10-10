@@ -6,14 +6,15 @@
  *
  * Cloudflare injects a `cf-ray` header and terminates TLS at its edge (so the
  * origin sees `x-forwarded-proto: https`); either signal marks tunnel-origin
- * traffic. The dashboard, tRPC, and the secret-gated Fabric routes must stay
- * LAN-only — only app paths are served publicly (see CLAUDE.md §15). Registered
- * routes skip the front door's notFoundHandler, so the secret routes are kept
- * LAN-only by an explicit onRequest guard, applied here so index.ts, the app-to-
- * app broker, and the ingress /fabric refusal all use ONE implementation.
+ * traffic. The secret-gated Fabric routes stay LAN-only whatever else is published
+ * (CLAUDE.md §15); the dashboard is served from outside only through remote
+ * administration's gate, on an address of its own (system/remote-admin.ts).
+ * Registered routes skip the front door's notFoundHandler, so the secret routes are
+ * kept LAN-only by an explicit onRequest guard, applied here so index.ts, the
+ * app-to-app broker, and the ingress /fabric refusal all use ONE implementation.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { noteRefusal } from './tunnel-refusals';
+import { refuseOverTunnel } from './tunnel-refusals';
 
 /**
  * `x-forwarded-proto` is attacker-influenced and arrives in more shapes than one
@@ -201,20 +202,7 @@ export function registerOriginFormGuard(server: FastifyInstance): void {
 export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
-    if (isViaTunnel(req)) {
-      const ref = noteRefusal(
-        req.url,
-        {
-          host: String(req.headers.host ?? ''),
-          method: req.method,
-          cfRay: String(req.headers['cf-ray'] ?? ''),
-          accept: String(req.headers.accept ?? ''),
-          agent: String(req.headers['user-agent'] ?? ''),
-        },
-        'lan-only-route',
-      );
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-    }
+    if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
     done();
   });
 }

@@ -26,6 +26,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Download, KeyRound, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { isRemoteSession } from '../lib/apps';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
 import { CheckboxField } from './CheckboxField';
@@ -76,6 +77,9 @@ export function TwoFactorPanel() {
   const close = () => setFlow(null);
 
   if (!s) return null;
+  /** Emailed codes are on AND going where they went when switched on. Paused ones
+   *  read as off here, so the switch turns them back on for the new address. */
+  const emailOn = s.email && !s.emailPaused;
 
   return (
     <section className="glass-raised panel">
@@ -126,12 +130,23 @@ export function TwoFactorPanel() {
             <div className="setting-row__text">
               <div className="setting-row__title">{t('settings.twoFactor.emailTitle')}</div>
               <div className="setting-row__hint">
-                {s.emailPossible ? t('settings.twoFactor.emailHint') : t('settings.twoFactor.emailUnavailable')}
+                {/* Paused: switched on, but the address or mail account changed since,
+                    so codes are not sent until the admin turns them on again for the new
+                    one (core auth/twofactor.ts says why the destination is bound). That
+                    hint invites turning them on, so it is shown only when that is
+                    possible — with no mail account left, what to do first is set one up. */}
+                {!s.emailPossible
+                  ? s.emailMissing === 'address'
+                    ? t('settings.twoFactor.emailNoAddress')
+                    : t('settings.twoFactor.emailUnavailable')
+                  : s.emailPaused
+                    ? t('settings.twoFactor.emailPaused')
+                    : t('settings.twoFactor.emailHint')}
               </div>
             </div>
             <Switch
-              checked={s.email}
-              disabled={!s.emailPossible && !s.email}
+              checked={emailOn}
+              disabled={!s.emailPossible && !emailOn}
               onCheckedChange={() => setFlow('email')}
               aria-label={t('settings.twoFactor.emailTitle')}
             />
@@ -161,7 +176,11 @@ export function TwoFactorPanel() {
         active={s.active}
         danger
         title={t('settings.twoFactor.turnOffTitle')}
-        body={t('settings.twoFactor.turnOffBody')}
+        // From outside, "here" is outside: turning it off shuts THIS window out at once,
+        // and only someone at the masjid can set it up again. The masjid's wording said
+        // the opposite to anyone reading it from home.
+        body={isRemoteSession() ? t('settings.twoFactor.turnOffBodyRemote') : t('settings.twoFactor.turnOffBody')}
+        cost={isRemoteSession() ? t('settings.cfCutOffCost') : undefined}
         confirmLabel={t('common.turnOff')}
         onClose={close}
         run={(vars) => disable.mutateAsync(vars)}
@@ -190,11 +209,11 @@ export function TwoFactorPanel() {
       <SudoDialog
         open={flow === 'email'}
         active={s.active}
-        title={s.email ? t('settings.twoFactor.emailOffTitle') : t('settings.twoFactor.emailOnTitle')}
-        body={s.email ? t('settings.twoFactor.emailOffBody') : t('settings.twoFactor.emailOnBody')}
-        confirmLabel={s.email ? t('common.turnOff') : t('common.turnOn')}
+        title={emailOn ? t('settings.twoFactor.emailOffTitle') : t('settings.twoFactor.emailOnTitle')}
+        body={emailOn ? t('settings.twoFactor.emailOffBody') : t('settings.twoFactor.emailOnBody')}
+        confirmLabel={emailOn ? t('common.turnOff') : t('common.turnOn')}
         onClose={close}
-        run={(vars) => setEmailFactor.mutateAsync({ ...vars, enabled: !s.email })}
+        run={(vars) => setEmailFactor.mutateAsync({ ...vars, enabled: !emailOn })}
         onDone={() => {
           close();
           refresh();
@@ -365,6 +384,7 @@ function SudoDialog({
   danger,
   title,
   body,
+  cost,
   confirmLabel,
   onClose,
   run,
@@ -375,6 +395,8 @@ function SudoDialog({
   danger?: boolean;
   title: string;
   body: string;
+  /** What it costs to undo, when that is the real point — shown as a warning. */
+  cost?: string;
   confirmLabel: string;
   onClose: () => void;
   run: (v: SudoVars) => Promise<unknown>;
@@ -416,6 +438,11 @@ function SudoDialog({
       title={title}
     >
       <p>{body}</p>
+      {cost && (
+        <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}>
+          {cost}
+        </p>
+      )}
       <div className="field" style={{ marginBlockStart: '0.9rem' }}>
         <label className="label">{t('settings.currentPassword')}</label>
         <input

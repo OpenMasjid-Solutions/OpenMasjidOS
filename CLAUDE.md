@@ -89,7 +89,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 - Installer auto-installs Docker + the Docker Compose plugin if missing, sets up OpenMasjidOS as a managed service, and during install also:
   - **Optionally configures a static IP** for the machine (guided, confirmed, safe — see §8). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped.
   - **Sets a hostname and mDNS** so the dashboard is reachable at **`openmasjidos.local`** (plus the raw IP as a fallback). **⚠️ NOT YET IMPLEMENTED** — still wanted, not shipped. Today the dashboard is reached at `https://<server-ip>`, and the `.local` name only appears as a certificate SAN so it will work if mDNS is ever added.
-- **Web UI authentication.** The dashboard is always behind a login. The **first time** the dashboard is opened, the user creates the **admin account**. Sessions use secure, HTTP-only cookies. No part of the UI is reachable unauthenticated except the login/first-run screen.
+- **Web UI authentication.** The dashboard is always behind a login. The **first time** the dashboard is opened, the user creates the **admin account**. Sessions use HTTP-only cookies — always `Secure` on the remote dashboard, deliberately not by default on the LAN, so plain-HTTP apps keep single sign-on (§9). No part of the UI is reachable unauthenticated except the login/first-run screen.
 - **Core backend (daemon):** a type-safe **tRPC** API (over HTTP, with WebSocket subscriptions for live data). Manages container lifecycle via the Docker Engine API.
 - **Dashboard home with live system stats:** CPU %, RAM used/total, disk used/total, CPU temperature (where available), uptime, and count of running apps — updated live — alongside the grid of installed apps.
 - **App management:** install / start / stop / restart / remove / update apps; view status and logs.
@@ -113,7 +113,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 
 ### 🔭 Later (v1.1+, design for but don't implement now)
 - Multiple admin users with roles.
-- Remote-access helper (Tailscale/Cloudflare-tunnel wizard).
+- Remote-access helper (Tailscale/Cloudflare-tunnel wizard). Remote access itself already ships: a Cloudflare tunnel the masjid creates by hand and pastes the token of into Settings → Remote access (§13.2e). What is later is a helper that sets one up for them.
 - Community-submitted app catalog with review flow.
 
 ---
@@ -124,7 +124,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
                        ┌──────────────────────────────────────────┐
                        │             User's browser                │
                        │   OpenMasjidOS UI (React + Vite + TW)      │
-                       │       reached at openmasjidos.local        │
+                       │       reached at https://<server-ip>       │
                        └───────────────▲────────────────────────────┘
                                        │ tRPC over HTTPS
                                        │ (+ WebSocket subscriptions)
@@ -147,14 +147,14 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
                 │  • custom (3rd-party) stacks │   │  catalog.json + manifests  │
                 │  • named volumes per app     │   └────────────────────────────┘
                 └──────────────────────────────┘
-        Host: avahi (mDNS → .local), optional static IP, host /proc for stats
+        Host: /proc + /sys for stats. (avahi/mDNS and a static IP: planned, NOT built — §4.)
 ```
 
 - **Core** is a single Node/TypeScript daemon, shipped as **one Docker image** (`openmasjid/core`) that both serves the built React UI and exposes the tRPC API. It talks to the host Docker daemon via the mounted socket `/var/run/docker.sock`.
 - **Type safety end-to-end:** the UI imports the core's tRPC `AppRouter` **type** (types only, never runtime code) so the client and server can never drift. Live data (stats, status, logs) uses **tRPC subscriptions over WebSocket**.
 - **System stats** come from `systeminformation`, reading host metrics (mount host `/proc` and `/sys` read-only into the core so CPU/RAM/disk/temp reflect the *machine*, not the container).
-- **Apps** (catalog and custom) are launched as their own Docker Compose projects (one project per app), labeled so the core can find and manage them.
-- **Networking:** the host runs avahi so `openmasjidos.local` resolves on the LAN; the installer can optionally pin a static IP.
+- **Apps** (catalog and custom) are launched as their own Docker Compose projects (one project per app, `omos-<id>`), found by Docker's own compose project label — the platform adds no labels of its own (§10, §11).
+- **Networking:** on the masjid's network the dashboard is `https://<server-ip>` (443, with 80 as a plain-HTTP front door — §8). mDNS (`openmasjidos.local`) and an installer static-IP step are wanted but **NOT IMPLEMENTED** (§4, §8). From outside, an optional Cloudflare tunnel lands on port 80: app paths on the apps' hostname (a shared app for anyone, the rest only for the admin, opened from the remote dashboard), and — only when the admin switches it on — the dashboard, on a hostname of its own (§13.2e, §15).
 - **Catalog** is plain static files served from the `OpenMasjidAPPS` repo. No app-store server to run.
 
 ---
@@ -181,7 +181,7 @@ AGPL is strong copyleft with a **network clause (Section 13)**: anyone who runs 
 | i18n | **i18next / react-i18next** | Translation-ready + RTL aware from day one. |
 | Build/deploy | Docker multi-stage (build UI + core → one runtime image) | Final image runs the Node daemon, which serves the UI. |
 | Container mgmt | Docker Compose v2 (`docker compose` plugin) | Every app is a compose project. |
-| Host networking | `avahi-daemon` (mDNS), distro-native static-IP tool (netplan / nmcli / dhcpcd) | `.local` access + optional fixed IP. |
+| Host networking | `avahi-daemon` (mDNS), distro-native static-IP tool (netplan / nmcli / dhcpcd) | `.local` access + optional fixed IP. **Planned, NOT implemented** (§4, §8). |
 
 > **"Lightweight" now means "runs comfortably on a Raspberry Pi / small mini-PC"** (umbrelOS's proven footprint), not "single static binary." Keep dependencies lean, lazy-load heavy UI, and don't pull in frameworks we don't need.
 
@@ -213,20 +213,26 @@ OpenMasjidOS/
 │   │   ├── src/
 │   │   │   ├── index.ts                # boot: TLS dashboard + HTTP front door, tRPC, WS, static UI
 │   │   │   ├── config.ts  logger.ts  version.ts
-│   │   │   ├── reset-password.ts  reset-auth.ts   # installer "Reset sign-in" entry points
+│   │   │   ├── reset-password.ts  reset-auth.ts   # sign-in recovery; Reset sign-in runs reset-auth (§8.1)
 │   │   │   ├── trpc/
 │   │   │   │   ├── router.ts            # root AppRouter (exported type → UI)
 │   │   │   │   ├── context.ts  trpc.ts  # session/CSRF context, procedure builders
-│   │   │   │   └── routers/             # one file per area: auth, apps, store, community,
-│   │   │   │                            #   custom, settings, stats, system, files, backups,
-│   │   │   │                            #   alerts, notifications, email, whatsapp, commands,
-│   │   │   │                            #   stripe, cloudflare
+│   │   │   │   │                        #   (no signed-in change while a restore runs, §15)
+│   │   │   │   └── routers/             # one file per area: auth, twofactor, apps, store,
+│   │   │   │                            #   community, custom, settings, stats, system, files,
+│   │   │   │                            #   backups, alerts, notifications, email, whatsapp,
+│   │   │   │                            #   commands, stripe, cloudflare
 │   │   │   ├── api/                     # plain HTTP/WS routes: fabric, files, terminals,
 │   │   │   │                            #   update, app-update, restore, branding,
-│   │   │   │                            #   static-ui, ws-auth
-│   │   │   ├── auth/                    # argon2 (@node-rs/argon2), sessions, admin store
+│   │   │   │                            #   backup-download (sending a backup, LAN + remote),
+│   │   │   │                            #   static-ui, ws-auth (`requestUser`)
+│   │   │   ├── auth/                    # argon2 (@node-rs/argon2), sessions (+ per-app access
+│   │   │   │                            #   tokens), admin store, twofactor + totp + qr
+│   │   │   │                            #   (the enrolment QR), login-challenge, ip-lockout
 │   │   │   ├── docker/                  # dockerode + the one `docker compose` wrapper
-│   │   │   ├── apps/                    # manifest parsing, lifecycle, compose-validate (the gate)
+│   │   │   ├── apps/                    # manifest parsing, lifecycle, compose-validate (the gate),
+│   │   │   │                            #   paths (the shape of an app path, and the first
+│   │   │   │                            #   segments no app may take)
 │   │   │   ├── commands/                # WhatsApp admin commands: normalise → gate → parse →
 │   │   │   │                            #   registry → execute, + reply/conversation/os
 │   │   │   ├── fabric/                  # app↔app broker (appLink), proxy, appCommands
@@ -238,7 +244,11 @@ OpenMasjidOS/
 │   │   │   │                            #   (email, whatsapp, stripe, commands, branding)
 │   │   │   ├── stripe/                  # dispute (chargeback) polling
 │   │   │   ├── system/                  # channel, tls, ingress, app-proxy, app-host, backup,
-│   │   │   │                            #   restore, cloudflared, update-lock, monitors, …
+│   │   │   │                            #   restore, cloudflared, update-lock, monitors,
+│   │   │   │                            #   via-tunnel, tunnel-refusals, remote-admin (the
+│   │   │   │                            #   door + front-door gate), app-access (Open from
+│   │   │   │                            #   outside), remote-sockets, socket-relay (both
+│   │   │   │                            #   ends of a relayed socket close together), …
 │   │   │   └── util/                    # phone, version, origin, id, json-store, image-size,
 │   │   │                                #   net (why a peer check can't work), slug
 │   │   ├── test/              # node:test. EVERY file must be listed in package.json's
@@ -255,11 +265,19 @@ OpenMasjidOS/
 │       │   │                           #   SceneBackground, Windows, Glyphs, …
 │       │   ├── lib/
 │       │   │   ├── trpc.ts             # typed client (imports AppRouter TYPE from core)
+│       │   │   ├── trpcClient.ts       # links: batched HTTP + a LAZY WebSocket (§15 says why lazy)
 │       │   │   ├── prefs.ts            # theme/accent/wallpaper applied pre-paint
 │       │   │   ├── motion.ts           # shared Motion presets
 │       │   │   ├── version.ts          # deliberate copy of core's util/version.ts (§13.4)
 │       │   │   ├── phone.ts            # country table + display formatting; React-free so
 │       │   │   │                       #   a core test can cover it (ui has no runner)
+│       │   │   ├── app-url.ts          # where an app opens from here (LAN port vs. outside);
+│       │   │   │                       #   React-free for the same reason
+│       │   │   ├── apps.ts             # Open: the LAN port, or `apps.openRemote` from outside
+│       │   │   ├── update-endings.ts   # what an app update's close code means; React-free
+│       │   │   │                       #   so a core test holds it to the server's (§13.4)
+│       │   │   ├── session.ts          # the dashboard key, in this origin's storage only (§15)
+│       │   │   ├── files.ts            # File Explorer transfers + the 100 MB limit from outside
 │       │   │   └── i18n/               # en.json + helpers (RTL aware)
 │       │   ├── styles/                 # tokens.css (theme tokens), app.css, glass.css
 │       │   └── index.css               # Tailwind v4 @import
@@ -268,11 +286,15 @@ OpenMasjidOS/
 └── docs/
     ├── ARCHITECTURE.md
     ├── APP_MANIFEST_SPEC.md   # catalog contract + the Fabric (appearance, SSO, email, whatsapp, commands)
+    ├── APP_UI_DESIGN_SPEC.md  # how an app's own UI should look beside the dashboard
     ├── FABRIC_APP_LINK_AND_TUNNEL.md  # app↔app broker + per-app tunnel exposure
+    ├── REMOTE_ADMIN.md        # the dashboard over the tunnel, on a hostname of its own
     ├── WHATSAPP.md            # gateway, pacing, groups, admin commands
     ├── SECURITY.md            # the security model, as told to an operator
-    ├── NETWORKING.md          # how the dashboard is reached on the LAN
+    ├── NETWORKING.md          # how the dashboard is reached: LAN address, ports, the tunnel
     ├── THEMING.md
+    ├── design-system/         # the shared OpenMasjid design system (shadcn/ui + Radix + Tailwind v4)
+    ├── screenshots/           # the README's images
     └── audit/                 # point-in-time audit records (dated; not a live to-do list)
 ```
 
@@ -314,9 +336,9 @@ What would you like to do?
   4) Remove        — uninstall (your apps & data stay safe)
   5) Quit          — do nothing
 ```
-- **Update:** resolve the channel's newest build (`resolve_image`), recreate the core container, keep data and all installed apps untouched.
-- **Repair:** rewrite the core `docker-compose.yml`, re-pull **the exact reference already there**, restart, fix `/opt/openmasjid` permissions. Non-destructive, and deliberately never moves the machine to another version or channel.
-- **Reset sign-in:** run the core's `reset-auth` / `reset-password` entry points — a new admin password and re-issued per-app secrets, keeping all data. This is the way back in when nobody knows the password.
+- **Update:** resolve the channel's newest build (`resolve_image`), download it, and only THEN write it into the core `docker-compose.yml` and recreate the core container — data and all installed apps untouched. The order is load-bearing (`do_update`): it used to write the file first, so a download that failed (the script stops, `set -e`) left the file naming a build the core had never run, and whatever next recreated the core from it — Repair, which keeps the exact reference; a restore, before it pinned the running build (§15) — brought it back on that build.
+- **Repair:** rewrite the core `docker-compose.yml`, re-pull **the exact reference already there**, restart, fix `/opt/openmasjid` permissions. Non-destructive, and deliberately never moves the machine to another version or channel. Update and Repair both end with *"Open it at: https://<ip>"* (`TLS_PORT`) — they printed `http://`, which reached the dashboard only through port 80's redirect, and only on the masjid's network.
+- **Reset sign-in:** run the core's `reset-auth` (`do_reset_signin` → `docker exec … reset-auth.js`) — a new admin password, every session signed out, every app's Fabric key re-issued and the apps restarted with them, all data kept. This is the way back in when nobody knows the password. **It can also turn two-step sign-in off** — asked only when two-step sign-in is on, `[y/N]`, so the default leaves it alone — because nothing else can: the dashboard asks for a current code to change two-step sign-in, on the masjid's network too (`requireSudo`, §9), so an admin who lost the phone with their authenticator AND the backup codes had no way to remove or replace it. Whoever runs the tool already has the server, so it gives nothing away; with no factor, managing from outside stays shut until one is set up again (§13.2e). `reset-password` is the lighter tool (the password only, run by hand with `docker exec`); it leaves the second factor alone and, when one is on, says to run this full reset instead. `test/credential-binding.test.ts` (*THE FULL SIGN-IN RESET CAN TURN TWO-STEP SIGN-IN OFF*) drives the real tool as a separate process, the `[y/N]` answered both ways.
 - **Remove:** stop & remove the core. Then ask, separately and explicitly: *"Also remove all installed apps and their data? This cannot be undone."* Removing data requires the user to type `DELETE` to confirm. Default is to keep app data.
 
 > **There is no "Reconfigure network" entry, and no mDNS or static-IP code in `install.sh` at all.**
@@ -360,7 +382,7 @@ As shipped, `main()` parses exactly: `--install`, `--update`, `--repair`, `--res
 
 **The installer must never move a machine between update channels by accident.** `write_compose_file` wrote `image: …:latest` unconditionally and both Update and Repair call it, so a Development box that ran the one-liner to repair a broken update was silently put back on Stable — which also meant a broken dev box could not be repaired from the installer at all. `resolve_image` now decides: an explicit `--channel` wins; otherwise the tag already in `${DATA_DIR}/docker-compose.yml` is authoritative (the dashboard's `alignComposeImage` writes that same line, so it reflects a switch made in Settings). **Repair keeps the exact reference** — repair means "make this work again", never "move it to another version" — while **Update resolves to the channel alias**, because keeping the exact pinned version would make Update a no-op. A digest pin survives both. `is_installed` is deliberately generous (compose file *or* `config/` *or* `apps/` *or* the container): offering a fresh install to a masjid that has one reads as "your server is empty", and a damaged compose file is the likeliest casualty of a half-finished update.
 
-**Ports:** the dashboard is served over **HTTPS on 443** (`TLS_PORT`), with **80** (`PORT`) as an HTTP front door that 308-redirects browsers to HTTPS and carries the LAN-only Fabric routes for app backends (which cannot trust a self-signed cert server-to-server). So the dashboard URL needs no port suffix, but it is `https://`. **Data dir:** `/opt/openmasjid`.
+**Ports:** the dashboard is served over **HTTPS on 443** (`TLS_PORT`), with **80** (`PORT`) as an HTTP front door that 308-redirects LAN browsers to HTTPS and carries the LAN-only Fabric routes for app backends (which cannot trust a self-signed cert server-to-server). Port 80 is also where an optional Cloudflare tunnel lands: it serves app paths there and hands remote dashboard requests to the 443 listener (§13.2e, §15). So the dashboard URL needs no port suffix, but it is `https://`. **Data dir:** `/opt/openmasjid`.
 
 > The installer is piped to bash, so it must stay **readable and commented** — we are asking people to trust it. No obfuscation, ever. Keep it auditable and minimal in privilege.
 
@@ -370,7 +392,7 @@ As shipped, `main()` parses exactly: `--install`, `--update`, `--repair`, `--res
 
 The dashboard is **always** behind a login. There is no pre-baked password and no anonymous access to any feature.
 
-- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** — **name + email + password** (enforce a sane minimum strength). **Login is by username** (= the name), NOT the email; the **email is stored only for sending OS alerts** (an app going offline, etc.). This keeps pre-email installs working (they log in with their original username; they can add an alert email in Settings → Account). `verifyCredentials` accepts the stored username OR the email. Optionally let them pick a theme (dark is pre-selected). Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
+- **First visit (no admin exists yet):** the user lands on a first-run screen and **creates the admin account** — **name + email + password** (enforce a sane minimum strength). **The login username is the name**, not the email. The **email is where OS alerts go** (an app going offline, etc.) and, once emailed sign-in codes are switched on, where those codes go (below); `verifyCredentials` also accepts it in place of the username. This keeps pre-email installs working (they log in with their original username; they can add an alert email in Settings → Account). Optionally let them pick a theme (dark is pre-selected). Then they go straight to the dashboard. **Do not ask for any masjid/prayer details here** — that belongs to apps.
 - **Subsequent visits:** standard login screen → dashboard. Wrong credentials get a friendly, rate-limited error.
 - **Sessions:** server-side session, HTTP-only + SameSite=Lax cookie (non-`Secure` on the LAN so plain-HTTP apps keep SSO). Logout clears it. Passwords hashed with **argon2id** via **`@node-rs/argon2`**, never stored or logged in plaintext.
   - **Sessions are PERSISTED (`config/sessions.json`, 0600, atomic), and that is a lockout fix** (v0.51.2-dev.15). They lived in a process-memory Map while the browser kept the cookie for seven days, so every update, reboot and crash silently invalidated the admin's cookie — and the dashboard (fetching `auth.me` once on mount) went on drawing the signed-in shell. Pressing **Open** handed the app a dead cookie; the app's SSO check said "not signed in"; and because the platform WAS reachable, every OpenMasjid app also refused its own password recovery ("sign in through your dashboard"). A masjid reported it as "it randomly asks for the control panel password". It was every restart.
@@ -378,6 +400,123 @@ The dashboard is **always** behind a login. There is no pre-baked password and n
   - **The binding comes from the password that was PROVED, not the password current when the session is written — and a second review is why.** Binding at write time (`currentCred()` inside `createSession`) left three gaps of one shape: something is awaited between "the password was right" and "mint the session", and the binding was read at the END. argon2 itself — a change landing mid-verify minted a session bound to the NEW password for someone who had only shown the old one; the up-to-ten-minute wait for a remote sign-in's second factor; and the admin store being read once at boot, so for the whole Reset sign-in window the daemon went on *accepting* the old password. Now `verifyCredentials` captures the hash before argon2 and returns its fingerprint, `login` refuses unless it still matches, a tunnel challenge carries it and `completeLogin` refuses a stale one with `restart: true`, and `changePassword` re-reads after hashing (CONFLICT on a concurrent change) and clears every pending challenge. **A third review found the same shape twice more, so both halves are now structural:** the check after the verify reads FRESH (`freshCredential`), because the throttled copy can be a second stale after a reset written by another process; and `createSession(username, cred)` takes the fingerprint that was proved instead of reading the current hash, because a refresh landing between check and mint bound the session to a password nobody had shown. `cred` is a REQUIRED parameter, so `npm run lint` refuses a caller that leaves it out (a structural test stood in for the compiler first, and a multi-line call with a trailing comma walked past it); `test/credential-binding.test.ts` pins that it stays required. The two-step settings' password re-check (`requireSudo`) follows the same rule. `test/credential-binding.test.ts` drives each through the real router, the reset tool as a separate process included.
   - **The admin store notices a change made by another process** (`auth/store.ts` `refresh`): a stat stamp (inode, mtime, size) checked at most once a second on reads, and always before a write or a password check. Three rules, each load-bearing. **Only a good read is adopted** — a damaged or MISSING file keeps the last good copy, because adopting a missing file as "no admin yet" re-opens first-run setup to the next visitor, the exact takeover the `corrupt` flag exists to prevent. **A write merges onto the latest file**, or a profile edit writes the old hash back over a reset. And **a restore holds it** (`holdForRestore`, released in a `finally`): reads keep the identity the restore began with, and writes are refused, because between restore's `rmSync` and `renameSync` `config/` does not exist and a write would recreate it and make the rename fail. The hold is **owned** — `holdForRestore()` returns that restore's own release — because a shared flag let a second restore that stopped early lift the first's hold mid-way; and restores are **single-flight** on the server (`withUpdateLock('restore')`, the upload refusing with 409 while one runs). Two more rules from the same review: **write first, then believe it** (`save(next)` assigns the cache only after `writeJson` succeeds — the other order left a failed password change half-applied in memory, signing the admin out and refusing the old password, with nothing able to repair it because the file never changed); and **a read that failed at boot is retried** (`lastStamp` starts at a value no stat produces), or one transient EIO refused the right password until a restart.
   - **Other rules, each from a specific failure.** A damaged file never stops boot (it starts empty — the old behaviour). A failed write never fails a sign-in and never evicts anything; memory is authoritative in-process. A sign-out the disk refuses **removes the file** rather than leaving the revoked token to return at the next boot (unlink works on a full disk; a missing file boots empty, failing closed). Signing out a token that is not a live session **writes nothing** — logout is a public procedure and tRPC batches, so one request could otherwise force hundreds of synchronous fsyncs on an SD card. A failed write removes its temp file, which holds the same tokens. **A password file that cannot be read is not a password change**: while `isAuthStoreDamaged()`, no session is honoured (fail closed) but none is discarded (`isDead` vs `isLive`), and the boot load retries the read first — treating "unreadable" as "changed" dropped every saved session after one transient EIO at boot, which is the reported symptom again. And a restore ends every session **at the next boot** (`endAllSessionsAtNextBoot` → `config/sessions.reset`), as it always did when sessions lived in memory — **not mid-restore**: the first fix called `destroyAllSessions()` straight after the rename, which signed the admin out part-way through and unmounted the window reporting whether the restore worked. The marker is spent once, and also ends any session made during the restore (the old core keeps serving until it is replaced).
+  - **A session records whether it is REMOTE, and which second factor it proved; from the tunnel only such a session
+    counts** (v0.51.2-dev.16). `remote: true` originates in exactly one place — `completeLogin`, i.e. the second
+    factor passing on tunnel traffic — together with `tf`, the second-factor epoch the code was checked against
+    (`VerifyResult.epoch`), and `handedOver`, whether the front door handed that sign-in over (below). The
+    `createSession` type requires both with `remote: true`, for the reason `cred` is required. The only other place
+    that writes them only carries them over: `changePassword`, called through the tunnel, gives the replacement
+    session exactly the OLD session's grant (`remoteGrantOf` → `{ tf, handedOver }`) — the factor it proved and
+    whether the remote dashboard made it, never whatever is current. Every dashboard route asks through
+    `getSessionUserFor(token, { viaTunnel, handedOver })` (tRPC context, and `api/ws-auth.ts` `requestUser` for the
+    raw routes), which on a tunnel request honours only a remote session whose `tf` still equals
+    `secondFactorEpoch()`, and refuses a LAN session — password only — **without discarding it**. This is what
+    makes "everything works remotely" defensible: a LAN cookie is not proof of anything from outside, because every
+    app on the masjid's network receives the admin's cookie (that is how single sign-on works), so any app that kept
+    one could otherwise have walked past the second factor. Only a literal `true` in the file counts.
+    - **From outside, only a session the REMOTE DASHBOARD itself made counts** (`Session.handedOver`). A sign-in
+      through a reverse proxy the masjid runs on its own network passes the second factor too — the proxy sends
+      `X-Forwarded-Proto: https`, so it looks like the tunnel — and its session is `remote`. But it lives in the LAN
+      cookie on the proxy's host, which every app opened from that page receives (cookies ignore ports), and any of
+      those apps could compute, by the public formula, an access token for EVERY app (§15) and use it from the
+      internet, private apps included. A review proved it. So `isRemoteSession` — the remote dashboard's routes and
+      sockets, `claimsDashboardSocket`, `mintAppTicket`, and the sweep through `isRemoteSessionAt` — and
+      `appAccessToken`/`appAccessUser` honour only a session marked `handedOver`, and `getSessionUserFor` requires one
+      for every handed-over request. Such a proxy session still works THROUGH THE PROXY, second factor and all
+      (`getSessionUserFor` without `handedOver`). A remote session written before the flag existed has none, so its
+      owner signs in once more from outside.
+      `test/remote-apps.test.ts` (*A SIGN-IN THROUGH A REVERSE PROXY AT THE MASJID IS NEVER USABLE FROM OUTSIDE*).
+    - **Two cookies, two names.** The LAN session lives in `omos_session` (`COOKIE_NAME`), non-`Secure` as above. The
+      remote dashboard's lives in `__Host-omos_session` (`REMOTE_COOKIE_NAME`), on the admin hostname only (§13.2e), set
+      with `REMOTE_COOKIE_OPTS` — always `Secure`, `Path=/`, no `Domain` — and only a request the front door handed over
+      reads or sets it (`trpc/context.ts`, `api/ws-auth.ts`). The prefix is the point: the admin hostname is a sibling of
+      the apps' one, a page or backend on a sibling may set a cookie for the parent domain, and a planted `omos_session`
+      would shadow the real session on every request it covered, signing the admin out in a loop. A browser refuses a
+      `__Host-` cookie that names a `Domain`, so nothing outside the admin hostname can plant or overwrite it.
+    - **For a handed-over request the door is part of the session.** The tRPC context and `requestUser` also require
+      `remoteDoorOpen(host)`; because a WebSocket's context is built once and lives as long as the connection,
+      `trpc.ts` `isAuthed` re-checks the door AND `isRemoteSession` on every protected call, terminals re-check before
+      every keystroke, and `system/remote-sockets.ts` closes what no longer qualifies (§15).
+    - **Through the tunnel, an app's single sign-on never sees a session at all.** `/api/auth/session` (LAN-only, app
+      secret) still resolves the forwarded `omos_session` with `getSessionUser` — any live session, exactly as on the
+      LAN — or else an app access token made for the calling app (`appAccessSsoUser`, §15). The first draft of this
+      bullet ended "app SSO still accepts any live session", and through the tunnel that was a hole: the ingress relayed
+      the browser's cookies to a shared app verbatim, so a password-only LAN cookie presented there was forwarded by the
+      app and accepted, with no second factor. The ingress now removes every platform session cookie from what an app
+      receives through the tunnel and puts back only that app's own access token (`cookieHeaderForApp`).
+  - **The second factor has an EPOCH, so replacing it ends what it opened — from outside** (`auth/twofactor.ts`
+    `epoch`, v0.51.2-dev.16). It is re-randomised — random rather than a counter, so a restored file can never collide
+    with a later value — by enrolling an authenticator (`confirmEnrolment`), replacing the backup codes, switching
+    emailed codes on or off, and turning two-step sign-in off (`disableTwoFactor` keeps nothing but a new epoch, so a
+    session made under the removed factor cannot come back if it is switched on again). Never by USING a factor:
+    signing in must not sign everyone else out. Every remote session made under the old epoch stops working from
+    outside, and with it every app access token derived from one; before, a session made with a lost phone or a found
+    backup code ran its full seven days, files and terminals included, whatever the admin did about the factor.
+    - **The epoch revokes REMOTE use and nothing else, by design.** `getSessionUserFor` consults it only for a tunnel
+      request; on the masjid's network every session stays bound to the password alone. The second factor has never
+      been part of signing in there — `login` demands it on tunnel traffic only, at Hasan's direction, so a volunteer is
+      never locked out of the dashboard by a phone left at home (`trpc/routers/auth.ts`) — so a change to it has
+      nothing to revoke on the LAN. What ends a session everywhere is a password change. Tying LAN sessions to the
+      epoch would sign the admin out at the masjid for an event that never protected the masjid.
+    - **The session that made the change keeps going.** A change made FROM OUTSIDE moves the caller's own session to
+      the new epoch (`rebindRemoteSession`, from `afterFactorChange` in `trpc/routers/twofactor.ts` — judged by
+      `viaTunnel`, deliberately, not by the hand-over: a session made through a reverse proxy at the masjid is held
+      to the epoch as well, so it is moved with it), because they have just proved the password and a current code
+      and are usually reading backup codes shown once — signing them out there unmounts the codes before they are
+      written down. Every other handed-over socket that no longer qualifies is
+      closed at once (`sweepHandedOverSockets`). (Turning two-step off shuts the door on the caller too: with no factor
+      there is no remote administration.) A change is refused if another lands while its password is being checked
+      (`requireSudo`'s CONFLICT, §15), and for as long as a restore runs (below).
+    - **Around a restore, the epoch is HELD and then RENEWED** (§15 has the restore's side). A restore that carries
+      `config/` replaces `twofactor.json` under the running daemon with the backup's, which holds the epoch the factor
+      had when the backup was taken. So from just before that swap until the restore ends, `secondFactorEpoch()`
+      answers the epoch as it stood when the hold was taken (`holdSecondFactorEpoch`), and **a sign-in completed
+      meanwhile is bound to that HELD epoch** (`verifySecondFactor` returns it, not the file's) — bound to the restored
+      file's, it was refused the moment it was made. **Nothing about the factor can be CHANGED while a restore runs —
+      the whole restore, not only the hold** (`refuseDuringRestore` in `trpc/routers/twofactor.ts`:
+      `secondFactorHeld() || isUpdating('restore')`, a CONFLICT: *"A backup is being restored right now. Please try
+      this again once it has finished."*). Before the swap, the backup's settings would simply overwrite a change;
+      during the hold it counted for nothing until the release, and the admin who made it, moved onto the held
+      epoch, was signed out from outside the moment the restore let go — earlier versions let both happen. It is
+      asked at the start of `requireSudo`, again once the password has been checked — a restore can begin while
+      argon2 runs — and at the start of `confirm`, so all five two-step mutations are refused before any code is
+      spent. (Every other signed-in change is refused for the whole restore too — §15, *NOTHING IS CHANGED FROM THE
+      DASHBOARD WHILE A RESTORE RUNS* — and that rule answers first; but it is asked only as a call arrives, so this
+      one's second ask, after the password, is still what catches a restore that begins mid-check.) Signing IN goes
+      on working throughout. And **a restore that puts a backup's `config/` in place RENEWS
+      the epoch** (`renewSecondFactorEpoch`, straight after the rename) **and moves only the restoring admin's own
+      remote session onto it** (`rebindRemoteSession`, with the token `api/restore.ts` passes from
+      `requestSessionToken`, in the restore's `finally` while both holds still stand, so there is no moment that
+      session does not count) — and only if that session STILL counts then (`remoteGrantOf`, judged against the held
+      epoch): one shut out while the restore ran must stay out, and the rebind used to carry it back in
+      (`test/remote-restore.test.ts`, *A RESTORE DOES NOT CARRY ITS CALLER BACK IN*). Releasing the hold onto the
+      backup's epoch, as the first cut did, brought back from outside every session made under the factor as the
+      backup had it — one the admin had shut out since by replacing the factor included — and shut out the admin
+      doing the restore whenever the factor had changed since the backup. A new epoch counts for nobody else, and
+      every session ends at the next boot anyway (`endAllSessionsAtNextBoot`). The renewal ends sessions; it does not
+      undo the factor itself, whose backup codes come back as the backup had them (§15).
+  - **An emailed code is bound to WHERE it goes** (`emailBoundTo`, v0.51.2-dev.16). It proves "this person can read
+    the masjid admin's mail" only while it is sent there, and both the admin's address (Settings → Account) and the
+    mail account (Settings → Email) can be changed by a password-only session on the LAN. Unbound, that session could
+    quietly redirect the next sign-in code, and the factor would no longer mean what the admin switched on. **Be exact
+    about what the binding is NOT:** it is not what stands between a dashboard session at the masjid and signing in
+    from outside. Such a session can download a backup, and a backup holds the authenticator's secret along with every
+    other one (backups are unencrypted, §15). What two-step sign-in protects is remote access from someone who knows
+    the password but cannot reach the masjid's network. This bullet used to say the binding stopped a LAN password
+    being turned into a remote session, "the one thing two-step sign-in exists to stop" — which promised more than any
+    binding can give. So codes are sent and honoured only while the admin's address and
+    `emailDeliveryFingerprint()` (the provider plus the SMTP host, port, TLS flag and user, or a hash of the Resend key
+    — not the From address, which changes only what a recipient sees, and not the SMTP password, whose rotation keeps
+    the same mailbox) still match what they were when emailed codes were switched on. A change PAUSES them
+    (`emailUsable`; `twoFactorStatus().emailPaused`, which the two-step panel says out loud) rather than following it,
+    and turning them on again is `setEmailFactor` behind `requireSudo`: the password and a current authenticator or
+    backup code. **Emailed codes can be switched on only alongside an authenticator, and the server enforces it**
+    (`setEmailFactor` refuses `enabled: true` without one, PRECONDITION_FAILED; §15 says why the screen alone was not
+    enough), so a pause never leaves the admin without a factor. Configurations from before the binding are adopted at
+    boot (`adoptLegacyEmailBinding`) — never from a read, because a status check must not change security state.
+    Residual: a configuration from before that rule with emailed codes as its ONLY factor keeps working until they
+    pause; then nothing is enrolled, remote administration closes, and they cannot be switched back on without an
+    authenticator — so the way back is enrolling one, on the masjid's network.
   - **Backups leave `config/sessions.json` and its `.tmp` OUT, and ONLY those** (`backupTarArgs`): a bearer credential in an unencrypted archive. Two GNU tar traps, both caught: exclusion and anchoring options are **positional** in tar ≥1.29 (Alpine ships GNU tar 1.35 — the image's `apk add tar`), so after the paths they exclude nothing; and patterns are **unanchored by default**, so a bare `--exclude=config/sessions.json` also silently dropped any app's own `apps/<id>/config/sessions.json` from a backup that still reported success. Hence `--anchored … --no-anchored`, before the paths. `test/session-persistence.test.ts` runs the real arguments through the real binary and checks both directions.
   - **The dashboard re-checks `auth.me` on EVERY window focus (`'always'`) and every 60 s** (`Root.tsx`). `true` would honour the global 30 s `staleTime`, and coming back within half a minute is exactly what an admin does after an app tells them to "press Open from the dashboard" — so the loop would survive. A background refetch with data present neither flashes the splash nor remounts the sign-in screen.
 - **Account management** (in Settings): change password. (Multiple users/roles are v1.1.)
@@ -446,7 +585,7 @@ fabric:                           # OPTIONAL — app-to-app broker (v0.40.0); ca
     - capability: billing
   consumes:                       #   capabilities it may CALL, "<target-app-id>/<capability>"
     - students/billing
-tunnel: true                      # OPTIONAL — REQUEST internet exposure (admin confirms in Settings)
+tunnel: true                      # OPTIONAL — REQUEST internet exposure (the admin decides, at install + in Settings)
 email: true                       # OPTIONAL (v0.41.0) — may POST /api/fabric/email to send mail
 whatsapp: true                    # OPTIONAL (v0.51.0) — may POST /api/fabric/whatsapp (QUEUES, never sends)
 alerts:                           # OPTIONAL (v0.41.0) — admin gets a granular on/off per alert
@@ -463,14 +602,19 @@ How the core installs/manages a catalog app (the real behaviour):
   `com.docker.compose.project` label). Apps add **no** special labels; the platform records each
   app's kind/version in its own `apps/<id>/meta.json`.
 - **Open URL** comes from the container's **published host port**; the platform checks host-port
-  conflicts before install and offers to remap.
+  conflicts before install and offers to remap. That is on the masjid's network. From outside, Open goes
+  through a one-use ticket to the app's PATH on the apps' hostname (§13.2e, §15), so an app must work under
+  a base path to be usable there.
 - **Update** (catalog app) = re-fetch the entry, rewrite `compose.yml` (keeping the user's `.env`),
-  `compose pull` + `up -d` — settings and data preserved (app ⋮ → "Check for update").
+  `compose pull` + `up -d` — settings and data preserved (app ⋮ → "Check for update"). The new compose is
+  risk-checked first (§15), the old one is put back if the download or the start fails, and the window says how it
+  ended (§13.4).
 - **Remove** = `compose down` (with `--rmi all -v` when the user also deletes the app's data).
 - Validate every entry before running it (kebab `id`, required fields); never `up` an untrusted
   compose without risk-checking it first (§11, §15). A `fabric:` block is shape-validated
-  (`parseFabric`) and issues the app the per-app secret; `tunnel: true` is a request that the admin
-  confirms per-app in Settings (default off). Full contract + broker/tunnel mechanics:
+  (`parseFabric`) and issues the app the per-app secret; `tunnel: true` is only a request — the Store
+  asks at install (the box pre-ticked when the manifest requests it), the admin can change it per app in
+  Settings → Remote access, and with no answer the app stays private. Full contract + broker/tunnel mechanics:
   `docs/APP_MANIFEST_SPEC.md` and `docs/FABRIC_APP_LINK_AND_TUNNEL.md`.
 
 ---
@@ -517,7 +661,7 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
   of it; `applyAccent` must set the two together or light mode puts white text on a bright
   button (`theme-tokens.test.ts` does the contrast arithmetic).
 - **Dashboard name:** cosmetic title shown in the header (default `OpenMasjidOS`; a masjid may rename it to whatever they like — this is decoration, not prayer config).
-- **Masjid logo:** an optional uploaded logo (PNG/JPG/WebP, ≤1 MB; raster only — no SVG). Stored server-side as raw bytes (`config/branding/`, chmod 600), NOT a data URI in settings. Reused across the masjid's outbound comms: notification webhooks (Slack/Discord) show it as the sender avatar, OS-sent emails (alerts + the test) show it as a remote `<img>` — **both only when remote access is configured**, because the receiving service fetches the image from *its* network, so a LAN address is useless — and apps can read it over the Fabric (`/api/public/appearance` → `logo`) to brand their own receipts. **Email deliberately does NOT use a CID attachment** (it did until v0.47.0): the MIME was correct — nodemailer emits `multipart/related` + `Content-Disposition: inline`, and Resend's `content_id` is its only documented inline lever with no disposition field — but mail clients list *any* part carrying a filename in their attachment row, so the logo arrived as a downloadable `logo.png`. Dropping the filename is the only thing that changes the MIME and it breaks inline rendering in Outlook/Thunderbird, so the only provider-independent fix is to send no attachment at all. Without a tunnel, the masjid's name renders as a text wordmark instead (always rendered, so a client that blocks remote images is never left with a blank header). Admin upload/clear is LAN-only + auth-gated; the read is the public `GET /api/public/logo`. Still presentation, not masjid/prayer config.
+- **Masjid logo:** an optional uploaded logo (PNG/JPG/WebP, ≤1 MB; raster only — no SVG). Stored server-side as raw bytes (`config/branding/`, chmod 600), NOT a data URI in settings. Reused across the masjid's outbound comms: notification webhooks (Slack/Discord) show it as the sender avatar, OS-sent emails (alerts + the test) show it as a remote `<img>` — **both only when remote access is configured**, because the receiving service fetches the image from *its* network, so a LAN address is useless — and apps can read it over the Fabric (`/api/public/appearance` → `logo`) to brand their own receipts. **Email deliberately does NOT use a CID attachment** (it did until v0.47.0): the MIME was correct — nodemailer emits `multipart/related` + `Content-Disposition: inline`, and Resend's `content_id` is its only documented inline lever with no disposition field — but mail clients list *any* part carrying a filename in their attachment row, so the logo arrived as a downloadable `logo.png`. Dropping the filename is the only thing that changes the MIME and it breaks inline rendering in Outlook/Thunderbird, so the only provider-independent fix is to send no attachment at all. Without a tunnel, the masjid's name renders as a text wordmark instead (always rendered, so a client that blocks remote images is never left with a blank header). Admin upload/clear (`/api/branding/logo`) is auth-gated and registered on the dashboard listener only, never the HTTP front door — so from outside it is reachable only through remote administration, on the dashboard's own address, by a session that passed the second factor (§13.2e, §15); the read is the public `GET /api/public/logo`. Still presentation, not masjid/prayer config.
 - **UI language: there is NO language control, and this is deliberate.** English is the only
   locale, `i18n/index.ts` registers only `en`, and Settings has never rendered a picker. The
   i18next plumbing stays — every string still goes through `t()`, because a missing key then
@@ -529,7 +673,17 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **Animations: there is NO on/reduced control, and the OS setting is the whole mechanism.** `prefers-reduced-motion` is honoured unconditionally in `tokens.css` and in the Motion presets, which is the part that matters for accessibility and is non-negotiable (§14). A dashboard toggle was described here for a long time and has never existed in `routes/Settings.tsx`; if one is wanted it is a `reduceMotion` pref feeding `MotionConfig` plus a `data-motion` attribute the CSS blocks key off — a deliberate change, not something to describe as already shipped.
 
 ### 13.2 Account
-- Change admin **name + email** (email = login id + where OS alerts go) and password.
+- Change the admin's **name, email and WhatsApp number**, and the **password**. The email is where OS alerts (and
+  emailed sign-in codes) go and is accepted at sign-in in place of the username; the number is a destination only
+  (§13.2b-ii). The login username itself does not change here.
+- **Two-step sign-in** (`components/TwoFactorPanel.tsx`): an authenticator app with ten backup codes, and — only
+  alongside it — emailed codes. It is asked for only when signing in from outside, and remote administration cannot
+  be switched on without it (§9, §13.2e); a change to it needs the password and, once one is active, a current code —
+  on the masjid's network too. So with the phone AND the backup codes lost, the only way to remove it is the
+  installer's Reset sign-in (§8.1). Emailed codes need a mail provider (§13.2b) AND an address on the account, and
+  the panel names whichever is missing (`twoFactor.status` `emailMissing: 'provider' | 'address'`) — it used to send
+  an admin with a provider but no address off to set up a provider (`test/twofactor-router.test.ts`, *when emailed
+  codes cannot be used, the panel is told WHICH is missing*).
 
 ### 13.2b Email (SMTP / Resend)
 - Configure ONE email provider — **SMTP** (host/port/TLS/user/pass) or **Resend** (API key) — plus a From address/name. The secret (SMTP password / Resend key) is stored in `config/email.json` (chmod 600) and never returned to the UI (only "is set" flags). A **"Send test email"** button verifies it, and a green/red status dot shows configured/not. Apps send mail through this over the Fabric (`POST /api/fabric/email`, `email` capability) — no app ever handles the credentials or the From address.
@@ -538,7 +692,7 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 
 - A second outbound transport beside email, through **OpenWA** — a self-hosted, MIT-licensed WhatsApp gateway the masjid installs **from the App Store** (the catalogue entry lives in OpenMasjidAPPS; the platform never runs it). The API key lives in `config/whatsapp.json` (chmod 600) and never returns to the UI (only an "is set" flag). The gateway is resolved automatically from the app registry at its published host port — via `system/app-host.ts`, the same no-SSRF rule the Fabric broker follows — with a typed `baseUrl` as the override for a gateway on another machine.
 - **The admin phone number lives on the admin record** (`auth/store.ts` `phone`, `getAdminPhone()`), exactly as the email does: a destination for OS alerts and the test message, **never a login identifier**. Stored as digits, so one number has one representation. Every phone input in the UI is `components/PhoneField.tsx` — a country picker plus the national number, never a free-text box asking for "international format", because `+1 555…` / `001555…` / `555…` all look reasonable and three of them are wrong. No phone library (libphonenumber is ~150 KB gzipped); the server's `toDigits` stays the authority and **never guesses a missing country code**.
-- **The whole feature is behind ONE switch that is off by default, and the gateway app is hidden until it is on.** `apps/managed.ts` marks OpenWA platform-managed: `visibleCatalog` keeps it out of the App Store unless `provider !== 'none'` (fail-closed — a managed id with no gate stays hidden), and `InstalledApp.managed` keeps it off the dashboard grid and out of the dock. Turning the switch on requires accepting the ban-risk warning, and then leads straight into installing it (`/store?install=<id>`). The reason is not tidiness: the platform **owns the session** — it creates, starts, pairs and paces — and every one of those guarantees breaks if an admin links a second phone in OpenWA's own UI or sends from there, bypassing the one queue. Opening OpenWA to *read or reply to chats* is fine and is the only thing the Settings button is for.
+- **The whole feature is behind ONE switch that is off by default, and the gateway app is hidden until it is on.** `apps/managed.ts` marks OpenWA platform-managed: `visibleCatalog` keeps it out of the App Store unless `provider !== 'none'` (fail-closed — a managed id with no gate stays hidden), and `InstalledApp.managed` keeps it off the dashboard grid and out of the dock. Turning the switch on requires accepting the ban-risk warning, and then leads straight into installing it (`/store?install=<id>`). The reason is not tidiness: the platform **owns the session** — it creates, starts, pairs and paces — and every one of those guarantees breaks if an admin links a second phone in OpenWA's own UI or sends from there, bypassing the one queue. Opening OpenWA to *read or reply to chats* is fine and is the only thing the Settings button is for. From outside the masjid that button is disabled and says why (`whatsappGatewayOpenRemote`): OpenWA's own screen does not work under a path, which is how the tunnel serves an app (§13.2e).
 - **Turning the switch OFF asks WHICH off, because there are two and only the admin knows which they mean.** Off-and-keep (the default) writes `provider: 'none'` and nothing else, so the key, session, linked number, approved groups and trustee list stay on disk and switching back on restores the setup exactly — that is a promise the UI now makes out loud, and `test/whatsapp-delete.test.ts` pins it. Off-and-delete erases all of it plus the gateway app **with its data**. It used to switch off silently, which was defensible but left an admin who believed they had removed WhatsApp with every secret still on disk, and an admin who only wanted a pause with no way to know their setup was safe.
   - **The ORDER of the delete is load-bearing, and the first step is the one that is easy to leave out.** Unlink at WhatsApp FIRST, while the gateway container still exists: `POST /api/sessions/:id/logout` is the ONLY route that asks WhatsApp to release the companion device. `stop`, `force-kill` and `DELETE /api/sessions/:id` all release things **locally only** — verified against OpenWA's own source, whose comment on the method says exactly that — so the device stays listed under Linked Devices on the masjid's handset. Remove the container first and nothing in this dashboard can ever revoke it again. Then, in order: `provider:'none'` (so `enqueue` refuses and the pump drains rather than spinning against a gateway about to vanish) → `deleteWhatsAppConfig` → queue store + runtime → alerts column → commands → `removeApp(OPENWA_APP_ID, true)`. That `true` is not a nicety: it is what removes the Docker volumes holding the linked-device credentials and `apps/openwa/.env`, which is a SECOND copy of the API key and is written without an 0600 mode.
   - **A 200 from `logout` is an acknowledgement, not a look at the handset**, and a **502** (`SESSION_LOGOUT_INCOMPLETE`) means the device may still be linked — so it is surfaced as "go and remove it on the phone", never folded into a generic failure and never reported as unlinked. The gateway steps are best-effort: a masjid deleting a BROKEN install must not be blocked by the very thing that is broken.
@@ -582,7 +736,7 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 - **A menu number resolves against the menu that sender was SHOWN**, not a positional index into the current list, which moves when an app update inserts a command.
 - **Replies reuse the ONE non-queued path** (`sendImmediate`, generalised from the test-send; `replyTo` takes **digits**, never a JID, so it cannot post to a group). Bypasses the queue. There is no budget left to spend — what stops "message yourself in a loop" is that a reply only ever answers an inbound message from an authorised sender, bounded by the **inbound** rate limit in `commands/gate.ts` (5, refill 1/15s). A solicited reply to a known contact is the lowest-risk traffic the number emits — that stays true only because **no command may take a phone number as an argument**, pinned structurally in `test/command-execute.test.ts`.
 - **There is deliberately NO sending-allowance check on a mutating command, and nothing should add one back.** An earlier version refused to run one when the hour/day allowance was spent, reasoning that "it restarted but you will never know" is the worst outcome. The premise was false: a reply goes out via `replyTo` → `sendImmediate`, which calls `sendOne` directly and never consults the caps — so the check protected nothing while blocking real work, and it bit hardest on a freshly linked number, whose warm-up ramp quarters the hourly cap to ~3, locking an admin out of the very commands they were testing. It surfaced as `!os update` always answering *"I've hit today's WhatsApp limit"*. What bounds commands is the **inbound** rate limit in `commands/gate.ts` (5, refill 1/15s), which is tighter anyway. **Every mutating command still raises the `command-run` OS alert**: with one admin account there is no second pair of eyes, and a stolen phone does not have the inbox.
-- **Refused, with the reasons written into `commands/os.ts`:** rebooting the host, app logs (secrets + PII, and a chat keeps a copy forever), OS self-update (it replaces the process holding the conversation), removing an app. **`!os update <app>` IS offered** — it recreates only that app's container, so the core survives to report back — but is refused for any `isPlatformManaged` app, because updating the gateway would sever the connection carrying the command.
+- **Refused, with the reasons written into `commands/os.ts`:** rebooting the host, app logs (secrets + PII, and a chat keeps a copy forever), OS self-update (it replaces the process holding the conversation), removing an app. **`!os update <app>` IS offered** — it recreates only that app's container, so the core survives to report back — but is refused for any `isPlatformManaged` app, because updating the gateway would sever the connection carrying the command. It reports what really happened (`updateCatalogApp`'s outcome, §13.4): an update that was refused or put back answers, for example, *"Donations wasn't updated, so nothing was changed. Have a look on the dashboard to see why."* — it used to say the app was updated, because the stayed-up check then found the OLD version still running.
 - Apps declare `commands:` like `alerts:` (`parseCommands`); the platform authorises and renders, the app only executes at `POST /fabric/commands/run`. **`commands` is a reserved Fabric capability** — allowing it in `fabric.provides` would let another app reach that handler through the broker. The platform identifies itself as **`omos:platform`**, unforgeable *by construction* because the colon is outside `APP_ID_RE`'s charset; words like `os` are refused at install via `RESERVED_ID_WORDS`, deliberately **not** `RESERVED_APP_IDS`, which `rmSync`s the directory of anything in it.
 
 ### 13.2c Alerts (granular per-alert × per-channel matrix, UniFi-style)
@@ -591,28 +745,181 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 ### 13.2d Chargeback alerts (`stripe-chargeback`)
 - The platform polls each configured Stripe account for **disputes** (chargebacks) and raises the OS `stripe-chargeback` alert through the same matrix (`system/stripe-monitor.ts` + `stripe/disputes.ts`). No-op until a Stripe account exists; no app change needed.
 - **Why the platform and not a donations app.** A dispute belongs to the **account**, and the whole point of the Stripe vault (§13.2 / `store/stripe.ts`) is that several apps share ONE account — so an app-raised alert would double-fire or, if that app were stopped, never fire. Chargebacks also arrive days/weeks after the payment, when the app may well be off.
-- **Why polling and not a webhook.** A Stripe webhook needs a publicly reachable platform route, and §15 keeps that list to presentation assets that carry nothing — a route accepting Stripe POSTs would breach that, and would still leave every LAN-only masjid with no alerts. Polling is outbound-only, adds no attack surface, and works with no remote access. The cost is latency (≤ one 30-min interval) against a dispute window measured in days.
+- **Why polling and not a webhook.** A Stripe webhook needs a publicly reachable platform route, and §15 keeps the platform's public routes to presentation assets that carry nothing and one that does nothing without a one-use ticket the platform itself minted for an admin signed in from outside (`/_omos/open`) — plus, only if the admin switches it on, the dashboard's sign-in on a hostname of its own. A route accepting Stripe POSTs from anyone would breach that, and would still leave every LAN-only masjid with no alerts. Polling is outbound-only, adds no attack surface, and works with no remote access. The cost is latency (≤ one 30-min interval) against a dispute window measured in days.
 - **This is monitoring, not payment processing** — it stays inside §4's "payment-agnostic" rule. The platform creates no charges and moves no money; it reads dispute status with credentials it already holds, exactly as the existing green/red Stripe status dot does.
 - Rules that must not regress: **state is PERSISTED** (`config/stripe-disputes.json`) because a chargeback is a one-shot event — in-memory tracking would re-alert every open dispute on each restart; a **failure to reach Stripe records NOTHING** (treating "couldn't ask" as "none" would mark unseen chargebacks as seen and lose them permanently) and never alerts; **first run** absorbs settled history silently but DOES alert anything still `needs_response`, because doing nothing loses that money by default; and **>5 new disputes in one poll become one grouped alert**, since card-testing fraud can otherwise flood the inbox. Amounts respect zero-/two-/three-decimal currencies (JPY, KWD) — dividing by 100 regardless would misreport a Gulf masjid's KWD by 10x.
 
 ### 13.2e Remote administration (Settings → Remote access, v0.51.2)
 
-- **Serving the DASHBOARD over the Cloudflare tunnel, not just app paths.** Off by default, and absent from every
-  `settings.json` written before it existed, so an upgrade can never publish a masjid's dashboard. The address is the
-  root of the tunnel hostname the masjid already uses — `https://omos.example.org/` — because apps are routed by first
-  path segment and the root was free. No Cloudflare change is needed; the single existing route already points there.
-- **Three conditions, all re-read per request** (`system/remote-admin.ts` `remoteAdminEnabled()`): the tunnel is on,
-  the switch is on, and a second factor is enrolled. That last one is the point — an admin who turns two-step sign-in
-  off closes this door in the same action, rather than leaving a password-only admin dashboard on the internet. The
+- **Serving the DASHBOARD over the Cloudflare tunnel, not just app paths — on a hostname of its own.** Off by default,
+  and absent from every `settings.json` written before it existed, so an upgrade can never publish a masjid's
+  dashboard. It needs a SECOND Cloudflare public hostname on the same tunnel, the **Dashboard address**
+  (`settings.cloudflare.adminHost`, e.g. `admin.example.org`), with Type HTTP and URL `localhost:80` (`PORT`) — exactly
+  like the apps' one, which Settings now calls **Your apps' address** (`settings.cloudflare.domain`, formerly "Your
+  domain"). The remote dashboard is `https://<admin hostname>/`; it is served there and nowhere else, and no app is
+  ever served there. The first versions (dev.13–dev.15) put it at the root of the apps' hostname,
+  `https://omos.example.org/`, "because apps are routed by first path segment and the root was free", and this bullet
+  said "No Cloudflare change is needed". That convenience was the flaw — §15, *THE DASHBOARD AND THE APPS NEVER SHARE
+  AN ORIGIN*. `validateAdminHost` is the one rule for the field (used by `cloudflare.save`): a bare DNS name — a typed
+  `https://` or path is stripped, an IP address is refused — that differs from the apps' hostname in every spelling
+  (`normalizeHost`: lower-case, no port, no trailing dot), judged against the apps' address as it will stand after
+  the same save, so moving the apps' address onto the dashboard's is refused too. Both fields are saved as bare
+  hostnames (`hostnameOfDomain` strips a scheme and anything after the first `/`, then `normalizeHost`). The operator's steps are in
+  `docs/REMOTE_ADMIN.md`.
+- **The door is ONE predicate of five conditions, all re-read per request** (`system/remote-admin.ts`):
+  `remoteAdminEnabled()` = `settingsOpenTheDoor(cf) && twoFactorActive() && isConfigured()`. The settings half —
+  the tunnel is on and the switch is on (each a literal `true`, never merely truthy), and an admin hostname is set
+  that is not the apps' one — is `settingsOpenTheDoor`, a pure function of a cloudflare settings object, because a
+  restore from outside asks the very same question of the backup it is about to put in place (§15 says what a copy of
+  the rule cost). The second factor is the point — an admin who turns two-step sign-in off closes this door in the
+  same action, rather than leaving a password-only admin dashboard on the internet. The admin is the backstop
+  (v0.51.2-dev.16): the second factor lives in its own file, so a box whose admin record went missing while those
+  settings survived would otherwise offer first-run setup and first-run restore — open by design, "the box belongs to
+  whoever reaches it first" — to the internet. `auth.setup` and the first-run restore routes also refuse tunnel traffic outright. The
+  hostname is the boundary: without one of its own there is nowhere to serve the dashboard that an app page does not
+  share, so there is no remote administration rather than an unsafe one. `remoteDoorOpen(host)` —
+  `remoteAdminEnabled() && isAdminHost(host)` — is the question every long-lived connection keeps asking (§15). The
   switch and the effect can therefore disagree, so `cloudflare.status` reports `remoteAdmin` (the setting) **and**
-  `remoteAdminActive` (what is actually happening) and Settings says so out loud; showing only the switch would be a
-  screen that lies.
+  `remoteAdminActive` (what is actually happening), plus `adminHost` and `remoteAdminBlocked`
+  (`remoteAdminBlockedReason()`: `no-two-factor`, `no-tunnel` or `no-admin-host`), and Settings says which out loud;
+  showing only the switch would be a screen that lies. `setRemoteAdmin` refuses to switch on for the same three.
+  `doorClosedReason()` changes only the refusal record: with the tunnel and the switch on, a second factor active and
+  an admin account, but no dashboard address of its own (or one equal to the apps'), a refused dashboard visit is
+  recorded as `no-admin-host` ("set the dashboard address") rather than `lan-only-route`, because that is exactly what
+  a box updated from dev.13–dev.15 looks like.
 - **Turning it on is a dialog, not a toggle that fires.** It is the one control on that page whose effect is outside the
-  building, and the dialog says plainly that the sign-in page will answer to anyone on the internet who knows the
-  address. It also states what the second factor is really protecting, rather than listing reassurances.
-- **Files, terminals and backup/restore stay LAN-only** (`LAN_ONLY_FEATURES`) — see §15 for why each. The UI hides
-  them on a remote session (`auth.me` → `remote`), but that is presentation: the control is that those routes are
-  not registered on the tunnel-facing listener at all.
+  building, and the dialog says plainly that the sign-in page at `https://<admin hostname>/` will answer to anyone on
+  the internet who knows the address. It also states what the second factor is really protecting, rather than listing
+  reassurances, and that apps open at the apps' address, never the dashboard's.
+- **Turning it OFF from outside asks first; at the masjid it does not.** Switching remote access (the tunnel) off,
+  switching managing-from-outside off, and removing the tunnel each end the very connection the admin is using, and
+  only someone at the masjid can turn them back on — so from outside each opens a `ConfirmDialog` that says exactly
+  that (`settings.cfCutOff*`). On the masjid's network they stay one click, by `ConfirmDialog`'s own rule: a control
+  that is reversible right beside it gets no dialog, because a dialog on every toggle trains people to click through
+  the ones that matter. Removing the tunnel (`cloudflare.clear`) also switches remote administration off, rather than
+  leaving it dormant to switch itself back on with the next tunnel the masjid configures.
+  - **A cut-off confirmed from outside usually never gets its answer, and that is the action WORKING.** Switching the
+    tunnel off or removing it takes down the connection the request came through, so Cloudflare answers with its own
+    error page instead of the dashboard's reply. The panel used to toast that as a raw parse error, with the dialog
+    still armed to do it again; now a failure with no tRPC error code there means done — *"Done — this window can't
+    reach the dashboard any more. Someone at the masjid can turn it back on."* (`settings.cfCutOffDone`) — and the
+    dialog is disarmed. (Switching managing-from-outside off is not treated so: it closes the open sockets, not the
+    request that asked, and that request gets its answer.)
+  - **Turning two-step sign-in off says the same from outside** (`TwoFactorPanel`): its dialog gets wording for
+    someone outside — it shuts this window out at once, and changing phones is *Use a different phone* instead, which
+    keeps them signed in — and the same cost line, *"Only someone at the masjid can turn it back on."*
+- **Settings → Remote access CHECKS EVERYTHING, THEN WRITES ONCE** (`cloudflare.save`). The apps' address, the
+  dashboard address and the tunnel token share one Save. It works out both final addresses, validates the dashboard
+  address against the apps' address as it will end up, checks the token (below), and only then writes the token and
+  ONE `updateCloudflare` — so a refused save changes nothing: not the addresses, not the token, not the door
+  (`test/remote-settings.test.ts`). It used to write the apps' address first and refuse the dashboard address
+  afterwards, so a save that said "refused" had already put the apps on the dashboard's hostname, which switches
+  remote administration off; done from outside, the admin's next request was refused and only the masjid could undo
+  it. Three reviewers found it separately.
+  - **From outside** (`ctx.handedOver`: the front door's hand-over, never a header — *"FROM OUTSIDE" IS THE HAND-OVER*
+    below), **the dashboard address cannot be moved or cleared** (FORBIDDEN, *"Change the dashboard address at the
+    masjid — changing it from here would cut you off."*). The request doing it arrived through that address, so the
+    change would close the door behind it with nothing left saying where the dashboard went — a typo would be a drive
+    to the masjid. Sending it unchanged is not a move. The field is disabled from outside, with a hint saying so.
+  - **The tunnel token is the masjid's in the same way.** Saving one recreates the cloudflared container — from
+    outside, the very connection the request came through — and a token for another tunnel, a stale one or half of
+    one connects nowhere useful while the platform logged *"Cloudflare tunnel is running."* (it no longer does —
+    below): the dashboard's address and every shared app stay offline until someone at the masjid fixes it. So from
+    outside only the token already in use is accepted (`isCurrentTunnelToken` — re-pasting it changes nothing) and
+    any other is FORBIDDEN (*"Replace
+    the tunnel token at the masjid — if the new one didn't work, this window and every shared app would go offline
+    until someone there fixed it."*); the field is disabled from outside, with a hint. Everywhere, a paste that is not
+    a whole token is refused before anything is written (`system/cloudflared.ts` `normalizeTunnelToken`: base64 of a
+    JSON `{a, t, s}`, `t` a UUID), and Cloudflare's whole install command — `… --token X`, `--token=X`,
+    `service install X`, which is what its page shows — is reduced to the token inside it. That check is of the
+    SHAPE only: a whole token for a different tunnel is still accepted at the masjid, where a mistake can be seen and
+    put right on the spot. **A token pasted without its `=` padding is REPAIRED, and only the canonical form is
+    stored** (`isTunnelToken`: a whole number of four-character blocks that re-encodes to exactly itself).
+    cloudflared reads the token with Go's padded base64, which refuses a final block without its padding or with too
+    much; Node's decoder accepts both, so a token cloudflared then refused used to be saved as it was — and a
+    double-click selects letters and digits only, i.e. all of a token except its padding. The padding is fixed by the
+    length, so it is put back (a length of 4n+1 cannot be base64 and is refused); from outside, the token in use
+    re-pasted without its padding is the same token and changes nothing. And **Settings no longer calls a tunnel stuck
+    restarting "running"** (`cloudflaredRunning` → `tunnelContainerUp`: `Running && !Restarting`): Docker reports a
+    container in its restart loop — which is what a refused token produces — as Running too, so the panel showed
+    *"Tunnel is running."* over a dashboard address and shared apps that were all offline. A tunnel switched on but
+    not up now says *"Tunnel is turned on but isn't connecting. Check that the tunnel token is the right one."*
+    (`settings.cfNotConnecting`); it fell through to *"Tunnel is set up but turned off."*,
+    over a switch that was on (the red dot was already right). And `ensureCloudflared` logs *"Cloudflare tunnel
+    started."*, not *"…is running."*: starting the container is all it knows, and a refused token got that line too.
+    `test/remote-settings.test.ts` (*A TOKEN WHOSE "=" PADDING WAS LEFT BEHIND IS REPAIRED*, and *a tunnel stuck
+    restarting on a refused token is not shown as running*, which pins the "isn't connecting" wording as well).
+  - The UI sends each address — `domain` and `adminHost` — only when it was edited: sending whatever a field held put
+    back the value from when the page loaded, undoing a change made on another device (for the apps' address, every
+    shared app's public links with it). After a successful save both fields refill from what the server stored, as it
+    normalised it. After a refused one only the panel's status refreshes: the fields are filled from the server once,
+    when the panel opens, so they keep what was typed, still marked as edited. Every save closes the handed-over
+    sockets that no longer qualify (`sweepHandedOverSockets`).
+- **EVERYTHING works remotely once two-step sign-in is set up — at the masjid's request** (v0.51.2-dev.16). The
+  first cut served the dashboard and nothing else: files, terminals and backup/restore were kept LAN-only on purpose
+  (`LAN_ONLY_FEATURES`, now deleted), and so — by accident — were core and app updates and the logo upload, because
+  every one of them is an `/api` route on the dashboard listener. And **no app opened at all**: Open built
+  `http://<hostname>:<app port>`, a port the tunnel does not carry. Now:
+  - the front door **hands** every permitted remote dashboard request (HTTP and WebSocket) to the dashboard listener as
+    its own event (`server.server.emit('request' | 'upgrade', …)`), so the remote dashboard IS the LAN dashboard —
+    same routes, limits and checks, no second copy (§15);
+  - **Open, from outside, never builds a URL** (`ui/src/lib/app-url.ts` `appOpenUrl` returns null there). It asks
+    `apps.openRemote` for a one-use, 60-second ticket bound to the remote session and the app, and sends a new tab —
+    opened blank first, while the click is still a click (pop-up blockers), with its `opener` cut — to
+    `https://<apps' hostname>/_omos/open?t=<ticket>`, which spends it, gives that browser the app's access token and
+    sends it on to `/<its path>/` (`ui/src/lib/apps.ts`, `system/app-access.ts`, §15). An app NOT shared online opens
+    this way too, for the admin alone; to anyone else its path is the same 404 as an empty address, and it still has
+    no public URL;
+  - from outside, an app's own favicon (the fallback when it has no catalogue icon) is loaded only for a SHARED app,
+    from the apps' hostname (`appBaseUrl`) — anything else there is served only to a browser holding that app's token;
+  - the safety property is two rules together: the session rule in §9 (from the tunnel, only a session that passed
+    the second factor, and is still under that factor, counts) and the origin rule in §15 (the dashboard and the apps
+    never share an origin).
+  Honest limits: an app must be **base-path aware** to work under its path (every OpenMasjid app is; a
+  community/custom app may not be) — OpenWA's own screen is not, so its **Open** button is disabled from outside and
+  says so; Cloudflare's free plan refuses request bodies over **100 MB**, so a larger restore or File Explorer upload
+  must be done at the masjid — both say so before sending anything (`ui/src/lib/files.ts` `REMOTE_UPLOAD_LIMIT`) and
+  read Cloudflare's own 413 page as the same thing; a backup download from outside answers at once but sends nothing
+  until every app's data is copied, and Cloudflare can drop a connection that stays silent for about 100 s, so on a
+  very large install it can still fail (§15); a restore from outside goes ahead only if the backup keeps the way back
+  in, and the restore dialog warns about that, and the 100 MB limit, before the upload (§15); an update or a change of
+  update channel from outside goes ahead only to a version that can itself be managed from outside, so going back to
+  Stable is refused there until Stable has remote administration (§13.4); `/api/health` stays refused over the
+  tunnel, so the update and restore dialogs watch `/trpc/auth.me` — which reports `version` to a signed-in session
+  and `appOrigin` to a remote one — to see the core come back; Cloudflare also closes a WebSocket that carries
+  nothing either way for about 100 s, so the platform pings the dashboard's own sockets (§15) but not an app's — an
+  app that keeps a socket quiet for that long needs a heartbeat of its own; and the apps share ONE origin with each
+  other on the apps' hostname (§15).
+- **"FROM OUTSIDE" IS THE HAND-OVER, NOT A HEADER — for everything the dashboard DOES differently there.** `auth.me`'s
+  `remote` and `appOrigin`, `apps.openRemote` (which refuses anything else), `cloudflare.save`'s from-outside refusals,
+  `system.setUpdateChannel`'s version check, and the `remote` flags of the core update (`api/update.ts`) and the
+  restore (`api/restore.ts`), both `wasHandedOver(req.raw)`, all read the mark the front door sets on what it hands
+  over (`ctx.handedOver`, §15), never `isViaTunnel`. A reverse proxy the masjid runs on its own network — nginx,
+  Caddy, Tailscale Serve — sends `X-Forwarded-Proto: https`, so `viaTunnel` is true behind it, and answering
+  "remote" there sent every Open button down the from-outside path, where it was refused: at the masjid, every app.
+  The SECURITY rules keep `viaTunnel` — the second factor at sign-in, the per-IP lockout, marking a session remote,
+  the first-run refusals, the session rule — because each of them only ever demands more of a request, and a proxy
+  at the masjid paying that is a cost, not a hole (§15, *"LAN-only" means…*). A session made through such a proxy
+  is where the two meet: it is `remote` (it passed the second factor) but never `handedOver`, so it works through
+  the proxy and never from outside (§9). `test/remote-apps.test.ts` (*A REVERSE PROXY ON THE MASJID'S OWN NETWORK IS
+  NOT "OUTSIDE"*) and `test/remote-settings.test.ts` pin it.
+- **A BOX MANAGED ONLY FROM OUTSIDE CANNOT MOVE ITSELF TO THE NEW ADDRESS** (Development only: dev.13–dev.15 →
+  dev.16; Stable never had remote administration). A box managed remotely on dev.13–dev.15 had its dashboard at the
+  apps' hostname and no dashboard address. After updating, remote administration is off until the admin creates the
+  second Cloudflare hostname AND enters it under Dashboard address; the switch stays on, so saving the address is
+  all it takes to open the door again. Until then the old address answers the ordinary 404, recorded as
+  `no-admin-host` (`doorClosedReason`) with a label that says to set the dashboard address at the masjid, and Settings
+  → Remote access says *"Give the dashboard an address of its own first"*. The second step cannot be done from
+  outside: the field is set only by `cloudflare.save` (or by a restore, which replaces `settings.json`), both of them
+  dashboard routes, and the remote dashboard does not exist until it is set; no WhatsApp command, installer option or
+  other route sets it. Nor can it be entered ahead of the update, because no earlier build has the field (dev.15's
+  `cloudflare.save` takes only `domain` and `token`). And nothing announces it: there is no OS alert and no notice on
+  the dashboard itself — only that hint and the refusal record, both in Settings → Remote access. A dev.13–dev.15
+  session cannot be carried across either (it has no `remote` flag, and the remote dashboard reads only
+  `__Host-omos_session`), so the admin signs in again — password and code — at the new address. So whoever updates a
+  box they only manage remotely needs one visit to the masjid's network afterwards — any device there, at
+  `https://<the box's IP>`; creating the Cloudflare hostname beforehand only shortens that visit. Say so before anyone
+  updates such a box.
 - **A SPENT SIGN-IN MUST SEND THE ADMIN BACK, NOT SIT ON A BUTTON THAT CANNOT WORK** (v0.51.2-dev.14).
   `completeLogin` threw one sentence — *"That sign-in attempt has expired. Please start again."* — for all four
   `claimChallenge` refusals. Five wrong codes destroyed the challenge, so every press afterwards said "expired" seconds
@@ -644,14 +951,74 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
 
 - **The channel word is NOT the branch name for this repo** — `osBranch()` maps `'main'` → `master` (see the Branching policy above). Never interpolate the channel into an OpenMasjidOS raw URL.
 - **The platform updates by image tag, not by git.** `docker/update.ts` inspects its own container and rewrites only the *tag*, so a masjid on a private mirror keeps their registry — and a **digest-pinned** reference is left alone, because the operator pinned it deliberately.
+  - **So a core pinned to a digest is not "updated" onto itself** (v0.51.2-dev.16). When the core's compose line names a digest (`composeImageRef()` contains `@`), `runUpdateInner` refuses before anything is downloaded — after the up-to-date and from-outside checks — with *"OpenMasjidOS is pinned to one exact build on this machine, so it can't update itself from here. Nothing was changed."* (4001). Before, every press pulled that same build and restarted the dashboard onto it, for nothing, while the banner went on offering the update. **Residual:** `checkForUpdate` is unchanged, so the banner and the `core-update` alert still offer an update to a digest-pinned core; pressing it now explains rather than restarts. `test/remote-update.test.ts` (*A CORE PINNED TO ONE EXACT BUILD IS NOT "UPDATED" ONTO THAT SAME BUILD, AGAIN AND AGAIN*).
 - **Switching goes through `system.setUpdateChannel`, never `settings.update`.** The order is the safety property: read the TARGET catalogue first (`requireCatalog`, which throws), and only persist once it's proven readable. An unreachable or malformed dev catalogue therefore leaves the masjid exactly where it was rather than pointing at a channel whose apps it can't resolve. Both caches are keyed by channel *and* cleared on switch, so a switch can never serve the other channel's entries.
 - **Apps don't move on their own.** After a switch, `appsPendingChannel()` lists catalogue apps still on the old channel and the UI offers "Update all" plus per-app update, reusing the existing update stream. Recreating every container the instant a toggle flips would take a masjid's displays down unannounced. `AppMeta.channel` records where each app came from; `undefined` is grandfathered as `'main'` so upgrading doesn't mark every existing app pending.
 - **Development is VERSIONED, and therefore uses the same update path as Stable — there is no Development-specific update logic, and nothing should reintroduce any.** A dev build's version is a semver **prerelease**: this repo's `dev/VERSION` holds `0.50.0-dev.1`, and a dev catalogue entry holds e.g. `0.11.0-dev.1` and pins that **exact immutable image tag** (never `:dev`). So `checkForUpdate` / `checkCatalogUpdate` just compare versions on both channels, the update alert fires on both, and `reason` is only `'version' | 'channel'`.
   - **Ordering is the point:** `0.49.3 < 0.50.0-dev.1 < 0.50.0-dev.2 < 0.50.0`. A prerelease sorts above the last release and below the one it precedes, which is exactly what a dev build is. `util/version.ts` implements real semver precedence — prerelease identifiers compare **numerically** (`-dev.10 > -dev.9`; a text compare silently stops offering updates at the tenth dev build) and a release outranks its own prereleases (the old dotted-numeric compare read `0.50.0-dev.4` as `[0,50,0,4]` and so called it *newer* than `0.50.0`). `packages/ui/src/lib/version.ts` is a deliberate copy — keep the two in step.
-  - **An update pulls the exact version on BOTH channels, never the channel alias.** `coreTargetTag()` returns the version (`:0.50.2`, `:0.50.2-dev.1`) and falls back to the alias only when there is no version to aim at (offline). A moving alias can point at different bytes than the version just announced, and every failure that produces is **silent**: you pull, you recreate, you are still on the old build, and the check offers the same update forever. The exact tag either gets that build or fails loudly ("it may still be building"). Stable was exempted from this once, on the claim that `:latest` and `:X.Y.Z` were "equivalent by construction" — **that was false and cost a release to learn**: `:latest` was published by both the master-branch build and the release-tag build, so on v0.50.1 it held `5eaf997` while `:0.50.1` held `23696bb`, and `:0.50.0` had already been silently republished by a README-only commit pushed straight to master. Don't re-exempt either channel.
+  - **An update pulls the exact version on BOTH channels, never the channel alias.** `coreTargetTag()` returns the version (`:0.50.2`, `:0.50.2-dev.1`) and falls back to the alias only when there is no version to aim at — which, since `runUpdate` stops on its own channel when the version cannot be read (*"Couldn't check for the latest version just now, so nothing was changed."* — it used to say "already up to date", which nobody knew), means a channel move made at the masjid while the target's version cannot be read (offline). A moving alias can point at different bytes than the version just announced, and every failure that produces is **silent**: you pull, you recreate, you are still on the old build, and the check offers the same update forever. The exact tag either gets that build or fails loudly ("it may still be building"). Stable was exempted from this once, on the claim that `:latest` and `:X.Y.Z` were "equivalent by construction" — **that was false and cost a release to learn**: `:latest` was published by both the master-branch build and the release-tag build, so on v0.50.1 it held `5eaf997` while `:0.50.1` held `23696bb`, and `:0.50.0` had already been silently republished by a README-only commit pushed straight to master. Don't re-exempt either channel.
   - **This is why `dev/VERSION` must be bumped to publish a dev build** — the bump *is* the publish, and CI tags the image from `VERSION` (`type=raw`), which is what makes the tag pullable. Pushing to dev without bumping republishes the same tag; that's tolerable only because no box was told to move to it.
   - **What this replaced, and must not come back:** dev entries used to repeat the stable version and point at `:dev`, so nothing observable changed when a build was published. Everything built to compensate — `usesMovingTags()`, `movingTag`, `reason: 'dev-refresh'`, `certain`, a `CatalogApp.imageDigests` map, `docker/image-ref.ts`'s digest comparison, a suppressed update banner, a manual "check for a new Development build" action — was a second update axis faking a version axis, and all of it is deleted. If Development ever seems to need its own detection mechanism again, the actual bug is a dev build without a distinct version.
-- **dev → main is a DOWNGRADE, not a symmetrical toggle.** Dev may be ahead in ways that don't reverse: images and schemas need not be backward compatible. Both directions are confirmed, and the downgrade dialog says plainly that data written by a Development version may misbehave and that a pre-switch backup is the remedy. **No automatic data migration is attempted** — pretending to migrate would be worse than saying we can't.
+- **dev → main is a DOWNGRADE, not a symmetrical toggle.** Dev may be ahead in ways that don't reverse: images and schemas need not be backward compatible. Both directions are confirmed, and the downgrade dialog says plainly that data written by a Development version may misbehave and that a pre-switch backup is the remedy. **No automatic data migration is attempted** — pretending to migrate would be worse than saying we can't. From outside the masjid it is refused outright for as long as Stable cannot be managed from outside (next bullet).
+- **From outside, the dashboard never moves the box to a version that cannot be managed from outside**
+  (v0.51.2-dev.16). `FIRST_REMOTE_ADMIN_VERSION` (`system/remote-admin.ts`, `'0.51.2-dev.16'`) is the first build
+  that serves the dashboard on an address of its own, and `managesFromOutside(version)` is a semver `>=` against it.
+  Both of the dashboard's paths that move the OS ask it — for a request the front door handed over, and nothing
+  else (§13.2e, *"FROM OUTSIDE" IS THE HAND-OVER*); a root terminal opened from outside can still do anything, this
+  included:
+  - **the core update**: `runUpdate(onLine, { remote })`, with `remote` = `wasHandedOver(req.raw)` in
+    `api/update.ts`. After the checks that find nothing to do and before anything is pulled, a target it could not
+    read (`checkForUpdate().latest` null — by then only a channel move's, since on its own channel an unreadable
+    version has already stopped the update) is refused — *"Couldn't check which version this would install, so it
+    can't be done from outside right now."* — and so is one below that build — *"Version X can't be managed from
+    outside the masjid, so installing it from here would cut you off."* — each ending *"Nothing was changed."*
+    Unknown is refused rather than guessed because nobody out there could put a wrong guess right.
+  - **the channel switch**: `system.setUpdateChannel` with `ctx.handedOver` reads the TARGET channel's published
+    VERSION before anything else (`system/system.ts` `publishedVersion`, the read `checkForUpdate` makes):
+    unreadable is SERVICE_UNAVAILABLE, below that build is FORBIDDEN, and both say nothing was changed. Refusing the
+    switch itself, not just the OS step at its end, is the point: refusing only that step would leave the apps on
+    one channel and the platform on the other, the mixed state this section exists to prevent.
+  Without it, going back to Stable from outside — whose releases so far, up to 0.51.1, have no remote dashboard at
+  all — and letting the dashboard move the OS across would cut off every window from outside until someone at the
+  masjid moved the box on again. At the masjid both go ahead as before, and once Stable reaches that build the
+  switch is allowed from outside too. `test/remote-update.test.ts`.
+- **The update window is told how the update ended, and says "updated" only on EVIDENCE** — by the close code of
+  its progress socket (`api/update.ts` `UPDATE_CLOSE`, from `runUpdate`'s `UpdateOutcome`). **4001** `unchanged`:
+  already up to date, a version that could not be read, a download that failed, an updater that could not start (the
+  compose file is put back first, §15), a refusal from outside, a core pinned to a digest (above), a restore or an
+  app's update in the way (§15, *one at a time*), an error — and the window says *"Nothing was changed. The messages above say why."* at once
+  (`update.unchanged`), unlocked, with a Close button. Any 4000–4999 close lands there, and the 4401/4403 refusals at
+  the door send their reason as a line first, so there are messages above. A stream that never connected began
+  nothing — `LogStream` reports whether the socket ever opened — and says *"Couldn't connect to OpenMasjidOS, so
+  nothing was changed. Please try again."* **1000** `restarting` means the core is expected to be replaced: by this
+  update's helper, or by the one already running when the same update was asked for twice (*"An update is already
+  running. It will finish on its own."*). The window waits for that, as it does for a stream that merely drops,
+  watching `/trpc/auth.me` (§13.2e), and `UpdateModal` says it updated only when a new version answers, or when it
+  saw the core go down and come back (and cannot see the version). It counts the core as down only after TWO failed
+  checks in a row, a good answer resetting the count: one blip — a 502, the Wi-Fi — read as the restart kept the
+  dialog locked for three minutes and could claim a restart that never happened. With no sign of a restart after
+  ~30 s it says so, unlocked, and goes on watching (*"OpenMasjidOS hasn't restarted yet. If nothing changes in a
+  minute or two, reload this page to see which version is running."*); after ~3 min it ends there. When the core
+  comes back on the SAME version it watches ~30 s more (15 checks), in case another restart is still to come, and
+  then ends, unlocked, on *"OpenMasjidOS restarted, but it is still on v{{version}}. Reload this page, then try the
+  update again."* — it used to hold the dialog shut for the rest of the three minutes first. It used to read every
+  ending as a restart and, after three locked minutes, announce "Update applied." over an update that had changed
+  nothing, was still downloading, or had failed. `test/remote-update.test.ts` reads `UpdateModal.tsx` to keep the
+  two copies of the codes in step, and pins the two-failure rule (*the update window is told whether anything
+  changed — and waits only for a restart*).
+- **An app's update says how it ended too** (`apps/manager.ts` `updateCatalogApp` → `AppUpdateOutcome`;
+  `api/app-update.ts` `APP_UPDATE_CLOSE`): **1000** updated; **4001** nothing was changed — already current, held
+  back by the risk gate, put back after a download or a start that failed, or refused by the update lock; **4003**
+  updated, but the new version is not staying up; **4002** stopped part-way (an error). A refusal before it starts
+  says why as a line and closes 4401/4403, an impossible app id 4400. One React-free map turns a close into an ending
+  for every window that streams an app update (`ui/src/lib/update-endings.ts`, held to the server's codes by
+  `test/remote-update.test.ts`): `AppUpdate` says *"{{name}} is up to date now."* for 1000 only, *"We lost touch with
+  this update…"* for a drop part-way (it may still be finishing), and that nothing was changed for a stream that
+  never connected. It used to close with no code, and the window called the app up to date whatever had happened.
+  *Update all apps* and the channel switch count what really happened: *"All N apps updated."* only when every one
+  did, otherwise *"U of N apps updated. The messages above say what happened to the others."* (`UpdateAllApps`,
+  §13.5); `ChannelMigrate` says how many apps really moved, and reads its OS step's close — any 4xxx, or a stream that
+  never connected, is *"OpenMasjidOS itself was not changed — the messages above say why."*
 - Only **catalogue** apps track a channel. Community and custom apps come from a URL or a pasted compose the admin owns, so the OS has no other version to offer and must not claim they're pending.
 - Legacy: `updateChannel` shipped in ≤0.48.x as `'stable' | 'beta'` — declared but never read. `coerceChannel` migrates `stable`→`main`, `beta`→`dev`, and anything unrecognised → `main`, because the safe answer to "I can't tell which channel you wanted" is the tested one. This **must** run after the spread in `withDefaults`, or the persisted legacy word wins and the catalogue URL 404s.
 - CI must build **both** branches (`branches: [master, dev]`) and publish **both** a channel alias and the version. `type=ref,event=branch` gives `:dev`; `type=raw,value=<VERSION file>` gives `:0.50.2-dev.1`, the tag the Development channel actually pulls — without it Development can detect an update it cannot install.
@@ -666,8 +1033,13 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
   it from** — the installer has no network step (§8.1) and mDNS is unimplemented, so a masjid
   wanting a fixed address adds a DHCP reservation on their router. Do not link this to a
   "Reconfigure network" entry; it does not exist.
-- **"Check for updates" + one-click live update** for the core: the dashboard pulls the new image and recreates the core itself (via a detached helper container), streaming progress to a live log window and reconnecting when it's back — no terminal needed. Installed apps are never touched (golden rule).
-- **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one.
+- **"Check for updates" + one-click live update** for the core: the dashboard pulls the new image and recreates the core itself (via a detached helper container), streaming progress to a live log window and reconnecting when it's back — no terminal needed. The window is told how the update ended, so one that changed nothing says so at once, and it calls the update done only once it has seen the core restart (§13.4). Installed apps are never touched (golden rule), and an update never runs alongside a restore or an app's update — nor in the minutes before the core it handed over is actually replaced (§15).
+- **Backup / Restore:** download a tarball of platform config + app volumes, and restore from one. While a restore runs no setting or account detail can be changed from the dashboard and no app can be started, installed or removed (§15 says what that does not cover); the window says how it ended, and a restore that left apps without their data, not started, or not paused first is named again on the dashboard after the next sign-in (§15).
+- Everything above also works from outside once remote administration is on, behind the second factor — the
+  terminals behind the same off-by-default switches — within the limits §13.2e lists (an upload over 100 MB, a
+  restore or a file, has to be done at the masjid) and with three differences: a backup download starts answering
+  before the backup is made, a restore goes ahead only if the backup keeps the way back in (both §15), and an update
+  goes ahead only to a version that can itself be managed from outside (§13.4).
 
 ---
 
@@ -709,9 +1081,12 @@ at from running their polling queries.
   trusting `compose up` exiting 0 — a bulk endpoint would be a second implementation of all
   of it, and the startup check is exactly what you would not notice was missing. Sequential
   because simultaneous recreation takes the display, the donations page and the kiosk down
-  together. Channel moves are excluded: they are Settings → Updates' job, which also brings
-  the OS across, and doing half of that here leaves the mixed-channel state §13.4 exists to
-  prevent.
+  together. Channel moves are excluded: they are the update channel's job (Settings →
+  Advanced), which also brings the OS across, and doing half of that here leaves the
+  mixed-channel state §13.4 exists to prevent. It counts the apps that really updated, by
+  each stream's close code (`lib/update-endings.ts`, §13.4): *"All N apps updated."* only
+  when every one did, otherwise how many, with a warning — it used to say "all" over a run
+  in which one had been refused or put back.
 
 ## 14. Design system & theming (this is a priority — make it feel premium)
 
@@ -783,7 +1158,7 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - All Docker interaction goes through the `docker/` module (dockerode + the one wrapped `docker compose` invocation). No ad-hoc shelling elsewhere.
 - tRPC routers stay thin; business logic lives in the `apps/`, `store/`, `stats/`, `auth/` modules.
 - Errors surfaced to the UI are typed tRPC errors with friendly messages; full detail is logged server-side only.
-- Hash passwords with argon2id. Sessions in secure, HTTP-only, SameSite cookies. Never log secrets.
+- Hash passwords with argon2id. Sessions in HTTP-only, SameSite cookies, `Secure` where §9 says (the remote dashboard's always; the LAN one deliberately not by default). Never log secrets.
 - The platform never injects masjid data into apps — apps own that.
 
 **Frontend (ui)**
@@ -802,9 +1177,9 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 
 **Security invariants — DO NOT REGRESS** (established by the v0.39.0 sweep; the core runs as **root with the Docker socket**, so an app-isolation gap = host root):
 - **`apps/compose-validate.ts` is the SOLE install-time risk gate** for catalog, community, AND custom (paste-a-compose) apps. It must keep flagging: `volumes_from` (a `container:openmasjid-core` entry inherits the mounted docker.sock + `/data`), `env_file` with an absolute or `..` path (reads other apps'/platform secrets), top-level `secrets:`/`configs:` with a `file:` source (host-file read), and **truthy** boolean flags via `isTruthyFlag` (`privileged: yes|on|1|"true"`, not just `=== true`), plus the existing namespace/mount/cap checks. Any new check here **must be mirrored in `OpenMasjidAPPS/scripts/validate-compose.mjs`** so "passes the catalog build == safe to install".
-- **The gate runs on every path that introduces or refreshes a compose** (v0.45.0): install (catalog/community/custom), **update** (`updateCatalogApp` — previously the one path that skipped it), and post-restore `reupAllApps`. A refreshed catalog entry is fresh external data; never write + `up` one unchecked.
+- **The gate runs on every path that introduces or refreshes a compose** (v0.45.0): install (catalog/community/custom), **update** (`updateCatalogApp` — previously the one path that skipped it), and a restore — `reviewEveryApp` the moment `apps/` is in place, and `reupAllApps` again before it starts anything (next bullet). A refreshed catalog entry is fresh external data; never write + `up` one unchecked.
   - **`startApp` is gated by a PERSISTED REVIEW VERDICT, and the two earlier versions of this bullet were both wrong** (v0.51.2-dev.1). It runs `docker compose up` on whatever `apps/<id>/compose.yml` is on disk. Until v0.51.0 this claimed "EVERY path that starts a compose", which was false. It then claimed the gap was contained because "every *write* vector into that file is closed: install/update/restore all pass the gate" — **and that was false too.** `system/restore.ts` `rmSync`s `apps/` and `renameSync`s the archive's tree straight into place with **no gate on the write**; the gate ran only afterwards in `reupAllApps`, which correctly declined to auto-start a dangerous stack, printed `(not started — needs review: …)` into the restore stream, and **then discarded the verdict** — `AppMeta` had nowhere to put it. So once the restore window closed, an app carrying a smuggled `privileged: true` was an ordinary Stopped card with a Start button, and the core runs as root with the Docker socket, so pressing it was **host root with no warning at the moment of the click**. The same ungated entry was reachable from `!os start` over WhatsApp and from the exposure toggle. A false containment argument is worse than a documented gap: it is precisely what stops anyone re-examining it.
-    Now: `reviewCompose()` records the verdict on `AppMeta.review` (`{kind, reasons[], at}`) and **clears it** when a compose passes, so a legitimate update or a fixed file is the way out rather than a dead end. **Refusals are never acknowledgeable** — the original advice stands, and `kind` is a stored field rather than something inferred from the text so the UI can tell a `danger` (offer the tickbox) from a `refusal` (explain, offer no confirm at all) from `unreadable` (say plainly that nothing was checked). **WhatsApp deliberately cannot acknowledge**: possession of a phone must not be enough to consent to a root-capable compose, so `!os start` reports the hold and points at the dashboard. Honest residual: an app restored by a build **older than this one** carries no marker and stays grandfathered startable; it gains one the next time a restore runs.
+    Now: `reviewCompose()` records the verdict on `AppMeta.review` (`{kind, reasons[], at}`) and **clears it** when a compose passes, so a legitimate update or a fixed file is the way out rather than a dead end. **A restore records that verdict the moment `apps/` is in place** (v0.51.2-dev.16: `reviewEveryApp()`, straight after `config/` and `apps/` are moved into place and before any volume is refilled; `reupAllApps` reviews again at the end): until then the restored `meta.json` carried the BACKUP's verdict — none at all, for a compose smuggled in beside it — so anything that started the app while its data was being put back started it unvetted, from WhatsApp too. Starts are refused for the whole restore as well (`assertAppFree`, the update-lock bullet below), but the review does not rely on that (`test/remote-restore.test.ts`, *A RESTORED APP'S COMPOSE IS CHECKED THE MOMENT IT IS IN PLACE*). **Refusals are never acknowledgeable** — the original advice stands, and `kind` is a stored field rather than something inferred from the text so the UI can tell a `danger` (offer the tickbox) from a `refusal` (explain, offer no confirm at all) from `unreadable` (say plainly that nothing was checked). **WhatsApp deliberately cannot acknowledge**: possession of a phone must not be enough to consent to a root-capable compose, so `!os start` reports the hold and points at the dashboard. Honest residual: an app restored by a build **older than this one** carries no marker and stays grandfathered startable; it gains one the next time a restore runs.
     Four things here are load-bearing and were each wrong in the first cut — an adversarial review of the fix found them, which is the only reason they are listed rather than shipped:
       - **The gate must read the compose BEFORE it touches `meta.json`, and never depend on it.** `reviewCompose` opened with `loadMeta(id); if (!meta) return null`, so a single unparseable byte in `meta.json` — which arrives in the *same* backup as the compose — produced "no finding" and `reupAllApps` then **auto-started** the unvetted stack. That is strictly worse than the hole being closed. `startBlockedReason` fails closed on the same input (present-but-unparseable ⇒ held; absent ⇒ not installed, the caller's own error path).
       - **The COMPUTED verdict always wins over the persisted one.** Skipping the write when only the reason *text* matched let a pre-seeded `kind: 'danger'` survive a genuine refusal, turning a never-acknowledgeable finding into a tickbox. `sameReview` compares kind and every reason.
@@ -813,22 +1188,88 @@ Every label and message uses plain, warm, non-technical language. The user is a 
 - **`checkCompose` returns `dangers` AND `refusals`** (v0.45.0). `refusals` are NEVER acknowledgeable — no "I understand the risk" path, on any router. Currently: a top-level volume that uses `external:` (short or long form) or `name:` to attach to an `omos-*` volume, i.e. another app's data or platform infra. Neither form names a host path, so `bindSource`/`checkHostPath` return early and saw nothing. Keep `refusals` refused everywhere; keep the non-`omos-` external/renamed case an ordinary `danger`.
 - **Every listener that serves `/api/fabric` must carry `registerFabricTunnelGuard`** (v0.45.0) — the TLS dashboard server as well as the HTTP front door. `test/fabric-lan-only.test.ts` pins this structurally.
 - **Every path comparison against a request URL matches the DECODED path, not the raw text** (v0.46.0). The router dispatches on the percent-decoded path, so a guard that compared `req.url` verbatim was walked past with `/api/%66abric/app/…` — raw text that doesn't start with `/api/fabric` but still reached the app-to-app broker. `matchesSecretRoute` and `isFabricSubpath` now test the raw **and** `decodedPath()` spellings and fail closed; `decodedPath` resolves escape-by-escape so one malformed `%zz` can't throw the comparison away. `isViaTunnel` likewise compares the first `x-forwarded-proto` hop trimmed + lowercased (`"HTTPS"`, `"https,http"`, and a duplicated header all count). Never reintroduce a raw-string `startsWith` on a URL in a security check. **And a request target is not always a path** (v0.51.2-dev.15): HTTP also allows `GET http://host/path` and `GET *`, find-my-way routes the absolute form by its path, and every guard here read its first segment as `http:` — the front-door gate, the Fabric guard and the CSRF check all said "not mine". `registerOriginFormGuard` refuses anything not starting with `/`, as the FIRST hook on both listeners — and a refused **upgrade** is closed (`hijack` + `destroy`), never answered: on the dashboard listener `@fastify/websocket` only destroys the socket from its own hook, which a reply from an earlier one skips, so the first version's 400 left every refused upgrade's socket open for good. Not reachable through Cloudflare (which always sends a path), so this closed a spelling rather than a door — closed because every guard assumes one.
-- **A backup must never report success it can't back** (v0.45.0). `backupStream()` returns `{ stream, done }`; a volume that fails to archive fails the whole backup (its partial file is deleted), the outer tar's exit code flows through `done`, and a failure destroys the stream. `runBackup` requires `upload.ok && archive.ok` **before** recording success and **before** `pruneOld` — pruning on an unverified result is how repeated silent failures evict every good archive. One backup at a time (`BackupBusyError` → 409); manual download and scheduler share one staging path. Restore stops apps before refilling volumes and reports per-volume failures. In `tarVolume`, a staging **write** failure is tracked separately from the container's exit code (`writeFailed`, v0.46.0) — the two are independent, and folding it in with `code ??= -1` silently reported success whenever `docker run` had already exited 0 (i.e. ENOSPC on the final flush, the likeliest real failure). **Known-open, and NOT covered by `ok`:** volumes are tarred live, and a torn SQLite/WAL capture still exits tar 0 — so `ok: true` is not proof the databases inside will open. That fix is app-side (`VACUUM INTO` snapshots in each app); don't add a platform-side check that only looks like it covers it. The archive is also unencrypted (`rclone crypt` is the real fix).
-- **The Cloudflare tunnel exposes app paths, and — only when the admin switches it on — the dashboard.** The **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only unconditionally, and so do `/api/health` and `/api/ready`. This bullet opened with "the tunnel exposes ONLY app paths" until v0.51.2, and that half is now a setting (`system/remote-admin.ts`, §13.2e) rather than an invariant. **The Fabric half did not move and must not**: those routes carry every app’s 256-bit secret and every configured Stripe live key, and `registerFabricTunnelGuard` runs on both listeners regardless of what remote administration is set to. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance`, `/api/public/logo`, and the three root icon aliases `/favicon.ico`, `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png` (low-sensitivity presentation assets — the icons serve the SAME already-public logo bytes, raster-only so no SVG-script vector, and exist because a phone asks for them at the root of any site it is asked to bookmark). Five routes, not two: count them here whenever one is added, because a registered route skips the front-door `notFoundHandler` and is therefore reachable over the tunnel by construction. Admin logo upload/clear (`/api/branding/logo`) is registered on the LAN `server` only, never `front`. The tunnel is not started in the no-TLS fallback.
+- **A backup must never report success it can't back** (v0.45.0). `backupStream()` returns `{ stream, done }`; a volume that fails to archive fails the whole backup (its partial file is deleted), the outer tar's exit code flows through `done`, and a failure destroys the stream. `runBackup` requires `upload.ok && archive.ok` **before** recording success and **before** `pruneOld` — pruning on an unverified result is how repeated silent failures evict every good archive. One backup at a time (`BackupBusyError` → 409); manual download and scheduler share one staging path. Restore stops apps before refilling volumes, reports per-volume failures, and names any app Docker would not stop (*A restore says HOW it ended*, below). In `tarVolume`, a staging **write** failure is tracked separately from the container's exit code (`writeFailed`, v0.46.0) — the two are independent, and folding it in with `code ??= -1` silently reported success whenever `docker run` had already exited 0 (i.e. ENOSPC on the final flush, the likeliest real failure). **Known-open, and NOT covered by `ok`:** volumes are tarred live, and a torn SQLite/WAL capture still exits tar 0 — so `ok: true` is not proof the databases inside will open. That fix is app-side (`VACUUM INTO` snapshots in each app); don't add a platform-side check that only looks like it covers it. The archive is also unencrypted (`rclone crypt` is the real fix).
+  - **A download ends only once tar has SAID it succeeded** (`api/backup-download.ts` `sendBackup`, used by the download on the masjid's network and from outside alike). tar's output ends BEFORE tar exits, so a response ended with the output — by a pipe, or by Fastify's `reply.send(stream)` — was delivered whole and clean for a backup tar had FAILED: a file it could not read left out, an archive cut short. The browser said done, the log said "Backup failed", and the admin found out at the restore. Now the bytes go as they come, the response ends only when the output has finished AND `done.ok`, and anything else breaks the download off (`res.destroy()`), which a browser reports as failed. The LAN route hijacks its reply to do it (with `cache-control: private, no-store`) rather than `reply.send(stream)`. `test/remote-backup.test.ts` (*A BACKUP TAR FAILED IS NEVER DELIVERED AS A WHOLE FILE*).
+  - **Whether a backup holds anything to restore is decided BEFORE a single app is stopped** (`system/restore.ts`, with `stagedVolumeArchives` the ONE list of volume archives for the check and for the work, so the two cannot disagree about what a backup holds). It used to be found out afterwards, so a backup with nothing usable in it (an "app data only" folder built by hand, say) stopped every app and left them stopped — a container stopped this way does not even come back after a reboot — while saying only that there had been nothing to restore (on dev.15 the window then announced *"Restore complete."*). Now it says *"That backup had nothing to restore. Nothing has been changed."* and stops nothing (`test/remote-restore.test.ts`, *A BACKUP WITH NOTHING TO RESTORE STOPS NO APP*).
+  - **NOTHING IS CHANGED FROM THE DASHBOARD WHILE A RESTORE RUNS — looking is fine** (v0.51.2-dev.16; `trpc/trpc.ts` `noChangesDuringRestore`, so `protectedProcedure = t.procedure.use(isAuthed).use(noChangesDuringRestore)`). While `isUpdating('restore')` every protected MUTATION is a CONFLICT — *"A backup is being restored right now. Please try this again once it has finished."*, and during the hold after the hand-off (the update-lock bullet below) *"OpenMasjidOS is restarting to finish restoring your backup. Please try again in a minute or two. Nothing was changed."* (`finishingMessage`); queries still answer, and signing in and out are public procedures, untouched. Two mutations change nothing a restore replaces and go ahead (`ALLOWED_DURING_RESTORE`): `apps.stop` — turning an app off must always work, and it is what a restore does to every app anyway — and `apps.openRemote`, which only mints a one-use ticket in memory. The logo routes (`api/branding.ts`, outside tRPC, writing `config/branding/`) refuse the same way — 409, the same words — after their origin, session and key checks. Why: a restore replaces `config/` whole, so a change made during one was accepted and then silently undone — a review changed the password and switched remote administration off mid-restore, and after the restart the old password worked again and remote administration was back ON. Starting, installing and removing apps are refused too (`assertAppFree`, below). The rule is asked once, as a call arrives: a change already under way when a restore begins is not stopped by it (two-step sign-in asks again after the password, §9). **Residual:** the File Explorer's own writes — uploading, renaming and deleting the masjid's files — are NOT refused during a restore; `config/` and the platform's per-app files are out of its reach anyway (the File Explorer bullet below). `test/remote-restore.test.ts` (*NOTHING IS CHANGED FROM THE DASHBOARD WHILE A RESTORE RUNS*).
+  - **…and the restored settings are the ones this process uses from the moment they are in place.** After the swap, when `config/` was moved, `system/restore.ts` calls `reloadSettings`, `reloadEmailConfig`, `reloadStripeConfig`, `reloadWhatsAppConfig` and `reloadCommandConfig`. Each of those stores read its file once at boot and kept the copy, so any write after the swap — a monitor's or a scheduled job's as well as an admin's — put the PRE-restore settings back over the restored file: a review restored a backup with the root terminal off, changed the theme while it ran, and the root terminal came back ON. The admin store re-reads by itself (§9) and the second factor has its own hold and renewal (below). Only those five are reloaded: the WhatsApp queue and link-health records (`whatsapp-queue.json`, `whatsapp-health.json`) are runtime state held in memory, and their next write is this process's copy. A new store that caches a `config/` file needs a reload here, or it reopens this. `test/remote-restore.test.ts` (*A RESTORE PUTS ITS SETTINGS IN PLACE AT ONCE*).
+  - **The monitors stand aside while a restore runs.** The app-offline monitor's tick (`system/alert-monitor.ts`) returns at once while `isUpdating('restore')`, and `stopAllApps` also `suppressOfflineAlert`s each app it pauses: the restore pauses every app on purpose, and the alert (*"<Name> has stopped"*, its action note *"Then press Start."*) told the admin to start an app over data still being put back. The off-site backup scheduler (`system/backup-upload.ts`) skips its tick while a restore OR a core update runs — one would copy data being refilled, the other would be cut off when the core is replaced — and the next tick runs it. So does the address monitor (`system/address-monitor.ts`) while a restore runs: it rewrites apps' settings, which would land in a tree about to be swapped out. An app that does not come back is named by the restore itself (the window and the report, below), not by an alert: once the core has restarted, the monitor's first check only records what it sees. `test/remote-restore.test.ts` (*NEITHER THE OFFLINE ALERTS NOR THE OFF-SITE BACKUP RUN WHILE A RESTORE DOES*).
+  - **A restore that does not happen leaves no backup behind.** The uploaded `.restore.tar.gz` is every password hash, key and token on a box — possibly another box's — unencrypted, in the data folder. When a restore is refused because OTHER work is in the way (`UpdateBusyError` with `clash`), or during the last restore's own hold (`finishing('restore')` — that one removed its own file on the way out, so anything at the path is the refused request's), `runRestore` removes it — but not while another restore is still RUNNING, which is reading it. The upload route refuses first, 409, before the file is read or saved (the browser may still send it — the refusal is about what the server keeps, not the bytes on the wire): *"A restore is already running. Please wait for it to finish."* while one runs, the finishing message during its hold, and the clash message while an update is in the way (`clashFor('restore')`). And at boot, once the data dir exists, `removeRestoreLeftovers()` (`index.ts` `main`) deletes a `.restore.tar.gz` and a `.restore-staging` left by a restore that never reached its `finally` — a power cut, a crash — logging *"Removed <name> left behind by a restore that did not finish."* While either exists the File Explorer keeps it private (its bullet below). **And a backup and a restore never overlap**: `backupStream` refuses while a restore runs (`backupRefusal` — the download from outside asks before its headers go, so the answer is still a 409), and a restore refuses while a backup is being made (`BACKUP_RUNNING`: the upload route, and `restoreOnce` first thing), because a backup taken mid-restore copied data half put back and reported success. `test/remote-restore.test.ts` (*A BACKUP AND A RESTORE NEVER OVERLAP*). `test/remote-restore.test.ts` (*A RESTORE REFUSED FOR AN UPDATE IN ITS WAY SAYS SO, AND LEAVES NO BACKUP BEHIND*, *WHAT AN UNFINISHED RESTORE LEFT BEHIND IS REMOVED AT BOOT*).
+  - **A restore brings the core back on the build it is RUNNING — whatever the compose file says** (`docker/update.ts` `recreateCore` with no tag → `pinComposeToRunningBuild`). The compose file is not a reliable record of that: an update whose helper could not start had already pointed it at the target, and the installer's Update wrote it before downloading. So before the helper runs, the running container's image, by ID, is tagged `<the compose file's repo>:<running VERSION>` (`docker tag`) and the compose line is pointed at that tag (`alignComposeImage(VERSION)`); the helper itself runs from that image by ID (failing that, the reference the compose file names; the channel alias only as a last resort, when there is neither). Nothing is pinned when the compose line or the running reference is a digest (the operator's choice) or the container cannot be inspected (no Docker API: local development). It used to aim at the channel's alias (`:latest`, `:dev`) WITHOUT pulling it — a dashboard update pulls the exact version (§13.4), so the alias named whatever build the installer had last fetched, usually an older one — and a restore quietly put the box back on it — which, done from outside, would have meant a build with no remote dashboard, locking the admin out of the very address the restore had promised to keep. Both ways the file went wrong are closed as well: an update whose helper cannot be started puts the compose file back as it was, so *"Nothing was changed."* stays true, and the installer's Update downloads before it writes (§8.1). The dashboard update still passes the exact version it pulled. It is §13.4's lesson again: a moving alias is not a target, and nor is a file that may be stale (`test/remote-update.test.ts`, *A RESTORE COMES BACK ON THE BUILD THAT IS RUNNING*; `test/remote-restore.test.ts`, *… and the core comes back on the build it is running*).
+- **The Cloudflare tunnel exposes app paths on the apps' hostname, and — only when the admin switches it on — the dashboard, on a hostname of its own.** The **secret-gated Fabric routes** (`/api/fabric/*`, `/api/auth/session`) stay LAN-only unconditionally, and so do `/api/health` and `/api/ready`. This bullet opened with "the tunnel exposes ONLY app paths" until v0.51.2, and that half is now a setting (`system/remote-admin.ts`, §13.2e) rather than an invariant. **The Fabric half did not move and must not**: those routes carry every app’s 256-bit secret and every configured Stripe live key, and `registerFabricTunnelGuard` runs on both listeners regardless of what remote administration is set to. Registered routes skip the front-door `notFoundHandler`, so those routes are blocked over the tunnel by an explicit `onRequest` guard in `index.ts` (`viaTunnel` = `cf-ray` header or `x-forwarded-proto: https`). Never add a new secret route to `front` without that guard; the ONLY intentionally-public-over-tunnel routes are `/api/public/appearance`, `/api/public/logo`, the three root icon aliases `/favicon.ico`, `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png` (low-sensitivity presentation assets — the icons serve the SAME already-public logo bytes, raster-only so no SVG-script vector, and exist because a phone asks for them at the root of any site it is asked to bookmark), and `/_omos/open` (`system/app-access.ts` `registerAppOpen`, v0.51.2-dev.16), where the remote dashboard's one-use app ticket is spent. That last one is not a presentation asset, and it is safe to publish because it does nothing without a ticket the platform itself minted for a session that passed the second factor: 32 random bytes, spent on first use whether or not it was still valid, dead after 60 s (`TICKET_TTL_MS`), at most 200 outstanding (`MAX_TICKETS`). It refuses on the admin hostname and with remote administration off (the identical 404) and on the LAN (a plain 404); a spent, expired or unknown ticket gets a friendly 410 page and nothing else; every answer carries the no-store headers and `referrer-policy: no-referrer`, and the refusal record never keeps the query string the ticket travels in. Two residuals are accepted, and must not be written as closed: it does not check that it was asked for on the apps' hostname — any hostname routed to the tunnel but the admin one would do (minor: the dashboard always builds the link on the apps' hostname) — and because a bad ticket gets the 410 page while the door is open and the ordinary 404 while it is shut, a stranger can tell from this one address whether remote administration is on. What it hands out opens one app and nothing more (the app-opening bullet below), and `_omos` is never routed as an app's path: the ingress routes only the shape an install or Settings gives an app (`apps/paths.ts` `isAppPathShape`, `^[a-z0-9][a-z0-9-]{0,79}$`), because an app is also recovered from any `omos-*` project Docker reports, Docker allows `_` in a project name, and a stack started by hand as `omos-_omos` would otherwise be routed at `/_omos` — ahead of this route, since the ingress hook runs first — where it could receive Open tickets meant for other apps (`test/app-paths.test.ts`, *ONLY THE SHAPE OF AN APP PATH IS EVER ROUTED*). Six routes, not two: count them here whenever one is added, because a registered route skips the front-door `notFoundHandler` and is therefore reachable over the tunnel by construction. (That handler also answers one thing itself rather than refusing it: a service worker's script fetch at a bare one-segment address, an app's or an empty one, gets the self-removing worker — the app-opening bullet below — which carries nothing and is the same everywhere.) Admin logo upload/clear (`/api/branding/logo`) is registered on the dashboard listener `server` only, never `front`, so from outside it is reached only by the remote-administration hand-over (it is in `DASHBOARD_API`). The tunnel is not started in the no-TLS fallback.
 
+  - **THE DASHBOARD AND THE APPS NEVER SHARE AN ORIGIN** (v0.51.2-dev.16). dev.13–dev.15 served the remote dashboard
+    at the root of the apps' hostname (`https://omos.example.org/`) with every app beside it at `/<path>/`, and the
+    first draft of dev.16 added files, terminals, backups and private apps to that origin. An adversarial review showed
+    what that meant: a browser draws the line around "this site's own data" by scheme + host + port, NEVER by path, so
+    every app page WAS the dashboard's origin. Its script — any app the admin opened, or a cross-site-scripting bug in any public app
+    page — could read the dashboard key out of `localStorage` (`omos.dashboardKey`), send same-origin requests carrying
+    the admin's cookie, pass the origin check (Origin and Host agreed, because they were the same site) and drive the
+    whole admin API: switch the root terminal on and open it — host root, since the core holds the Docker socket — or
+    download a backup, which is every secret. The dashboard key's entire defence (`auth/sessions.ts`,
+    `ui/src/lib/session.ts`: an app on another origin cannot read the dashboard's storage) rests on that boundary. On
+    the masjid's network it has always existed — the dashboard is `https://<ip>`, each app `http://<ip>:<port>`, and
+    a different port is a different origin. Through the tunnel the only way to draw it is a different HOSTNAME. So, two
+    halves:
+    - **the dashboard is served over the tunnel ONLY on the admin hostname** — `frontDoorDecision` refuses a dashboard
+      path asked for on any other (`dashboard-elsewhere`); `claimsDashboardSocket` asks that same decision;
+      `remoteAdminEnabled()` is false while the admin hostname is empty or equals the apps' one, and `validateAdminHost`
+      refuses an equal one in every spelling (`normalizeHost`); and `registerHandoffOnlyGuard` refuses Cloudflare
+      traffic the gate did not hand over, so a tunnel pointed straight at port 443 cannot serve it anywhere else;
+    - **no app content is EVER served on the admin hostname** — `system/ingress.ts` declines every app path there, HTTP
+      and WebSocket, shared or private, token or not (`app-on-admin-host`, the same 404 as an empty address), and
+      `/_omos/open` refuses there, so no app cookie is ever set where the dashboard's lives.
+    The remote dashboard's cookie is `__Host-omos_session` besides (§9), which a sibling hostname cannot plant or
+    shadow. Pinned by `test/remote-admin.test.ts` (*THE DASHBOARD IS NEVER SERVED ON THE APPS' HOSTNAME*) and
+    `test/remote-apps.test.ts` (*NO APP IS EVER SERVED ON THE ADMIN HOSTNAME*). **A future change must never serve app
+    content on the admin hostname — not a proxied page, not a static file — nor the dashboard on any other hostname,
+    and must never let the two hostnames be equal.** Each of those hands host root to any app page again. The accepted
+    residual is the other boundary: the apps share ONE origin WITH EACH OTHER on the apps' hostname, where on the LAN
+    each has its own port. A malicious app's page can act within another app the admin has opened there (its
+    access-token cookie rides any same-origin request to that app's path), though never as the dashboard. Stripping
+    `Service-Worker-Allowed` and platform `Set-Cookie`s from app responses, and never serving an app's worker script
+    at its bare address — only one that removes itself (below) — keep one app from registering a worker over the
+    whole hostname or setting a platform session cookie through its responses; a platform cookie its script writes
+    with `document.cookie` never reaches another app either, because of the platform's cookies the ingress passes an
+    app only a valid token for that app (`cookieHeaderForApp`).
   - **Remote administration re-checks its preconditions on EVERY request, and that is the property that matters.**
-    `remoteAdminEnabled()` is true only when the tunnel is on, the admin switched remote administration on, AND a second
-    factor is enrolled — all three re-read per request, never captured when the switch was flipped. So turning two-step
-    sign-in off closes this door in the same action, without the admin having to know the two settings are connected;
-    otherwise the result is a password-only admin dashboard on the public internet with nothing on screen saying so.
-    `login` also refuses tunnel traffic outright when no factor is enrolled, as the backstop for any path that does not
-    come through here.
-  - **What is served over the tunnel is an ALLOW-LIST, not "everything that is not an app".** `isDashboardPath` claims
-    `/`, `/trpc`, `/assets`, the built UI's root files and the UI's own routes, and nothing else — in particular
-    nothing under `/api`. Two reasons: the published surface is what was decided rather than whatever happens to be
-    registered, and every other address goes on being refused, so `system/tunnel-refusals.ts` stays the diagnostic it
-    was instead of every mistyped app path silently showing a donor the admin sign-in page. `test/remote-admin.test.ts`
-    reads `Root.tsx` and fails if a UI route is added that the list does not cover.
+    The five conditions of `remoteAdminEnabled()` (§13.2e) are re-read per request, never captured when the switch
+    was flipped. So turning two-step sign-in off closes this door in the same action, without the admin having to know
+    the two settings are connected; otherwise the result is a password-only admin dashboard on the public internet
+    with nothing on screen saying so. `login` also refuses tunnel traffic outright when no factor is enrolled, as the
+    backstop for any path that does not come through here. And a request is not the only unit that matters: every
+    protected tRPC call and every raw dashboard route a handed-over request reaches asks `remoteDoorOpen(host)`
+    (`remoteAdminEnabled() && isAdminHost(host)`) again on every use (the long-lived-connection bullet below).
+  - **A change to the second factor can reopen the door, so it is guarded like a sign-in.** Two rules, each from a
+    review:
+    - **`requireSudo` refuses with CONFLICT when the factor changed while the password was being checked.** It
+      captures `secondFactorEpoch()` and `twoFactorActive()` before argon2, and if either moved by the end, answers
+      *"Two-step sign-in was changed somewhere else a moment ago. Please try again."* rather than building on a state
+      nobody proved against. Without it the admin turning two-step sign-in OFF to evict someone could lose the race
+      to that someone — holding a remote session and the password — whose own change, begun a moment earlier, then
+      found "nothing enrolled", skipped the code, switched emailed codes back on and kept their session under the new
+      epoch: the door reopened with them inside, while the admin was told it was shut. A review reproduced it 3 times
+      out of 3; `test/twofactor-router.test.ts` (*A CHANGE THAT LANDS WHILE THE PASSWORD IS BEING CHECKED IS
+      REFUSED*) pins the refusal. It also refuses — before the password check and again after it — while a restore
+      holds the epoch (§9; *NOTHING ABOUT THE SECOND FACTOR CHANGES WHILE A RESTORE HOLDS IT*).
+    - **Emailed codes are never the only factor — on the server, not only on the screen** (`setEmailFactor` →
+      PRECONDITION_FAILED without an authenticator). As the only factor they are pausable by a password-only session
+      on the LAN (a new admin address or mail account pauses them, §9); then nothing is enrolled, the next change to
+      the factor needs only the password, and that change could point the codes anywhere. With an authenticator
+      always present, switching them back on always takes a current code. The screen had only ever offered them once
+      an authenticator existed, but nothing behind it enforced that (*EMAILED CODES ARE NEVER THE ONLY FACTOR*).
+  - **What is served over the tunnel is an ALLOW-LIST, not "everything that is not an app" — and only on the admin
+    hostname.** `isDashboardPath` claims `/`, the first segments in `DASHBOARD_SEGMENTS` (`trpc`, `assets` and the UI's
+    own routes: `store`, `apps`, `files`, `settings`, `design-system`), the built UI's root files (`/index.html`,
+    `/favicon.svg`, `/ambient.mp4`) and the dashboard's own API routes, `DASHBOARD_API` (`/api/update`,
+    `/api/apps/update`, `/api/files`, `/api/terminal`, `/api/backup`, `/api/restore`, `/api/branding/logo`), and
+    nothing else — in particular not the Fabric, `/api/auth/session`, health or readiness, and a near miss like
+    `/api/backups` is not `/api/backup`. The sockets have their own, narrower list (`DASHBOARD_SOCKETS`, below). Two
+    reasons: the published surface is what was decided rather than whatever happens to be registered, and every other
+    address goes on being refused, so `system/tunnel-refusals.ts` stays the diagnostic it was instead of every mistyped
+    app path silently showing a donor the admin sign-in page. **A new dashboard route is unreachable from outside
+    until it is added here, and that is the failure to prefer.** `test/remote-admin.test.ts` reads `Root.tsx` and
+    fails if a UI route is added that the list does not cover.
   - **The gate and the server ask DIFFERENT questions, and one predicate answering both was a bypass** (v0.51.2-dev.15).
     Serving the SPA needs `isDashboardPath`: EVERY spelling must agree. Deciding whether the gate even LOOKS at a
     request needs `touchesDashboardPath`: ANY spelling is enough. With `every` in the gate, `/%74rpc/auth.me` (raw
@@ -836,64 +1277,360 @@ Every label and message uses plain, warm, non-technical language. The user is a 
     DECODED path — handed it to tRPC: the whole dashboard API over the tunnel with remote administration switched
     OFF, proved against the real daemon. It is v0.46.0's `/api/%66abric` lesson with the direction reversed, so
     before reusing a spelling-aware predicate, check which way it fails: an ALLOW must need every spelling, a GATE
-    must trigger on any.
+    must trigger on any. Claiming a WebSocket for the dashboard is an allow, and was written with `some` — see the
+    sockets bullet below for what that cost.
   - **A REGISTERED ROUTE SKIPS THE NOT-FOUND HANDLER, and that is how this feature broke the LAN on its first cut.**
     The front door's `notFoundHandler` was what 308-redirected plain-HTTP LAN traffic to the HTTPS dashboard. The moment
     `@fastify/static` was registered on that listener, `GET /` matched a real route, skipped the handler, and served
     the dashboard over unencrypted HTTP on the masjid's own network. The gate now redirects LAN traffic itself rather
     than falling through. **The unit tests did not catch it** — the front door they build to exercise the gate had no
     static route, so the fall-through still reached the handler there; a smoke test against the real daemon found it.
-    Any test that mirrors this listener must register a route at `/`, or it is not testing the thing that breaks.
-  - **The dashboard's WebSocket is the ONE non-app upgrade allowed through, and the allowance must stay narrow.**
+    Any test that mirrors this listener must register a route at `/`, or it is not testing the thing that breaks. The
+    same property is why `/_omos/open` answers every case itself — the LAN, the admin hostname, remote administration
+    off — rather than counting on the not-found handler to.
+  - **THE FRONT DOOR SERVES NO DASHBOARD OF ITS OWN — it decides, and HANDS OVER** (v0.51.2-dev.16). A permitted
+    remote request (`frontDoorDecision` → `serve`) is marked (`markHandedOver`), `reply.hijack()`ed and emitted, body
+    unread, as a `request` event on the dashboard listener; a dashboard socket is claimed, marked, tracked
+    (`trackHandedOverSocket`) and emitted the same way as an `upgrade` event. The first cut registered tRPC and the
+    static UI on the front door instead — a second copy of the dashboard, and only part of one (everything under `/api`
+    stayed behind, which is why a remote update or logo upload failed), and every route registered there skips the
+    not-found handler. `test/remote-admin.test.ts` fails if `fastifyTRPCPlugin`/static files reappear on `front`. The
+    dashboard listener's own guards (request target, hand-over, Fabric, origin) run on handed-over requests, which
+    still carry Cloudflare's headers, so the session rule applies. Pass nothing else this way: `pass` (not a dashboard
+    path) stays with the front door's own routes.
+    - **The mark is the one signal nobody can type.** `wasHandedOver` (a `WeakSet` of Node requests that only the gate
+      adds to) says "the remote-administration gate let this in"; headers only say "this came through Cloudflare",
+      which a LAN client can claim. The mark is what makes the dashboard listener read `__Host-omos_session` instead of
+      `omos_session`, honour only a session the remote dashboard made (`Session.handedOver`, §9; a sign-in it hands
+      over is marked so), re-check the door, count an anonymous body (the body-limit bullet below), add
+      `CDN-Cache-Control` / `Cloudflare-CDN-Cache-Control: no-store` to every response it sends (Cloudflare's edge
+      caches by address alone, and a File Explorer download can end in `.pdf`), start a backup download before the
+      backup is made, and answer "from outside" for everything the dashboard does differently there — Open, the
+      Remote access refusals, the restore's safety rule, the version check on an update or a channel switch (§13.2e
+      says why a header cannot stand in for it).
+    - **`registerHandoffOnlyGuard` makes the gate unavoidable.** It is the second hook on the dashboard listener,
+      straight after the request-target guard and before any plugin, and it refuses any request carrying `cf-ray` that
+      the front door did not hand over — the identical 404, and an upgrade is closed rather than answered. The tunnel
+      is meant to land on port 80; one wrong field in Cloudflare pointing it at 443 would otherwise have the dashboard
+      answer the internet directly, switch off and admin hostname ignored — "off by default" would be a sentence in
+      Settings rather than a fact. `cf-ray` because Cloudflare sets it at its edge and no LAN browser or masjid reverse
+      proxy sends it; a bare `x-forwarded-proto: https` is still answered (*THE DASHBOARD LISTENER ANSWERS CLOUDFLARE
+      ONLY THROUGH THE GATE*). The refusal is recorded as `wrong-port`, not `lan-only-route`, and "Recently turned
+      away" names the fix — set that hostname to Type HTTP and URL `localhost:80` — because the cause is a Cloudflare
+      setting, and "Local network only" would send the admin looking in the wrong place.
+  - **A STRANGER MAY SEND A SIGN-IN AND A CODE, AND NOTHING LARGER** (v0.51.2-dev.16). The dashboard listener accepts
+    25 MB bodies, because a signed-in admin uploads wallpapers and pastes compose files; handing the internet's requests
+    to it unread made that reachable by anybody, and a handful of concurrent 25 MB posts is a memory-exhaustion attack
+    on a Raspberry Pi running as root — taking every public app page down with it. So a handed-over request with no
+    live remote session (`hasRemoteSession`) may carry at most `ANONYMOUS_BODY_LIMIT` (64 KB): a declared larger — or
+    non-numeric — `Content-Length` is refused 413 at the front door before a byte is read (`anonymousBodyRefusal`), and
+    a body that declares nothing (chunked, which a tunnel may use even for a browser's fixed-size request) is counted
+    as it arrives and stopped at 413 by the `preParsing` hook of `registerDashboardRequestLimits` (`limitAnonymousBody`)
+    — refusing undeclared bodies outright would refuse real sign-ins. The same function makes every `/trpc` request
+    other than GET, HEAD and OPTIONS carry `application/json` or get 415, for everyone: tRPC's adapter also takes
+    multipart bodies and reads them with NO size limit, and nothing in the dashboard uses that path. (The front door's
+    own 1 MB default never applies to remote dashboard traffic: it is handed over unread.)
+  - **The dashboard's own sockets are the ONLY non-app upgrades allowed through, and the allowance must stay narrow.**
     `attachIngress`'s `upgrade` handler destroys every socket that is not an app path, deliberately: an abandoned
     upgrade gets no response and no close, so it holds a file descriptor until the peer gives up — an unauthenticated
-    resource lever against a daemon running as root with the Docker socket. `claimUpgrade` takes exactly one: the
-    dashboard's tRPC socket, when `claimsDashboardSocket` says so — and that asks `frontDoorDecision`, the very
-    function the HTTP gate calls, so a socket the gate would redirect or refuse is destroyed rather than answered on a
-    connection nothing will close. Widening it to "is anything registered here" would abandon sockets nothing answers.
-  - **The ingress is the ONLY upgrade owner on the front door: `@fastify/websocket` must never be registered there**
-    (and tRPC there is `useWSS: false`). It was, in dev.13–14, to carry the dashboard socket — and it routes EVERY
-    upgrade through Fastify, so each app's socket was piped to the app by the ingress AND proxied as plain HTTP by the
-    ingress's onRequest hook. The client got an HTTP response inside its WebSocket stream, and every app's live socket
-    over the tunnel died. The dashboard socket is now handled by hand, with tRPC's own `getWSConnectionHandler`.
+    resource lever against a daemon running as root with the Docker socket. `claimUpgrade` takes exactly the sockets in
+    `DASHBOARD_SOCKETS` (`/trpc`, `/api/update`, `/api/apps/update`, `/api/restore/run`, `/api/terminal/*`), when
+    `claimsDashboardSocket` says so — and that asks `frontDoorDecision`, the very function the HTTP gate calls, so a
+    socket the gate would redirect or refuse (one on the apps' hostname, say) is destroyed rather than answered on a
+    connection nothing will close. **EVERY spelling of the URL must be a dashboard socket**, because claiming is an
+    allow. It was `some`, and a review found the cost: a dot-segment spelling of nothing (`/x/../trpc`) was claimed and
+    answered by the dashboard while a private app's socket was destroyed on the spot, so the difference told a
+    stranger which apps were installed. Hence also: a declined app socket (a private app without its token, any app on
+    the admin hostname) is offered to the claim and then destroyed exactly like an address with nothing at it, never
+    on the spot. Widening any of this to "is anything registered here" would abandon sockets nothing answers.
+    - **And only to a signed-in REMOTE session** — one the remote dashboard itself made (`claimsDashboardSocket` ends
+      on `hasRemoteSession`, i.e. `isRemoteSession`, §9); a stranger's socket is destroyed exactly like an address
+      with nothing at it. Every one of these sockets is useless without a session, and handing over anyone's let a
+      stranger hold any number of them open and push frames the dashboard had to buffer and parse — the attack the
+      64 KB body limit (above) exists to stop, through the one door it did not cover. It is why the dashboard's tRPC
+      socket is **lazy** (`ui/src/lib/trpcClient.ts`, `lazy: { enabled: true, closeMs: 10_000 }`): it opens only
+      while something is subscribed, so the sign-in page holds none and the first one opens after signing in, when it
+      qualifies — an eager socket, opened before signing in, could only have been refused.
+    - **Every dashboard WebSocket message is capped at 1 MiB** (`DASHBOARD_WS_MAX_PAYLOAD`, the dashboard listener's
+      `maxPayload`, for every socket on it, LAN ones included). The dashboard only ever sends small frames —
+      subscription messages, a terminal's keystrokes and pastes — and uploads go over HTTP; at the library's default,
+      100 MB, any socket could make the daemon buffer, stringify and parse that much per message.
+    - **Every dashboard WebSocket is pinged every 30 s** (`DASHBOARD_WS_HEARTBEAT_MS`, `startDashboardHeartbeat` on
+      the dashboard listener's WebSocket server, LAN sockets included — it costs them nothing). Cloudflare closes a
+      WebSocket that carries nothing either way for about 100 s, and nothing else speaks on these while the admin is
+      reading: a remote terminal at a prompt or in an editor printed "[Session closed]" in any pause, leaving whatever
+      ran inside where nobody could get back to it, and an update's progress window could drop during a long
+      download. A browser answers a ping by itself. An app's own sockets are not pinged — their bytes only pass
+      through the relay (§13.2e's honest limits). `test/front-door-websocket.test.ts` (*A QUIET DASHBOARD SOCKET IS
+      PINGED*).
+    - **At most 200 are tracked at once, and at most 150 of them an app's** (`MAX_TRACKED_SOCKETS`,
+      `MAX_APP_SOCKETS`, `system/remote-sockets.ts`; the app sockets below). Each belongs to a signed-in remote
+      session or carries one of its app tokens, so the admin never comes near the bound, but the table is filled from
+      the internet and so gets one; a socket refused for it is destroyed rather than answered, and the refusal is
+      logged at most once a minute. The app share is capped so the dashboard's own always have room: an app's page
+      opens a socket with the admin's token whenever it likes, and a hostile or merely leaky one (a reconnect loop
+      that never closes the old socket) filled all 200 — after which every terminal, update and restore from outside
+      failed to start, on every device. `test/front-door-websocket.test.ts` (*AN APP CANNOT TAKE THE LAST PLACES*).
+  - **A HANDED-OVER CONNECTION IS RE-CHECKED FOR AS LONG AS IT LIVES** (v0.51.2-dev.16). The gate decides once per
+    request, which is enough for HTTP and not for a WebSocket — the dashboard's live data, an update's progress, a root
+    terminal — which is one request that lasts for hours. A review found all of them outliving the very actions an
+    admin takes to shut a door: a live terminal went on taking keystrokes after remote administration was switched
+    off, two-step sign-in was turned off, the admin signed out or the password changed, and a live tRPC socket could
+    switch remote administration straight back on. Three layers now: `trpc.ts` `isAuthed` re-checks
+    `remoteDoorOpen(ctx.host)` AND `isRemoteSession(ctx.sessionToken)` on EVERY protected call of a handed-over
+    context; `api/ws-auth.ts` `requestUser` re-checks the door on every use, and a terminal asks it (with its Advanced
+    switch) before every keystroke; and `system/remote-sockets.ts` records each handed-over socket with its hostname
+    and remote session and closes those that no longer qualify — on a sweep every 5 s (`SWEEP_MS`), and at once
+    (`sweepHandedOverSockets`) from sign-out, a password change, every change to the second factor, remote
+    administration switched off, the tunnel switched on or off or cleared, and every save of the Remote access
+    addresses. Every dashboard socket handed over carries a remote session now (the bullet above). A sweep reads the
+    door, and the second-factor epoch for the dashboard's sockets, ONCE per pass (`isRemoteSessionAt`): it used to
+    read them for every socket, a file read per open socket every five seconds on the daemon's only thread. (An app
+    socket's check, `appAccessUser`, still reads the epoch for itself.) **An app's socket opened through the tunnel
+    WITH the admin's access token is tracked the same way** (`trackAppSocket`, from the ingress's upgrade path) and
+    closed by the same sweep when that sign-in ends — sign-out, a new password, a changed second factor, the door
+    shutting. The dashboard's sockets closed on every one of those while the app's stayed open, and a review found a
+    private app still answering a socket opened before the admin signed out. **Both ends close**: the sweep destroys
+    the browser's socket, and `system/socket-relay.ts` `closeTogether` destroys the connection to the app with it. With
+    pipes alone it did not — a destroyed socket emits `close` but never `end`, so the app was never told, and the core
+    held its connection open until the app noticed by itself, which an idle socket may never do; a review found that
+    too. The app sees the connection drop (no close frame — 1006 to a WebSocket library). `closeTogether` is the ONE
+    relay lifetime for the ingress and the per-app HTTPS proxy (`system/app-proxy.ts`) alike: either side's `error`
+    or `close` destroys the other, except that after a polite end the browser's side is left to finish what is still
+    on its way to it. Both proxies' HTTP paths have the same rule (`proxyHttp`, and `app-proxy.ts`'s handler): a
+    browser that leaves part-way — a live event stream, a long poll, a big download, Cloudflare dropping the
+    connection — destroys the request to the app, where `pipe()` had only paused the app's response and the core held
+    that connection until the app gave up (`test/remote-apps.test.ts`, *A BROWSER THAT LEAVES PART-WAY ENDS THE APP'S
+    RESPONSE TOO*). But a long-lived HTTP response is NOT tracked like a socket: one opened with the admin's access
+    token — a Server-Sent Events stream, say — goes on after that sign-in ends, an accepted residual. A socket opened
+    with no token is the public's, and nothing here ends it. Closing a progress socket never stops the work: an update
+    or a restore runs to the end (the one-update-at-a-time bullet below).
+  - **The ingress is the ONLY upgrade owner on the front door: `@fastify/websocket` must never be registered there.**
+    It was, in dev.13–14, to carry the dashboard socket — and it routes EVERY upgrade through Fastify, so each app's
+    socket was piped to the app by the ingress AND proxied as plain HTTP by the ingress's onRequest hook. The client
+    got an HTTP response inside its WebSocket stream, and every app's live socket over the tunnel died. A claimed
+    dashboard socket is now handed to the dashboard listener's own `@fastify/websocket` as an `upgrade` event.
     `test/front-door-websocket.test.ts` drives real sockets through the real ingress, with Docker stubbed to answer the
     way a reachable daemon does — the first version only passed because the machines running it had no Docker, and on
     CI a late rebuild wiped its routes. Every test has a timeout and its front door is closed after it whatever
     happens, so a regression fails the suite rather than hanging it. `test/remote-admin.test.ts` pins the wiring.
-  - **Files, terminals and backup/restore are NOT exposed** (`LAN_ONLY_FEATURES`). Not an oversight: the File Explorer
-    browses the directory that holds the admin password hash, the Stripe keys and the TLS private key; terminals are a
-    root shell; a backup archive is every secret the platform holds, unencrypted. They are refused by not being
-    registered on that listener at all — the UI hiding them is presentation, not the control.
+  - **Files, terminals and backup/restore ARE exposed now — on the admin hostname, behind a session that passed the
+    second factor** (v0.51.2-dev.16, at the masjid's request; `LAN_ONLY_FEATURES` is gone). They were kept off on
+    purpose, and the reasons have not changed: the File Explorer browses the directory holding the password hash, the
+    Stripe keys and the TLS private key; terminals are a root shell; a backup is every secret, unencrypted. What makes
+    exposing them defensible is two rules together, and the first draft had only one: the session rule (§9) — from the
+    internet they take the password AND the current second factor, where on the LAN they take the password — and the
+    origin rule above, without which any app page could have driven them with the admin's own cookie. The terminals
+    keep their off-by-default Advanced switches and the File Explorer its protected paths (`protectedReason`) — both
+    apply remotely. Never relax the session rule on the assumption that "the dashboard already checked": it is the only
+    thing standing between these routes and a password-only cookie lifted from any app on the LAN.
+    - **A backup download from outside starts answering before the backup is made** (`api/backup-download.ts`
+      `remoteBackupDownload` → `sendBackupEarly`, chosen in `index.ts` for a handed-over request). Making one copies
+      every app's data first; on the LAN that wait is invisible, but Cloudflare gives an origin 100 s to start answering
+      and then shows its own error page, so on any box whose data took longer every remote download failed. The
+      headers go first; "already running" is still a proper 409 (`backupInProgress`), because it is known before
+      anything is sent; a failure after that breaks the download off (`res.destroy()`) rather than letting the browser
+      save a partial file the admin would trust. (The silent wait that is left is an honest limit, §13.2e.)
+    - **A browser that leaves must END the backup, at whatever point it leaves.** Leaving was noticed only once the
+      backup existed, by a listener attached then — but the `close` had already fired during the minutes spent copying
+      app data, and it fires once. The backup was piped into a dead response: the pipe paused for ever, tar blocked on
+      a full pipe and never exited, and the one-backup-at-a-time flag it clears on exit stayed set — so every later
+      backup, the nightly off-site one included, was refused as "already running" until a restart, with a copy of
+      every app's data left on disk. Cancelling a download stuck at 0 bytes was enough, and so was Cloudflare dropping
+      a silent connection. Now the `close` listener goes on BEFORE the backup starts (`sendBackupEarly`), a backup that
+      finishes after the browser has gone is destroyed at once, and the rest goes through `sendBackup` — the tar-success
+      rule above — which ends tar the moment the browser leaves, and ending tar is what clears the flag
+      (`test/remote-backup.test.ts`, with the real backup and real tar).
+    - **A restore from outside is refused unless the backup keeps the way back in** (`system/restore.ts`
+      `remoteRestoreProblem`, run when the front door handed the restore over — `wasHandedOver`, not a header,
+      §13.2e — once the archive is unpacked and validated, before anything is stopped or replaced). A restore replaces
+      `config/` whole, and from outside a backup taken before remote administration was set up — most of them, the
+      feature being new — would turn the door off behind the admin, with only someone in the building able to open it
+      again. So from outside it goes ahead only if: the backup's settings pass `settingsOpenTheDoor` — **the live box's
+      own rule, not a copy of it**: a hand-written copy here missed "the dashboard address equals the apps' address",
+      and a restore it waved through shut the remote dashboard behind the admin — with the same dashboard address; the
+      same tunnel token (`tunnelTokenMatches`); a username and the same password hash (`isConfigured` needs both, so a
+      backup with no username restores a box nobody can sign in to); and the same authenticator secret
+      (`sameSecondFactorAs`), which needs an authenticator on BOTH sides — an emailed-only configuration is refused,
+      because whether a restored emailed factor would deliver depends on the restored address and mail account, and
+      nobody can repair a wrong guess from outside. Otherwise nothing is changed and the admin is told to restore it at
+      the masjid. Only the authenticator is compared: the backup's backup codes come back with it, whatever was done to
+      them since, so an admin who replaced them because someone saw them should replace them again after restoring an
+      older backup. A backup with no `config/` is never refused here, and a restore at the masjid is unchanged.
+      First-run restore and `auth.setup` refuse tunnel traffic outright (§13.2e).
+    - **A restore HOLDS the second-factor epoch while it runs, and RENEWS it once a backup's `config/` is in place**
+      (`holdSecondFactorEpoch`, taken beside `holdForRestore` once the apps are stopped, just before `config/` is
+      replaced, and released in the same `finally`, owned like that hold; `renewSecondFactorEpoch` straight after the
+      rename). The restored `twofactor.json` can carry an older epoch — any change to the factor since the backup, new
+      backup codes say — and a remote session counts only under the epoch it proved, so the admin restoring from
+      outside was signed out MID-restore, the sweep closed their progress window, and every line after it was lost. A
+      sign-in completed during the hold is bound to the held epoch, and only the restoring admin's own session is
+      moved onto the renewed one (`rebindRemoteSession`, before either hold is released), and only if it still counts
+      at that moment (`remoteGrantOf`) — §9 says why each. Nothing about the factor can be CHANGED for the whole
+      restore, the hold and the minutes before it alike: every two-step mutation is refused with a CONFLICT
+      (`refuseDuringRestore`: `secondFactorHeld() || isUpdating('restore')`, §9), because before the swap the backup's
+      settings would overwrite the change, and during the hold it counted for nothing until the release and signed out
+      from outside the very admin who made it. Signing in goes on working.
+    - **A restore says HOW it ended** (`RestoreOutcome`, carried as the WebSocket close code by `api/restore.ts`
+      `RESTORE_CLOSE`: 1000 `restarting`, 4003 `restarting-with-problems`, 4001 `unchanged`, 4002 `not-restarted`,
+      4004 `restored-not-restarted`). The window used to assume every ending was a restart, so a REFUSED restore — the
+      usual result from outside, and every "busy", "too large" or "nothing in it" — sat on *"Restarting OpenMasjidOS —
+      reconnecting…"* for four minutes and then announced *"Restore complete."* Now `RestoreModal` says "Nothing was
+      changed" for 4001 and every other 4xxx but 4002–4004, and *"Couldn't connect to OpenMasjidOS, so nothing was
+      changed."* for a stream that never opened; for 4002 that it stopped before it could finish (*"…reload to see
+      where things stand."*) — **4002 is a restore that stopped on an ERROR, read cautiously**: `api/restore.ts`
+      starts from `'not-restarted'`, so an unexpected exception closes 4002 even when it came before anything was
+      changed, because nobody can vouch for what an exception interrupted (an accepted residual: such a restore is
+      told to look rather than told nothing changed) — and for **4004**, everything put back but the helper that
+      restarts the core could not be started, *"Your backup was restored, but OpenMasjidOS couldn't restart itself to
+      finish. Restarting the machine finishes it — or someone at the masjid can run the install command again and
+      choose Repair."* (told apart from 4002 because the advice is the opposite: restoring again would stop every app
+      again for nothing). Otherwise it waits for the restart (watching `/trpc/auth.me`, since `/api/health` is refused
+      from outside), saying after about 30 s that it has not restarted yet while it goes on waiting, and counting the
+      core as down only after TWO failed checks in a row (a good answer resets the count) — one blip read as the
+      restart said *"Restore complete."* while the old core was still about to be replaced. And it says it is
+      complete only when it HEARD how the restore ended (1000, or 4003): a stream that DROPPED first — any other close,
+      a sleeping laptop, the Wi-Fi — ends, once a restart is seen, on *"OpenMasjidOS has restarted, but this window
+      lost touch with the restore before it said how it went. Please reload, sign in again and check that your apps
+      and settings look right."* (`restore.lost`), because a restart proves only that the core restarted; it used to
+      say *"Restore complete."* The refusals made before a restore starts (4401 signed out, 4403 a bad origin or a
+      first-run restore from outside) also SEND their reason as a line, ending *"Nothing has been changed."*, because
+      "the messages above say why" over an empty log was false. **4003 is a restart in which some app's data could
+      not be put back, some app could not be started** (held for review, or `compose up` failed — `reupAllApps`
+      returns their names), **or some app could not be paused first**: `stopAllApps` now reads `composeStop`'s exit
+      code — it reports a failure there and never throws, so its catch alone never fired and a container Docker
+      refused to stop was listed as paused — and such an app prints *"• <Name> (couldn't pause it — its data may not
+      restore cleanly)"*, is logged, and is returned, because its data was put back under a running container. The
+      window waits for a 4003 like any other restart and then says *"The restore finished, but some of your apps or
+      their data need attention — the messages above say which…"* rather than *"Restore complete."* — which is what a
+      masjid moving to a new box, ALL of whose app data had failed, was shown over the lines saying otherwise. The
+      window's *"Affected:"* line names apps, not Docker volumes (a volume it cannot place keeps its own name).
+      `test/remote-restore.test.ts` reads `RestoreModal.tsx` to keep the two copies of the codes in step, and
+      `test/remote-update.test.ts` (*the update window is told whether anything changed — and waits only for a
+      restart*) pins the two-failure rule and the `lost` ending.
+    - **And a restore REMEMBERS what went wrong, for after the restart** (`config/restore-report.json`, 0600:
+      `{at, appsWithoutData, appsNotStarted, appsNotPaused}`, app NAMES). The window naming the problem apps is unmounted within a
+      minute of the core restarting — every session ends then — and nothing recorded which apps had come back empty.
+      So a restore with problems writes the report (and logs each failure with `log.warn`); one with nothing to report
+      removes any older report, including one that came back inside the backup's own `config/`. After the next sign-in
+      the dashboard shows a warning, *"Your last restore needs a look"*, naming the apps whose data could not be put
+      back, the apps that did not start, and the apps that could not be paused (*"These apps couldn't be paused for the
+      restore, so their data may not have been put back cleanly: {{apps}}. Please check them."*), until *"I've
+      checked them"* dismisses it (`backups.restoreReport` / `backups.dismissRestoreReport`, both protected).
+      `test/remote-restore.test.ts` (*AN APP THAT DID NOT START AFTER A RESTORE IS NOT "COMPLETE" EITHER*,
+      *"RESTORED, BUT IT COULD NOT RESTART ITSELF" IS NOT "IT STOPPED PART-WAY"*, *AN APP THAT COULD NOT BE PAUSED IS
+      NOT "COMPLETE"*).
+  - **OPENING AN APP FROM OUTSIDE: a one-use ticket, then a token for that app alone — never the dashboard's session**
+    (v0.51.2-dev.16; `system/app-access.ts`). With the dashboard on a hostname of its own, its cookie never reaches an
+    app — which is the point — so an app has nothing from the admin's browser to go on: a private app cannot tell the
+    admin from a stranger, and single sign-on has no cookie to forward. The first draft let a private app through for
+    any request carrying a remote session cookie (`privateAppAllowed`, deleted), on the very origin the review
+    condemned. Now:
+    - Open calls `apps.openRemote`, which mints a ticket (`mintAppTicket`) only for a request the front door handed
+      over (§13.2e), for a live remote session the remote dashboard made (§9), with remote administration on and an
+      apps' hostname set, for an installed app with a web port, and returns
+      `https://<apps' hostname>/_omos/open?t=<ticket>`. Spending it
+      (`registerAppOpen`) sets
+      `omos_session=<that app's ACCESS TOKEN>; Path=/<app path>; Secure; HttpOnly; SameSite=Lax`, for no longer than the
+      session it came from, and 303s to `/<app path>/`.
+    - The access token (`auth/sessions.ts` `appAccessToken` / `appAccessUser`) is `a1.<session handle>.<mac>`, the MAC
+      an HMAC-SHA256 keyed by the session token over the app id: valid only for THAT app, and only while its remote
+      session is valid (same password, same second-factor epoch, not signed out, made by the remote dashboard — never
+      one made through a proxy at the masjid, §9) and remote administration is on. It
+      cannot be turned back into the session or into another app's token, so an app that keeps it holds a key to itself
+      and nothing more. It is NOT a dashboard session: no dashboard route accepts it.
+    - **Checking a token is work a stranger can ask for, so it is bounded.** `appAccessFromCookie` tries every
+      `omos_session` value in the header (a browser may hold an old one for another path), but at most eight
+      (`MAX_TOKEN_CANDIDATES`), and only once the cheap tests pass (any such cookie at all; remote administration on);
+      and each session's public handle is memoised. A review measured ~5 ms of the root daemon's single thread per
+      request from a 16 KB Cookie header of token-shaped values before both.
+    - What an app receives through the tunnel, on the HTTP and the WebSocket path alike: every platform session cookie
+      — `omos_session` of any value, `__Host-omos_session` — is REMOVED from the Cookie header, and the app's own valid
+      access token, if the request carried one, is put back FIRST (`cookieHeaderForApp`; every OpenMasjid app forwards
+      the first `omos_session` it finds). So a LAN cookie presented through the tunnel never reaches an app (§9), and
+      single sign-on needs no app change: `/api/auth/session` accepts the token for the app it was made for
+      (`appAccessSsoUser`) and for no other.
+    - An app NOT shared online is served through the tunnel only with a valid token for it; anyone else falls through
+      to the identical 404, recorded as `app-not-shared` (`declinedReason`); on the LAN the front door does not serve it
+      at all. Its `/fabric/*` stays refused for everyone, token or not.
+    - **A private app's address must answer EXACTLY as an empty one — bodies included — so it is declined FIRST.** The
+      ingress hook declines it before the `/fabric` refusal or anything else there can answer for it. A review found
+      the `/fabric` refusal answering in that hook, before any body was read, while an empty address went on to the
+      not-found handler, where Fastify parses the body first: a malformed or oversized POST then got 404 at an
+      installed private app's path and 400/413 at an empty one, which told a stranger which apps were installed.
+      Declined first, both take the same road (`test/remote-apps.test.ts`, *A PRIVATE APP'S ADDRESS ANSWERS EXACTLY AS
+      AN EMPTY ONE*); a declined app's WebSocket does the same (the sockets bullet above). Any new early answer in the
+      ingress must come after the decline, or it re-opens the same probe.
+    - **An app's BARE address never serves the app's service worker — only one that removes itself — and nothing
+      answered there is cached** (`isBareAppAddress`, `isWorkerScriptFetch`, `answerBareWorkerFetch`). A service
+      worker's reach is the directory of its script's address, and the directory of `/<seg>` is `/` — the whole apps'
+      hostname, every other app's pages and `/_omos/open` included. Stripping `Service-Worker-Allowed` (below) confined
+      only a script UNDER `/<seg>/`; a review found an app could serve its worker at the bare address instead. So at
+      `/<seg>` with nothing after it but a query, a request the browser marks as a worker's script fetch —
+      `Service-Worker: script` or `Sec-Fetch-Dest: serviceworker`, which a page's own fetch cannot carry — never reaches
+      the app. It gets `SELF_REMOVING_WORKER` (`system/ingress.ts`): a 200 `text/javascript`, with the no-store
+      headers, whose worker skips waiting and unregisters itself on activation, and does nothing else (it clears no
+      caches — they are the apps'). Not a 404, which was the first answer: a 404 stops NEW registrations, but by the
+      Service Workers specification a failed update check leaves an EXISTING registration running, and every build
+      before this one, Stable included, let an app's page register a worker over the whole apps' address from its bare
+      one; the browser's next update check now installs this instead, and the registration goes with it. The answer
+      is the same at a shared app's bare address, a private app's (token or not), an empty one, the admin hostname
+      and the masjid's network — the front door's not-found handler gives it too — so it says nothing about what is
+      installed; it is recorded as `worker-at-bare-address` only when it came through the tunnel (`recordRefusal`),
+      because the record is a list of what came in from outside. Everything else at a bare address is proxied to the
+      app as it always was, but with `Cache-Control: private, no-store` and the CDN no-store headers (`noStore`), so no
+      cached copy, the browser's or Cloudflare's, can later stand in for a worker fetch — on the tunnel and on the LAN
+      front door alike. Under `/<seg>/` a worker is the app's own business. Accepted residual: a worker an older build
+      let an app register over `/` through `Service-Worker-Allowed`, from a script UNDER its path, is not reached by
+      this — its update check is proxied to the app, the header is stripped, and that update fails, which leaves the
+      old registration in place in the browsers that hold it. **The first fix was a 308 from `/<seg>` to `/<seg>/` for
+      every GET, and it is gone for a reason:** an app that treats `/<seg>` as its root and sends `/<seg>/` back there
+      — Next.js with a base path does, by default — then bounced between the two for ever, and its public page was
+      down. Do not bring the redirect back (`test/remote-apps.test.ts`, *AN APP'S BARE ADDRESS NEVER SERVES THE APP'S
+      WORKER*).
+    - What an app sends back through the tunnel loses any `Set-Cookie` for a platform cookie name and any
+      `Service-Worker-Allowed` (`responseHeadersForTunnel`): the apps share a hostname, and one must not plant a session
+      on another's path or register a worker over all of them — including the address that hands out tokens. A private
+      page, or anything served to a token, also gets `Cache-Control: private, no-store` plus `CDN-Cache-Control` /
+      `Cloudflare-CDN-Cache-Control: no-store` (`NO_STORE_HEADERS`) — Cloudflare keys its cache on the address alone, so
+      a cached copy would go to the next person to ask — and so does every tunnel refusal.
+    Accepted residuals: a WebSocket's `101` response is relayed raw, so a `Set-Cookie` on it is not filtered; and the
+    apps share one origin with each other (the origin bullet above).
   - **Per-IP lockout is the one thing that gets BETTER over the tunnel** (`auth/ip-lockout.ts`). Cloudflare sets
     `CF-Connecting-IP` at its edge and a tunnel client cannot forge it, so remote sign-ins can be rate-limited per
     address where LAN ones cannot (Docker SNATs every LAN client to the bridge gateway — `util/net.ts`). **The address
     is trusted only when `isViaTunnel` is already true**; `trpc/context.ts` passes `null` otherwise, because
     off-tunnel the header is attacker-supplied and honouring it would be both a bypass and a way to lock out someone
     else's address. The map is bounded: it is keyed by something the internet chooses.
-  - **A session created by an HTTPS tunnel visitor gets a `Secure` cookie — and "via the tunnel" is NOT that condition.** The rule is `cf-ray` present **and** `visitorScheme(headers) === 'https'` (`trpc/context.ts`). It was `isViaTunnel(req)` for one build, on the reasoning "it reached us through Cloudflare, so the browser is on HTTPS" — false: Cloudflare stamps `cf-ray` on a plain `http://` visit too, and a browser **rejects** a `Secure` cookie delivered over plain HTTP, so remote sign-in completed its second factor and bounced back to the sign-in screen. It requires `cf-ray` rather than `isViaTunnel` because the latter is also true for a bare `x-forwarded-proto: https` from a masjid's own LAN reverse proxy, where a `Secure` cookie overwrites the non-Secure one in the same jar and ends SSO for every plain-HTTP app. **`visitorScheme` reads `cf-visitor` FIRST**, `x-forwarded-proto` only as a fallback: every reverse proxy rewrites XFP with its own scheme (nginx `$scheme`), and trusting it first made every HTTPS visit behind such a proxy look like HTTP — the upgrade below then redirected the browser to the URL it was already on, for ever. The front-door gate is ONE pure function, `frontDoorDecision` (`system/remote-admin.ts`), called by index.ts AND by the tests, because the first version's hand-built test copy had already drifted (it had no upgrade branch). A plain-`http://` tunnel visit to a dashboard path is **upgraded** (308) to `https://<the CONFIGURED tunnel host>` **whatever the request's Host says** — the target never comes from the request, so it cannot be an open redirect, and the first version's extra "Host must equal ours" check protected nothing while serving a second routed hostname in clear. With **no** hostname configured it is **refused**, not served in clear. Only an EXPLICIT http signal redirects, so a proxy that strips the scheme cannot cause a loop. The flag is decided per response, not per process. Its default stays off for LAN sessions because an app on a plain-HTTP port needs the forwarded cookie for SSO; a session
+  - **The remote dashboard's cookie is `__Host-omos_session`, always `Secure` — and the LAN cookie's `Secure` rule is NOT "via the tunnel".** A handed-over request reads and sets only `REMOTE_COOKIE_NAME`, with `REMOTE_COOKIE_OPTS` (§9 says why the `__Host-` name). The LAN cookie's flag is still decided per response by `cookieOptsFor`: `cf-ray` present **and** `visitorScheme(headers) === 'https'` (`trpc/context.ts`). It was `isViaTunnel(req)` for one build, on the reasoning "it reached us through Cloudflare, so the browser is on HTTPS" — false: Cloudflare stamps `cf-ray` on a plain `http://` visit too, and a browser **rejects** a `Secure` cookie delivered over plain HTTP, so remote sign-in completed its second factor and bounced back to the sign-in screen. It requires `cf-ray` rather than `isViaTunnel` because the latter is also true for a bare `x-forwarded-proto: https` from a masjid's own LAN reverse proxy, where a `Secure` cookie overwrites the non-Secure one in the same jar and ends SSO for every plain-HTTP app. (Since the hand-over, a request carrying `cf-ray` reaches the dashboard listener only when the gate handed it over — and then gets the remote cookie — so this rule is the second line now; it is kept, and `test/remote-admin.test.ts` still drives it through the real context.) **`visitorScheme` reads `cf-visitor` FIRST**, `x-forwarded-proto` only as a fallback: every reverse proxy rewrites XFP with its own scheme (nginx `$scheme`), and trusting it first made every HTTPS visit behind such a proxy look like HTTP — the upgrade below then redirected the browser to the URL it was already on, for ever. The front-door gate is ONE pure function, `frontDoorDecision` (`system/remote-admin.ts`), called by index.ts AND by the tests, because the first version's hand-built test copy had already drifted (it had no upgrade branch). A plain-`http://` tunnel visit to a dashboard path on the admin hostname is **upgraded** (308) to `https://<the CONFIGURED admin hostname><path>` — the target never comes from the request, so it cannot be an open redirect. (The first version's "Host must equal ours" check on the upgrade alone protected nothing while serving a second routed hostname in clear; today a dashboard path asked for on any hostname but the admin one is refused as `dashboard-elsewhere` before the scheme is even looked at.) With **no** admin hostname (or one equal to the apps') there is no remote administration, so the visit is **refused** — recorded as `no-admin-host` when the tunnel, the switch, a second factor and an admin account are all in place and only the address is missing, `lan-only-route` otherwise (`doorClosedReason`) — and never served in clear. Only an EXPLICIT http signal redirects, so a proxy that strips the scheme cannot cause a loop. The flag is decided per response, not per process. Its default stays off for LAN sessions because an app on a plain-HTTP port needs the forwarded cookie for SSO; a session
     for a hostname that resolves on the public internet is the one that must never be sent in clear. They cannot
-    collide — the tunnel hostname and the LAN address are separate origins with separate cookie jars.
-  - **"LAN-only" means "refused over the tunnel", NOT "only reachable from the LAN" — do not write it as the stronger claim.** The guard is a deny-list on a header signal, and it is sound in the direction that matters (a tunnel client cannot strip `cf-ray`, which Cloudflare sets at its edge). But `HOST` is `0.0.0.0` and the compose publishes 80/443, so on a **directly reachable host** — a public-IP VPS, or a router forwarding those ports — requests arrive with no Cloudflare headers and nothing distinguishes the internet from the office laptop. Those routes, and the login page, are then internet-facing.
+    collide — the admin hostname and the LAN address are separate origins with separate cookie jars, and the two
+    cookies have different names besides.
+  - **"LAN-only" means "refused over the tunnel", NOT "only reachable from the LAN" — do not write it as the stronger claim.** The guard is a deny-list on a header signal, and it is sound in the direction that matters (a tunnel client cannot strip `cf-ray`, which Cloudflare sets at its edge — the same fact `registerHandoffOnlyGuard` rests on). But `HOST` is `0.0.0.0` and the compose publishes 80/443, so on a **directly reachable host** — a public-IP VPS, or a router forwarding those ports — requests arrive with no Cloudflare headers and nothing distinguishes the internet from the office laptop. Those routes, and the login page, are then internet-facing — whatever the remote-administration switch says, and under LAN rules (password only), because nothing marks such a request as remote. The opposite imprecision exists too: a masjid's own LAN reverse proxy that sends `x-forwarded-proto: https` is treated as tunnel traffic (`isViaTunnel`), so sign-in through it demands the second factor (and is refused while none is enrolled), and a password-only session presented through it reads as signed out — while a session made through it, second factor and all, is never usable from outside (`handedOver`, §9). That is as far as it goes: what the dashboard DOES differently from outside reads the front door's hand-over, which such a proxy never gets, so behind one apps still open at their own ports (§13.2e).
   - **A source-address check is NOT the fix, and adding one would be a regression.** With Docker's default `userland-proxy=true`, `docker-proxy` re-originates every inbound connection from the bridge gateway: measured on a real daemon, an app container, host-network cloudflared, and a client from **outside the host entirely** all present `172.17.0.1`. So a peer check would answer "private" for the internet — an allow-list in appearance that admits everyone. `util/net.ts` carries the full note and `test/ip-private.test.ts` fails the build if `peerIsPrivate` reappears; the same SNAT fact is why the login lockout cannot be per-IP (`trpc/routers/auth.ts`). The real mitigations are a firewall and a bind address, documented for the operator in `docs/SECURITY.md` → *What "LAN-only" means, exactly*.
-  - What holds regardless of network position: **no route grants a session, skips a password, or relaxes CSRF because a request looks local** — every use of `isViaTunnel` is a route guard, never an authn/authz decision — and every `/api/fabric/*` route independently requires the 256-bit per-app secret **and** the declared capability. Reaching a Fabric route is not using it.
+  - What holds regardless of network position: **no route grants a session, skips a password, or relaxes CSRF because a request looks local** — `isViaTunnel` only ever refuses something or demands MORE of a request (the second factor, a remote session, a ticket), never less, so a request that merely looks local gets the LAN rules and nothing beyond them — and every `/api/fabric/*` route independently requires the 256-bit per-app secret **and** the declared capability. Reaching a Fabric route is not using it.
 - **"COULD NOT ASK DOCKER" IS NOT "THERE IS NOTHING THERE"** (v0.51.1-dev.14). `discoverApps()` caught a Docker failure and returned an empty map, identical to a healthy daemon reporting no containers. `listInstalled()` then listed every app from meta.json with `ports: []` and `running: false`, and two consumers acted on it: `system/ingress.ts` rebuilt its routing table, dropped every app for having no port, and answered `{"error":"Not found."}` to **every visitor of every public app path** until the next 10s tick; and `system/alert-monitor.ts` saw every app go running→stopped and would email an `app-offline` alert for each. **Both had a `try/catch` written to prevent exactly this, and neither could ever fire, because nothing threw.** A guard that cannot be reached is worse than no guard, because it stops anyone looking. `discoverAppsResult()` now returns `{apps, ok}`; `listInstalledWithHealth()` carries `discoveryOk` to the callers that make decisions, while `listInstalled()` stays lossy for the ones that only display. This is the same rule as §13.2d's Stripe case and the WhatsApp health monitor — **a failure to ask records nothing and decides nothing** — and it is worth checking any future poller against it.
   - **OPEN: that fix was applied to the two instances found, not to the class.** This bullet used to say `discoveryOk` reached "the two callers that make decisions, while `listInstalled()` stays lossy for the thirteen that only display", which read as a complete audit and is not one. **`system/address-monitor.ts` and `restoreAppProxies` (`apps/manager.ts`) both still decide from the lossy variant** — so a Docker hiccup can still drive a decision from "there is nothing there". Neither is as loud as the ingress 404 storm, which is why they were missed. Anything new that *acts* on an app list must take `listInstalledWithHealth()`; don't trust a count in this paragraph as proof the sweep was exhaustive.
 - **THE PLATFORM MUST NEVER ANSWER AN SSO CHECK "NOT SIGNED IN" FOR ITS OWN REASONS** (v0.51.2-dev.15). Every OpenMasjid app reads anything but `{authenticated:true}` from `GET /api/auth/session` as "platform reachable, not signed in" — **deliberately**, because `reachable:false` is what unlocks an app's local-password recovery, and an attacker must not be able to unlock it by making the platform refuse. So the apps fail closed and are right to. That makes every platform-side refusal a **lockout**: the app says "sign in through your dashboard" and refuses its own password. Two of them were the platform's own rate limits, both silent:
   - the central hook charged SSO introspection to the app's **120/min SEND budget** — shared with every email, WhatsApp, alert and broker call that app makes — so a busy minute (a roster's fee reminders) refused the very next sign-in check;
   - the handler ALSO charged the per-IP tier, which is **one bucket for the whole box** (Docker SNATs every app to the bridge gateway, `util/net.ts`) — so ANOTHER app's traffic refused the app the admin had just pressed.
   Now SSO has its own counter (`appsso:<id>`, `RATE_MAX_APP_SSO`), an **identified** caller is not charged to the shared IP tier (that tier exists to bound an UNAUTHENTICATED flood; a valid 256-bit secret is not one), an unidentified caller still is, and the generous tier is granted only when **every** spelling resolves exactly to the SSO path (`isSsoIntrospection`, `every` not `some`) — an encoded or dot-segment spelling, a POST, pays the tight send budget. A 429 keeps `authenticated:false` (fail-closed apps unchanged) and adds `retryable` + `Retry-After`. Every refusal is now **logged**, throttled, never with a cookie or secret — the failing exits used to be silent while the success logged at `info`, which is why this could not be found from the log. `test/sso-reliability.test.ts`; `restore.ts` also now calls `invalidateFabricIndex()` after replacing `apps/`, which `saveMeta` never saw — the same lockout through a different door.
-- **A REFUSED TUNNEL REQUEST MUST BE OPAQUE OUTSIDE AND EXPLICABLE INSIDE** (v0.51.1-dev.15). Five guards answered tunnel traffic with a byte-identical `{"error":"Not found."}` and **no log line at all**, so three unrelated situations — nothing published at that path, a LAN-only platform route, an app's own LAN-only `/fabric` space — were indistinguishable from outside (correct) and equally indistinguishable from inside (not). `system/tunnel-refusals.ts` records path + host + reason in a bounded in-memory ring, surfaced only through the LAN-only dashboard (`cloudflare.refusals`, Settings → Remote access). **The RESPONSE must stay identical for every reason** — a discriminating 404 would let a stranger map which paths are real routes on this platform, which is the same disclosure the version-withholding on `/api/health` exists to prevent; `test/tunnel-refusals.test.ts` fails if a 404 body ever names its guard, and if any guard 404s without recording. The query string is never stored (that is where tokens live) and the ring is never persisted — this is a "why is my page down right now" diagnostic, not an access log.
-- **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. Don't relay request headers verbatim to app containers.
+- **A REFUSED TUNNEL REQUEST MUST BE OPAQUE OUTSIDE AND EXPLICABLE INSIDE** (v0.51.1-dev.15). Five guards answered tunnel traffic with a byte-identical `{"error":"Not found."}` and **no log line at all**, so three unrelated situations — nothing published at that path, a LAN-only platform route, an app's own LAN-only `/fabric` space — were indistinguishable from outside (correct) and equally indistinguishable from inside (not). `system/tunnel-refusals.ts` records path + host + reason in a bounded in-memory ring, surfaced only to a signed-in admin (`cloudflare.refusals`, Settings → Remote access — on the LAN, or from outside behind the second factor). **The RESPONSE must stay identical for every reason** — a discriminating 404 would let a stranger map which paths are real routes on this platform, which is the same disclosure the version-withholding on `/api/health` exists to prevent; `test/tunnel-refusals.test.ts` fails if a 404 body ever names its guard, and if any guard 404s tunnel traffic without recording. Every guard now answers through ONE responder, `refuseOverTunnel` (v0.51.2-dev.16), because the copies had drifted: the not-found handler gave a browser an HTML page while the dashboard gate and the Fabric guard gave it JSON, so the shape of the answer told a visitor which kind of address they had hit. Every refusal also carries the no-store headers, so Cloudflare cannot cache a 404 and serve it to the admin later. There are TEN reasons now, every one seen only in the record: the first three above (`no-app-at-path`, `lan-only-route`, `app-fabric-lan-only`) and seven from remote administration — `plain-http-no-host` (dev.15: a plain-`http://` dashboard visit the gate cannot upgrade — since the dashboard address became a condition of the door, in practice only a request target beginning `//`), and in dev.16 `app-not-shared`, `dashboard-elsewhere`, `app-on-admin-host`, `no-admin-host` (the switch is on but the dashboard has no address of its own — a box updated from dev.13–dev.15), `wrong-port` (Cloudflare traffic that reached the HTTPS port directly) and `worker-at-bare-address` (a service worker's script asked for at an app's bare address, the app-opening bullet above). That last is the one reason not answered with THE 404: it gets the self-removing worker, through `answerBareWorkerFetch`, which is just as identical at every bare address and so tells a stranger no more; it is given on the LAN front door too, but recorded (`recordRefusal`, the recorder `refuseOverTunnel` uses) only when it came through the tunnel. Each has its own words in "Recently turned away", and `test/tunnel-refusals.test.ts` fails if a reason in the type has none (*EVERY REASON HAS ITS OWN WORDS*): an unlabelled reason falls back to "Local network only", which is how `no-admin-host` and `wrong-port` were first shown, with nothing to say what to fix. The query string is never stored (that is where tokens live) and the ring is never persisted — this is a "why is my page down right now" diagnostic, not an access log.
+- **The reverse proxies are a hostile boundary.** `system/ingress.ts` + `system/app-proxy.ts` strip client-supplied `X-Forwarded-*`/`Forwarded` + hop-by-hop headers and set trusted values. That includes **`X-Forwarded-Prefix`**, which the platform never sends: some frameworks (Spring, ASP.NET, Next.js behind a proxy) take their base path from it, so one arriving was typed by the visitor and would choose where the app believes it lives. Each file strips on two paths, HTTP (`STRIP_HEADERS`) and WebSocket (an inline `drop` set), so a header belongs on all four lists — `cf-connecting-ip` was once added to one path of a file and missed on the other. The two WebSocket relays share ONE lifetime helper, `system/socket-relay.ts` `closeTogether` (the long-lived-connection bullet above says why), for the same reason: the same relay written twice is how one copy gets fixed and the other does not. Their HTTP paths carry its twin, written into each — a browser that leaves part-way destroys the request to the app — so a change to one belongs in both. Through the tunnel the ingress rebuilds the Cookie header too (`cookieHeaderForApp` — no platform session cookie ever reaches an app) and filters what comes back (`responseHeadersForTunnel`); see the app-opening bullet above. Don't relay request headers verbatim to app containers.
 - **`checkForUpdate` must offer an update when the RUNNING BUILD is from the other channel, not only when a version is newer** (v0.50.5-dev.1). `runUpdate` had always acted on this (`wrongChannel`), but the detector compared versions alone — so a box running a Stable image while set to Development was never told: no banner, no alert, no error, no way out of the dashboard. It happens for real (an interrupted update repaired with the installer, which pulled `:latest`). `channelMismatch` is symmetric (`isPrerelease(VERSION) !== (channel === 'dev')`) — a per-channel branch here is the old Development special-casing returning — and feeds `updateAvailable`, but only when `latest != null`, because a move needs a target. `reason: 'version' | 'channel'` exists so the UI does not call a channel move "a new version": going back to Stable targets an OLDER number. **This also means a numbering mistake cannot strand a masjid again** — the mismatch alone offers the way back even when the channel's VERSION is below the running one.
 - **An update runs ONCE at a time, enforced on the SERVER** (`system/update-lock.ts`, v0.50.4-dev.6). Nothing prevented two updates of the same thing: every WebSocket connection to `/api/update` started a fresh core update and every one to `/api/apps/update?id=…` a fresh app update, so closing the progress window and pressing the button again ran a second over the first — two `compose up --force-recreate` racing for one container, two writers on one compose file. A masjid's box stopped coming back. The dialog/window is also locked while running (`Modal locked`, `OpenWindowOptions.locked`, and `close()` itself refuses a locked window so the Escape handler is covered by the same rule), but **the client lock is the second line of defence, never the first** — a browser can be closed, a laptop can sleep. A refused second run is reported as information, never as "Update failed", because calling it a failure pushes an admin into retrying. A client going away must never abort an update in flight; the work continues and the progress lines are dropped.
+  - **And a core update, a restore and an app's update never overlap** (v0.51.2-dev.16). The keys `core` and `restore` are EXCLUSIVE: either is refused while anything else runs, and nothing starts while either does; two different apps' updates touch nothing in common and may still run together. A review pressed Update 300 ms into a restore: the update's helper replaced the core while the restore was still refilling app data — the restore cut off part-way, every app left stopped, a database half put back. A clash is `UpdateBusyError` with `clash: true` and a message naming what is in the way (*"A backup is being restored right now. Please update OpenMasjidOS once it has finished. Nothing was changed."*, and so on for each pair); the same work asked for twice is `clash: false` (the core's: *"An update is already running. It will finish on its own."*). The core update's window closes 1000 when it is the same update asked for twice — the running one is expected to restart the core, so the window waits for that, saying "updated" only on evidence (§13.4) — and 4001 for a clash, because nothing is coming; a refused restore or app update ends "nothing was changed" either way. Two-step sign-in cannot be changed for the whole of a restore either (§9). `test/update-lock.test.ts` (*A CORE UPDATE, A RESTORE AND AN APP UPDATE NEVER OVERLAP*).
+  - **A core update or a restore keeps its lock until the core is REPLACED, not just until it hands that job over** (v0.51.2-dev.16). `withUpdateLock(key, busy, fn, { holdAfter })`: once `fn` resolves, `holdAfter(result)` ms keep the key held, released by an unref'd timer; a throw never holds. `runUpdate` holds for `'restarting'`, `runRestore` for `'restarting'` and `'restarting-with-problems'`, each for `HOLD_UNTIL_REPLACED_MS` (5 minutes); every other ending lets go at once. Why: the old core runs on about 12 s after handing its replacement to the helper — the helper's `sleep 2`, then compose's 10 s stop timeout, because the core is node as PID 1 (`Dockerfile` `ENTRYPOINT`) with no SIGTERM handler and so waits to be killed — and releasing at the hand-off accepted a restore, an app update or a second core update in that gap, which the replacement then killed part-way: a review launched three helpers, and cut a restore off with one app's data half put back and every app left stopped. During the hold the work is DONE and only waits for the core to be replaced, so every refusal says that instead (`finishing(key)`, `finishingMessage(key)`): *"OpenMasjidOS is restarting to finish an update. Please try again in a minute or two. Nothing was changed."*, or *"…to finish restoring your backup…"* — in place of the clash message, the same-work *"already running"* (still not a clash, so the update window waits for the restart, close 1000), `assertAppFree`'s messages (next bullet), and the restore middleware's, the logo routes' and the restore upload's (the restore bullets above). Saying *"being restored right now"* over a restore that had finished sent the admin to wait for something that was not happening; while the work is still RUNNING the earlier messages stand. `isUpdating` answers true throughout the hold, so everything keyed on it lasts until the core is gone; the timer is only the backstop, so a helper that never replaces the core cannot wedge the box. `__releaseHeldLocksForTests()` is for tests only. `test/update-lock.test.ts` (*A CORE UPDATE OR A RESTORE KEEPS ITS LOCK UNTIL THE CORE IS REPLACED*), `test/remote-restore.test.ts` (*A RESTORE THAT RESTARTS THE CORE KEEPS ITS LOCK UNTIL THE CORE IS REPLACED*).
+  - **No app is started, restarted, installed or removed under a restore or its own update — stopping never is** (v0.51.2-dev.16; `assertAppFree(id, 'start' | 'install' | 'remove')`, an `UpdateBusyError` with `clash: true`). It is asked FIRST — before any compose call, file or `meta.json` write — in `startApp` and `restartApp` (both `'start'`: a restart starts a stopped app), `removeApp`, `installCatalogApp` and `installStack`. During a restore every action is refused (a start: *"A backup is being restored right now. Your apps will start again on their own when it has finished. Nothing was changed."*; an install or a removal: *"A backup is being restored right now. Please install this app once it has finished. Nothing was changed."*, or *remove*); during that app's own update (`app:<id>`) every action (*"This app is being updated right now. Please try again once it has finished. Nothing was changed."*); during a core update an install or a removal only (*"OpenMasjidOS is being updated right now. Please install this app once it has finished. Nothing was changed."*) — it would be cut off with the core, while a start is quick and allowed. Why: a restore stops every app and refills its data, and an app started meanwhile ran over a database being replaced — a review's Start was accepted mid-refill and `compose up` ran before the refill finished — and, worse, a compose that came in with the backup and had not been checked yet could be started with no consent at all (`privileged: true`, host root), from WhatsApp too, which must never be able to consent (the persisted-review bullet above). A Start during the app's own update brought up the compose the update was about to put back. The restore's own `reupAllApps` brings apps up with `composeUp` directly, so it is not refused. `stopApp` never asks: stopping is what a restore does to every app anyway, and turning an app off must always work. Every caller already handles the error: tRPC turns it into CONFLICT (`trpc/routers/apps.ts` `wrap`, and the store, custom and community install routes and the WhatsApp gateway's restart, each of which used to pass it on as INTERNAL_SERVER_ERROR); WhatsApp `!os start` and `!os restart` reply with the message (`say.busy`); the address monitor and Remote access's re-ups catch it and skip. `test/update-lock.test.ts` (*NO APP IS STARTED, INSTALLED OR REMOVED UNDER A RESTORE OR ITS OWN UPDATE*).
 - **Stats must agree with `free`, `htop` and the provider's console** (v0.50.4-dev.6), because that is what a masjid checks them against and a number that disagrees reads as the dashboard lying — which costs trust in every other figure on the page. Three fixed: (a) memory used is computed exactly as `free` does (`MemTotal − MemFree − Buffers − (Cached + SReclaimable)`) — it counted the page cache as used, so a mostly-idle box showed as nearly full; the LXC/Proxmox path (`readHostCgroupMemory`) is tried first and is unaffected. (b) The CPU sampler's baseline is module-level while its callers are not — `stats.get` plus one `stats.stream` loop **per open tab** — so whoever called last moved the baseline and the next reading averaged a few milliseconds of jiffies, i.e. noise; a sample is now only taken after `MIN_CPU_SAMPLE_MS` and callers in between get the last real value **without the baseline moving**. (c) Storage reserves `HOST_OS_RESERVE_BYTES` (16 GB) for the host OS: a disk at a true 100% cannot write logs or update itself and needs someone at a terminal in the masjid, so the card counts down to "full" early. `used` stays the real figure (the UI clamps the percentage), and the mount match is a path-boundary test picking the *most specific* mount — `/` contains everything, so a plain prefix test reported the wrong disk.
 - **Reaching an app's published port goes through `system/app-host.ts` — never a hardcoded loopback address** (v0.50.4-dev.3). The core is a bridge-network container, so `127.0.0.1` inside it is *the core*; an app's published port is on the **host**, reachable only via the installer's `host.docker.internal:host-gateway` mapping. Three callers had this right and the expression was pasted into each; the WhatsApp gateway client was then written from memory with `127.0.0.1` and **could not reach OpenWA on any install**. The symptoms ("cannot reach the gateway", `fetch failed`) both pointed at the masjid's setup rather than at the platform, and this file's own §13.2b-ii and Fabric bullets described the address as `127.0.0.1` too — a wrong spec produced a wrong implementation. It is one exported helper now, `test/app-host.test.ts` fails any source file that builds `http://127.0.0.1:${…}`, and a transport failure must name a reason an admin can act on rather than surfacing undici's bare `fetch failed` (the real cause hides in `err.cause.code`).
 - **The Fabric app-to-app broker (`fabric/appLink.ts`, `POST /api/fabric/app/:target/:capability/:method`) is LAN-only and least-privilege** (v0.40.0). It inherits the `/api/fabric` viaTunnel guard (`registerFabricTunnelGuard`, `system/via-tunnel.ts` — the single shared implementation), authorizes by **static manifest grants** (caller `consumes` ∧ target `provides`), builds the target URL ONLY from the registry (the app's published host port via `system/app-host.ts` — no request-controlled host/path, no SSRF), injects the **target's own** secret + a trusted `X-OpenMasjid-Caller-App` while stripping caller-supplied identity/forwarding/hop-by-hop headers, caps JSON at 256 KB each way with a 10 s timeout + per-caller rate limit, returns `{ fabric_error }` on platform failures, and **never logs bodies**. Don't weaken any of these.
 - **OPEN GAP — the Fabric's least-privilege rule does NOT hold for Stripe.** `GET /api/fabric/stripe?account=<id>` (`api/fabric.ts`) takes the account id straight from the query string and returns that account's `secretKey` and `webhookSecret`; the only check is that the caller holds the `stripe` capability. Nothing binds an app to a particular account, and `/api/fabric/stripe/accounts` hands the caller the ids to ask for. **So any stripe-capable app can read every configured account's live keys** — a masjid running one Stripe account for donations and another for school fees has no separation between the two apps. It is LAN-only and capability-gated, so this is an app-vs-app boundary rather than an internet-facing hole, but it is the one place the "least privilege" claim above is not true, and it must not be written as though it were. The fix is a per-app account binding recorded at install and enforced here. Do not "improve" it unilaterally: silently narrowing this breaks a masjid's live donations page.
   - **CORRECTION: this is NOT a cross-repo change, and saying it was is what kept it open.** This bullet claimed the fix "changes the app-facing Fabric contract — so it is its own coordinated change across `OpenMasjidAPPS` and the app repos". That is true only of a **manifest-declared** binding. An **admin-recorded** binding is purely platform-side: `AppMeta.stripeAccounts`, set by a mutation mirroring `setExposed`/`setAppPath` and a per-app row in Settings → Payments. The app keeps calling `GET /api/fabric/stripe?account=<id>` byte-for-byte unchanged; only the set of ids it gets an answer for shrinks. It must **not** live in the manifest — an author cannot know a masjid's account names, and letting the app assert its own scope is the mistake `manager.ts` already calls out ("Trust is not something the subject gets to assert"). What genuinely remains Hasan's is the **default when unbound**, because that is the difference between a compatible no-op and breaking a live donations page. Three traps for whoever builds it: `getAccountFull(idOrLabel)` resolves by id **or label**, case-insensitively, so enforcement must resolve first and then compare `acc.id` — a check against the raw query string is bypassable by asking by label; `?account=` omitted silently means `accounts[0]`, so that path needs the same treatment; and `/api/fabric/stripe/accounts` must be narrowed in the same change or the enumeration survives. Note also that `type: stripe-account` (the install-time dropdown) is **optional** and independent of the `stripe` capability, so it cannot be relied on as the sole source of the binding.
-- **Tunnel exposure is per-app opt-in** (v0.40.0). `ingress.rebuild()` routes an app only when `meta.exposed !== false` (grandfathered `undefined` = exposed, so pre-0.40 installs don't go dark); the admin toggles it in Settings (default from the manifest `tunnel:true` request). An app's own **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths (`isFabricSubpath`) — those routes are LAN-only. `OPENMASJID_PUBLIC_URL` is injected empty unless exposed; `/api/fabric/site` stays the live source of truth.
-- **Email + alerts over the Fabric are LAN-only + least-privilege** (v0.41.0). The SMTP password / Resend API key live in `config/email.json` (chmod 600) and never leave `store/email.ts` except to the sender (`notify/email.ts`); the admin API returns only "is set" flags. `POST /api/fabric/email` (capability `email`) and `POST /api/fabric/alert` (gated on the app having declared the alert in its manifest) are under `/api/fabric`, so they inherit the viaTunnel LAN-only guard; both are rate-limited and never log bodies. Alerts are gated by the admin's granular per-type toggle (`notify/alerts.ts`, disabled-set in `config/alerts.json`) before any email/webhook is sent. The admin email (`auth/store.ts` `getAdminEmail`) is the only alert recipient.
-- **The File Explorer's sandbox is NOT just "inside the data dir"** (v0.47.3) [OPENMASJIDOS-004]. The data dir is also where the platform keeps its control plane, so confinement to `/data` still exposed two things to any authenticated session: (a) **every platform secret** — `config/` holds the admin password hash, the SMTP password / Resend key, the Stripe keys, the tunnel token and the TLS private key, all of which every other surface deliberately refuses to return to the client; and (b) **host root** — start/update run `docker compose -f apps/<id>/compose.yml up`, reading that file *from disk*, so rewriting it and pressing Start launches a `privileged: true` / docker.sock-mounted container **without passing `apps/compose-validate.ts`**, the sole install-time gate. `apps/<id>/meta.json` is the same class (it carries `ssoSecret` and the Fabric capability grants). `files/manager.ts` now has ONE decider, `protectedReason()`, and **every entry point asks it** — `resolve()` is the choke point, and constructed targets (rename destination, upload destination, the `writeTextFile` leaf) each call `assertAllowed` because they don't pass through `resolve()`. Protected: `config/**`, `.backup-staging/**`, and exactly `compose.yml` / `.env` / `meta.json` directly inside `apps/<id>/` (matched case-insensitively; deeper paths are the app's own data and stay browsable). The guard checks the **realpath as well as the requested path** — a symlink at `apps/x/data/link` → `config/stripe.json` is legitimately *inside* the sandbox, so checking one spelling isn't enough (same lesson as the raw-vs-decoded guards). **Backup and restore must stay independent of this module**: they archive `config/` and `apps/` directly and import nothing from `files/manager.ts` — `test/files-guard.test.ts` pins that structurally, because a guard that reached the backup path would silently produce backups missing every setting.
+- **Tunnel exposure is per-app opt-in** (v0.40.0). Whether an app is shared online is `isExposedMeta` (`InstalledApp.exposed`): the admin toggles it in Settings (default from the manifest `tunnel:true` request), and a value nobody set is grandfathered exposed for a catalog app (so pre-0.40 installs don't go dark) and private for a custom/community one. `ingress.rebuild()` used to route an app only when it was shared; since v0.51.2-dev.16 it routes every app with a web port and CARRIES `exposed` on the route, because a private app must still open for the admin from outside: through the tunnel it is served only to a browser holding that app's access token, everyone else gets the identical 404 (recorded as `app-not-shared`), and on the LAN the front door does not serve it at all (the app-opening bullet above). `isRouted` still means PUBLICLY routed (`exposed === true`), so a private app never gets a public URL: `OPENMASJID_PUBLIC_URL` is injected empty unless exposed, and `/api/fabric/site` stays the live source of truth. With every app in one table, a clash of paths can hurt now — a private app taking a shared app's path would turn a public donations page into a 404 for every donor while Settings still showed it as shared — so `placeRoute` keeps a shared app's path whatever else claims it (and logs the clash), and **`isRouted(id)` is true only for the app that actually HOLDS the route** (`r.id === appId`), or the other app's Stripe return links and QR codes would point at someone else's app. An app's own **`/fabric/*` is refused over the tunnel** on BOTH the HTTP and WebSocket ingress paths (`isFabricSubpath`), for every app and whatever token comes with it — those routes are LAN-only.
+  - **No two apps on one address, and none on the platform's own** — checked when an address is set AND when an app is installed. `setAppPath` refuses a path another installed app already answers to, and one in `apps/paths.ts` `RESERVED_PATH_SEGMENTS` (`api`, `trpc`, `assets`). That is ONE list, read by the ingress (which never routes them) and by Settings: when only the ingress knew, an admin could set an app's address to `/api`, accepted without a word, after which the app had no public page and opening it from outside landed on a 404. The ingress also routes nothing but an app-path SHAPE (`isAppPathShape`; the `/_omos/open` bullet above says why). And an INSTALL (catalog, community or custom) whose id is already another app's address, or a reserved word, gets the next free `<id>-N` (`addressForNewApp`) — decided before anything is written, logged, and used in `OPENMASJID_PUBLIC_URL`; a reinstall keeps the address it had. Installing used to take the id unconditionally, which is the half `setAppPath` could not see: give a community app `/donations`, install the official Donations app later, and the two shared one address — the newer took the public page, Settings listed both as published there, and opening the older one from outside opened the other (`test/app-paths.test.ts`).
+- **Email + alerts over the Fabric are LAN-only + least-privilege** (v0.41.0). The SMTP password / Resend API key live in `config/email.json` (chmod 600) and never leave `store/email.ts` except to the sender (`notify/email.ts`); the admin API returns only "is set" flags. `POST /api/fabric/email` (capability `email`) and `POST /api/fabric/alert` (gated on the app having declared the alert in its manifest) are under `/api/fabric`, so they inherit the viaTunnel LAN-only guard; both are rate-limited and never log bodies. Alerts are routed by the admin's per-alert × per-channel matrix (`notify/alerts.ts`, `channels` in `config/alerts.json`; §13.2c) before anything is sent. The admin email (`auth/store.ts` `getAdminEmail`) is the only address alert emails go to.
+- **The File Explorer's sandbox is NOT just "inside the data dir"** (v0.47.3) [OPENMASJIDOS-004]. The data dir is also where the platform keeps its control plane, so confinement to `/data` still exposed two things to any authenticated session: (a) **every platform secret** — `config/` holds the admin password hash, the SMTP password / Resend key, the Stripe keys, the tunnel token and the TLS private key, all of which every other surface deliberately refuses to return to the client; and (b) **host root** — start/update run `docker compose -f apps/<id>/compose.yml up`, reading that file *from disk*, so rewriting it and pressing Start launches a `privileged: true` / docker.sock-mounted container **without passing `apps/compose-validate.ts`**, the sole install-time gate. `apps/<id>/meta.json` is the same class (it carries `ssoSecret` and the Fabric capability grants). `files/manager.ts` now has ONE decider, `protectedReason()`, and **every entry point asks it** — `resolve()` is the choke point, and constructed targets (rename destination, upload destination, the `writeTextFile` leaf) each call `assertAllowed` because they don't pass through `resolve()`. Protected: `config/**`, `.backup-staging/**`, a backup uploaded for restoring and its unpacked copy (`.restore.tar.gz`, `.restore-staging/**`, v0.51.2-dev.16 — each a whole backup, every password hash, key and token, possibly another box's, and both were browsable and downloadable while a restore waited or ran: *"This is a backup being restored, so it is kept private. It is removed when the restore finishes."*; `test/files-guard.test.ts`, *a backup waiting to be restored, and its unpacked copy, are private*), the core's own `docker-compose.yml`, and exactly `compose.yml` / `.env` / `meta.json` directly inside `apps/<id>/` (matched case-insensitively; deeper paths are the app's own data and stay browsable). The `apps/<id>` folder itself stays browsable but cannot be renamed or deleted, which would take those three files with it. The guard checks the **realpath as well as the requested path** — a symlink at `apps/x/data/link` → `config/stripe.json` is legitimately *inside* the sandbox, so checking one spelling isn't enough (same lesson as the raw-vs-decoded guards). **Backup and restore must stay independent of this module**: they archive `config/` and `apps/` directly and import nothing from `files/manager.ts` — `test/files-guard.test.ts` pins that structurally, because a guard that reached the backup path would silently produce backups missing every setting.
 - **A damaged file in the data dir must never stop the daemon booting** (v0.47.2). The dashboard's TLS cert is the case that proved it: `ensureCert` checked only that `cert.pem`/`key.pem` *existed*, `loadCert` was a bare `readFileSync`, and Node builds the TLS context **inside the Fastify constructor** — which sits outside the try/catch that wraps reading the cert. A corrupt-but-present cert therefore exited the process, and under `restart: unless-stopped` that is a crash-loop with no dashboard left to repair it from, on hardware that may be wall-mounted. Both installer self-service paths (Update, Repair) re-read the same file, so it needed a drive to the masjid. Now: `certPairProblem` runs the same three checks Node does (parse cert, parse key, `checkPrivateKey` — the last is the only thing that catches a *partial restore*, where both files are valid PEM but from different boxes); `ensureCert` validates **content**, quarantines the damage as `*.broken`, and regenerates; `loadCert` throws rather than returning unusable bytes; and `index.ts` rebuilds the server **without TLS** if the constructor throws anyway, which also keeps the tunnel refused. `generateSelfSigned` verifies what openssl actually wrote instead of trusting exit code 0. Two rules when touching this: **a healthy cert must be left byte-for-byte alone** (churning it re-triggers the browser warning on every device on the LAN), and **never remove the plain-HTTP fallback** — it is the last way in. `test/tls-boot.test.ts` pins all of it, including the real `ensureCert → loadCert → createServer` sequence. The same shape applies to any other boot-critical file: validate before trusting, degrade rather than exit.
 - **Secrets at rest:** persist config secrets 0o600 (`writeJson` does this; `CONFIG_DIR` is 0o700; `config/email.json` too). First-run `auth.setup` uses `createAdminIfUnset` (compare-and-set, capturing email/name) — don't reintroduce an unconditional write.
 - **CI:** the CLA workflow runs on `pull_request_target` — keep third-party actions pinned to a commit SHA (never a tag) and never `actions/checkout` the PR head there. It **does** need `permissions: actions: write` (the official contributor-assistant setup): after a contributor posts the sign comment, the action re-runs the PR workflow to flip the required `cla` check green — without it the signature records but the check stays red (`Resource not accessible by integration`). That's safe here specifically because the job runs ONLY the pinned action and never checks out/executes the PR's code.

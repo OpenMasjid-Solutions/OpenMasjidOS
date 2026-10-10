@@ -2,32 +2,46 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Path-based ingress for remote access. So the admin only adds ONE Cloudflare
- * public hostname (omos.<domain> → http://localhost:<PORT>) instead of one per
- * app, the platform's HTTP front door reverse-proxies each app by the first path
- * segment: `omos.<domain>/donate/…` → the Donations container, `/display/…` →
+ * public hostname for the apps (omos.<domain> → http://localhost:<PORT>) instead of
+ * one per app, the platform's HTTP front door reverse-proxies each app by the first
+ * path segment: `omos.<domain>/donate/…` → the Donations container, `/display/…` →
  * Display, etc. (paths from getAppPath, admin-configurable).
  *
  * Cloudflare terminates TLS at its edge and sends plain HTTP to the origin, so we
  * proxy to each app's plain HTTP container port (no per-app HTTPS/No-TLS-Verify to
- * configure). The dashboard itself is NOT exposed here — only known app paths are
- * proxied; everything else falls through to the front door (health/Fabric/redirect)
- * which 404s tunnel traffic, keeping the admin UI LAN-only.
+ * configure). Only known app paths are proxied here; everything else falls through
+ * to the front door, whose gate decides the rest (system/remote-admin.ts).
+ *
+ * An app that is shared online is served to anyone. One that is NOT is served only
+ * to a browser carrying that app's access token, which the remote dashboard's Open
+ * button gives it (system/app-access.ts) — so the admin can open every app from
+ * outside, while the public sees nothing at its path.
+ *
+ * NO APP IS EVER SERVED ON THE ADMIN HOSTNAME. That is where the remote dashboard's
+ * cookie and key live, and a browser's boundary between the two is the hostname —
+ * an app page served there could drive the dashboard as the admin
+ * (system/remote-admin.ts has the whole story). This file is half of that rule; the
+ * gate, which serves the dashboard ONLY there, is the other.
  */
 import http from 'node:http';
 import net from 'node:net';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { listInstalledWithHealth, getAppPath } from '../apps/manager';
+import { isAppPathShape, isReservedPathSegment } from '../apps/paths';
 import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunnel';
 import { appHost } from './app-host';
 import { log } from '../logger';
-import { noteRefusal } from './tunnel-refusals';
+import { NO_STORE_HEADERS, noteRefusal, recordRefusal, refuseOverTunnel, type RefusalReason } from './tunnel-refusals';
+import { isAdminHost } from './remote-admin';
+import { appAccessFromCookie, cookieHeaderForApp } from './app-access';
+import { trackAppSocket } from './remote-sockets';
+import { closeTogether } from './socket-relay';
+import { COOKIE_NAME, REMOTE_COOKIE_NAME } from '../auth/sessions';
 
 // How the core reaches an app's published host port — one definition, shared with the
 // per-app TLS proxy, the Fabric broker and the WhatsApp gateway client.
 const TARGET_HOST = appHost();
-// Path segments that must never be treated as an app route (platform endpoints).
-const RESERVED = new Set(['api', 'trpc', 'assets']);
 
 // Client-supplied forwarding + hop-by-hop headers we must NOT relay verbatim: the
 // tunnel is a hostile boundary and apps trust X-Forwarded-* behind the OS proxy,
@@ -38,6 +52,9 @@ const STRIP_HEADERS = [
   'x-forwarded-proto',
   'x-forwarded-host',
   'x-forwarded-port',
+  // The base path some app frameworks trust (Spring, ASP.NET, Next.js behind a proxy):
+  // the platform never sends one, so one arriving was typed by the visitor.
+  'x-forwarded-prefix',
   'forwarded',
   // Client-IP headers of exactly the class this list exists to remove. Any proxy
   // in front of us would set these; a caller reaching us directly can type them,
@@ -59,11 +76,18 @@ const STRIP_HEADERS = [
 ];
 
 /** Build the header set to send upstream: the client's headers minus any
- *  forwarding/hop-by-hop headers, plus trusted forwarding headers we set. */
-function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
+ *  forwarding/hop-by-hop headers, plus trusted forwarding headers we set — and,
+ *  through the tunnel, the Cookie header with every platform session cookie
+ *  removed but this app's own access token (`cookieHeaderForApp` says why). */
+function trustedHeaders(req: IncomingMessage, keep: string | null): NodeJS.Dict<string | string[]> {
   const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
   for (const h of STRIP_HEADERS) delete headers[h];
   const tunnel = isViaTunnelHeaders(req.headers);
+  if (tunnel) {
+    const cookie = cookieHeaderForApp(req.headers.cookie, keep);
+    if (cookie === undefined) delete headers.cookie;
+    else headers.cookie = cookie;
+  }
   // Real client IP: Cloudflare's CF-Connecting-IP, but only when the request looks
   // like it arrived through the tunnel; otherwise the socket peer.
   //
@@ -89,10 +113,45 @@ function trustedHeaders(req: IncomingMessage): NodeJS.Dict<string | string[]> {
   return headers;
 }
 
-let routes = new Map<string, number>(); // path segment → app HTTP port
+/**
+ * Where an app path goes. EVERY app with a web port is here, not only the ones
+ * shared online: an app that is not shared is still served at its path to a browser
+ * holding its access token (system/app-access.ts), so the admin can open it from
+ * outside. To anyone else it is an address with nothing at it.
+ */
+interface Route {
+  /** Whose path this is — the access token a request carries must be for THIS app. */
+  id: string;
+  port: number;
+  /** Shared online: served to anyone. False: served only with this app's access token. */
+  exposed: boolean;
+}
+
+let routes = new Map<string, Route>(); // path segment → where the app is
 /** Set only by `__setRoutesForTests`, so a background rebuild cannot race a test's
  *  table — checked both before and after rebuild's one await. */
 let pinnedForTests = false;
+/** The last collisions logged, so the same one is not repeated every ten seconds. */
+let lastCollisions = '';
+
+/**
+ * Put an app's route into the table being built, deciding a clash of paths.
+ *
+ * Two apps can end up with one path: nothing used to stop it (`setAppPath` refuses
+ * it now, but an older install may already have one), and an app that is no longer
+ * shared keeps the path it had. Before every app was in this table that could never
+ * hurt a shared app — the private one was simply not here. Now it is, so the rule is
+ * explicit: A SHARED APP KEEPS ITS PATH. A private app taking it would turn a
+ * masjid's public donations page into a 404 for every donor, and stop the shared app
+ * advertising its public address — while Settings went on showing it as shared.
+ * Otherwise the later app wins, which is what the table always did.
+ */
+export function placeRoute(next: Map<string, Route>, seg: string, route: Route, clashes: string[]): void {
+  const prev = next.get(seg);
+  if (prev) clashes.push(`/${seg} (${prev.id}, ${route.id})`);
+  if (prev?.exposed && !route.exposed) return;
+  next.set(seg, route);
+}
 
 async function rebuild(): Promise<void> {
   if (pinnedForTests) return;
@@ -112,22 +171,33 @@ async function rebuild(): Promise<void> {
       log.warn('Ingress: could not read Docker; keeping the previous app routes.');
       return;
     }
-    const next = new Map<string, number>();
+    const next = new Map<string, Route>();
+    const clashes: string[] = [];
     for (const a of apps) {
-      // Per-app exposure opt-in: only route apps the admin has exposed over the
-      // tunnel. `exposed` is grandfathered-true for apps installed before this flag
-      // (see InstalledApp.exposed), so upgrades never silently drop a working app.
-      if (!a.exposed) continue;
       const port = a.ports[0]; // raw HTTP container port (Cloudflare provides TLS)
       if (port == null) continue;
       const seg = getAppPath(a.id);
-      if (seg && !RESERVED.has(seg)) next.set(seg, port);
+      // Per-app exposure is the admin's choice and is carried on the route rather
+      // than deciding whether there is one: `exposed` is grandfathered-true for apps
+      // installed before the flag existed (see InstalledApp.exposed), and an app that
+      // is not shared still opens from the remote dashboard.
+      // The platform's own endpoints are never an app's (apps/paths.ts — Settings
+      // refuses them as an address, but an older install or a restore may hold one).
+      if (seg && isAppPathShape(seg) && !isReservedPathSegment(seg)) {
+        placeRoute(next, seg, { id: a.id, port, exposed: a.exposed }, clashes);
+      }
     }
+    const sig = clashes.join(', ');
+    if (sig && sig !== lastCollisions) {
+      log.warn(`Ingress: more than one app uses the same address: ${sig}. A shared app keeps it; give the other its own path in Settings → Remote access.`);
+    }
+    lastCollisions = sig;
     // Worth a line when the public site is about to go dark, even legitimately (every
     // app stopped, or every app un-exposed) — this was silent, and silence is what made
     // the outage above so hard to place.
-    if (next.size === 0 && routes.size > 0) {
-      log.warn(`Ingress: no app is exposed and running; ${routes.size} public path(s) will stop resolving.`);
+    const shared = (m: Map<string, Route>) => [...m.values()].filter((r) => r.exposed).length;
+    if (shared(next) === 0 && shared(routes) > 0) {
+      log.warn(`Ingress: no app is exposed and running; ${shared(routes)} public path(s) will stop resolving.`);
     }
     routes = next;
   } catch (err) {
@@ -138,9 +208,17 @@ async function rebuild(): Promise<void> {
 
 /** Test seam: route path segments to ports without Docker, and stop the periodic
  *  rebuild from replacing them. Never called by the daemon. */
-export function __setRoutesForTests(next: Record<string, number>): void {
+export function __setRoutesForTests(next: Record<string, number | { port: number; exposed: boolean; id?: string }>): void {
   pinnedForTests = true;
-  routes = new Map(Object.entries(next));
+  // A bare port is an app shared online, which is what every test before private
+  // apps existed meant by it. The app's id defaults to its path, as it does for
+  // every app nobody has given a path of its own.
+  routes = new Map(
+    Object.entries(next).map(([seg, r]) => [
+      seg,
+      typeof r === 'number' ? { id: seg, port: r, exposed: true } : { id: r.id ?? seg, port: r.port, exposed: r.exposed },
+    ]),
+  );
 }
 
 /** Is the OS actually routing this app's public path to it right now? The Fabric
@@ -149,8 +227,97 @@ export function __setRoutesForTests(next: Record<string, number>): void {
  *  self-probe through Cloudflare (which fails from inside a container even when the
  *  path routes fine for real external visitors). */
 export function isRouted(appId: string): boolean {
+  // PUBLICLY routed, and to THIS app. A private app is in the table too, but it has no
+  // public URL to advertise — the admin opening it remotely does not make it reachable
+  // by a donor. And when two apps answer to one path (placeRoute decides which keeps
+  // it), only the one actually there may be told it is published there: the other's
+  // Stripe return links and QR codes would otherwise point at someone else's app.
   const seg = getAppPath(appId);
-  return Boolean(seg) && routes.has(seg);
+  const r = seg ? routes.get(seg) : undefined;
+  return r !== undefined && r.id === appId && r.exposed === true;
+}
+
+/**
+ * Is this request a browser fetching a SERVICE WORKER'S script? Browsers mark it twice —
+ * `Service-Worker: script` (the Service Workers specification) and `Sec-Fetch-Dest:
+ * serviceworker` — and a page cannot make an ordinary fetch that carries the second.
+ */
+export function isWorkerScriptFetch(headers: http.IncomingHttpHeaders): boolean {
+  const one = (v: string | string[] | undefined) => String(Array.isArray(v) ? v[0] : (v ?? '')).trim().toLowerCase();
+  return one(headers['service-worker']) === 'script' || one(headers['sec-fetch-dest']) === 'serviceworker';
+}
+
+/**
+ * Is this an app's BARE address — `/<seg>` with nothing after it but a query?
+ *
+ * A service worker's reach is the directory of its script's address, and the directory
+ * of `/<seg>` is `/` — the whole apps hostname: every other app's pages, and the address
+ * that hands a browser an app's access token (system/app-access.ts). Stripping
+ * Service-Worker-Allowed (below) only confines a script that lives UNDER `/<seg>/`; a
+ * review found an app could serve its worker at the bare address instead. So the app's
+ * worker script is never served there (`isWorkerScriptFetch`) — only one that removes
+ * itself (`SELF_REMOVING_WORKER`) — and nothing answered there may be kept in a cache,
+ * the browser's or Cloudflare's, from which it could stand in for one later. Everything
+ * else reaches the app as it always did.
+ *
+ * Not a redirect to `/<seg>/`, which was the first fix: an app that treats `/<seg>` as
+ * its root and sends `/<seg>/` back there (Next.js with a base path does, by default)
+ * then bounced between the two for ever, and its public page was gone.
+ *
+ * Every spelling counts (`/%73hared` is `/shared` to the router), which is why this asks
+ * of the raw path only "one segment, no trailing slash".
+ */
+export function isBareAppAddress(url: string): boolean {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  return !raw.endsWith('/') && raw.split('/').filter(Boolean).length === 1;
+}
+
+/**
+ * A service worker that removes itself — what a worker's script fetch at a bare address
+ * gets, instead of a 404.
+ *
+ * A 404 stops NEW registrations. But by the Service Workers specification, an update
+ * check that fetches no script leaves an EXISTING registration in place with its old
+ * worker still running — and every build before this one let an app's page register a
+ * worker over the whole apps' address from its bare one (Stable passed
+ * Service-Worker-Allowed through, too). Such a worker, in the browser of anyone who once
+ * opened that app through the internet address, the admin included, went on answering
+ * every page there — the one-use Open address now among them — after the app was gone.
+ * The browser's next update check installs this instead, and it unregisters on
+ * activation. It does nothing else: it clears no caches, which belong to the apps.
+ *
+ * It reaches only a worker whose script is AT a bare address. One an older build let an
+ * app register over the whole address from a script under its own path (`/<seg>/sw.js`
+ * with `Service-Worker-Allowed: /`) checks for updates there, which is the app's to
+ * answer; without the header now its update fails, and a failed update leaves the old
+ * worker running. Clearing that browser's data for the apps' address is the way out.
+ */
+export const SELF_REMOVING_WORKER =
+  "self.addEventListener('install',()=>self.skipWaiting());" +
+  "self.addEventListener('activate',(e)=>e.waitUntil(self.registration.unregister()));\n";
+
+/**
+ * Answer a worker's script fetch at a bare address with SELF_REMOVING_WORKER — the same
+ * answer whether a shared app is there, a private one, or nothing at all, so it says
+ * nothing about what is installed (the front door's not-found handler gives it too).
+ * Recorded as a refusal when it came through the tunnel; never cacheable.
+ */
+export function answerBareWorkerFetch(req: FastifyRequest, reply: FastifyReply, opts: { record: boolean }): FastifyReply {
+  if (opts.record) recordRefusal(req, 'worker-at-bare-address');
+  for (const [k, v] of Object.entries(NO_STORE_HEADERS)) reply.header(k, v);
+  return reply.code(200).type('text/javascript; charset=utf-8').send(SELF_REMOVING_WORKER);
+}
+
+/**
+ * App paths this ingress declined to serve, and why — an app that is not shared
+ * online, asked for without its access token, or ANY app asked for on the admin
+ * hostname. The not-found handler reads it to record the reason
+ * (system/tunnel-refusals.ts `notFoundReason`) while sending the very same 404, so
+ * the difference exists only in the record.
+ */
+const declined = new WeakMap<IncomingMessage, RefusalReason>();
+export function declinedReason(req: IncomingMessage): RefusalReason | null {
+  return declined.get(req) ?? null;
 }
 
 function segmentOf(path: string): string {
@@ -214,17 +381,75 @@ export function isFabricSubpath(url: string, seg: string): boolean {
   );
 }
 
-function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number): void {
+/**
+ * What an app may say back through the tunnel.
+ *
+ *  - Never a platform session cookie. The apps share a hostname with each other, and
+ *    one app setting `omos_session` for another's path is how it would sign the admin
+ *    out of that app, or into an account of its own choosing.
+ *  - Never `Service-Worker-Allowed`. Without it a service worker is confined to the
+ *    directory its script is served from — which, because no app's worker script is
+ *    ever served at the bare `/<seg>` address (isBareAppAddress), is always inside the
+ *    app's own path. With it, one app could register a worker over the whole hostname, see
+ *    every other app's pages — and the address that hands a browser an app's access
+ *    token (system/app-access.ts), which it could then use elsewhere.
+ *  - Never cached by anyone but the admin's own browser, when the page is private or
+ *    the request carried the admin's access token: Cloudflare keys its cache on the
+ *    address alone, so a cached copy would go to everyone who asks next.
+ */
+function responseHeadersForTunnel(
+  headers: http.IncomingHttpHeaders,
+  opts: { private: boolean },
+): http.OutgoingHttpHeaders {
+  const out: http.OutgoingHttpHeaders = { ...headers };
+  delete out['service-worker-allowed'];
+  const cookies = headers['set-cookie'];
+  if (cookies) {
+    const kept = cookies.filter((c) => {
+      const name = c.slice(0, Math.max(0, c.indexOf('='))).trim();
+      return name !== COOKIE_NAME && name !== REMOTE_COOKIE_NAME;
+    });
+    if (kept.length > 0) out['set-cookie'] = kept;
+    else delete out['set-cookie'];
+  }
+  if (opts.private) {
+    for (const [k, v] of Object.entries(NO_STORE_HEADERS)) out[k] = v;
+    delete out.expires;
+  }
+  return out;
+}
+
+function proxyHttp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  port: number,
+  /** `noStore`: never cacheable, whatever the app says (an app's bare address). */
+  opts: { tunnel: boolean; keep: string | null; private: boolean; noStore: boolean },
+): void {
   const up = http.request(
-    { host: TARGET_HOST, port, method: req.method, path: req.url, headers: trustedHeaders(req) },
+    { host: TARGET_HOST, port, method: req.method, path: req.url, headers: trustedHeaders(req, opts.keep) },
     (upRes) => {
-      res.writeHead(upRes.statusCode ?? 502, upRes.headers);
+      let headers: http.OutgoingHttpHeaders = opts.tunnel
+        ? responseHeadersForTunnel(upRes.headers, { private: opts.private || opts.noStore })
+        : upRes.headers;
+      if (!opts.tunnel && opts.noStore) {
+        headers = { ...upRes.headers, ...NO_STORE_HEADERS };
+        delete headers.expires;
+      }
+      res.writeHead(upRes.statusCode ?? 502, headers);
       upRes.pipe(res);
     },
   );
   up.on('error', () => {
     if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
     res.end('This app is not reachable right now.');
+  });
+  // A browser that leaves part-way — a live event stream, a long poll, a big download,
+  // or Cloudflare dropping the connection — ends the request to the app too. pipe() only
+  // pauses the app's response, so this daemon held the app's connection until the app
+  // gave up by itself (system/socket-relay.ts is the same lesson for sockets).
+  res.once('close', () => {
+    if (!res.writableFinished) up.destroy();
   });
   req.pipe(up);
 }
@@ -261,34 +486,94 @@ export function attachIngress(
 
   front.addHook('onRequest', (req, reply, done) => {
     const seg = firstSegment(req.url);
-    const port = seg ? routes.get(seg) : undefined;
-    if (port == null) return done(); // not an app path → normal front-door handling
-    // Refuse an app's /fabric/* over the tunnel — LAN-only (app↔platform + broker).
-    if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url, seg)) {
-      const ref = noteRefusal(
-        req.url,
-        {
-          host: String(req.headers.host ?? ''),
-          method: req.method,
-          cfRay: String(req.headers['cf-ray'] ?? ''),
-          accept: String(req.headers.accept ?? ''),
-          agent: String(req.headers['user-agent'] ?? ''),
-        },
-        'app-fabric-lan-only',
-      );
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+    const route = seg ? routes.get(seg) : undefined;
+    if (!route) return done(); // not an app path → normal front-door handling
+    // Never on the admin hostname, whatever the app and whoever is asking: that
+    // origin holds the dashboard's cookie and key. Falls through to the same 404 as
+    // an empty address (or, on the masjid's network, the usual redirect).
+    if (isAdminHost(req.headers.host)) {
+      declined.set(req.raw, 'app-on-admin-host');
+      return done();
     }
+    const tunnel = isViaTunnelHeaders(req.headers);
+    // The admin's access token for THIS app, if the request carries a valid one.
+    const keep = tunnel ? appAccessFromCookie(req.headers.cookie, route.id) : null;
+    const isPrivate = tunnel && (!route.exposed || keep !== null);
+    // An app that is not shared online, asked for without its token, is declined
+    // FIRST — before anything below can answer differently for it than for an empty
+    // address. A review found the /fabric refusal answering here, before the body was
+    // read, while an empty address went on to the not-found route, where Fastify
+    // parses the body first: a malformed or oversized POST then got 404 at an
+    // installed app's path and 400/413 at an empty one, which told a stranger which
+    // apps were installed. Declined here, both take the same road.
+    if (!route.exposed) {
+      // Not shared online. On the masjid's network nothing changes — it is reached at
+      // its own port, and this listener goes on not serving it.
+      if (!tunnel) return done();
+      // From outside: only with its access token. Anyone else falls through to the
+      // not-found handler and gets exactly the 404 an empty address gets.
+      if (!keep) {
+        declined.set(req.raw, 'app-not-shared');
+        return done();
+      }
+    }
+    // Refuse an app's /fabric/* over the tunnel — LAN-only (app↔platform + broker).
+    // An access token does not open it either.
+    if (tunnel && isFabricSubpath(req.url, seg)) return refuseOverTunnel(req, reply, 'app-fabric-lan-only');
+    // An app's bare address never serves the app's worker script — only one that removes
+    // itself — and nothing answered there is cacheable (isBareAppAddress says why).
+    // Everything else goes to the app.
+    const bare = isBareAppAddress(req.url);
+    if (bare && isWorkerScriptFetch(req.headers)) return answerBareWorkerFetch(req, reply, { record: tunnel });
     reply.hijack(); // we own the raw response from here
-    proxyHttp(req.raw, reply.raw, port);
+    proxyHttp(req.raw, reply.raw, route.port, { tunnel, keep, private: isPrivate, noStore: bare });
   });
 
   // WebSocket upgrades for app paths (apps may use live sockets behind the tunnel).
   front.server.on('upgrade', (req, socket, head) => {
     const seg = firstSegment(req.url ?? '');
-    const port = seg ? routes.get(seg) : undefined;
-    if (port == null) {
-      // Not an app path. ONE thing may claim it: the dashboard's own tRPC socket,
-      // when the front-door gate would let that request through.
+    const found = seg ? routes.get(seg) : undefined;
+    const tunnel = isViaTunnelHeaders(req.headers);
+    // Is this an app socket THIS request may open? The same rules as HTTP: never on
+    // the admin hostname; an app that is not shared online only with its access
+    // token, and on the masjid's network not through this listener at all.
+    const keep = found && tunnel ? appAccessFromCookie(req.headers.cookie, found.id) : null;
+    let route = found;
+    let why: RefusalReason | null = null;
+    if (route && isAdminHost(req.headers.host)) {
+      why = 'app-on-admin-host';
+      route = undefined;
+    } else if (route && !route.exposed && !(tunnel && keep)) {
+      why = 'app-not-shared';
+      route = undefined;
+    }
+    // Same /fabric/* refusal as the HTTP path (a WS upgrade must not tunnel in) — and,
+    // as there, only for a socket that would otherwise be served, so a declined app's
+    // /fabric takes the same road as an empty address below.
+    if (route && tunnel && isFabricSubpath(req.url ?? '', seg)) {
+      socket.destroy();
+      return;
+    }
+    if (!route) {
+      if (tunnel && why) {
+        noteRefusal(
+          req.url ?? '',
+          {
+            host: String(req.headers.host ?? ''),
+            method: req.method,
+            cfRay: String(req.headers['cf-ray'] ?? ''),
+            accept: String(req.headers.accept ?? ''),
+            agent: String(req.headers['user-agent'] ?? ''),
+          },
+          why,
+        );
+      }
+      // Not an app socket. ONE thing may claim it: one of the dashboard's own sockets,
+      // when the front-door gate would let that request through. A declined app takes
+      // this same path rather than being destroyed on the spot, so the answer is the
+      // same as for an address with nothing at it — a review found that destroying a
+      // private app's socket here, while a dot-segment spelling of nothing was claimed
+      // and answered, told a stranger which apps were installed.
       if (opts.claimUpgrade?.(req, socket, head)) return;
       // Otherwise DESTROY it, never just return. An abandoned socket gets no
       // response and no close — it holds a file descriptor until the peer gives
@@ -301,11 +586,13 @@ export function attachIngress(
       socket.destroy();
       return;
     }
-    // Same /fabric/* refusal on the WebSocket path (a WS upgrade must not tunnel in).
-    if (isViaTunnelHeaders(req.headers) && isFabricSubpath(req.url ?? '', seg)) {
+    // Opened with the admin's access token: recorded, so signing out, a new password, a
+    // changed second factor or the door shutting closes it (system/remote-sockets.ts).
+    if (tunnel && keep && !trackAppSocket(socket, route.id, keep)) {
       socket.destroy();
       return;
     }
+    const port = route.port;
     const up = net.connect(port, TARGET_HOST, () => {
       up.write(`${req.method} ${req.url} HTTP/1.1\r\n`);
       // Relay the handshake headers (incl. Connection/Upgrade, which WS needs) but
@@ -318,16 +605,23 @@ export function attachIngress(
         'x-forwarded-proto',
         'x-forwarded-host',
         'x-forwarded-port',
+        'x-forwarded-prefix',
         'forwarded',
         'cf-connecting-ip',
         'x-real-ip',
         'true-client-ip',
       ]);
+      // Through the tunnel the Cookie header is rebuilt, exactly as on the HTTP path:
+      // no platform session cookie reaches an app, only its own access token.
+      if (tunnel) drop.add('cookie');
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         if (drop.has(req.rawHeaders[i].toLowerCase())) continue;
         up.write(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`);
       }
-      const tunnel = isViaTunnelHeaders(req.headers);
+      if (tunnel) {
+        const cookie = cookieHeaderForApp(req.headers.cookie, keep);
+        if (cookie !== undefined) up.write(`Cookie: ${cookie}\r\n`);
+      }
       const cfIp = tunnel ? req.headers['cf-connecting-ip'] : undefined;
       const trustedCfIp = typeof cfIp === 'string' && cfIp ? cfIp : '';
       const fwdFor = trustedCfIp || req.socket?.remoteAddress || '';
@@ -340,8 +634,7 @@ export function attachIngress(
       up.pipe(socket);
       socket.pipe(up);
     });
-    up.on('error', () => socket.destroy());
-    socket.on('error', () => up.destroy());
+    closeTogether(socket, up);
   });
 
   log.info('Path-based app ingress attached to the HTTP front door.');

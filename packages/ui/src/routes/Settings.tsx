@@ -21,7 +21,8 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PhoneField } from '../components/PhoneField';
 import { formatPhone } from '../lib/phone';
 import { AppLogs } from '../components/AppLogs';
-import { openApp } from '../lib/apps';
+import { isRemoteSession, openApp } from '../lib/apps';
+import { REMOTE_UPLOAD_LIMIT } from '../lib/files';
 import { changelogWindowOptions } from '../components/ChangelogWindow';
 import { UpdateChannel } from '../components/UpdateChannel';
 import { ChannelMigrate } from '../components/ChannelMigrate';
@@ -297,13 +298,6 @@ export function Settings() {
   const utils = trpc.useUtils();
   // An unknown or missing section falls back rather than 404s: a stale bookmark from
   // before a section was renamed should land somewhere useful, not on an error.
-  // Is this session from outside the masjid? A few controls below reach routes
-  // that are registered on the LAN listener alone and are deliberately not
-  // published over the tunnel (system/remote-admin.ts LAN_ONLY_FEATURES). They
-  // are refused server-side by not existing there; this just stops the screen
-  // offering a button that cannot work.
-  const meQuery = trpc.auth.me.useQuery();
-  const remoteSession = meQuery.data?.remote === true;
   const { section: sectionParam } = useParams();
   const section: SectionId = isSectionId(sectionParam) ? sectionParam : DEFAULT_SECTION;
   const show = (id: SectionId) => section === id;
@@ -352,6 +346,12 @@ export function Settings() {
   }
 
   async function uploadAndRestore(file: File) {
+    // Cloudflare's free plan carries nothing larger through the tunnel, and answers with
+    // its own error page — which used to surface here as "Something went wrong".
+    if (isRemoteSession() && file.size > REMOTE_UPLOAD_LIMIT) {
+      toast(t('settings.restoreTooBigRemote'), 'error');
+      return;
+    }
     setRestoreUploading(true);
     try {
       const fd = new FormData();
@@ -363,8 +363,10 @@ export function Settings() {
         body: fd,
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error || t('errors.generic'));
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        // Not our answer at all: Cloudflare's own page, almost always the size limit.
+        if (!body && isRemoteSession() && res.status === 413) throw new Error(t('settings.restoreTooBigRemote'));
+        throw new Error(body?.error || t('errors.generic'));
       }
       setRestoreFile(null);
       setRestoreOpen(true);
@@ -654,9 +656,8 @@ export function Settings() {
           <div className="setting-row">
             <div className="setting-row__text">
               <div className="setting-row__title">{t('settings.rootTerminalOpen')}</div>
-              {remoteSession && <div className="setting-row__hint">{t('settings.remoteOnlyLanHint')}</div>}
             </div>
-            <button className="btn" disabled={remoteSession} onClick={openRootTerminal}>
+            <button className="btn" onClick={openRootTerminal}>
               <SquareTerminal size={15} /> {t('settings.rootTerminalOpen')}
             </button>
           </div>
@@ -719,15 +720,12 @@ export function Settings() {
             {/* The downloaded file is unencrypted and carries everything — say so
                 here too, not only on the off-site panel. */}
             <div className="setting-row__hint">{t('settings.backupContentsBody')}</div>
-            {remoteSession && <div className="setting-row__hint">{t('settings.remoteOnlyLanHint')}</div>}
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {!remoteSession && (
-              <a className="btn" href={withKey('/api/backup')}>
-                <Download size={15} /> {t('settings.downloadBackup')}
-              </a>
-            )}
-            <button className="btn" disabled={restoreUploading || remoteSession} onClick={() => restoreInput.current?.click()}>
+            <a className="btn" href={withKey('/api/backup')}>
+              <Download size={15} /> {t('settings.downloadBackup')}
+            </a>
+            <button className="btn" disabled={restoreUploading} onClick={() => restoreInput.current?.click()}>
               <Upload size={15} /> {restoreUploading ? t('settings.restoreUploading') : t('settings.restore')}
             </button>
             <input
@@ -777,6 +775,9 @@ export function Settings() {
 
       <Modal open={!!restoreFile} onClose={() => !restoreUploading && setRestoreFile(null)} title={t('settings.restoreConfirmTitle')}>
         <p>{t('settings.restoreConfirmBody')}</p>
+        {/* From outside, a restore that would close the way back in is refused by the
+            platform (core system/restore.ts) — say so before the upload, not after. */}
+        {isRemoteSession() && <p className="setting-row__hint">{t('settings.restoreConfirmRemote')}</p>}
         {restoreUploading ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '1rem' }}>
             <span className="spinner" /> {t('settings.restoreUploading')}
@@ -1019,6 +1020,10 @@ function ChangePassword() {
   const saveProfile = trpc.auth.updateProfile.useMutation({
     onSuccess: () => {
       utils.auth.me.invalidate();
+      // A new address pauses emailed sign-in codes (core auth/twofactor.ts), and the
+      // two-step panel sits just below this form: without this it went on showing
+      // them as on until its cache ran out.
+      utils.auth.twoFactor.status.invalidate();
       toast(t('settings.profileSaved'), 'success');
     },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
@@ -1633,6 +1638,8 @@ function EmailPanel() {
       setApiKey('');
       utils.email.get.invalidate();
       utils.email.status.invalidate();
+      // Another mail account pauses emailed sign-in codes too (see saveProfile).
+      utils.auth.twoFactor.status.invalidate();
       toast(t('settings.emailSaved'), 'success');
     },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
@@ -2146,10 +2153,16 @@ function WhatsAppPanel() {
                         ? t('settings.whatsappGatewayRestart')
                         : t('settings.whatsappGatewayStart')}
                   </button>
+                  {/* Not from outside: the gateway is someone else's software and its own
+                      screen does not work under a path, which is how the tunnel serves an
+                      app — so the button would open a broken page. It says so instead. */}
                   <button
                     className="btn"
-                    disabled={!gw.running || gw.openPort == null}
-                    onClick={() => openApp(gw)}
+                    disabled={!gw.running || gw.openPort == null || isRemoteSession()}
+                    title={isRemoteSession() ? t('settings.whatsappGatewayOpenRemote') : undefined}
+                    onClick={() => {
+                      if (!openApp(gw)) toast(t('errors.openApp'), 'error');
+                    }}
                   >
                     <ExternalLink size={15} /> {t('settings.whatsappGatewayOpen')}
                   </button>
@@ -2175,6 +2188,11 @@ function WhatsAppPanel() {
                   <span className="hint" style={{ marginInlineStart: '0.5rem' }}>
                     {t('settings.whatsappGatewayStopped')}
                   </span>
+                )}
+                {isRemoteSession() && gw.running && (
+                  <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>
+                    {t('settings.whatsappGatewayOpenRemote')}
+                  </div>
                 )}
                 {/* When it starts and dies, the reason is already in hand — putting it
                     on screen beats sending the admin to the logs button to find the one
@@ -3339,10 +3357,10 @@ function StripePanel() {
  *
  * This is the panel that answers "my public page says Not found and I cannot tell why".
  * Every one of those 404s is identical from outside on purpose, so this is the only place
- * the difference is visible — and it is behind the LAN-only dashboard, which is what makes
- * being specific here safe.
+ * the difference is visible — and it is behind a sign-in (from outside, one that passed the
+ * second factor), which is what makes being specific here safe.
  */
-function TunnelRefusals() {
+function TunnelRefusals({ port }: { port: number }) {
   const { t } = useTranslation();
   // Only while someone is looking at this panel; it is a diagnostic, not a monitor.
   const q = trpc.cloudflare.refusals.useQuery(undefined, { refetchInterval: 15_000 });
@@ -3368,6 +3386,18 @@ function TunnelRefusals() {
             <span style={{ flex: '0 0 auto' }}>
               {r.reason === 'plain-http-no-host'
                 ? t('settings.cfRefusalPlainHttp')
+                : r.reason === 'app-not-shared'
+                ? t('settings.cfRefusalAppNotShared')
+                : r.reason === 'dashboard-elsewhere'
+                ? t('settings.cfRefusalDashboardElsewhere')
+                : r.reason === 'app-on-admin-host'
+                ? t('settings.cfRefusalAppOnAdminHost')
+                : r.reason === 'no-admin-host'
+                ? t('settings.cfRefusalNoAdminHost')
+                : r.reason === 'wrong-port'
+                ? t('settings.cfRefusalWrongPort', { port })
+                : r.reason === 'worker-at-bare-address'
+                ? t('settings.cfRefusalWorker')
                 : r.reason === 'no-app-at-path'
                 ? t('settings.cfRefusalNoApp')
                 : r.reason === 'app-fabric-lan-only'
@@ -3412,25 +3442,65 @@ function CloudflarePanel() {
 
   const [domain, setDomain] = useState('');
   const [token, setToken] = useState('');
+  const [adminHost, setAdminHost] = useState('');
+  // The apps' address, likewise, only when edited: sending what the field held since the
+  // page loaded put back an address another device had changed — every shared app's
+  // public links with it.
+  const [domainEdited, setDomainEdited] = useState(false);
+  // Sent only when the admin actually changed it. Sending whatever the field held put
+  // back a value from when the page loaded — undoing a change made on another device.
+  const [adminHostEdited, setAdminHostEdited] = useState(false);
+  // From outside, the actions below that close remote access close it on THIS window
+  // too, and only someone at the masjid can open it again: those get asked first.
+  // At the masjid they are reversible with the control beside them, so they do not
+  // (ConfirmDialog's own rule).
+  const remote = isRemoteSession();
+  const [cutOff, setCutOff] = useState<null | 'tunnel' | 'remoteAdmin' | 'clear'>(null);
   const seeded = useRef(false);
   useEffect(() => {
     if (cf && !seeded.current) {
       setDomain(cf.domain);
+      setAdminHost(cf.adminHost);
       seeded.current = true;
     }
   }, [cf]);
 
   const save = trpc.cloudflare.save.useMutation({
-    onSuccess: () => { setToken(''); refresh(); toast(t('settings.cfSaved'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onSuccess: (r) => {
+      setToken('');
+      // Show what is stored now, as the server normalised it.
+      setDomain(r.domain);
+      setAdminHost(r.adminHost);
+      setDomainEdited(false);
+      setAdminHostEdited(false);
+      refresh();
+      toast(t('settings.cfSaved'), 'success');
+    },
+    // Refresh the status on a refusal too, so it says what is actually stored. The fields
+    // keep what was typed, so a mistyped address can be corrected rather than retyped.
+    onError: (e) => { refresh(); toast(e.message || t('errors.generic'), 'error'); },
   });
+  // A cut-off confirmed from outside takes down the very connection its answer would come
+  // back on, so the answer never arrives: Cloudflare sends its own error page instead.
+  // That is the action having WORKED — say so, rather than toast a parse error and leave
+  // the dialog armed to do it again.
+  const cutOffEnded = (e: { data?: { code?: string } | null }) => {
+    if (!remote || cutOff === null || e.data?.code) return false;
+    setCutOff(null);
+    toast(t('settings.cfCutOffDone'), 'info');
+    return true;
+  };
   const setEnabled = trpc.cloudflare.setEnabled.useMutation({
-    onSuccess: () => refresh(),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onSuccess: () => { setCutOff(null); refresh(); },
+    onError: (e) => {
+      if (!cutOffEnded(e)) toast(e.message || t('errors.generic'), 'error');
+    },
   });
   const clear = trpc.cloudflare.clear.useMutation({
-    onSuccess: () => { setToken(''); refresh(); toast(t('settings.cfCleared'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onSuccess: () => { setCutOff(null); setToken(''); refresh(); toast(t('settings.cfCleared'), 'success'); },
+    onError: (e) => {
+      if (!cutOffEnded(e)) toast(e.message || t('errors.generic'), 'error');
+    },
   });
   const setPath = trpc.cloudflare.setPath.useMutation({
     onSuccess: (r) => { utils.cloudflare.routes.invalidate(); toast(t('settings.cfPathSaved', { path: r.path }), 'success'); },
@@ -3444,6 +3514,7 @@ function CloudflarePanel() {
     onSuccess: (r) => {
       refresh();
       setRemoteAdminAsk(false);
+      setCutOff(null);
       toast(r.remoteAdminActive ? t('settings.cfRemoteAdminOn') : t('settings.cfRemoteAdminOff'), 'success');
     },
     onError: (e) => toast(e.message || t('errors.generic'), 'error'),
@@ -3472,10 +3543,20 @@ function CloudflarePanel() {
             {t('settings.cfEnable')}
           </div>
           <div className="setting-row__hint">
-            {cf.running ? t('settings.cfRunning') : cf.hasToken ? t('settings.cfStopped') : t('settings.cfNoToken')}
+            {cf.running
+              ? t('settings.cfRunning')
+              : !cf.hasToken
+                ? t('settings.cfNoToken')
+                : cf.enabled
+                  ? t('settings.cfNotConnecting')
+                  : t('settings.cfStopped')}
           </div>
         </div>
-        <Toggle checked={cf.enabled} onChange={(v) => setEnabled.mutate({ enabled: v })} label={t('settings.cfEnable')} />
+        <Toggle
+          checked={cf.enabled}
+          onChange={(v) => (!v && remote ? setCutOff('tunnel') : setEnabled.mutate({ enabled: v }))}
+          label={t('settings.cfEnable')}
+        />
       </div>
 
       <div className="setting-row">
@@ -3483,7 +3564,50 @@ function CloudflarePanel() {
           <div className="setting-row__title">{t('settings.cfDomain')}</div>
           <div className="setting-row__hint">{t('settings.cfDomainHint')}</div>
         </div>
-        <input className="input glass-inset" style={{ maxWidth: '16rem' }} placeholder="omos.example.org" value={domain} onChange={(e) => setDomain(e.target.value)} />
+        <input
+          className="input glass-inset"
+          style={{ maxWidth: '16rem' }}
+          placeholder="omos.example.org"
+          value={domain}
+          onChange={(e) => {
+            setDomain(e.target.value);
+            setDomainEdited(true);
+          }}
+        />
+      </div>
+
+      {/* The dashboard's own address from outside — beside the apps' one, so the one
+          Save below stores both. Its own field, and its own Cloudflare hostname, because
+          the dashboard must never share an address with the apps: an app page on the
+          dashboard's address could act as the admin (core system/remote-admin.ts). */}
+      <div className="setting-row">
+        <div className="setting-row__text">
+          <div className="setting-row__title">{t('settings.cfAdminHost')}</div>
+          <div className="setting-row__hint">{t('settings.cfAdminHostHint')}</div>
+        </div>
+        <input
+          className="input glass-inset"
+          style={{ maxWidth: '16rem' }}
+          placeholder="admin.example.org"
+          value={adminHost}
+          onChange={(e) => {
+            setAdminHost(e.target.value);
+            setAdminHostEdited(true);
+          }}
+          // From outside, the server refuses to move the address this page is open
+          // on; better to say so here than after Save.
+          disabled={remote}
+          title={remote ? t('settings.cfAdminHostRemote') : undefined}
+          aria-label={t('settings.cfAdminHost')}
+        />
+      </div>
+      {remote && (
+        <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
+          {t('settings.cfAdminHostRemote')}
+        </div>
+      )}
+      <div className="setting-row__hint" style={{ marginBlockEnd: '0.6rem' }}>
+        {t('settings.cfAdminHostSteps', { port: routes.data?.ingressPort ?? 80 })}
       </div>
 
       <div className="field">
@@ -3496,16 +3620,30 @@ function CloudflarePanel() {
           value={token}
           onChange={(e) => setToken(e.target.value)}
           autoComplete="off"
+          // From outside the server refuses a new token (a wrong one would cut this
+          // window off), so the field says so instead of letting someone paste one.
+          disabled={remote}
+          title={remote ? t('settings.cfTokenRemote') : undefined}
         />
-        <div className="setting-row__hint">{t('settings.cfTokenHint')}</div>
+        <div className="setting-row__hint">{remote ? t('settings.cfTokenRemote') : t('settings.cfTokenHint')}</div>
       </div>
 
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
-        <button className="btn btn--primary" disabled={save.isPending} onClick={() => save.mutate({ domain: domain.trim(), token: token.trim() || undefined })}>
+        <button
+          className="btn btn--primary"
+          disabled={save.isPending}
+          onClick={() =>
+            save.mutate({
+              domain: domainEdited ? domain.trim() : undefined,
+              token: token.trim() || undefined,
+              adminHost: adminHostEdited ? adminHost.trim() : undefined,
+            })
+          }
+        >
           <Check size={15} /> {save.isPending ? t('settings.cfSaving') : t('settings.cfSave')}
         </button>
         {cf.hasToken && (
-          <button className="btn" disabled={clear.isPending} onClick={() => clear.mutate()}>
+          <button className="btn" disabled={clear.isPending} onClick={() => (remote ? setCutOff('clear') : clear.mutate())}>
             <Trash2 size={15} /> {t('settings.cfClear')}
           </button>
         )}
@@ -3528,15 +3666,19 @@ function CloudflarePanel() {
                 ? t('settings.cfRemoteAdminNeeds2fa')
                 : cf.remoteAdminBlocked === 'no-tunnel'
                   ? t('settings.cfRemoteAdminNeedsTunnel')
-                  : cf.remoteAdmin && !cf.remoteAdminActive
-                    ? t('settings.cfRemoteAdminStalled')
-                    : t('settings.cfRemoteAdminHint')}
+                  : cf.remoteAdminBlocked === 'no-admin-host'
+                    ? t('settings.cfRemoteAdminNeedsHost')
+                    : cf.remoteAdmin && !cf.remoteAdminActive
+                      ? t('settings.cfRemoteAdminStalled')
+                      : t('settings.cfRemoteAdminHint')}
             </div>
           </div>
           <Toggle
             checked={cf.remoteAdmin}
             disabled={setRemoteAdmin.isPending || (!cf.remoteAdmin && cf.remoteAdminBlocked !== null)}
-            onChange={(v) => (v ? setRemoteAdminAsk(true) : setRemoteAdmin.mutate({ enabled: false }))}
+            onChange={(v) =>
+              v ? setRemoteAdminAsk(true) : remote ? setCutOff('remoteAdmin') : setRemoteAdmin.mutate({ enabled: false })
+            }
             label={t('settings.cfRemoteAdmin')}
           />
         </div>
@@ -3547,7 +3689,7 @@ function CloudflarePanel() {
         )}
         {cf.remoteAdminActive && (
           <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-            {t('settings.cfRemoteAdminAt', { url: `https://${cf.domain}/` })}
+            {t('settings.cfRemoteAdminAt', { url: `https://${cf.adminHost}/` })}
           </p>
         )}
       </div>
@@ -3595,7 +3737,12 @@ function CloudflarePanel() {
                           />
                         </>
                       ) : (
-                        <span style={{ color: 'var(--color-ink-muted)', fontFamily: 'inherit' }}>{t('settings.cfNotShared')}</span>
+                        // A sentence, not an address: it wraps, in the body face. The cell's
+                        // nowrap monospace is for the address branch above, and this text
+                        // under it forced the whole table to scroll sideways on a phone.
+                        <span style={{ color: 'var(--color-ink-muted)', fontFamily: 'var(--font-sans)', whiteSpace: 'normal' }}>
+                          {t('settings.cfNotShared')}
+                        </span>
                       )}
                     </td>
                   </tr>
@@ -3637,7 +3784,38 @@ function CloudflarePanel() {
         </p>
 
       </details>
-      <TunnelRefusals />
+      <TunnelRefusals port={routes.data?.ingressPort ?? 80} />
+
+      {/* From outside: turning remote access off, managing from outside off, or removing
+          the tunnel ends this window's connection, and only the masjid can undo it. */}
+      <ConfirmDialog
+        open={cutOff !== null}
+        onClose={() => setCutOff(null)}
+        onConfirm={() =>
+          cutOff === 'tunnel'
+            ? setEnabled.mutate({ enabled: false })
+            : cutOff === 'remoteAdmin'
+              ? setRemoteAdmin.mutate({ enabled: false })
+              : clear.mutate()
+        }
+        title={
+          cutOff === 'tunnel'
+            ? t('settings.cfCutOffTunnelTitle')
+            : cutOff === 'remoteAdmin'
+              ? t('settings.cfCutOffAdminTitle')
+              : t('settings.cfCutOffClearTitle')
+        }
+        body={
+          cutOff === 'tunnel'
+            ? t('settings.cfCutOffTunnelBody')
+            : cutOff === 'remoteAdmin'
+              ? t('settings.cfCutOffAdminBody')
+              : t('settings.cfCutOffClearBody')
+        }
+        cost={t('settings.cfCutOffCost')}
+        confirmLabel={cutOff === 'clear' ? t('settings.cfClear') : t('common.turnOff')}
+        pending={setEnabled.isPending || setRemoteAdmin.isPending || clear.isPending}
+      />
 
       {/* Turning remote administration ON. A dialog rather than a toggle that just
           fires, because the effect is outside the building: after this, the
@@ -3649,7 +3827,7 @@ function CloudflarePanel() {
         onClose={() => setRemoteAdminAsk(false)}
         title={t('settings.cfRemoteAdminAskTitle')}
       >
-        <p>{t('settings.cfRemoteAdminAskBody', { url: `https://${cf.domain}/` })}</p>
+        <p>{t('settings.cfRemoteAdminAskBody', { url: `https://${cf.adminHost}/` })}</p>
         <ul style={{ margin: '0.85rem 0', paddingInlineStart: '1.1rem', display: 'grid', gap: '0.4rem' }}>
           <li>{t('settings.cfRemoteAdminAsk1')}</li>
           <li>{t('settings.cfRemoteAdminAsk2')}</li>

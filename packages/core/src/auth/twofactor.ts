@@ -35,6 +35,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
+import { getAdminEmail } from './store';
+import { emailDeliveryFingerprint } from '../store/email';
 import {
   clockSkewSteps,
   generateSecret,
@@ -106,8 +108,30 @@ export interface TwoFactorConfig {
   pendingTotpAttempts?: number;
   /** Emailed codes are allowed as a second factor. Needs a configured provider. */
   emailEnabled?: boolean;
+  /**
+   * Where emailed codes were going when they were switched on: the admin's address
+   * and the mail account they are sent through (`emailBinding`). Codes are honoured
+   * and sent only while that is still where they would go. See `emailUsable`.
+   */
+  emailBoundTo?: string;
   pendingEmail?: PendingEmailCode;
   backupCodes?: BackupCode[];
+  /**
+   * Changes whenever what counts as a second factor changes: an authenticator
+   * enrolled, backup codes replaced, emailed codes switched on or off, two-step
+   * sign-in turned off. A remote session records the value it signed in under and
+   * is honoured from outside only while it still matches (auth/sessions.ts) — so
+   * replacing a lost phone, or burning the backup codes someone found, shuts every
+   * session made with the old ones out from the internet at once. Without it those
+   * sessions ran from outside for their full seven days, files and terminals
+   * included, whatever the admin did about the factor. On the masjid's network such a
+   * session goes on working, as any session does there: the second factor has never
+   * been part of signing in on the LAN, and a password change is what ends a session
+   * everywhere.
+   * Random rather than a counter, so a restored file can never collide with a value
+   * a later change produced.
+   */
+  epoch?: string;
 }
 
 function load(): TwoFactorConfig {
@@ -121,10 +145,143 @@ function save(cfg: TwoFactorConfig): void {
 
 const sha256 = (v: string): string => crypto.createHash('sha256').update(v, 'utf8').digest('hex');
 
+/**
+ * Where an emailed code would go right now: the admin's address, and the mail
+ * account it would be sent through.
+ *
+ * THE DESTINATION IS PART OF THE FACTOR. An emailed code proves "this person can
+ * read the masjid admin's mail" only while it is sent to the masjid admin's mail.
+ * Changing the address (Settings → Account) or pointing mail at another relay
+ * (Settings → Email) needs nothing but a signed-in session — a password-only one,
+ * on the masjid's network — so without this binding that session could quietly
+ * redirect the next sign-in code, and the factor would no longer mean what the admin
+ * switched on.
+ *
+ * Be exact about what this does NOT do: it is not what stands between a full dashboard
+ * session at the masjid and signing in from outside. Such a session can download a
+ * backup, which holds the authenticator's secret along with every other one (backups
+ * are unencrypted, CLAUDE.md §15). What two-step sign-in protects is remote access
+ * from someone who knows the password but cannot reach the masjid's network.
+ */
+function emailBinding(): string {
+  const to = (getAdminEmail() ?? '').trim().toLowerCase();
+  return sha256(`omos-email-factor:${to}\n${emailDeliveryFingerprint()}`);
+}
+
+/**
+ * Emailed codes are on AND still going where they went when they were switched on.
+ *
+ * A change of address or mail account PAUSES them rather than following the change:
+ * the admin turns them on again from the two-step panel, which asks for the password
+ * and an authenticator code. Emailed codes are only ever offered alongside an
+ * authenticator (Settings shows the switch once one is set up), so pausing them
+ * never leaves the admin without a way in.
+ */
+function emailUsable(c: TwoFactorConfig): boolean {
+  return Boolean(c.emailEnabled) && c.emailBoundTo === emailBinding();
+}
+
+/** Give the factor configuration a new epoch — see `TwoFactorConfig.epoch`. */
+function bumpEpoch(cfg: TwoFactorConfig): void {
+  cfg.epoch = crypto.randomBytes(16).toString('hex');
+}
+
+/**
+ * A restore's hold on the epoch (`holdSecondFactorEpoch`), or null. While held,
+ * `secondFactorEpoch()` answers the value the restore began with.
+ */
+let epochHold: { epoch: string } | null = null;
+
+/**
+ * The current second-factor epoch ('' for a configuration written before epochs
+ * existed). A remote session is honoured only while it matches the one it signed in
+ * under (auth/sessions.ts `getSessionUserFor`).
+ */
+export function secondFactorEpoch(): string {
+  return epochHold ? epochHold.epoch : (load().epoch ?? '');
+}
+
+/**
+ * Give the second factor a NEW epoch, once a restore has put a backup's twofactor.json
+ * in place (system/restore.ts). Returns it.
+ *
+ * Releasing the restore's hold would otherwise hand the box the BACKUP's epoch: every
+ * session made under the factor as it stood when the backup was taken counted from
+ * outside again — one the admin had shut out since by replacing the factor included —
+ * while the admin doing the restore was shut out. A new epoch counts for nobody; the
+ * restore moves its own admin onto it (auth/sessions.ts `rebindRemoteSession`).
+ */
+export function renewSecondFactorEpoch(): string {
+  const cfg = load();
+  bumpEpoch(cfg);
+  save(cfg);
+  return cfg.epoch ?? '';
+}
+
+/**
+ * Keep `secondFactorEpoch()` at its current value until released — for a restore,
+ * which replaces twofactor.json under a running process (system/restore.ts says why).
+ * Owned, like auth/store.ts `holdForRestore`: a release lifts only its own hold, and
+ * is safe to call twice.
+ *
+ * The factor itself is not changed while held (`secondFactorHeld`; the two-step
+ * router refuses, as the account store refuses a password change during a restore).
+ * A change written now would not count until the release — and the admin making it,
+ * moved onto the epoch that counts NOW, would be signed out from outside the moment
+ * the restore let go. Signing in still works: a code checked during the hold is
+ * judged, and the session bound, against the held epoch (`verifySecondFactor`).
+ */
+export function holdSecondFactorEpoch(): () => void {
+  const hold = { epoch: load().epoch ?? '' };
+  epochHold = hold;
+  return () => {
+    if (epochHold === hold) epochHold = null;
+  };
+}
+
+/** Is a restore holding the epoch right now (`holdSecondFactorEpoch`)? */
+export function secondFactorHeld(): boolean {
+  return epochHold !== null;
+}
+
+/**
+ * Bind emailed codes that were switched on before the binding existed to where
+ * they go NOW. Run once at boot — not from a read, because a status check must
+ * not change security state as a side effect (see `pendingIsLive`). Without it an
+ * upgrade would pause every working emailed factor; with it, the binding starts
+ * from what the masjid already had, which is the same trust the old code extended.
+ */
+export function adoptLegacyEmailBinding(): void {
+  const cfg = load();
+  if (!cfg.emailEnabled || cfg.emailBoundTo !== undefined) return;
+  cfg.emailBoundTo = emailBinding();
+  save(cfg);
+}
+
+/**
+ * Would a configuration restored from a backup let the admin sign in with the SAME
+ * second factor they use now? For a restore started from outside, which must not
+ * swap in a factor the admin no longer has (system/restore.ts).
+ *
+ * The authenticator is what is compared — the secret itself, in constant time — and
+ * both sides must have one.
+ */
+export function sameSecondFactorAs(other: unknown): boolean {
+  const o = (other && typeof other === 'object' ? other : {}) as TwoFactorConfig;
+  const c = load();
+  const mine = c.totpSecret && c.totpConfirmedAt ? c.totpSecret : null;
+  const theirs = typeof o.totpSecret === 'string' && o.totpConfirmedAt ? o.totpSecret : null;
+  // With no authenticator to compare, say no. Emailed codes alone are never offered,
+  // and whether a restored emailed factor would even work depends on the restored
+  // address and mail account too — not something to guess at for a restore that
+  // nobody can repair from outside if the guess is wrong.
+  return mine !== null && theirs !== null && timingSafeEqualString(mine, theirs);
+}
+
 /** True when a second factor is enrolled and must be satisfied to sign in. */
 export function twoFactorActive(): boolean {
   const c = load();
-  return Boolean((c.totpSecret && c.totpConfirmedAt) || c.emailEnabled);
+  return Boolean((c.totpSecret && c.totpConfirmedAt) || emailUsable(c));
 }
 
 /** What the admin may be asked for, in the order the UI should offer them. */
@@ -132,7 +289,7 @@ export function availableFactors(): SecondFactorKind[] {
   const c = load();
   const out: SecondFactorKind[] = [];
   if (c.totpSecret && c.totpConfirmedAt) out.push('totp');
-  if (c.emailEnabled) out.push('email');
+  if (emailUsable(c)) out.push('email');
   return out;
 }
 
@@ -157,6 +314,8 @@ export function twoFactorStatus(nowMs: number = Date.now()): {
   active: boolean;
   totp: boolean;
   email: boolean;
+  /** Switched on, but the address or mail account has changed since — see `emailUsable`. */
+  emailPaused: boolean;
   enrolmentPending: boolean;
   backupCodesRemaining: number;
 } {
@@ -165,6 +324,7 @@ export function twoFactorStatus(nowMs: number = Date.now()): {
     active: twoFactorActive(),
     totp: Boolean(c.totpSecret && c.totpConfirmedAt),
     email: Boolean(c.emailEnabled),
+    emailPaused: Boolean(c.emailEnabled) && !emailUsable(c),
     enrolmentPending: pendingIsLive(c, nowMs),
     backupCodesRemaining: (c.backupCodes ?? []).filter((b) => !b.usedAt).length,
   };
@@ -242,6 +402,7 @@ export function confirmEnrolment(code: string, nowMs: number = Date.now()): stri
   cfg.lastCounter = counter;
   dropPending(cfg);
   cfg.backupCodes = plain.map((p) => ({ hash: sha256(p) }));
+  bumpEpoch(cfg);
   save(cfg);
   return plain;
 }
@@ -258,7 +419,16 @@ function newBackupCode(): string {
 // ── verification ───────────────────────────────────────────────────────────
 
 export type VerifyResult =
-  | { ok: true; used: 'totp' | 'backup' | 'email' }
+  | {
+      ok: true;
+      used: 'totp' | 'backup' | 'email';
+      /**
+       * The epoch of the configuration this code was checked against. A remote
+       * session is bound to THIS, not to whatever is current when it is written —
+       * the same rule as the password binding (auth/sessions.ts `createSession`).
+       */
+      epoch: string;
+    }
   | {
       ok: false;
       reason: 'bad-code' | 'replayed' | 'expired' | 'too-many-attempts' | 'not-enrolled';
@@ -282,6 +452,9 @@ export type VerifyResult =
  */
 export function verifySecondFactor(code: string, nowMs: number = Date.now()): VerifyResult {
   const cfg = load();
+  // The epoch sessions are judged against RIGHT NOW — the held one during a restore —
+  // or a sign-in made then was bound to the restored file's and refused at once.
+  const epoch = epochHold ? epochHold.epoch : (cfg.epoch ?? '');
   const submitted = code.replace(/\s/g, '').toUpperCase();
   if (!twoFactorActive()) return { ok: false, reason: 'not-enrolled' };
 
@@ -294,7 +467,7 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
       }
       cfg.lastCounter = counter;
       save(cfg);
-      return { ok: true, used: 'totp' };
+      return { ok: true, used: 'totp', epoch };
     }
   }
 
@@ -313,11 +486,12 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
     backups[matched]!.usedAt = new Date(nowMs).toISOString();
     cfg.backupCodes = backups;
     save(cfg);
-    return { ok: true, used: 'backup' };
+    return { ok: true, used: 'backup', epoch };
   }
 
-  // 3. A pending emailed code.
-  if (cfg.pendingEmail) {
+  // 3. A pending emailed code — only while emailed codes still go where they went
+  //    when they were switched on (`emailUsable`).
+  if (cfg.pendingEmail && emailUsable(cfg)) {
     const p = cfg.pendingEmail;
     if (nowMs > p.expiresAt) {
       cfg.pendingEmail = undefined;
@@ -332,7 +506,7 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
     if (timingSafeEqualString(p.hash, sha256(submitted))) {
       cfg.pendingEmail = undefined; // single use
       save(cfg);
-      return { ok: true, used: 'email' };
+      return { ok: true, used: 'email', epoch };
     }
     // A wrong guess costs an attempt. Counted BEFORE returning, so a flood
     // burns the code rather than getting unlimited tries at it.
@@ -379,7 +553,11 @@ export function issueEmailCode(nowMs: number = Date.now()): { code: string } | {
 export function setEmailFactor(enabled: boolean): void {
   const cfg = load();
   cfg.emailEnabled = enabled;
-  if (!enabled) cfg.pendingEmail = undefined;
+  // Bound to where codes go NOW — the address and account the admin just proved
+  // themselves alongside (the router asks for the password and a current code).
+  cfg.emailBoundTo = enabled ? emailBinding() : undefined;
+  cfg.pendingEmail = undefined;
+  bumpEpoch(cfg);
   save(cfg);
 }
 
@@ -388,6 +566,9 @@ export function regenerateBackupCodes(): string[] {
   const cfg = load();
   const plain = Array.from({ length: BACKUP_CODE_COUNT }, () => newBackupCode());
   cfg.backupCodes = plain.map((p) => ({ hash: sha256(p) }));
+  // New codes usually mean the old ones were seen by someone else, so a remote
+  // session made with one of them must not outlive them.
+  bumpEpoch(cfg);
   save(cfg);
   return plain;
 }
@@ -402,7 +583,11 @@ export function regenerateBackupCodes(): string[] {
  * active, the current second factor) before calling this.
  */
 export function disableTwoFactor(): void {
-  save({});
+  // Everything goes except a NEW epoch: a remote session made under the factor being
+  // removed must not come back to life if two-step sign-in is switched on again.
+  const cfg: TwoFactorConfig = {};
+  bumpEpoch(cfg);
+  save(cfg);
 }
 
 /** Seconds until the current TOTP step rolls over — for "this code expires in…". */

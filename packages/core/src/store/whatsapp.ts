@@ -257,6 +257,11 @@ let cache: WhatsAppConfig = withDefaults(
   readJson<WhatsAppFile>(WHATSAPP_PATH, { whatsapp: DEFAULT_CONFIG }).whatsapp,
 );
 
+/** Re-read the WhatsApp configuration from disk — for a restore, which replaces it under this process. */
+export function reloadWhatsAppConfig(): void {
+  cache = withDefaults(readJson<WhatsAppFile>(WHATSAPP_PATH, { whatsapp: DEFAULT_CONFIG }).whatsapp);
+}
+
 function persist(): void {
   writeJson(WHATSAPP_PATH, { whatsapp: cache });
   try {

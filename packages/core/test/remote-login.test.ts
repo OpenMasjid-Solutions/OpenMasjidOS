@@ -65,6 +65,51 @@ function freshAdmin(): void {
   lc.clearChallenges();
 }
 
+test('FIRST-RUN SETUP IS REFUSED FROM OUTSIDE — it hands the box to whoever reaches it first', async () => {
+  // Fine for someone in the building, and nobody else. Remote administration already
+  // requires an admin (system/remote-admin.ts); this is the backstop.
+  freshAdmin();
+  assert.equal(store.isConfigured(), false, 'precondition: no admin yet');
+  const { caller } = call(TUNNEL);
+  await assert.rejects(
+    caller.setup({ name: 'intruder', email: 'x@example.com', password: 'a-password-of-my-own' }),
+    (e: { code?: string }) => e.code === 'FORBIDDEN',
+  );
+  assert.equal(store.isConfigured(), false, 'an admin was created from outside');
+});
+
+test('FIRST-RUN RESTORE IS REFUSED FROM OUTSIDE too', async () => {
+  const Fastify = (await import('fastify')).default;
+  const fastifyCookie = (await import('@fastify/cookie')).default;
+  const fastifyMultipart = (await import('@fastify/multipart')).default;
+  const fastifyWebsocket = (await import('@fastify/websocket')).default;
+  const { registerRestore } = req('../src/api/restore') as typeof import('../src/api/restore');
+  const app = Fastify();
+  await app.register(fastifyCookie);
+  await app.register(fastifyMultipart);
+  await app.register(fastifyWebsocket);
+  registerRestore(app);
+  await app.ready();
+  assert.equal(store.isConfigured(), false, 'precondition: no admin yet');
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/restore/upload',
+    headers: { 'cf-ray': 'abc-LHR', 'cf-visitor': '{"scheme":"https"}', host: 'omos.example.com' },
+  });
+  assert.equal(res.statusCode, 403, 'the open first-run restore answered the internet');
+  // The control: the same first-run upload from the masjid's network is let in — it is
+  // how a masjid moves onto new hardware — and fails only later, for want of a file.
+  const lan = await app.inject({ method: 'POST', url: '/api/restore/upload', headers: { host: '192.168.1.50' } });
+  assert.notEqual(lan.statusCode, 403, 'a first-run restore was refused on the masjid’s own network');
+  assert.notEqual(lan.statusCode, 401);
+  await app.close();
+  // The progress socket that runs the restore refuses the same way (inject cannot
+  // open a socket, so this half is read from the source).
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'api', 'restore.ts'), 'utf8');
+  const run = src.slice(src.indexOf("server.get('/api/restore/run'"));
+  assert.match(run, /\} else if \(isViaTunnel\(req\)\) \{\s*return refuse\(4403/, 'the restore socket runs a first-run restore for the internet');
+});
+
 test('setup: an admin exists', async () => {
   freshAdmin();
   if (!store.isConfigured()) {

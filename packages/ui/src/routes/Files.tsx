@@ -21,7 +21,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
-import { filesDownloadUrl, uploadFile, joinPath, fileKind } from '../lib/files';
+import { filesDownloadUrl, uploadFile, joinPath, fileKind, TooBigFromOutside } from '../lib/files';
 import { formatBytes } from '../lib/format';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -45,13 +45,7 @@ export function Files() {
   const [dragActive, setDragActive] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  // Bookmarked, or typed. The route resolves over the tunnel (it is in the
-  // dashboard allow-list so it does not 404), but the data routes behind it are
-  // registered on the LAN listener alone — so say so rather than firing a query
-  // that will fail and showing a raw error where a folder list belongs.
-  const me = trpc.auth.me.useQuery();
-  const remote = me.data?.remote === true;
-  const list = trpc.files.list.useQuery({ path }, { enabled: !remote });
+  const list = trpc.files.list.useQuery({ path });
   const refresh = () => utils.files.list.invalidate();
 
   const mkdir = trpc.files.mkdir.useMutation({
@@ -74,7 +68,7 @@ export function Files() {
       for (const f of Array.from(files)) await uploadFile(path, f);
       refresh();
     } catch (e) {
-      toast((e as Error).message || t('files.uploadError'), 'error');
+      toast(e instanceof TooBigFromOutside ? t('files.tooBigRemote') : (e as Error).message || t('files.uploadError'), 'error');
     } finally {
       setBusy(false);
       if (fileInput.current) fileInput.current.value = '';
@@ -99,20 +93,6 @@ export function Files() {
 
   const segments = path === '/' ? [] : path.replace(/^\//, '').split('/');
   const crumbPath = (i: number) => '/' + segments.slice(0, i + 1).join('/');
-
-  if (remote) {
-    return (
-      <Page>
-        <header className="page-head">
-          <h1 className="page-title">{t('files.title')}</h1>
-          <p className="page-sub">{t('settings.remoteOnlyLan')}</p>
-        </header>
-        <section className="glass-raised panel">
-          <p>{t('settings.remoteOnlyLanHint')}</p>
-        </section>
-      </Page>
-    );
-  }
 
   return (
     <Page>

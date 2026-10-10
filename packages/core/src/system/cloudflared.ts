@@ -11,10 +11,11 @@
  * published localhost port. The token is a SECRET: it lives only in
  * config/cloudflare/.env (chmod 600) and is never returned by any API or logged.
  *
- * Routing (which hostname/path → which app) is configured in the Cloudflare
- * Zero-Trust dashboard for the tunnel; the platform exposes each app's intended
- * public URL to the app over the Fabric (GET /api/fabric/site). OS-managed
- * path-based ingress is a planned enhancement (see docs).
+ * Cloudflare's own dashboard sends the tunnel's public hostnames to the box's front
+ * door (HTTP localhost:80); from there the OS routes each app by its path
+ * (system/ingress.ts) and, when the admin has set one up, serves the dashboard on a
+ * hostname of its own (system/remote-admin.ts). Each app learns its public URL over
+ * the Fabric (GET /api/fabric/site).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -68,6 +69,91 @@ export function hasToken(): boolean {
   return readToken() != null;
 }
 
+/**
+ * Does this `.env` text (from a backup being restored) hold the SAME tunnel token as
+ * the one in use? Answers the question without handing the token to anyone.
+ */
+export function tunnelTokenMatches(envText: string | null): boolean {
+  const current = readToken();
+  if (!current || !envText) return false;
+  const staged = /^CF_TUNNEL_TOKEN=(.*)$/m.exec(envText)?.[1]?.trim();
+  return staged === current;
+}
+
+/** Is `token` the one in use? Answers without handing the token to anyone. */
+export function isCurrentTunnelToken(token: string): boolean {
+  return readToken() === token;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Is this, by its shape, a tunnel token as Cloudflare issues one — in exactly the form
+ * cloudflared will read?
+ *
+ * cloudflared decodes it with Go's padded standard base64, which refuses a final block
+ * without its "=" padding or with too much. Node's decoder accepts both, so this used to
+ * pass tokens cloudflared then refused — so canonical form only: a whole number of
+ * four-character blocks that encodes back to itself.
+ */
+function isTunnelToken(s: string): boolean {
+  if (s.length < 32 || s.length > 4096 || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return false;
+  const bytes = Buffer.from(s, 'base64');
+  if (bytes.toString('base64') !== s) return false;
+  try {
+    const o = JSON.parse(bytes.toString('utf8')) as Record<string, unknown> | null;
+    return (
+      typeof o === 'object' &&
+      o !== null &&
+      typeof o.a === 'string' &&
+      o.a !== '' &&
+      typeof o.t === 'string' &&
+      UUID_RE.test(o.t) &&
+      typeof o.s === 'string' &&
+      o.s !== ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The tunnel token in what was pasted — or a sentence saying it is not one.
+ *
+ * A token is base64 of a small JSON object: the account (`a`), the tunnel's id (`t`, a
+ * UUID) and its secret (`s`). cloudflared refuses anything else and, under `restart:
+ * unless-stopped`, retries for ever, so a bad paste took the dashboard's address and
+ * every shared app offline while the platform logged "Cloudflare tunnel is running." —
+ * the container was up, it just never connected. Two pastes are common: half a token (a
+ * selection that stopped short) and Cloudflare's whole install command, which is what
+ * its page shows. The command is reduced to its token; anything else is refused.
+ *
+ * And one is repaired: a token whose "=" padding was left behind. A double-click selects
+ * letters and digits only, so it takes all of a token but that — and the padding carries
+ * nothing, being fixed by the length — yet cloudflared refuses a token without it. It
+ * used to be saved as it was, and the tunnel never came back.
+ */
+export function normalizeTunnelToken(input: string): string {
+  const raw = input.trim();
+  let candidate = raw;
+  if (/\s/.test(raw)) {
+    // `cloudflared tunnel run --token X`, `--token=X`, or `cloudflared service install X`.
+    const m = /--token(?:=|\s+)(\S+)/.exec(raw) ?? /\bservice\s+install\s+(\S+)/.exec(raw);
+    candidate = m?.[1] ?? '';
+  }
+  // Base64 pads to a whole number of four-character blocks: two characters short gets
+  // "==", one short gets "=", and three short (a length of 4n+1) cannot be base64 at all.
+  const bare = candidate.replace(/=+$/, '');
+  const pad = ['', null, '==', '='][bare.length % 4];
+  if (pad != null) candidate = bare + pad;
+  if (pad == null || !isTunnelToken(candidate)) {
+    throw new Error(
+      "That doesn't look like a whole tunnel token. Please copy it again from Cloudflare — just the long part after “--token”.",
+    );
+  }
+  return candidate;
+}
+
 /** Save the tunnel token (secret). Does not start it — the caller decides. */
 export function setToken(token: string): void {
   if (!token.trim()) throw new Error('Paste your Cloudflare tunnel token.');
@@ -104,10 +190,20 @@ export async function stopCloudflared(): Promise<void> {
   }
 }
 
+/**
+ * Is the tunnel's container actually up? Docker reports a container in its restart loop
+ * as Running too — and a refused token is exactly that loop, so "Running" alone showed a
+ * green "Tunnel is running." and sent the admin home with the dashboard's address and
+ * every shared app offline.
+ */
+export function tunnelContainerUp(state: { Running?: boolean; Restarting?: boolean } | undefined): boolean {
+  return state?.Running === true && state.Restarting !== true;
+}
+
 export async function cloudflaredRunning(): Promise<boolean> {
   try {
     const info = await docker.getContainer(CONTAINER).inspect();
-    return info.State?.Running === true;
+    return tunnelContainerUp(info.State);
   } catch {
     return false;
   }
@@ -119,7 +215,9 @@ export async function ensureCloudflared(): Promise<void> {
   const cf = getSettings().cloudflare;
   if (cf.enabled && hasToken()) {
     const r = await startCloudflared();
-    if (r.ok) log.info('Cloudflare tunnel is running.');
+    // "Started" is all compose can say: a token Cloudflare refuses leaves the container
+    // restarting for ever (tunnelContainerUp), which "running" used to hide in this log.
+    if (r.ok) log.info('Cloudflare tunnel started.');
     else log.warn(`Cloudflare tunnel could not start: ${r.message}`);
   } else {
     await stopCloudflared();
@@ -161,9 +259,10 @@ export function appPublicUrl(appId: string): string {
  *  freshly-exposed app gets a stable value immediately. '' when the tunnel is off,
  *  no domain, or the app isn't exposed. The LIVE source of truth stays
  *  GET /api/fabric/site (appPublicUrl). */
-export function intendedPublicUrl(appId: string, exposed: boolean): string {
+export function intendedPublicUrl(appId: string, exposed: boolean, path?: string): string {
   const host = publicHost();
   const cf = getSettings().cloudflare;
   if (!cf.enabled || !host || !exposed) return '';
-  return `https://${host}${appBasePath(appId)}`;
+  // `path`: an install decides its address before its meta.json exists to read it from.
+  return `https://${host}${path ? `/${path}` : appBasePath(appId)}`;
 }

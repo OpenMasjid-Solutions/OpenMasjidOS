@@ -111,7 +111,7 @@ test('every tunnel 404 offers the reference when there is one', () => {
   }
 });
 
-test('the record is only readable over the LAN-only dashboard', () => {
+test('the record is readable by a signed-in admin, and never by an app', () => {
   const router = read('trpc', 'routers', 'cloudflare.ts');
   assert.match(router, /refusals: protectedProcedure/, 'behind a session');
   // And never over the Fabric, which apps reach.
@@ -119,13 +119,64 @@ test('the record is only readable over the LAN-only dashboard', () => {
   assert.doesNotMatch(fabric, /recentRefusals/, 'apps must not be able to read a masjid\'s refused paths');
 });
 
-test('a browser navigation gets a sentence, not a JSON object', () => {
+/**
+ * Every reason a refusal can be recorded under, read from the type itself — so a new
+ * reason is covered here, and below, without anyone remembering to list it.
+ */
+const REASONS = (() => {
+  const src = read('system', 'tunnel-refusals.ts');
+  const decl = src.slice(src.indexOf('export type RefusalReason'));
+  const body = decl.slice(0, decl.indexOf(';'));
+  return [...body.matchAll(/\|\s*'([a-z-]+)'/g)].map((m) => m[1]!);
+})();
+
+test('the reason list is read from the type, all of it', () => {
+  assert.ok(REASONS.length >= 9, `parsed ${JSON.stringify(REASONS)}`);
+  for (const r of ['no-app-at-path', 'lan-only-route', 'app-not-shared', 'no-admin-host', 'wrong-port']) {
+    assert.ok(REASONS.includes(r), r);
+  }
+});
+
+test('EVERY REASON HAS ITS OWN WORDS in "Recently turned away"', () => {
+  // The label falls back to "Local network only" — which is how a Cloudflare hostname
+  // pointed at the wrong port, and a box whose dashboard had no address of its own,
+  // were both shown as "Local network only" with nothing to say what to fix.
+  const settings = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
+  const panel = settings.slice(settings.indexOf('function TunnelRefusals'), settings.indexOf('function CloudflarePanel'));
+  for (const reason of REASONS) {
+    if (reason === 'lan-only-route') continue; // the fallback IS its label
+    assert.match(panel, new RegExp(`r\\.reason === '${reason}'`), `"${reason}" would be shown as "Local network only"`);
+  }
+});
+
+test('a browser navigation gets a sentence, not a JSON object — from EVERY refusal', async () => {
+  // One responder for every guard (refuseOverTunnel). There used to be five, and they
+  // had drifted: the not-found handler gave a browser a page while the dashboard gate
+  // and the Fabric guard gave it JSON, so the shape of the answer told a visitor
+  // which kind of address they had hit.
+  const Fastify = (await import('fastify')).default;
+  const app = Fastify();
+  app.get('/:reason', async (r, reply) =>
+    refusals.refuseOverTunnel(r, reply, (r.params as { reason: string }).reason as never),
+  );
+  await app.ready();
+  const bodies = new Set<string>();
+  for (const reason of REASONS) {
+    const res = await app.inject({ method: 'GET', url: `/${reason}`, headers: { accept: 'text/html' } });
+    assert.equal(res.statusCode, 404);
+    assert.match(res.body, /There is no page at this address/, 'a person typing an address deserves words');
+    assert.doesNotMatch(res.body, new RegExp(reason), 'the page names its reason');
+    bodies.add(res.body.replace(/[0-9a-f]{6}/g, 'REF'));
+  }
+  assert.equal(bodies.size, 1, 'two refusals answered a browser differently');
+  await app.close();
+
+  // And every guard on the front door uses it rather than a 404 of its own.
   const index = read('index.ts');
-  const handler = index.slice(index.indexOf('front.setNotFoundHandler'));
-  assert.match(handler, /text\/html/, 'a person typing an address deserves words');
-  // But it must still say nothing about what IS published here.
-  const page = handler.slice(0, handler.indexOf('return reply.code(404).send'));
-  assert.doesNotMatch(page, /listInstalled|routes\.|getAppPath/, 'the page must not enumerate apps');
+  const front = index.slice(index.indexOf('async function startHttpFront'));
+  assert.doesNotMatch(front, /reply\.code\(404\)/, 'a front-door guard sends its own 404');
+  assert.doesNotMatch(read('system', 'ingress.ts'), /reply\.code\(404\)/, 'the ingress sends its own 404');
+  assert.doesNotMatch(read('system', 'via-tunnel.ts'), /reply\.code\(404\)/, 'the Fabric guard sends its own 404');
 });
 
 test('BROWSER NOISE is refused but never recorded, or it buries the real line', () => {

@@ -889,15 +889,20 @@ do_update() {
   check_root
   install_docker          # idempotent: present → skip
   setup_data_dir          # mkdir -p only
-  write_compose_file
+  # Download BEFORE writing the new image into the compose file. A failed download stops
+  # the script here (set -e), and a compose file already naming the new image would then
+  # be what the next restart of the core reads — coming back on a build it never ran.
+  resolve_image "${IMAGE_MODE:-channel}"
   info "Updating to the latest version..."
   docker pull "${IMAGE}"
+  write_compose_file
   docker compose --project-name "${COMPOSE_PROJECT}" --file "${DATA_DIR}/docker-compose.yml" up --detach
   wait_for_health
   echo ""
   info "OpenMasjidOS is up to date. Your installed apps and data were left untouched."
   print_acknowledgements
-  echo "  Open it at: http://$(get_server_ip)$( [ "${PORT}" != "80" ] && echo ":${PORT}" )"
+  # The dashboard is HTTPS. Port 80 only redirects there, and only on the masjid's network.
+  echo "  Open it at: https://$(get_server_ip)$( [ "${TLS_PORT}" != "443" ] && echo ":${TLS_PORT}" )"
   echo ""
 }
 
@@ -919,7 +924,8 @@ do_repair() {
   echo ""
   info "Repair complete. Your installed apps and data were left untouched."
   print_acknowledgements
-  echo "  Open it at: http://$(get_server_ip)$( [ "${PORT}" != "80" ] && echo ":${PORT}" )"
+  # The dashboard is HTTPS. Port 80 only redirects there, and only on the masjid's network.
+  echo "  Open it at: https://$(get_server_ip)$( [ "${TLS_PORT}" != "443" ] && echo ":${TLS_PORT}" )"
   echo ""
 }
 

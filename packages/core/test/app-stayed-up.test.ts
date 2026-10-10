@@ -36,7 +36,7 @@ test('the update path verifies before it says Done', () => {
 
   // And the failure path must return rather than falling through to "Done".
   const failure = body.slice(check, done);
-  assert.match(failure, /return;/, 'a crash-looping app must not also get the success line');
+  assert.match(failure, /return 'not-running';/, 'a crash-looping app must not also get the success line');
   assert.match(failure, /not staying running/, 'it must say what actually happened');
 });
 

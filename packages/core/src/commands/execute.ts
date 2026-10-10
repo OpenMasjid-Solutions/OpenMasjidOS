@@ -389,8 +389,14 @@ async function runOsVerb(command: CommandEntry, target: { id: string; name: stri
       case 'update': {
         await ctx.reply(`Updating ${target.name} now. I'll message you when it's finished.`);
         // The progress stream has nowhere to go in a chat; the lines are dropped and
-        // only the outcome is reported.
-        await updateCatalogApp(target.id, () => undefined);
+        // only the outcome is reported — the real one. An update put back after a failed
+        // download leaves the old version running, which the "stayed up" check below
+        // would have reported as updated.
+        if ((await updateCatalogApp(target.id, () => undefined)) === 'unchanged') {
+          log.warn(`WhatsApp commands: "${command.id}" on ${target.id} — nothing was changed.`);
+          audit(command, target.name, ctx);
+          return ctx.reply(`${target.name} wasn't updated, so nothing was changed. Have a look on the dashboard to see why.`);
+        }
         break;
       }
       default:

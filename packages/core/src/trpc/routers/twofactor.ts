@@ -11,7 +11,9 @@
  * ── THE RULE THIS FILE EXISTS TO ENFORCE ──────────────────────────────────
  *
  * EVERY MUTATION RE-PROVES THE PASSWORD, AND — ONCE A FACTOR IS ACTIVE — THE
- * CURRENT SECOND FACTOR TOO. A session is not enough.
+ * CURRENT SECOND FACTOR TOO. A session is not enough. (`confirm` is the one exception,
+ * and only in form: it finishes an enrolment that `begin` started behind both, and needs
+ * the code from the secret `begin` showed.)
  *
  * The attack this stops is not "turn 2FA off". Turning it off makes remote
  * sign-in fail CLOSED (`routers/auth.ts` refuses a tunnel login with no factor
@@ -40,6 +42,9 @@ import { getPasswordHash, getAdminEmail, getAdminName, getUsername } from '../..
 import { qrMatrix } from '../../auth/qr';
 import { clearChallenges } from '../../auth/login-challenge';
 import { isEmailConfigured } from '../../store/email';
+import { sweepHandedOverSockets } from '../../system/remote-sockets';
+import { finishing, finishingMessage, isUpdating } from '../../system/update-lock';
+import { rebindRemoteSession } from '../../auth/sessions';
 import { log } from '../../logger';
 import {
   BACKUP_CODE_COUNT,
@@ -47,6 +52,8 @@ import {
   confirmEnrolment,
   disableTwoFactor,
   regenerateBackupCodes,
+  secondFactorEpoch,
+  secondFactorHeld,
   setEmailFactor,
   twoFactorActive,
   twoFactorStatus,
@@ -63,6 +70,36 @@ const sudo = z.object({
 const BAD_PASSWORD = 'That password is not right.';
 
 /**
+ * After a change to the second factor: the admin who made it keeps their session if
+ * they made it from outside (auth/sessions.ts `rebindRemoteSession` says why), and
+ * every other connection from outside made under the old factor is closed now
+ * rather than at the next sweep.
+ */
+function afterFactorChange(ctx: { viaTunnel: boolean; sessionToken: string | null }): void {
+  if (ctx.viaTunnel) rebindRemoteSession(ctx.sessionToken, secondFactorEpoch());
+  sweepHandedOverSockets();
+}
+
+/**
+ * Nothing about the second factor changes while a restore runs. Before it swaps the
+ * backup's settings in, a change would simply be overwritten by the backup's factor; once
+ * it holds the epoch, a change would not count until the release, and the admin who made
+ * it would then be signed out from outside (auth/twofactor.ts `holdSecondFactorEpoch`).
+ * Asked before anything else, and again once the password has been checked, because a
+ * restore can begin while argon2 runs.
+ */
+function refuseDuringRestore(): void {
+  if (secondFactorHeld() || isUpdating('restore')) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: finishing('restore')
+        ? finishingMessage('restore')
+        : 'A backup is being restored right now. Please try this again once it has finished.',
+    });
+  }
+}
+
+/**
  * Re-prove the admin before a change to how they sign in.
  *
  * No serialising mutex here, unlike `login`. That one guards an UNAUTHENTICATED
@@ -71,16 +108,34 @@ const BAD_PASSWORD = 'That password is not right.';
  * proved a great deal more than a guesser has.
  */
 async function requireSudo(input: { password: string; code?: string }): Promise<void> {
+  refuseDuringRestore();
   // FRESH, and compared again after argon2 — the same rule as signing in. A reset
   // made by the installer a moment ago must already refuse the old password here,
   // and a change landing during the verify must not let the old one through.
   const hash = getPasswordHash({ fresh: true });
+  // The second factor, likewise, as it was when this began.
+  const epochAtStart = secondFactorEpoch();
+  const activeAtStart = twoFactorActive();
   const ok = await verifyPassword(hash ?? '', input.password);
   if (!ok || getPasswordHash({ fresh: true }) !== hash) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: BAD_PASSWORD });
   }
+  // A CHANGE TO THE SECOND FACTOR LANDED WHILE THE PASSWORD WAS BEING CHECKED: refuse,
+  // and let the caller start again against what is there now. Without this, the
+  // admin turning two-step sign-in OFF to evict someone could lose the race to that
+  // someone — who held a remote session and the password — whose own change, begun a
+  // moment earlier, then found "nothing enrolled", skipped the code, switched emailed
+  // codes back on and kept their session under the new epoch: the door reopened with
+  // them inside and the admin told it was shut. A review reproduced it 3 times out of 3.
+  if (secondFactorEpoch() !== epochAtStart || twoFactorActive() !== activeAtStart) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'Two-step sign-in was changed somewhere else a moment ago. Please try again.',
+    });
+  }
+  refuseDuringRestore();
 
-  if (!twoFactorActive()) return; // nothing enrolled yet — there is no code to ask for
+  if (!activeAtStart) return; // nothing enrolled yet — there is no code to ask for
   if (!input.code) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
@@ -109,6 +164,8 @@ export const twoFactorRouter = router({
     ...twoFactorStatus(),
     /** Whether emailed codes COULD be switched on (they need a mail provider). */
     emailPossible: isEmailConfigured() && Boolean(getAdminEmail()),
+    /** Which of the two is missing, so the panel names the right thing to set up. */
+    emailMissing: !isEmailConfigured() ? ('provider' as const) : !getAdminEmail() ? ('address' as const) : null,
     backupCodeCount: BACKUP_CODE_COUNT,
   })),
 
@@ -143,7 +200,8 @@ export const twoFactorRouter = router({
    */
   confirm: protectedProcedure
     .input(z.object({ code: z.string().trim().min(1).max(16) }))
-    .mutation(({ input }) => {
+    .mutation(({ input, ctx }) => {
+      refuseDuringRestore();
       const codes = confirmEnrolment(input.code);
       if (!codes) {
         // One message for "wrong code", "you have tried too many times" and
@@ -159,6 +217,9 @@ export const twoFactorRouter = router({
         });
       }
       log.info('Two-step sign-in: an authenticator app was enrolled.');
+      // A new factor ends every session from outside that was made with the old one
+      // (auth/twofactor.ts `epoch`) — except the one that just made it.
+      afterFactorChange(ctx);
       return { backupCodes: codes };
     }),
 
@@ -170,16 +231,17 @@ export const twoFactorRouter = router({
    * after changing the rules it was issued under is how a guard quietly stops
    * guarding.
    */
-  disable: protectedProcedure.input(sudo).mutation(async ({ input }) => {
+  disable: protectedProcedure.input(sudo).mutation(async ({ input, ctx }) => {
     await requireSudo(input);
     disableTwoFactor();
     clearChallenges();
+    afterFactorChange(ctx);
     log.warn('Two-step sign-in has been turned OFF. Signing in from outside the masjid will be refused.');
     return { active: false as const };
   }),
 
   /** Issue a fresh set of backup codes, invalidating every old one. Shown once. */
-  regenerateBackupCodes: protectedProcedure.input(sudo).mutation(async ({ input }) => {
+  regenerateBackupCodes: protectedProcedure.input(sudo).mutation(async ({ input, ctx }) => {
     await requireSudo(input);
     if (!twoFactorActive()) {
       throw new TRPCError({
@@ -188,7 +250,9 @@ export const twoFactorRouter = router({
       });
     }
     log.info('Two-step sign-in: backup codes were replaced.');
-    return { backupCodes: regenerateBackupCodes() };
+    const backupCodes = regenerateBackupCodes();
+    afterFactorChange(ctx);
+    return { backupCodes };
   }),
 
   /**
@@ -202,8 +266,21 @@ export const twoFactorRouter = router({
    */
   setEmailFactor: protectedProcedure
     .input(sudo.extend({ enabled: z.boolean() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       await requireSudo(input);
+      // Emailed codes are a BACKUP to an authenticator, never the only factor. The
+      // screen has only ever offered them once an authenticator exists, but nothing
+      // here enforced it — and as the only factor they are pausable by changing the
+      // admin's address (auth/twofactor.ts `emailUsable`), after which nothing is
+      // enrolled, the next change needs only the password, and that change could point
+      // the codes somewhere else. With an authenticator always present, turning them
+      // back on always needs a current code.
+      if (input.enabled && !twoFactorStatus().totp) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Set up an authenticator app first — emailed codes are a backup to it, not a replacement.',
+        });
+      }
       if (input.enabled && !isEmailConfigured()) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -217,6 +294,7 @@ export const twoFactorRouter = router({
         });
       }
       setEmailFactor(input.enabled);
+      afterFactorChange(ctx);
       return { email: input.enabled };
     }),
 });

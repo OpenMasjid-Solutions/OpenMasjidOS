@@ -11,6 +11,7 @@
  * settings.json and never in any API response. settings.backups holds only
  * non-secret metadata (kind, label, remote path, schedule, last-run status).
  */
+import { isUpdating } from './update-lock';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -260,6 +261,9 @@ let ticking = false;
 
 async function tick(): Promise<void> {
   if (ticking) return;
+  // Not while a restore refills the very data it would copy, nor while an update is about
+  // to replace this process mid-backup; the next tick runs it.
+  if (isUpdating('restore') || isUpdating('core')) return;
   const cfg = getSettings().backups;
   if (!cfg.enabled || !cfg.configured) return;
   const last = cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : 0;

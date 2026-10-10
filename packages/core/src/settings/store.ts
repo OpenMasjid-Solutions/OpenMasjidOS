@@ -83,6 +83,21 @@ export interface CloudflareConfig {
    * trusting what was true when the switch was flipped.
    */
   remoteAdmin: boolean;
+  /**
+   * The hostname the DASHBOARD is served at over the tunnel, e.g. "admin.example.org"
+   * — a second Cloudflare public hostname on the same tunnel, never `domain` itself.
+   *
+   * ITS OWN ADDRESS IS THE SECURITY PROPERTY, not a convenience. A browser draws the
+   * line around "the same site's own data" by scheme + host + port, so on one
+   * hostname every app page at `/<path>/` was the SAME ORIGIN as the dashboard at
+   * `/`: an app's script could read the dashboard key from storage and drive the
+   * whole admin API with the admin's own cookie — terminals, backups, files, i.e.
+   * host root — from any app the admin opened, or any XSS in any public app page.
+   * On the masjid's network that line was always there (apps are on other ports);
+   * through the tunnel it has to be a different hostname. Empty = remote
+   * administration cannot be switched on (system/remote-admin.ts).
+   */
+  adminHost: string;
 }
 
 export interface PlatformSettings {
@@ -129,7 +144,7 @@ const DEFAULTS: PlatformSettings = {
     lastMessage: '',
     lastBackupName: '',
   },
-  cloudflare: { enabled: false, domain: '', remoteAdmin: false },
+  cloudflare: { enabled: false, domain: '', remoteAdmin: false, adminHost: '' },
 };
 
 /** Merge persisted settings over defaults so a settings.json written by an older
@@ -152,6 +167,11 @@ function withDefaults(s: Partial<PlatformSettings>): PlatformSettings {
 }
 
 let cache: PlatformSettings = withDefaults(readJson(SETTINGS_PATH, {} as Partial<PlatformSettings>));
+
+/** Re-read the settings from disk — for a restore, which replaces it under this process. */
+export function reloadSettings(): void {
+  cache = withDefaults(readJson(SETTINGS_PATH, {} as Partial<PlatformSettings>));
+}
 
 export function getSettings(): PlatformSettings {
   return cache;

@@ -27,6 +27,7 @@ import {
   destroyAllSessions,
   credentialFingerprint,
   freshCredential,
+  remoteGrantOf,
 } from '../../auth/sessions';
 import { toDigits } from '../../notify/whatsapp';
 import { sendEmail } from '../../notify/email';
@@ -54,6 +55,9 @@ import {
   ipLockoutRemaining,
   noteIpFailure,
 } from '../../auth/ip-lockout';
+import { sweepHandedOverSockets } from '../../system/remote-sockets';
+import { appHostname } from '../../system/remote-admin';
+import { VERSION } from '../../version';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -136,19 +140,34 @@ export const authRouter = router({
     /**
      * Is this session being used from OUTSIDE the masjid?
      *
-     * The UI needs it because some of the dashboard genuinely is not there over
-     * the tunnel: the File Explorer, the terminals and backup/restore are
-     * registered on the LAN listener alone and stay that way
-     * (`system/remote-admin.ts` LAN_ONLY_FEATURES says why for each). Without
-     * this the remote dashboard would show those buttons and then fail on them,
-     * which reads as "the masjid's server is broken" rather than "that one is
-     * only available on site".
+     * The UI needs it to OPEN APPS: on the masjid's network an app is reached at
+     * its own port, which does not exist through the tunnel, so remotely an app is
+     * opened through `apps.openRemote` instead — on the apps' own hostname, never
+     * the dashboard's (system/app-access.ts).
      *
-     * Presentation only. Nothing is authorised on the strength of it — every
-     * one of those features is refused server-side by not being routed here at
-     * all, which is a far stronger guarantee than a hidden button.
+     * Presentation only. Nothing is authorised on the strength of it — what a
+     * remote request may do is decided server-side, by the session it carries
+     * (auth/sessions.ts `getSessionUserFor`).
+     *
+     * The front door's HAND-OVER decides it, never a header. `viaTunnel` is also true
+     * behind a reverse proxy the masjid runs on its own network (it sends
+     * `X-Forwarded-Proto: https`), and answering "remote" there sent every Open button
+     * down the from-outside path, where it was refused — at the masjid, every app.
      */
-    remote: ctx.viaTunnel,
+    remote: ctx.handedOver,
+    /**
+     * Where the apps are, from outside: `https://<the apps' hostname>`. Only to a
+     * signed-in remote session — the dashboard uses it for app icons; everyone else
+     * has no business learning it from the admin's address.
+     */
+    appOrigin: ctx.username && ctx.handedOver && appHostname() ? `https://${appHostname()}` : null,
+    /**
+     * The running version, to a signed-in session only. The update dialog watches it
+     * change to know the new build is up: `/api/health` reports it too, but health is
+     * refused from outside (it would tell the internet which build this is), and the
+     * dialog has to work the same in both places.
+     */
+    version: ctx.username ? VERSION : null,
   })),
 
   /**
@@ -161,6 +180,16 @@ export const authRouter = router({
    * comment eighteen lines below in the same procedure.
    */
   setup: publicProcedure.input(setupInput).mutation(async ({ input, ctx }) => {
+    // Never from outside. First-run setup hands the box to whoever reaches it first,
+    // which is fine for someone in the building and nobody else; remote
+    // administration already requires an admin to exist (system/remote-admin.ts),
+    // and this is the backstop for any path that does not come through there.
+    if (ctx.viaTunnel) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'OpenMasjidOS has to be set up at the masjid, on its own network.',
+      });
+    }
     if (isAuthStoreDamaged()) {
       // Fail closed, but say something a volunteer can act on rather than the
       // misleading "an account already exists". Recovery needs host access on
@@ -428,7 +457,17 @@ export const authRouter = router({
       }
       consumeChallenge(input.challenge);
       clearIpFailures(ctx.remoteIp);
-      const { token, csrf } = createSession(claim.username, claim.cred);
+      // REMOTE: this is the second factor passing over the tunnel, and the only way a
+      // tunnel sign-in ever becomes a session — so it is exactly the session that may
+      // be used from outside (auth/sessions.ts getSessionUserFor). Bound to the factor
+      // configuration the code was checked against, so replacing the factor later
+      // signs this session out. And marked with whether the remote dashboard made it:
+      // only then is it usable from the internet (auth/sessions.ts Session.handedOver).
+      const { token, csrf } = createSession(
+        claim.username,
+        claim.cred,
+        ctx.viaTunnel ? { remote: true, tf: result.epoch, handedOver: ctx.handedOver } : {},
+      );
       ctx.setSessionCookie?.(token);
       log.info(`Two-step sign-in completed using ${result.used}.`);
       return {
@@ -491,6 +530,9 @@ export const authRouter = router({
   logout: publicProcedure.mutation(({ ctx }) => {
     destroySession(ctx.sessionToken);
     ctx.clearSessionCookie?.();
+    // Anything still open from outside on that session — a terminal, a live socket —
+    // closes now rather than at the next sweep (system/remote-sockets.ts).
+    sweepHandedOverSockets();
     return { authenticated: false };
   }),
 
@@ -538,6 +580,10 @@ export const authRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // The second factor the CURRENT session proved, if it is a remote one, and whether
+      // the remote dashboard made it: the replacement made below carries exactly that,
+      // never whatever is current then.
+      const remoteGrant = ctx.viaTunnel ? remoteGrantOf(ctx.sessionToken) : null;
       // Captured before the await, and compared again after it: two changes racing
       // (or a reset made by the installer meanwhile) must not both go through.
       const hash = getPasswordHash({ fresh: true });
@@ -554,11 +600,19 @@ export const authRouter = router({
       }
       updatePasswordHash(nextHash);
       destroyAllSessions();
+      sweepHandedOverSockets();
       // A remote sign-in waiting for its second factor proved the OLD password.
       // completeLogin would refuse it anyway (the credential no longer matches);
       // clearing it here means it is gone rather than merely refused.
       clearChallenges();
-      const { token, csrf } = createSession(ctx.username, credentialFingerprint(nextHash));
+      // Remote if this request came over the tunnel — which, for a signed-in caller,
+      // means its session already passed the second factor. Changing the password
+      // must not quietly turn a remote session into one that cannot be used remotely.
+      const { token, csrf } = createSession(
+        ctx.username,
+        credentialFingerprint(nextHash),
+        remoteGrant !== null ? { remote: true, tf: remoteGrant.tf, handedOver: remoteGrant.handedOver } : {},
+      );
       ctx.setSessionCookie?.(token);
       return { ok: true, csrf };
     }),

@@ -250,6 +250,21 @@ test('the backup staging folder is left alone while a backup runs', () => {
   assert.ok(isProtectedError(() => m.resolveFile('/.backup-staging/volumes/v.tar.gz')));
 });
 
+test('a backup waiting to be restored, and its unpacked copy, are private', () => {
+  // Each is a whole backup — every password hash, key and token, possibly another box's —
+  // and a restore refused for an update in its way used to leave the upload behind, listed
+  // at the top of the File Explorer and downloadable.
+  const { m, dir } = freshManager();
+  fs.writeFileSync(path.join(dir, '.restore.tar.gz'), 'a whole backup');
+  fs.mkdirSync(path.join(dir, '.restore-staging', 'config'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.restore-staging', 'config', 'auth.json'), '{"passwordHash":"$argon2id$SECRET"}');
+  assert.ok(isProtectedError(() => m.resolveFile('/.restore.tar.gz')));
+  assert.ok(isProtectedError(() => m.removeEntry('/.restore.tar.gz')), 'a restore that is waiting reads it');
+  assert.ok(isProtectedError(() => m.listDir('/.restore-staging')));
+  assert.ok(isProtectedError(() => m.resolveFile('/.restore-staging/config/auth.json')));
+  assert.doesNotThrow(() => m.resolveFile('/notes.txt'), 'a neighbour is still the masjid’s');
+});
+
 test('the apps folder itself cannot be renamed or deleted', () => {
   const { m } = freshManager();
   assert.ok(isProtectedError(() => m.removeEntry('/apps')));

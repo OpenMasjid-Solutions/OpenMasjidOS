@@ -33,6 +33,11 @@ interface StripeFile {
 const STRIPE_PATH = path.join(CONFIG_DIR, 'stripe.json');
 let cache: StripeFile = readJson(STRIPE_PATH, { accounts: [] });
 
+/** Re-read the Stripe accounts from disk — for a restore, which replaces it under this process. */
+export function reloadStripeConfig(): void {
+  cache = readJson(STRIPE_PATH, { accounts: [] });
+}
+
 function persist(): void {
   writeJson(STRIPE_PATH, cache);
   try {

@@ -10,6 +10,7 @@ import { stdin, stdout } from 'node:process';
 import { isConfigured, getUsername, setCredentials } from './auth/store';
 import { hashPassword, MIN_PASSWORD_LENGTH } from './auth/passwords';
 import { destroyAllSessions } from './auth/sessions';
+import { twoFactorActive } from './auth/twofactor';
 import { docker } from './docker/client';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
@@ -54,6 +55,11 @@ async function main() {
   // core restarts; that's expected. Apps are separate compose projects, untouched.
   stdout.write('\n✅ Password updated. Restarting OpenMasjidOS to finish up…\n');
   stdout.write('   Give it a few seconds, then sign in with your new password.\n\n');
+  if (twoFactorActive()) {
+    // This tool leaves the second factor alone; say where the way to remove it is.
+    stdout.write('   Lost the phone for two-step sign-in too? Run the full sign-in reset (the\n');
+    stdout.write('   installer’s “Reset sign-in”) and choose to turn it off.\n\n');
+  }
   try {
     await docker.getContainer(CORE_CONTAINER).restart({ t: 3 });
   } catch (err) {

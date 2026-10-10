@@ -88,6 +88,28 @@ export interface UpdateInfo {
 }
 
 /**
+ * The newest OpenMasjidOS version published on a channel — its branch's VERSION file —
+ * or null when it could not be read.
+ */
+export async function publishedVersion(channel: Channel): Promise<string | null> {
+  try {
+    const res = await fetch(versionCheckUrl(channel), {
+      headers: { accept: 'text/plain' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const raw = (await res.text()).trim();
+      // Accepts a prerelease suffix — `0.50.0-dev.2` must pass, or the dev channel
+      // reads its own VERSION file as unusable and goes quiet again.
+      if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(raw)) return raw;
+    }
+  } catch (err) {
+    log.warn(`Update check failed against ${osBranch(channel)} (offline?).`, err);
+  }
+  return null;
+}
+
+/**
  * Is there a newer core build on this masjid's channel?
  *
  * ONE path for both channels, which is the point. Development used to be special-cased
@@ -104,21 +126,7 @@ export interface UpdateInfo {
  */
 export async function checkForUpdate(): Promise<UpdateInfo> {
   const channel = getSettings().updateChannel;
-  let latest: string | null = null;
-  try {
-    const res = await fetch(versionCheckUrl(channel), {
-      headers: { accept: 'text/plain' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (res.ok) {
-      const raw = (await res.text()).trim();
-      // Accepts a prerelease suffix — `0.50.0-dev.2` must pass, or the dev channel
-      // reads its own VERSION file as unusable and goes quiet again.
-      if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(raw)) latest = raw;
-    }
-  } catch (err) {
-    log.warn(`Update check failed against ${osBranch(channel)} (offline?).`, err);
-  }
+  const latest = await publishedVersion(channel);
   // The build we are RUNNING belongs to the other channel. This must be offered whatever
   // the numbers say, and `runUpdate` has always acted on it (`wrongChannel`) — but the
   // DETECTOR did not, so nothing ever told the masjid. A box that had ended up on a

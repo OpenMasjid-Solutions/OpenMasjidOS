@@ -67,6 +67,14 @@ const CONFIG_ROOT = path.resolve(CONFIG_DIR);
 const APPS_ROOT = path.resolve(APPS_DIR);
 /** Where system/backup.ts stages volume archives while a backup runs. */
 const STAGING_ROOT = path.join(ROOT, '.backup-staging');
+/**
+ * A backup uploaded for restoring, and the folder it is unpacked into (system/restore.ts —
+ * named here, not imported, so the backup and restore code stays independent of this
+ * module). Each holds a whole backup: every password hash, key and token, possibly of
+ * another box. They exist only while a restore is waiting or running.
+ */
+const RESTORE_UPLOAD = path.join(ROOT, '.restore.tar.gz');
+const RESTORE_STAGING = path.join(ROOT, '.restore-staging');
 
 /**
  * Files the platform itself owns inside each `apps/<id>/`. Names are matched
@@ -104,6 +112,9 @@ function classifyProtected(full: string): string | null {
   }
   if (isInside(STAGING_ROOT, full)) {
     return 'This folder is used while a backup is being prepared. It clears itself when the backup finishes.';
+  }
+  if (full === RESTORE_UPLOAD || isInside(RESTORE_STAGING, full)) {
+    return 'This is a backup being restored, so it is kept private. It is removed when the restore finishes.';
   }
   if (full.toLowerCase() === CORE_COMPOSE) {
     return "This file is how OpenMasjidOS itself runs, so it's kept private. Use the installer to update or repair.";

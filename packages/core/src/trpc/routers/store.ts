@@ -14,6 +14,7 @@ import { installCatalogApp } from '../../apps/manager';
 import { visibleCatalog } from '../../apps/managed';
 import { getWhatsAppConfig } from '../../store/whatsapp';
 import { checkCompose } from '../../apps/compose-validate';
+import { UpdateBusyError } from '../../system/update-lock';
 
 /**
  * Hide platform-managed apps until the admin has opted into the feature that uses them.
@@ -86,7 +87,9 @@ export const storeRouter = router({
       try {
         return await installCatalogApp(app, input.settings, ctx.host, input.expose);
       } catch (err) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+        // A restore or an update in the way is a refusal, not a fault (system/update-lock.ts).
+        const code = err instanceof UpdateBusyError ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR';
+        throw new TRPCError({ code, message: (err as Error).message });
       }
     }),
 });

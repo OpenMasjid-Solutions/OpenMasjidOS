@@ -35,6 +35,7 @@ process.env.OPENMASJID_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-re
 const req = createRequire(__filename);
 const ra = req('../src/system/remote-admin') as typeof import('../src/system/remote-admin');
 const settings = req('../src/settings/store') as typeof import('../src/settings/store');
+const store = req('../src/auth/store') as typeof import('../src/auth/store');
 const tf = req('../src/auth/twofactor') as typeof import('../src/auth/twofactor');
 const totpLib = req('../src/auth/totp') as typeof import('../src/auth/totp');
 const refusals = req('../src/system/tunnel-refusals') as typeof import('../src/system/tunnel-refusals');
@@ -44,6 +45,11 @@ const { registerFabricTunnelGuard, isViaTunnel } = req(
 
 const TUNNEL = { 'cf-ray': '7a1b2c3d4e5f-LHR' };
 const INDEX = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+/** The dashboard's own hostname, and the apps' one. Never the same (remote-admin.ts says why). */
+const ADMIN = 'admin.example.org';
+const APPS = 'omos.example.org';
+/** A tunnel request for the ADMIN hostname — where the dashboard lives. */
+const REMOTE = { ...TUNNEL, host: ADMIN };
 
 /** Enrol a second factor, so the "2FA is required" precondition can be met. */
 function enrolTwoFactor(): void {
@@ -52,14 +58,31 @@ function enrolTwoFactor(): void {
 }
 
 function setState(o: { tunnel: boolean; remoteAdmin: boolean; twoFactor: boolean }): void {
-  settings.updateCloudflare({ enabled: o.tunnel, remoteAdmin: o.remoteAdmin, domain: 'omos.example.org' });
+  // An admin exists in every state below: remote administration requires one (the
+  // first test checks that, before any admin is made).
+  if (!store.isConfigured()) store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
+  settings.updateCloudflare({ enabled: o.tunnel, remoteAdmin: o.remoteAdmin, domain: APPS, adminHost: ADMIN });
   tf.disableTwoFactor();
   if (o.twoFactor) enrolTwoFactor();
 }
 
 // ── the decision ───────────────────────────────────────────────────────────
 
-test('remote administration is OFF until all three conditions hold', () => {
+// MUST STAY THE FIRST TEST: every later one creates the admin.
+test('NO ADMIN, NO REMOTE ADMINISTRATION — first-run is for someone in the building', () => {
+  // With no admin, first-run setup and first-run restore are open by design. The
+  // second factor lives in its own file, so "tunnel + switch + a second factor" does
+  // not imply an admin exists — a box whose admin record went missing while those
+  // settings survived would otherwise offer "create the admin account" to the internet.
+  assert.equal(store.isConfigured(), false, 'precondition: no admin yet');
+  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS, adminHost: ADMIN });
+  enrolTwoFactor();
+  assert.equal(ra.remoteAdminEnabled(), false, 'the dashboard was offered to the internet with no admin');
+  store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
+  assert.equal(ra.remoteAdminEnabled(), true);
+});
+
+test('remote administration is OFF until every condition holds', () => {
   setState({ tunnel: false, remoteAdmin: false, twoFactor: false });
   assert.equal(ra.remoteAdminEnabled(), false, 'nothing set up');
 
@@ -74,6 +97,47 @@ test('remote administration is OFF until all three conditions hold', () => {
 
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   assert.equal(ra.remoteAdminEnabled(), true);
+});
+
+test('NO ADDRESS OF ITS OWN, NO REMOTE ADMINISTRATION — never the apps\' hostname', () => {
+  // On one hostname every app page is the dashboard's ORIGIN: its script can read the
+  // dashboard key and drive the admin API with the admin's cookie. So without a
+  // separate admin hostname there is no remote administration rather than an unsafe one.
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  assert.equal(ra.remoteAdminEnabled(), true);
+  settings.updateCloudflare({ adminHost: '' });
+  assert.equal(ra.remoteAdminEnabled(), false, 'no admin hostname set');
+  assert.equal(ra.remoteAdminBlockedReason(), 'no-admin-host');
+  settings.updateCloudflare({ adminHost: APPS });
+  assert.equal(ra.remoteAdminEnabled(), false, 'the SAME hostname as the apps — the exact thing this exists to prevent');
+  settings.updateCloudflare({ adminHost: 'OMOS.example.org.' });
+  assert.equal(ra.remoteAdminEnabled(), false, 'the same hostname in another spelling');
+  assert.equal(ra.remoteAdminBlockedReason(), 'no-admin-host');
+  settings.updateCloudflare({ adminHost: ADMIN });
+  assert.equal(ra.remoteAdminEnabled(), true);
+});
+
+test('isAdminHost: one name, however it is spelled — and never true with none set', () => {
+  for (const h of [ADMIN, 'ADMIN.example.org', `${ADMIN}.`, `${ADMIN}:443`, [ADMIN]]) {
+    assert.equal(ra.isAdminHost(h as string, ADMIN), true, JSON.stringify(h));
+  }
+  for (const h of [APPS, `x.${ADMIN}`, `${ADMIN}.evil.example`, '', undefined, null]) {
+    assert.equal(ra.isAdminHost(h as string, ADMIN), false, JSON.stringify(h));
+  }
+  assert.equal(ra.isAdminHost('', ''), false, 'an empty Host is not the admin hostname when none is set');
+  assert.equal(ra.isAdminHost(ADMIN, ''), false);
+});
+
+test('validateAdminHost: a hostname of its own, or a sentence saying why not', () => {
+  setState({ tunnel: true, remoteAdmin: false, twoFactor: true });
+  assert.equal(ra.validateAdminHost('admin.example.org'), 'admin.example.org');
+  assert.equal(ra.validateAdminHost('https://Admin.Example.org/'), 'admin.example.org');
+  assert.equal(ra.validateAdminHost(''), '', 'blank clears it');
+  for (const bad of ['localhost', '192.168.1.50', 'admin example.org', 'admin_.example.org', '-admin.example.org']) {
+    assert.throws(() => ra.validateAdminHost(bad), /web address like/, bad);
+  }
+  assert.throws(() => ra.validateAdminHost(APPS), /address of its own/, 'never the apps\' hostname');
+  assert.throws(() => ra.validateAdminHost(`${APPS.toUpperCase()}.`), /address of its own/);
 });
 
 test('REMOVING THE SECOND FACTOR CLOSES THE DOOR, with the switch still on', () => {
@@ -93,15 +157,19 @@ test('REMOVING THE SECOND FACTOR CLOSES THE DOOR, with the switch still on', () 
 test('an older settings.json has the feature off, not undefined-on', () => {
   // Absence must read as off, the same rule the alerts matrix's WhatsApp column
   // follows: an upgrade can never silently publish a masjid's dashboard.
-  const cf = { enabled: true, domain: 'omos.example.org' } as never;
+  // The dashboard HAS an address of its own here, so the missing switch is the ONLY
+  // thing keeping the door shut. Without one, the missing address shut it whatever an
+  // absent switch read as — and the test passed for the wrong reason.
+  const cf = { enabled: true, domain: APPS, adminHost: ADMIN } as never;
   settings.updateSettings({ cloudflare: cf });
   enrolTwoFactor();
   assert.equal(ra.remoteAdminEnabled(), false);
+  assert.equal(ra.settingsOpenTheDoor({ enabled: true, domain: APPS, adminHost: ADMIN }), false);
 });
 
 // ── which paths the dashboard owns ─────────────────────────────────────────
 
-test('NOTHING UNDER /api IS EVER A DASHBOARD PATH', () => {
+test('NOTHING UNDER /api IS A DASHBOARD PATH except the dashboard\'s own routes', () => {
   // The gate must not claim these: each one owns its own tunnel rule, and the
   // secret-gated ones are refused by a guard that runs before it.
   for (const url of [
@@ -112,11 +180,41 @@ test('NOTHING UNDER /api IS EVER A DASHBOARD PATH', () => {
     '/api/fabric/app/students/billing/lookup',
     '/api/auth/session',
     '/api/public/appearance',
-    '/api/files/read?path=config/stripe.json',
-    '/api/backup',
+    '/api/public/logo',
+    // Near misses of the allow-list: a prefix is not a path.
+    '/api/backups',
+    '/api/filesystem',
+    '/api/updates',
+    '/api/branding',
+    '/api/terminals',
+    '/api/restore-now',
   ]) {
     assert.equal(ra.isDashboardPath(url), false, url);
   }
+});
+
+test('the dashboard\'s own API routes ARE dashboard paths — so they work remotely', () => {
+  // These were refused over the tunnel outright (LAN_ONLY_FEATURES), which is why
+  // remote access could see the dashboard but not update an app, open a file,
+  // download a backup or use a terminal. Each route still checks for a session
+  // that passed the second factor before it does anything.
+  for (const url of [
+    '/api/update',
+    '/api/apps/update?id=display',
+    '/api/files/download?path=/apps/x/data.txt&k=key',
+    '/api/files/raw?path=/a.png',
+    '/api/files/upload?path=/',
+    '/api/terminal/root',
+    '/api/terminal/app/display',
+    '/api/backup',
+    '/api/backup?k=key',
+    '/api/restore/upload',
+    '/api/restore/run',
+    '/api/branding/logo',
+  ]) {
+    assert.equal(ra.isDashboardPath(url), true, url);
+  }
+  for (const url of ra.DASHBOARD_API) assert.equal(ra.isDashboardPath(url), true, url);
 });
 
 test('an ENCODED /api spelling is still not a dashboard path', () => {
@@ -174,21 +272,39 @@ test('every route in the UI is covered by the allow-list', () => {
 // ── the front door, wired as index.ts wires it ─────────────────────────────
 
 /**
+ * The dashboard listener, as far as these tests need one: some routes, and an SPA
+ * fallback for everything else, the way registerStaticUI serves index.html.
+ */
+async function dashboardListener() {
+  const dash = Fastify();
+  dash.get('/trpc/auth.me', async () => ({ dashboard: true }));
+  dash.get('/', async () => 'index.html');
+  dash.get('/assets/index.js', async () => 'bundle');
+  dash.get('/api/backup', async () => ({ backup: true }));
+  dash.setNotFoundHandler((_r, reply) => reply.type('text/html').send('<!doctype html><title>OpenMasjidOS</title>'));
+  await dash.ready();
+  return dash;
+}
+
+/**
  * A front door mirroring `startHttpFront`: the Fabric guard, then the gate, then
- * the dashboard routes, then the not-found handler.
+ * the front door's own not-found handler — and NO dashboard routes of its own. A
+ * visit the gate serves is handed, as its own request event, to a SEPARATE
+ * dashboard listener, exactly as index.ts hands it to the HTTPS listener.
  *
  * THE GATE IS THE REAL ONE. Its decision is `frontDoorDecision`, the same pure
- * function index.ts calls; only the four-way mapping to a reply is repeated here.
- * The first version of this mirror re-implemented the decision by hand, and a
- * review found it had already drifted — it had no upgrade branch at all, so no
- * test ever sent a plain-http tunnel visit through a gate.
+ * function index.ts calls; only the mapping to a reply is repeated here. The first
+ * version of this mirror re-implemented the decision by hand, and a review found it
+ * had already drifted — it had no upgrade branch at all, so no test ever sent a
+ * plain-http tunnel visit through a gate.
  */
-const TEST_HOST = 'omos.example.org';
+const TEST_HOST = ADMIN;
 async function frontDoor() {
+  const dash = await dashboardListener();
   const app = Fastify();
   registerFabricTunnelGuard(app);
   app.get('/api/health', async (r, reply) =>
-    isViaTunnel(r) ? reply.code(404).send({ error: 'Not found.' }) : { status: 'ok', version: '9.9.9' },
+    isViaTunnel(r) ? refusals.refuseOverTunnel(r, reply, 'lan-only-route') : { status: 'ok', version: '9.9.9' },
   );
   app.get('/api/fabric/site', async () => ({ ok: true }));
 
@@ -196,41 +312,29 @@ async function frontDoor() {
     const d = ra.frontDoorDecision(r.url, r.headers, {
       viaTunnel: isViaTunnel(r),
       remoteAdminEnabled: ra.remoteAdminEnabled(),
-      configuredHost: TEST_HOST,
+      adminHost: ra.adminHost(),
     });
-    if (d.kind === 'pass') return done();
-    if (d.kind === 'lan-https') return reply.code(308).redirect(`https://example${r.url}`);
-    if (d.kind === 'upgrade') return reply.code(308).redirect(d.to);
-    const ref = refusals.noteRefusal(
-      r.url,
-      { host: String(r.headers.host ?? ''), method: r.method, cfRay: '', accept: '', agent: '' },
-      d.reason,
-    );
-    return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+    switch (d.kind) {
+      case 'pass':
+        return done();
+      case 'serve':
+        reply.hijack();
+        dash.server.emit('request', r.raw, reply.raw);
+        return;
+      case 'lan-https':
+        return reply.code(308).redirect(`https://example${r.url}`);
+      case 'upgrade':
+        return reply.code(308).redirect(d.to);
+      case 'refuse':
+        return refusals.refuseOverTunnel(r, reply, d.reason);
+    }
   });
-
-  app.get('/trpc/auth.me', async () => ({ dashboard: true }));
-  // REGISTERED ROUTES for the built UI, and they are the point of this mirror.
-  // The first version of this test had only the tRPC route and a not-found
-  // handler, so `GET /` fell through to the handler and got the HTTPS redirect —
-  // while the real front door matched @fastify/static and served index.html over
-  // plain HTTP on the masjid's LAN. A registered route skips the not-found
-  // handler; a mirror without one cannot see that, and did not.
-  app.get('/', async () => 'index.html');
-  app.get('/assets/index.js', async () => 'bundle');
   app.setNotFoundHandler((r, reply) => {
-    if (isViaTunnel(r) && ra.remoteAdminEnabled() && ra.isDashboardPath(r.url)) {
-      return reply.type('text/html').send('<!doctype html><title>OpenMasjidOS</title>');
-    }
-    if (isViaTunnel(r)) {
-      refusals.noteRefusal(
-        r.url,
-        { host: String(r.headers.host ?? ''), method: r.method, cfRay: '', accept: '', agent: '' },
-        'no-app-at-path',
-      );
-      return reply.code(404).send({ error: 'Not found.' });
-    }
+    if (isViaTunnel(r)) return refusals.refuseOverTunnel(r, reply, refusals.notFoundReason(r.url, null));
     return reply.code(308).redirect(`https://example${r.url}`);
+  });
+  app.addHook('onClose', async () => {
+    await dash.close();
   });
   await app.ready();
   return app;
@@ -257,14 +361,58 @@ test('with the feature off, a refusal is still RECORDED', async () => {
   await app.close();
 });
 
-test('with the feature ON, the dashboard is served over the tunnel', async () => {
+test('with the feature ON, the dashboard is served over the tunnel — by the dashboard listener', async () => {
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   const app = await frontDoor();
-  assert.equal((await app.inject({ method: 'GET', url: '/trpc/auth.me', headers: TUNNEL })).statusCode, 200);
-  const page = await app.inject({ method: 'GET', url: '/settings/account', headers: TUNNEL });
+  const me = await app.inject({ method: 'GET', url: '/trpc/auth.me', headers: REMOTE });
+  assert.equal(me.statusCode, 200);
+  assert.match(me.body, /dashboard/, 'the request did not reach the dashboard listener');
+  const page = await app.inject({ method: 'GET', url: '/settings/account', headers: REMOTE });
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /OpenMasjidOS/);
   await app.close();
+});
+
+test('THE DASHBOARD IS NEVER SERVED ON THE APPS\' HOSTNAME — with the feature on, at any path', async () => {
+  // That hostname serves app pages. A dashboard there shares an origin with every one
+  // of them, and any of them could then act as the admin.
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  refusals.__clearRefusalsForTests();
+  const app = await frontDoor();
+  try {
+    for (const url of ['/', '/trpc/auth.me', '/settings', '/assets/index.js', '/api/backup', '/%74rpc/auth.me']) {
+      const res = await app.inject({ method: 'GET', url, headers: { ...TUNNEL, host: APPS } });
+      assert.equal(res.statusCode, 404, url);
+      assert.doesNotMatch(res.body, /dashboard|bundle|backup|OpenMasjidOS</, url);
+    }
+    assert.ok(
+      refusals.recentRefusals().some((r) => r.path === '/' && r.reason === 'dashboard-elsewhere'),
+      'the refusal must say where the dashboard went',
+    );
+    // Nor with no Host at all, nor a lookalike.
+    for (const host of ['', `${ADMIN}.evil.example`, `x${ADMIN}`]) {
+      const res = await app.inject({ method: 'GET', url: '/trpc/auth.me', headers: { ...TUNNEL, host } });
+      assert.equal(res.statusCode, 404, `Host: ${host}`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('WITH THE FEATURE ON, the dashboard\'s own API is handed over too — and only with it on', async () => {
+  // A backup download, as one representative of DASHBOARD_API. Off: refused like
+  // the rest of the dashboard. On: reaches the dashboard listener, where the route
+  // itself checks for a session that passed the second factor.
+  setState({ tunnel: true, remoteAdmin: false, twoFactor: true });
+  const off = await frontDoor();
+  assert.equal((await off.inject({ method: 'GET', url: '/api/backup', headers: TUNNEL })).statusCode, 404);
+  await off.close();
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  const on = await frontDoor();
+  const res = await on.inject({ method: 'GET', url: '/api/backup', headers: REMOTE });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.body, /backup/);
+  await on.close();
 });
 
 test('THE FABRIC STAYS REFUSED even with the feature on', async () => {
@@ -272,19 +420,21 @@ test('THE FABRIC STAYS REFUSED even with the feature on', async () => {
   // and every configured Stripe live key.
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   const app = await frontDoor();
-  assert.equal((await app.inject({ method: 'GET', url: '/api/fabric/site', headers: TUNNEL })).statusCode, 404);
-  assert.equal(
-    (await app.inject({ method: 'GET', url: '/api/%66abric/site', headers: TUNNEL })).statusCode,
-    404,
-    'the encoded spelling too',
-  );
+  for (const headers of [TUNNEL, REMOTE]) {
+    assert.equal((await app.inject({ method: 'GET', url: '/api/fabric/site', headers })).statusCode, 404);
+    assert.equal(
+      (await app.inject({ method: 'GET', url: '/api/%66abric/site', headers })).statusCode,
+      404,
+      'the encoded spelling too',
+    );
+  }
   await app.close();
 });
 
 test('the version stays withheld even with the feature on', async () => {
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   const app = await frontDoor();
-  const res = await app.inject({ method: 'GET', url: '/api/health', headers: TUNNEL });
+  const res = await app.inject({ method: 'GET', url: '/api/health', headers: REMOTE });
   assert.equal(res.statusCode, 404);
   assert.doesNotMatch(res.body, /9\.9\.9/);
   await app.close();
@@ -295,8 +445,10 @@ test('a wrong public address still 404s with the feature on', async () => {
   // mistypes the donations path gets "no page here", not an admin sign-in box.
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   const app = await frontDoor();
-  const res = await app.inject({ method: 'GET', url: '/donatoins', headers: TUNNEL });
-  assert.equal(res.statusCode, 404);
+  for (const headers of [TUNNEL, REMOTE]) {
+    const res = await app.inject({ method: 'GET', url: '/donatoins', headers });
+    assert.equal(res.statusCode, 404);
+  }
   await app.close();
 });
 
@@ -306,9 +458,10 @@ test('LAN TRAFFIC ON THE HTTP FRONT DOOR IS UNCHANGED, feature on or off', async
   for (const remoteAdmin of [false, true]) {
     setState({ tunnel: true, remoteAdmin, twoFactor: true });
     const app = await frontDoor();
-    // '/' and '/assets/index.js' are REGISTERED here, deliberately: they are the
-    // spellings that skip the not-found handler, and they are what broke.
-    for (const url of ['/', '/settings', '/assets/index.js']) {
+    // '/' and '/assets/index.js' are registered on the dashboard listener behind
+    // this one — the spellings that once skipped the gate and were served over plain
+    // HTTP on the LAN. They must be redirected, never handed over.
+    for (const url of ['/', '/settings', '/assets/index.js', '/api/backup']) {
       const res = await app.inject({ method: 'GET', url });
       assert.equal(
         res.statusCode,
@@ -336,19 +489,32 @@ test('index.ts registers the Fabric guard BEFORE the remote-admin gate', () => {
   assert.ok(guard < gate, 'the Fabric guard must be registered before the gate');
 });
 
-test('the CSRF and header hooks are added BEFORE the dashboard routes', () => {
-  // Fastify binds a route's hook chain when the route is registered, so a hook
-  // added afterwards can silently not apply — "the guard is there but never
-  // runs", which is the failure shape §15 records for discoverApps.
-  const csrf = INDEX.indexOf("urlHasPrefix(req.url, '/trpc') && !isWebSocketUpgrade(req)", INDEX.indexOf('startHttpFront'));
-  const headers = INDEX.indexOf("reply.header('X-Frame-Options', 'SAMEORIGIN')", INDEX.indexOf('startHttpFront'));
-  const trpc = INDEX.indexOf('front.register(fastifyTRPCPlugin', INDEX.indexOf('startHttpFront'));
-  const statics = INDEX.indexOf('registerStaticFiles(front', INDEX.indexOf('startHttpFront'));
-  for (const [name, at] of Object.entries({ csrf, headers, trpc, statics })) {
-    assert.ok(at > 0, `${name} is missing from the front door`);
-  }
-  assert.ok(csrf < trpc, 'the /trpc origin check must be registered before the tRPC plugin');
-  assert.ok(headers < trpc && headers < statics, 'security headers must be hooked before the routes');
+/** The body of `startHttpFront` in index.ts. */
+function frontDoorSource(): string {
+  const fn = INDEX.slice(INDEX.indexOf('async function startHttpFront'));
+  const end = fn.indexOf('\n  }\n');
+  const body = end > 0 ? fn.slice(0, end) : fn;
+  assert.ok(body.includes('const front = Fastify('), 'could not find the front door');
+  return body;
+}
+
+test('THE FRONT DOOR SERVES NO DASHBOARD OF ITS OWN — it hands a permitted visit over', () => {
+  // A second copy of the dashboard on this listener was only part of one: everything
+  // under /api stayed behind, which is why remote access could look at the dashboard
+  // but not update an app or open a file. And every route registered HERE is a route
+  // that skips the not-found handler — the class of bug that once served the
+  // dashboard over plain HTTP on the LAN.
+  const body = frontDoorSource();
+  assert.doesNotMatch(body, /front\.register\(\s*fastifyTRPCPlugin/, 'tRPC is registered on the front door again');
+  assert.doesNotMatch(body, /registerStaticFiles\(\s*front/, 'the UI is served by the front door again');
+  assert.doesNotMatch(body, /registerStaticUI\(\s*front/, 'the UI is served by the front door again');
+  assert.match(
+    body,
+    /case 'serve':[\s\S]*?reply\.hijack\(\);[\s\S]*?server\.server\.emit\('request', req\.raw, reply\.raw\)/,
+    'a served visit must be handed to the dashboard listener, unread',
+  );
+  // Its own answers — refusals and redirects — still carry the security headers.
+  assert.match(body, /reply\.header\('X-Frame-Options', 'SAMEORIGIN'\)/);
 });
 
 test('the front door only claims the dashboard WebSocket, and only when the gate would pass it', () => {
@@ -362,27 +528,71 @@ test('the front door only claims the dashboard WebSocket, and only when the gate
   assert.match(call, /claimUpgrade/, 'the dashboard socket claim is gone');
   assert.match(call, /claimsDashboardSocket\(/, 'it must ask the shared rule, not re-derive it');
   assert.match(call, /remoteAdminEnabled:\s*remoteAdminEnabled\(\)/, 'it must respect the setting');
-  assert.match(call, /configuredHost:\s*publicHost\(\)/);
+  assert.match(call, /adminHost:\s*adminHost\(\)/, 'only on the ADMIN hostname');
   assert.match(call, /if \(!ok\) return false;/, 'a declined upgrade must be handed back (and so destroyed)');
-  assert.match(call, /handleUpgrade\(/, 'a claimed socket must actually be handled');
+  assert.match(
+    call,
+    /if \(!trackHandedOverSocket\(req, socket\)\) return false;[\s\S]*?markHandedOver\(req\);[\s\S]*?server\.server\.emit\('upgrade', req, socket, head\)/,
+    'a claimed socket must be tracked (so it is closed when the door shuts; refused when the table is full), marked and then handed over',
+  );
+  // And the dashboard opens its socket only while something is subscribed, so the
+  // sign-in screen holds none — the front door now hands one over only to a session.
+  const client = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'lib', 'trpcClient.ts'), 'utf8');
+  assert.match(client, /createWSClient\(\{[^}]*lazy: \{ enabled: true/, 'the dashboard socket must be lazy');
 });
 
 test('claimsDashboardSocket: the dashboard socket, over the tunnel, when the gate would pass it — nothing else', () => {
-  const https = { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: HOST };
-  const on = { remoteAdminEnabled: true, configuredHost: HOST };
+  // A signed-in remote session: the only kind a socket is handed over to.
+  const sessions = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  const remote = sessions.createSession('admin', sessions.currentCredential(), { remote: true, tf: tf.secondFactorEpoch(), handedOver: true });
+  const lan = sessions.createSession('admin', sessions.currentCredential());
+  const signedIn = { cookie: `${sessions.REMOTE_COOKIE_NAME}=${remote.token}` };
+  const https = { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: HOST, ...signedIn };
+  const on = { remoteAdminEnabled: true, adminHost: HOST };
   assert.equal(ra.claimsDashboardSocket('/trpc', https, on), true);
+  // …and nobody else: a stranger, a LAN session (in either cookie), a session that ended.
+  const { cookie: _c, ...stranger } = https;
+  assert.equal(ra.claimsDashboardSocket('/trpc', stranger, on), false, 'a stranger holds no dashboard socket');
+  assert.equal(ra.claimsDashboardSocket('/trpc', { ...stranger, cookie: `${sessions.COOKIE_NAME}=${lan.token}` }, on), false);
+  assert.equal(ra.claimsDashboardSocket('/trpc', { ...stranger, cookie: `${sessions.REMOTE_COOKIE_NAME}=${lan.token}` }, on), false);
+  const ended = sessions.createSession('admin', sessions.currentCredential(), { remote: true, tf: tf.secondFactorEpoch(), handedOver: true });
+  sessions.destroySession(ended.token);
+  assert.equal(ra.claimsDashboardSocket('/trpc', { ...stranger, cookie: `${sessions.REMOTE_COOKIE_NAME}=${ended.token}` }, on), false);
   assert.equal(ra.claimsDashboardSocket('/trpc?connectionParams=1', https, on), true);
-  assert.equal(ra.claimsDashboardSocket('/%74rpc', https, on), true, 'the same request the HTTP gate passes');
 
   assert.equal(ra.claimsDashboardSocket('/trpc', {}, on), false, 'LAN sockets use the TLS listener, never this one');
   assert.equal(ra.claimsDashboardSocket('/trpc', https, { ...on, remoteAdminEnabled: false }), false, 'feature off');
   assert.equal(ra.claimsDashboardSocket('/trpc', http(), on), false, 'plain http:// is redirected by the gate, so not claimed');
   assert.equal(
-    ra.claimsDashboardSocket('/trpc', { ...https, 'cf-visitor': '' }, { ...on, configuredHost: '' }),
+    ra.claimsDashboardSocket('/trpc', { ...https, host: APPS }, on),
+    false,
+    'NOT on the apps\' hostname — the dashboard is never served there',
+  );
+  assert.equal(
+    ra.claimsDashboardSocket('/trpc', { ...https, 'cf-visitor': '' }, on),
     true,
     'unknown scheme is served by the gate, so claimed — the same answer, not a stricter one',
   );
   for (const url of ['/trpcx', '/settings', '/', '/api/fabric/site', '/donations/trpc']) {
+    assert.equal(ra.claimsDashboardSocket(url, https, on), false, url);
+  }
+  // EVERY spelling must be a dashboard socket — this is an allow. With `some`, a
+  // dot-segment spelling of nothing (`/x/../trpc`) was claimed and answered while a
+  // private app's path was destroyed, and the difference named the installed apps.
+  for (const url of ['/%74rpc', '/x/../trpc', '/students/../trpc', '/x/%2e%2e/api/update', '/api/../trpc']) {
+    assert.equal(ra.claimsDashboardSocket(url, https, on), false, url);
+  }
+  // The progress and terminal streams are dashboard sockets too — remotely, an
+  // update or a terminal is nothing without them.
+  for (const url of ['/api/update', '/api/apps/update?id=display', '/api/restore/run', '/api/terminal/root', '/api/terminal/app/display']) {
+    assert.equal(ra.claimsDashboardSocket(url, https, on), true, url);
+    assert.equal(ra.claimsDashboardSocket(url, https, { ...on, remoteAdminEnabled: false }), false, `${url} with the feature off`);
+  }
+  // Dashboard paths that are not sockets are not claimed as sockets — including ones
+  // that merely START with a socket's path: `/api/restore/running` is a dashboard path
+  // (it is under /api/restore) but it is not the restore socket.
+  for (const url of ['/api/backup', '/api/files/download', '/api/branding/logo', '/api/updates', '/api/restore/upload', '/api/restore/running']) {
     assert.equal(ra.claimsDashboardSocket(url, https, on), false, url);
   }
 });
@@ -392,16 +602,7 @@ test('@fastify/websocket is NOT registered on the front door', () => {
   // Fastify, so each app's socket was handled twice — piped to the app by the
   // ingress AND proxied as plain HTTP by its onRequest hook — and every app's
   // live socket over the tunnel died. The ingress is the one upgrade owner here.
-  const fn = INDEX.slice(INDEX.indexOf('async function startHttpFront'));
-  const end = fn.indexOf('\n  }\n');
-  const body = end > 0 ? fn.slice(0, end) : fn;
-  assert.ok(body.includes('const front = Fastify('), 'could not find the front door');
-  assert.doesNotMatch(body, /front\.register\(\s*fastifyWebsocket/, '@fastify/websocket is back on the front door');
-  assert.match(
-    body,
-    /front\.register\(fastifyTRPCPlugin,\s*\{\s*\.\.\.trpcPluginOptions,\s*useWSS:\s*false\s*\}\)/,
-    'tRPC on the front door must not try to serve its own WebSocket',
-  );
+  assert.doesNotMatch(frontDoorSource(), /front\.register\(\s*fastifyWebsocket/, '@fastify/websocket is back on the front door');
 });
 
 // ── the session cookie's Secure flag, asked of the real createContext ───────
@@ -476,10 +677,10 @@ test('visitorScheme prefers cf-visitor, reads the first hop, and only says what 
   assert.equal(visitorScheme({}), null);
 });
 
-const HOST = 'omos.example.org';
+const HOST = ADMIN;
 const http = (extra: Record<string, string> = {}) => ({ 'cf-ray': 'a-LHR', 'x-forwarded-proto': 'http', host: HOST, ...extra });
 
-const ON = { viaTunnel: true, remoteAdminEnabled: true, configuredHost: HOST };
+const ON = { viaTunnel: true, remoteAdminEnabled: true, adminHost: HOST };
 const decide = (url: string, headers: Record<string, string>, ctx = ON) => ra.frontDoorDecision(url, headers, ctx);
 
 test('A PLAIN-HTTP TUNNEL VISIT TO THE DASHBOARD IS UPGRADED TO HTTPS', () => {
@@ -490,31 +691,37 @@ test('A PLAIN-HTTP TUNNEL VISIT TO THE DASHBOARD IS UPGRADED TO HTTPS', () => {
   assert.deepEqual(decide('/', http({ 'cf-visitor': '{"scheme":"http"}' })), { kind: 'upgrade', to: `https://${HOST}/` });
 });
 
-test('THE UPGRADE ALWAYS GOES TO OUR HOSTNAME — never where the request says', () => {
-  // The target never comes from the request, so this can never be an open redirect
-  // whatever Host is sent. The first version ALSO required Host to equal ours, which
-  // protected nothing and meant a second hostname routed to the tunnel was served
-  // in clear; a review caught it.
-  for (const host of ['evil.example.com', `${HOST}.evil.example.com`, 'app.example.org', '']) {
+test('THE UPGRADE ALWAYS GOES TO THE CONFIGURED ADMIN HOSTNAME — never where the request says', () => {
+  // The target never comes from the request, so this can never be an open redirect.
+  // A different spelling of the admin hostname is upgraded to the configured one.
+  for (const host of [HOST, HOST.toUpperCase(), `${HOST}.`, `${HOST}:80`]) {
     assert.deepEqual(decide('/', http({ host })), { kind: 'upgrade', to: `https://${HOST}/` }, `Host: ${host}`);
+  }
+  // Any OTHER hostname gets no dashboard at all, upgraded or not: the apps' one serves
+  // app pages, and the dashboard must never share an origin with one.
+  for (const host of ['evil.example.com', `${HOST}.evil.example.com`, APPS, '']) {
+    assert.deepEqual(decide('/', http({ host })), { kind: 'refuse', reason: 'dashboard-elsewhere' }, `Host: ${host}`);
   }
   // A request target that is not a path is not something to build a URL from.
   assert.deepEqual(decide('//evil.example.com/x', http()), { kind: 'pass' }, 'not a dashboard path at all');
+  assert.deepEqual(decide('//settings', http()), { kind: 'refuse', reason: 'plain-http-no-host' });
 });
 
-test('WITH NO HOSTNAME CONFIGURED, A PLAIN-HTTP VISIT IS REFUSED, NOT SERVED IN CLEAR', () => {
-  assert.deepEqual(decide('/', http(), { ...ON, configuredHost: '' }), { kind: 'refuse', reason: 'plain-http-no-host' });
-  assert.deepEqual(decide('/settings', http(), { ...ON, configuredHost: '   ' }), {
-    kind: 'refuse',
-    reason: 'plain-http-no-host',
-  });
+test('WITH NO ADMIN HOSTNAME CONFIGURED, NOTHING IS SERVED OR UPGRADED', () => {
+  for (const blank of ['', '   ']) {
+    assert.deepEqual(decide('/', http(), { ...ON, adminHost: blank }), { kind: 'refuse', reason: 'dashboard-elsewhere' });
+    assert.deepEqual(decide('/settings', { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: '' }, { ...ON, adminHost: blank }), {
+      kind: 'refuse',
+      reason: 'dashboard-elsewhere',
+    });
+  }
 });
 
 test('the upgrade never loops', () => {
   // Only an EXPLICIT http signal redirects. HTTPS is served, and so is unknown — a
   // proxy that strips the scheme header can never trap the dashboard in a loop.
-  assert.deepEqual(decide('/', { 'cf-ray': 'a', 'x-forwarded-proto': 'https', host: HOST }), { kind: 'pass' });
-  assert.deepEqual(decide('/', { 'cf-ray': 'a', host: HOST }), { kind: 'pass' });
+  assert.deepEqual(decide('/', { 'cf-ray': 'a', 'x-forwarded-proto': 'https', host: HOST }), { kind: 'serve' });
+  assert.deepEqual(decide('/', { 'cf-ray': 'a', host: HOST }), { kind: 'serve' });
 });
 
 test('A PROXY THAT REWRITES x-forwarded-proto CANNOT CAUSE A REDIRECT LOOP', () => {
@@ -523,7 +730,7 @@ test('A PROXY THAT REWRITES x-forwarded-proto CANNOT CAUSE A REDIRECT LOOP', () 
   // "plain HTTP", redirected to the URL it was already on, for ever. cf-visitor is
   // Cloudflare's own statement and nothing in between touches it — so it wins.
   const rewritten = { 'cf-ray': 'a', 'x-forwarded-proto': 'http', 'cf-visitor': '{"scheme":"https"}', host: HOST };
-  assert.deepEqual(decide('/', rewritten), { kind: 'pass' }, 'an HTTPS visit behind a rewriting proxy was redirected');
+  assert.deepEqual(decide('/', rewritten), { kind: 'serve' }, 'an HTTPS visit behind a rewriting proxy was redirected');
   assert.equal(cookieSecureFor(rewritten), true, 'and it must still get a Secure cookie');
 });
 
@@ -550,19 +757,25 @@ test('THROUGH THE FRONT DOOR: a plain-http visit is 308ed to https, and refused 
   await app.close();
 });
 
-test('the real gate in index.ts IS frontDoorDecision, and handles all four outcomes', () => {
+test('the real gate in index.ts IS frontDoorDecision, and handles all five outcomes', () => {
   // Structural, but only for the wiring — the decision itself is tested above by
   // calling the very function index.ts calls.
   const from = INDEX.indexOf('const d = frontDoorDecision(req.url, req.headers');
   assert.ok(from > 0, 'the front door no longer calls frontDoorDecision');
-  const gate = INDEX.slice(from, INDEX.indexOf('front.register(fastifyTRPCPlugin', from));
-  assert.ok(gate.length > 0, 'the gate must come before the tRPC plugin');
-  assert.match(gate, /configuredHost:\s*publicHost\(\)/, 'the upgrade must target the CONFIGURED hostname');
-  for (const kind of ['pass', 'lan-https', 'upgrade', 'refuse']) {
+  const gate = INDEX.slice(from, INDEX.indexOf('front.setNotFoundHandler', from));
+  assert.ok(gate.length > 0, 'the gate must come before the not-found handler');
+  assert.match(gate, /adminHost:\s*adminHost\(\)/, 'the gate must know the CONFIGURED admin hostname');
+  assert.match(gate, /markHandedOver\(req\.raw\);[\s\S]*?reply\.hijack\(\);/, 'a served request must be marked before it is handed over');
+  assert.match(
+    gate,
+    /hasRemoteSession\(req\.headers\) \? null : anonymousBodyRefusal\(req\.headers\)/,
+    'a stranger\'s oversized body must be refused before it is handed over',
+  );
+  for (const kind of ['pass', 'serve', 'lan-https', 'upgrade', 'refuse']) {
     assert.match(gate, new RegExp(`case '${kind}'`), `the gate does not handle '${kind}'`);
   }
   assert.match(gate, /case 'upgrade':\s*(\/\/[^\n]*\n\s*)*return reply\.code\(308\)\.redirect\(d\.to\)/, 'an upgrade must 308 to d.to');
-  assert.match(gate, /noteRefusal\([\s\S]*?d\.reason/, "a refusal must be recorded under the decision's reason");
+  assert.match(gate, /refuseOverTunnel\(req, reply, d\.reason\)/, "a refusal must be recorded under the decision's reason");
   assert.doesNotMatch(INDEX, /httpsUpgradeTarget/, 'the old helper must not linger');
 });
 
@@ -625,7 +838,7 @@ test('THROUGH THE FRONT DOOR: /%74rpc/auth.me is NOT answered over the tunnel wi
   // Without this, a 404 below could be Fastify not matching rather than the gate.
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   const on = await frontDoor();
-  const served = await on.inject({ method: 'GET', url: '/%74rpc/auth.me', headers: TUNNEL });
+  const served = await on.inject({ method: 'GET', url: '/%74rpc/auth.me', headers: REMOTE });
   assert.equal(served.statusCode, 200, 'the router must deliver the encoded spelling, or this test proves nothing');
   assert.match(served.body, /dashboard/);
   await on.close();
@@ -796,4 +1009,155 @@ test('A REFUSED UPGRADE IS CLOSED BY THE SERVER, never answered and left open', 
     for (const c of conns) c.destroy();
     await app.close();
   }
+});
+
+// ── the dashboard listener's own guards ────────────────────────────────────
+
+test('anonymousBodyRefusal: a stranger declares a few hundred bytes, or is refused unread', () => {
+  assert.equal(ra.anonymousBodyRefusal({}), null);
+  assert.equal(ra.anonymousBodyRefusal({ 'content-length': '512' }), null);
+  assert.equal(ra.anonymousBodyRefusal({ 'content-length': String(ra.ANONYMOUS_BODY_LIMIT) }), null);
+  assert.equal(ra.anonymousBodyRefusal({ 'content-length': String(ra.ANONYMOUS_BODY_LIMIT + 1) }), 413);
+  assert.equal(ra.anonymousBodyRefusal({ 'content-length': '25000000' }), 413);
+  assert.equal(ra.anonymousBodyRefusal({ 'content-length': 'lots' }), 413);
+  // Not refused up front — a tunnel may send a browser's fixed-size sign-in this way.
+  // It is counted as it arrives instead (registerDashboardRequestLimits, below).
+  assert.equal(ra.anonymousBodyRefusal({ 'transfer-encoding': 'chunked' }), null);
+});
+
+const sessionsMod = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
+
+/** A dashboard listener with the real limits, and a stand-in for the front door's mark. */
+async function dashboardWithLimits() {
+  const dash = Fastify({ bodyLimit: 25 * 1024 * 1024 });
+  dash.addHook('onRequest', async (r) => {
+    if (r.headers['x-test-handed-over']) ra.markHandedOver(r.raw);
+  });
+  ra.registerDashboardRequestLimits(dash);
+  dash.post('/trpc/auth.login', async (r) => ({ got: JSON.stringify(r.body).length }));
+  dash.get('/trpc/auth.me', async () => ({ ok: true }));
+  await dash.ready();
+  return dash;
+}
+
+test("A STRANGER'S BODY IS COUNTED AS IT ARRIVES — even one that never says its size", async () => {
+  // The dashboard listener takes 25 MB of JSON, which a signed-in admin needs. Handed
+  // the internet's requests unread, that was 25 MB per request for anyone who could
+  // reach the sign-in page — a memory lever against a root process on a Pi.
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  const dash = await dashboardWithLimits();
+  const { Readable } = await import('node:stream');
+  const big = JSON.stringify({ x: 'a'.repeat(ra.ANONYMOUS_BODY_LIMIT + 10) });
+  const json = { 'content-type': 'application/json' };
+  try {
+    const chunked = await dash.inject({
+      method: 'POST',
+      url: '/trpc/auth.login',
+      headers: { ...json, 'x-test-handed-over': '1' },
+      payload: Readable.from([big.slice(0, 40_000), big.slice(40_000)]),
+    });
+    assert.equal(chunked.statusCode, 413, 'an undeclared body was read past the limit');
+    const small = await dash.inject({
+      method: 'POST',
+      url: '/trpc/auth.login',
+      headers: { ...json, 'x-test-handed-over': '1' },
+      payload: JSON.stringify({ username: 'admin', password: 'x' }),
+    });
+    assert.equal(small.statusCode, 200, 'a real sign-in must pass');
+    // On the masjid's network, and for a remote admin who is signed in, the
+    // dashboard's own limit applies — they upload wallpapers and paste compose files.
+    const lan = await dash.inject({ method: 'POST', url: '/trpc/auth.login', headers: json, payload: big });
+    assert.equal(lan.statusCode, 200);
+    const remote = sessionsMod.createSession('admin', sessionsMod.currentCredential(), {
+      remote: true,
+      tf: tf.secondFactorEpoch(),
+      handedOver: true,
+    });
+    const signedIn = await dash.inject({
+      method: 'POST',
+      url: '/trpc/auth.login',
+      headers: { ...json, 'x-test-handed-over': '1', cookie: `${sessionsMod.REMOTE_COOKIE_NAME}=${remote.token}` },
+      payload: Readable.from([big]),
+    });
+    assert.equal(signedIn.statusCode, 200);
+  } finally {
+    await dash.close();
+  }
+});
+
+test('tRPC TAKES JSON ONLY — its unlimited multipart path is closed to everyone', async () => {
+  const dash = await dashboardWithLimits();
+  try {
+    for (const [url, type] of [
+      ['/trpc/auth.login', 'multipart/form-data; boundary=x'],
+      ['/trpc/auth.login', 'text/plain'],
+      ['/trpc/auth.login', ''],
+      ['/%74rpc/auth.login', 'multipart/form-data; boundary=x'],
+    ] as const) {
+      const res = await dash.inject({ method: 'POST', url, headers: type ? { 'content-type': type } : {}, payload: '--x--' });
+      assert.equal(res.statusCode, 415, `${url} with "${type}"`);
+    }
+    // A query carries no body and no type, and is untouched.
+    assert.equal((await dash.inject({ method: 'GET', url: '/trpc/auth.me' })).statusCode, 200);
+  } finally {
+    await dash.close();
+  }
+});
+
+test('THE DASHBOARD LISTENER ANSWERS CLOUDFLARE ONLY THROUGH THE GATE', async () => {
+  // A tunnel pointed at the dashboard's own port by mistake would otherwise serve
+  // the dashboard to the internet with the switch off and the admin hostname ignored.
+  const dash = Fastify();
+  dash.addHook('onRequest', async (r) => {
+    if (r.headers['x-test-handed-over']) ra.markHandedOver(r.raw);
+  });
+  ra.registerHandoffOnlyGuard(dash);
+  dash.get('/trpc/auth.me', async () => ({ dashboard: true }));
+  await dash.ready();
+  try {
+    refusals.__clearRefusalsForTests();
+    const direct = await dash.inject({ method: 'GET', url: '/trpc/auth.me', headers: { 'cf-ray': 'abc-LHR' } });
+    assert.equal(direct.statusCode, 404, 'Cloudflare traffic was answered without the gate');
+    assert.doesNotMatch(direct.body, /dashboard/);
+    // Recorded as what it is — a hostname pointed at the wrong port — so "Recently
+    // turned away" says what to fix instead of "Local network only".
+    assert.ok(
+      refusals.recentRefusals().some((r) => r.path === '/trpc/auth.me' && r.reason === 'wrong-port'),
+      JSON.stringify(refusals.recentRefusals()),
+    );
+    assert.equal((await dash.inject({ method: 'GET', url: '/trpc/auth.me' })).statusCode, 200, 'the LAN');
+    assert.equal(
+      (await dash.inject({ method: 'GET', url: '/trpc/auth.me', headers: { 'x-forwarded-proto': 'https' } })).statusCode,
+      200,
+      "a masjid's own reverse proxy is not Cloudflare",
+    );
+    assert.equal(
+      (await dash.inject({ method: 'GET', url: '/trpc/auth.me', headers: { 'cf-ray': 'abc-LHR', 'x-test-handed-over': '1' } }))
+        .statusCode,
+      200,
+      'handed over by the gate',
+    );
+  } finally {
+    await dash.close();
+  }
+});
+
+test('index.ts wires the dashboard listener\'s guards, and the remote-only behaviours, where they belong', () => {
+  const origin = INDEX.indexOf('registerOriginFormGuard(server)');
+  const handoff = INDEX.indexOf('registerHandoffOnlyGuard(server)');
+  const limits = INDEX.indexOf('registerDashboardRequestLimits(server)');
+  assert.ok(origin > 0 && handoff > origin, 'the hand-over guard must come straight after the request-target guard');
+  assert.ok(limits > handoff, 'the request limits must be registered');
+  assert.ok(handoff < INDEX.indexOf('server.register(fastifyCookie)'), 'before any plugin adds a hook');
+  // The backup download starts answering before the backup is made, from outside.
+  assert.match(INDEX, /if \(wasHandedOver\(req\.raw\)\) return remoteBackupDownload\(reply\);/);
+  // …through api/backup-download.ts, whose behaviour test/remote-backup.test.ts drives.
+  assert.match(INDEX, /import \{ remoteBackupDownload, sendBackup \} from '\.\/api\/backup-download';/);
+  // Nothing of the remote dashboard is left in Cloudflare's cache.
+  assert.match(
+    INDEX,
+    /if \(wasHandedOver\(req\.raw\)\) \{\s*reply\.header\('cdn-cache-control', 'no-store'\);\s*reply\.header\('cloudflare-cdn-cache-control', 'no-store'\);/,
+  );
+  // And the boot adopts emailed codes switched on before they were bound.
+  assert.match(INDEX, /adoptLegacyEmailBinding\(\)/);
 });

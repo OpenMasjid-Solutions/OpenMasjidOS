@@ -171,7 +171,8 @@ test('every sign-in mints its session with the credential it PROVED, never a fre
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'auth', 'sessions.ts'), 'utf8');
   const sig = /export function createSession\(([^)]*)\)/.exec(src);
   assert.ok(sig, 'createSession is gone or renamed');
-  assert.match(sig![1]!, /^\s*username: string,\s*cred: string\s*$/, `createSession's credential must be required: (${sig![1]})`);
+  assert.match(sig![1]!, /^\s*username: string,\s*cred: string\s*(,|$)/, `createSession's credential must be required: (${sig![1]})`);
+  assert.doesNotMatch(sig![1]!, /cred: string\s*=/, 'the credential has a default again');
 });
 
 // ── a remote sign-in waiting for its second factor ─────────────────────────
@@ -348,6 +349,73 @@ test('THE REAL RESET TOOL, AS A SEPARATE PROCESS: the old password and old sessi
   assert.equal(cookie(), null, 'THE OLD PASSWORD STILL SIGNED IN AFTER A RESET');
   assert.equal(sessions.getSessionUser(before.token), null, 'a pre-reset session is still alive');
   assert.equal((await call(LAN).caller.login({ username: 'admin', password: NEWER })).authenticated, true);
+});
+
+/** Run the installer's FULL sign-in reset (reset-auth.ts), answering its questions. */
+function runFullReset(newPassword: string, turnOffTwoStep: 'y' | 'n' | null): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', path.join(__dirname, '..', 'src', 'reset-auth.ts')], {
+      env: {
+        ...process.env,
+        OPENMASJID_DATA_DIR: DATA,
+        DOCKER_SOCKET: path.join(DATA, 'there-is-no-docker-here.sock'),
+        OPENMASJID_CONTAINER_NAME: 'omos-test-no-such-container',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    const prompts: Array<[RegExp, string]> = [
+      [/Type RESET to confirm: $/, 'RESET'],
+      [/Admin username \[[^\]]*\]: $/, ''],
+      [/New admin password \(typed visibly\): $/, newPassword],
+      [/Confirm new password: $/, newPassword],
+      ...(turnOffTwoStep ? ([[/no backup codes\. \[y\/N\]: $/, turnOffTwoStep]] as Array<[RegExp, string]>) : []),
+    ];
+    let next = 0;
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`the full reset did not finish. It printed:\n${out}`));
+    }, 60_000);
+    child.stdout.on('data', (b: Buffer) => {
+      out += b.toString();
+      if (next < prompts.length && prompts[next]![0].test(out)) {
+        child.stdin.write(`${prompts[next]![1]}\n`);
+        next += 1;
+        if (next === prompts.length) child.stdin.end();
+      }
+    });
+    child.stderr.on('data', (b: Buffer) => (out += b.toString()));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
+  });
+}
+
+test('THE FULL SIGN-IN RESET CAN TURN TWO-STEP SIGN-IN OFF — the way back from a lost phone', { timeout: 120_000 }, async () => {
+  // The dashboard asks for a current code to change two-step sign-in, on the masjid's
+  // network too. An admin who lost the phone AND the backup codes had no way to remove
+  // or replace it at all; the installer's Reset sign-in is that way, for someone who
+  // has the server itself.
+  await reset();
+  tf.disableTwoFactor();
+  const { secret } = tf.beginEnrolment('admin');
+  tf.confirmEnrolment(totpLib.totp(secret, Date.now()));
+  assert.equal(tf.twoFactorActive(), true);
+
+  const kept = await runFullReset('a-password-from-the-full-reset', 'n');
+  assert.equal(kept.code, 0, kept.out);
+  assert.equal(tf.twoFactorActive(), true, 'answering no turned two-step sign-in off');
+
+  const off = await runFullReset('another-password-from-the-full-reset', 'y');
+  assert.equal(off.code, 0, off.out);
+  assert.match(off.out, /Two-step sign-in is off/);
+  assert.equal(tf.twoFactorActive(), false, 'the reset left two-step sign-in on');
+
+  // With nothing enrolled, the question is not asked at all.
+  const quiet = await runFullReset('a-third-password-from-the-full-reset', null);
+  assert.equal(quiet.code, 0, quiet.out);
+  assert.doesNotMatch(quiet.out, /Turn off two-step sign-in/);
 });
 
 test("CHANGING HOW YOU SIGN IN RE-PROVES THE CURRENT PASSWORD, not last second's", async () => {

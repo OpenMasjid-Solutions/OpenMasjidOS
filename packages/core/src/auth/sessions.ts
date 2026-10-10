@@ -81,9 +81,24 @@ import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { writeJson } from '../util/json-store';
 import { getPasswordHash, isAuthStoreDamaged } from './store';
+import { secondFactorEpoch } from './twofactor';
 import { log } from '../logger';
 
 export const COOKIE_NAME = 'omos_session';
+/**
+ * The cookie a REMOTE dashboard session lives in — on the admin hostname only
+ * (system/remote-admin.ts), never on the masjid's network.
+ *
+ * A different name from the LAN cookie, and a `__Host-` one, for one reason: the
+ * admin hostname is a sibling of the hostname the apps are served on, and a page
+ * or backend on a sibling may set a cookie for the parent domain that the browser
+ * then sends here too. A planted `omos_session` would shadow the real session on
+ * every request it covers, signing the admin out in a loop. A browser refuses to
+ * let anyone set a `__Host-` cookie with a Domain, so nothing outside the admin
+ * hostname can plant or overwrite this one — and the server reads only this name
+ * for a remote dashboard request.
+ */
+export const REMOTE_COOKIE_NAME = '__Host-omos_session';
 /** Header the dashboard sends the key in (HTTP); raw WS/download routes use ?k=. */
 export const CSRF_HEADER = 'x-omos-csrf';
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -97,6 +112,37 @@ interface Session {
   expiresAt: number;
   /** Fingerprint of the password hash this session was created under. */
   cred: string;
+  /**
+   * Created over the tunnel — which means it passed the second factor, because a
+   * tunnel sign-in only ever becomes a session in `completeLogin`. The ONLY kind of
+   * session honoured for a request that arrived through the tunnel: see
+   * `getSessionUserFor`. Absent on everything created before this existed, and on
+   * every LAN session, which reads as false.
+   */
+  remote?: boolean;
+  /**
+   * The second-factor epoch a remote session signed in under (auth/twofactor.ts
+   * `secondFactorEpoch`). From OUTSIDE it stops counting the moment that changes — a
+   * replaced authenticator, new backup codes, two-step sign-in turned off. On the
+   * masjid's network it goes on working, because signing in there has only ever taken
+   * the password: the epoch ends the remote privilege, and a password change is what
+   * ends a session everywhere. '' for a configuration from before epochs existed.
+   */
+  tf?: string;
+  /**
+   * Made by the REMOTE DASHBOARD itself: its sign-in was handed over by the front door
+   * (system/remote-admin.ts), so its token has only ever lived in `__Host-omos_session`
+   * on the dashboard's own address, where no app can read it. Only such a session works
+   * on the remote dashboard or yields an app's access token (`isRemoteSession`).
+   *
+   * A sign-in through a reverse proxy the masjid runs on its own network passes the
+   * second factor too (the proxy sends `X-Forwarded-Proto: https`, so it looks like the
+   * tunnel) and its session is `remote`, so it goes on working through that proxy. But
+   * it lives in the LAN cookie, which every app opened from that page receives — and any
+   * one of them could compute an access token for EVERY app from it and use it from the
+   * internet, private apps included. A review proved exactly that.
+   */
+  handedOver?: boolean;
 }
 
 interface StoredSession extends Session {
@@ -251,7 +297,16 @@ function loadAtBoot(): Map<string, Session> {
       typeof s.cred === 'string' &&
       s.cred.length > 0
     ) {
-      const session = { username: s.username, csrf: s.csrf, expiresAt: s.expiresAt, cred: s.cred };
+      // `remote` only ever widens what a session may do, so only a literal `true`
+      // counts — a hand-edited file cannot make a LAN session usable from outside
+      // by writing "yes".
+      const session: Session = { username: s.username, csrf: s.csrf, expiresAt: s.expiresAt, cred: s.cred };
+      if ((s as { remote?: unknown }).remote === true) {
+        session.remote = true;
+        const tf = (s as { tf?: unknown }).tf;
+        session.tf = typeof tf === 'string' ? tf : '';
+        if ((s as { handedOver?: unknown }).handedOver === true) session.handedOver = true;
+      }
       if (!isDead(session, now)) out.set(s.token, session);
     }
   }
@@ -329,15 +384,237 @@ export interface NewSession {
  * REQUIRED, with no default, so `npm run lint` refuses a caller that leaves it out.
  * It had a default for tests at first, and the structural test standing in for the
  * compiler could be passed by a multi-line call with a trailing comma.
+ *
+ * A REMOTE session must say, the same way, which second factor it proved: `tf`, the
+ * epoch the code was checked against (auth/twofactor.ts VerifyResult). The type
+ * requires it with `remote: true`, for the reason `cred` is required — a binding read
+ * at write time instead of at proof time lets a change landing in between bind the
+ * session to something nobody showed. And whether the remote dashboard made it
+ * (`handedOver`, `Session.handedOver`) — required too, so no caller forgets to decide.
  */
-export function createSession(username: string, cred: string): NewSession {
+export function createSession(
+  username: string,
+  cred: string,
+  opts: { remote?: false } | { remote: true; tf: string; handedOver: boolean } = {},
+): NewSession {
   const token = crypto.randomBytes(32).toString('base64url');
   const csrf = crypto.randomBytes(32).toString('base64url');
-  sessions.set(token, { username, csrf, expiresAt: Date.now() + TTL_MS, cred });
+  const session: Session = { username, csrf, expiresAt: Date.now() + TTL_MS, cred };
+  if (opts.remote === true) {
+    session.remote = true;
+    session.tf = opts.tf;
+    if (opts.handedOver) session.handedOver = true;
+  }
+  sessions.set(token, session);
   // A failed save never fails the sign-in: the session works for the life of this
   // process, and the next successful save of anything writes it out with the rest.
   save();
   return { token, csrf };
+}
+
+/**
+ * The username for a token, for a request that may have come through the tunnel.
+ *
+ * A request from the tunnel is honoured only by a REMOTE session — one that passed
+ * the second factor. Every route the dashboard serves remotely asks this, rather than
+ * `getSessionUser`, and that is the whole of what makes "everything works remotely"
+ * safe to offer: the files, the terminals, the backups and every private app are
+ * behind the password AND the second factor when reached from outside, and behind
+ * the password on the masjid's own network, exactly as before.
+ *
+ * Without it a LAN session — password only — would work from the internet the moment
+ * its cookie was presented there. Cookies are per-host, so a browser never sends one
+ * across by itself; but every app on the LAN receives the admin's cookie (that is how
+ * single sign-on works), so any app that kept it could have walked straight past the
+ * second factor. The session is kept, not discarded: it still works on the LAN.
+ *
+ * `handedOver`: the request is the remote dashboard's (the front door handed it over),
+ * which honours only a session it made itself (`Session.handedOver` says why).
+ */
+export function getSessionUserFor(
+  token: string | undefined | null,
+  opts: { viaTunnel: boolean; handedOver?: boolean },
+): string | null {
+  const user = getSessionUser(token);
+  if (!user || !opts.viaTunnel) return user;
+  const s = sessions.get(token!);
+  // Remote, AND still under the second factor it proved (`Session.tf`).
+  if (s?.remote !== true || (s.tf ?? '') !== secondFactorEpoch()) return null;
+  return !opts.handedOver || s.handedOver === true ? user : null;
+}
+
+/**
+ * Is this token a live session the REMOTE DASHBOARD may use — remote, under the current
+ * second factor, and made by the remote dashboard itself? The question for everything
+ * reached from the internet: the remote dashboard's routes and sockets, and the app
+ * access tokens derived from its sessions.
+ */
+export function isRemoteSession(token: string | undefined | null): boolean {
+  return getSessionUserFor(token, { viaTunnel: true, handedOver: true }) !== null;
+}
+
+/**
+ * `isRemoteSession`, against a second-factor epoch the caller has already read: for a
+ * sweep that checks many sockets in one pass and should read the factor's file once,
+ * not once per socket (system/remote-sockets.ts).
+ */
+export function isRemoteSessionAt(token: string | undefined | null, epoch: string): boolean {
+  if (!getSessionUser(token)) return false;
+  const s = sessions.get(token!);
+  return s?.remote === true && s.handedOver === true && (s.tf ?? '') === epoch;
+}
+
+/**
+ * What a live remote session — the remote dashboard's, or one made through a reverse
+ * proxy at the masjid — was granted, or null: the second-factor epoch it proved, and
+ * whether the remote dashboard made it. Changing the password mints a replacement
+ * session, and it must carry exactly these rather than read the current ones.
+ */
+export function remoteGrantOf(token: string | undefined | null): { tf: string; handedOver: boolean } | null {
+  if (getSessionUserFor(token, { viaTunnel: true }) === null) return null;
+  const s = sessions.get(token!)!;
+  return { tf: s.tf ?? '', handedOver: s.handedOver === true };
+}
+
+/**
+ * EVERY value of a cookie in a raw `Cookie` header, in the order sent.
+ *
+ * Not just the first. A browser sends one pair per matching cookie, and two
+ * cookies may share a name when their paths or domains differ — which is how a
+ * sibling hostname plants a cookie to shadow another. Code that has to find the
+ * one that is VALID asks for all of them.
+ */
+export function cookieValues(header: string | string[] | undefined, name: string): string[] {
+  const value = Array.isArray(header) ? header.join(';') : header;
+  if (!value) return [];
+  const out: string[] = [];
+  for (const part of value.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1 || part.slice(0, idx).trim() !== name) continue;
+    const raw = part.slice(idx + 1).trim();
+    try {
+      out.push(decodeURIComponent(raw));
+    } catch {
+      out.push(raw); // a malformed escape must not throw on every request
+    }
+  }
+  return out;
+}
+
+/** The session token in a raw `Cookie` header, for code that sees only Node's request. */
+export function sessionTokenFromCookieHeader(
+  header: string | string[] | undefined,
+  name: string = COOKIE_NAME,
+): string | null {
+  return cookieValues(header, name)[0] ?? null;
+}
+
+// ── Opening an app from outside: per-app access tokens ─────────────────────
+//
+// The remote dashboard lives on its own hostname so that no app page shares its
+// origin (system/remote-admin.ts). So its cookie never reaches an app — and an app
+// that is not shared online, or one that signs the admin in through the platform,
+// needs SOMETHING from the admin's browser to go on. That is this: a token for ONE
+// app, which the platform sets on the apps' hostname when the admin presses Open
+// (system/app-access.ts) and which the app forwards for single sign-on exactly as it
+// forwards the session cookie on the LAN.
+//
+// What it is NOT is the session. It is derived from one — an HMAC keyed by the
+// session token over the app's id — so it is honoured only while that remote session
+// is (signed out, password changed, second factor replaced: gone), and it cannot be
+// turned back into the session or into another app's token. An app that receives it
+// holds a key to itself and nothing else, which is all an app should ever hold.
+
+const APP_TOKEN_RE = /^a1\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{43})$/;
+
+/**
+ * A public handle for a session: names it without being able to use it.
+ *
+ * Memoised per token. `appAccessUser` runs on requests from the internet to every app
+ * path, and without the memo each token-shaped cookie value cost one SHA-256 per stored
+ * session — a review measured ~5 ms of a root daemon's single thread per request with
+ * a 16 KB Cookie header. The memo is pruned to the live sessions whenever it outgrows
+ * them, so it cannot grow without bound either.
+ */
+const handleMemo = new Map<string, string>();
+function sessionHandle(token: string): string {
+  let h = handleMemo.get(token);
+  if (h === undefined) {
+    h = crypto.createHash('sha256').update(`omos-session-handle:${token}`).digest('base64url').slice(0, 22);
+    if (handleMemo.size > sessions.size * 2 + 32) {
+      for (const t of handleMemo.keys()) if (!sessions.has(t)) handleMemo.delete(t);
+    }
+    handleMemo.set(token, h);
+  }
+  return h;
+}
+
+function appMac(token: string, appId: string): string {
+  return crypto.createHmac('sha256', token).update(`omos-app-access:v1:${appId}`).digest('base64url');
+}
+
+/**
+ * The access token for one app, derived from a live REMOTE session — or null when
+ * the session is not one. Shaped to pass the cookie-value check every OpenMasjid app
+ * applies before forwarding (`^[A-Za-z0-9._~%+/=-]{1,4096}$`).
+ */
+export function appAccessToken(sessionToken: string, appId: string): string | null {
+  if (!isRemoteSession(sessionToken)) return null;
+  return `a1.${sessionHandle(sessionToken)}.${appMac(sessionToken, appId)}`;
+}
+
+/**
+ * Who an app access token belongs to, for THIS app — or null.
+ *
+ * Valid only while the session it came from is a live remote session under the
+ * current password and second factor, and only for the app it was made for. Whether
+ * remote administration is switched on at all is the caller's question
+ * (system/app-access.ts), because this file must not depend on settings.
+ */
+export function appAccessUser(value: string | null | undefined, appId: string): string | null {
+  if (!value) return null;
+  const m = APP_TOKEN_RE.exec(value);
+  if (!m) return null;
+  for (const token of sessions.keys()) {
+    // The handle is not a secret, so finding the session by it may take any time it
+    // likes; the comparison that decides is the MAC, below, in constant time.
+    if (sessionHandle(token) !== m[1]) continue;
+    // Only a session the remote dashboard made: one signed in through a reverse proxy at
+    // the masjid sits in a cookie every app on that page receives (`Session.handedOver`).
+    const user = getSessionUserFor(token, { viaTunnel: true, handedOver: true });
+    if (!user) return null;
+    const want = Buffer.from(appMac(token, appId));
+    const got = Buffer.from(m[2]!);
+    return want.length === got.length && crypto.timingSafeEqual(want, got) ? user : null;
+  }
+  return null;
+}
+
+/**
+ * Keep the CALLER's remote session through a change to the second factor it made
+ * itself.
+ *
+ * Changing the factor shuts every session made under the old one out from outside —
+ * that is the point of the epoch (auth/twofactor.ts). But the admin doing it from outside has just
+ * proved the password and a current code to make the change, and is often reading
+ * the result: a fresh set of backup codes, shown once. Signing them out at that moment
+ * unmounts the codes before they are written down, and asking for new ones would sign
+ * them out again. So the session that made the change moves to the new epoch — the
+ * same thing a password change does for the session that made it — and every other
+ * one stays shut out.
+ */
+export function rebindRemoteSession(token: string | null | undefined, epoch: string): void {
+  if (!token) return;
+  const s = sessions.get(token);
+  if (!s || s.remote !== true || !isLive(s, Date.now())) return;
+  s.tf = epoch;
+  save();
+}
+
+/** When a session ends, in ms since the epoch, or null — for a cookie that should not outlive it. */
+export function sessionExpiresAt(token: string | undefined | null): number | null {
+  if (!token) return null;
+  return sessions.get(token)?.expiresAt ?? null;
 }
 
 /** Resolve the username for a token, or null if missing, expired or superseded. Memory only. */

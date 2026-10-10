@@ -52,7 +52,7 @@ test('BOTH failure paths roll back — a pull failure and a failed recreate', ()
     const at = body.indexOf(marker);
     assert.ok(at > 0, `expected the "${marker}" failure path`);
     // The rollback must come before that path's `return`, or the new files survive.
-    const ret = body.indexOf('return;', at);
+    const ret = body.indexOf("return 'unchanged';", at);
     const rb = body.indexOf('rollback()', at);
     assert.ok(rb > 0 && rb < ret, `the "${marker}" path must roll back before returning`);
   }

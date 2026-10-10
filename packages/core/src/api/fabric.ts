@@ -21,6 +21,7 @@
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
+import { appAccessSsoUser } from '../system/app-access';
 import { findFabricApp, appDeclaresAlert } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
@@ -295,7 +296,12 @@ export function registerFabric(server: FastifyInstance): void {
     }
 
     const cookie = req.cookies?.[COOKIE_NAME];
-    const username = getSessionUser(cookie);
+    // A session (the LAN), or — for a request the admin made from outside — the access
+    // token the remote dashboard's Open button gave this very app
+    // (system/app-access.ts). The token is bound to ONE app, so it is checked against
+    // the app presenting it; the ingress is what makes sure it is the only platform
+    // cookie an app receives through the tunnel.
+    const username = getSessionUser(cookie) ?? (app ? appAccessSsoUser(cookie, app.id) : null);
     if (!username) {
       // The diagnostic that was missing. A cookie the platform does not recognise is
       // the signature of an expired session or one lost before sessions persisted —
@@ -429,8 +435,10 @@ export function registerFabric(server: FastifyInstance): void {
       enabled,
       domain: enabled ? cf.domain : '',
       publicUrl: appPublicUrl(app.id),
-      // The path the app is served under (= its id). The app should mount its
-      // routes/assets under this base path so links resolve behind the tunnel.
+      // The path the app is served under: its id by default, or the address the admin
+      // gave it — or `<id>-2` when another app already answered to the id at install
+      // (apps/manager.ts `addressForNewApp`). The app should mount its routes/assets
+      // under this base path so links resolve behind the tunnel.
       basePath: appBasePath(app.id),
     };
   });

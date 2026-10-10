@@ -27,12 +27,13 @@ import { discoverApps, discoverAppsResult } from '../docker/discovery';
 import { docker } from '../docker/client';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
-import { withUpdateLock } from '../system/update-lock';
+import { assertAppFree, withUpdateLock } from '../system/update-lock';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
 // Runtime-only import (called inside functions, never at module load) — no cycle
 // hazard with cloudflared.ts, which imports getAppPath from here.
 import { intendedPublicUrl } from '../system/cloudflared';
+import { isReservedPathSegment } from './paths';
 import { suppressOfflineAlert } from '../system/offline-suppress';
 import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
@@ -731,6 +732,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       fabric: meta.sso === true || meta.notify === true,
       managed: isPlatformManaged(meta.id),
       exposed: isExposedMeta(meta),
+      path: getAppPath(meta.id),
       review: meta.review ?? null,
       ...openTarget(meta, disc?.ports ?? []),
     });
@@ -780,6 +782,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // other app: a recovered catalog app stays reachable, a recovered
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
+      path: getAppPath(disc.id),
       // A recovered orphan has no compose file of ours to have vetted, and it is
       // ALREADY running — holding it for a review we never performed would show
       // the admin a finding that does not exist. It starts un-held, exactly as
@@ -804,6 +807,8 @@ export async function installCatalogApp(
   baseUrl?: string | null,
   expose?: boolean,
 ): Promise<InstalledApp> {
+  // Not while a restore, an update of this app or of the core is under way (system/update-lock.ts).
+  assertAppFree(app.id, 'install');
   // Validate the manifest FIRST — a malformed grant or command must fail before we
   // write any files (throws a friendly error surfaced by the install mutation).
   const fabric = parseFabric(app.fabric, app.id);
@@ -812,6 +817,7 @@ export async function installCatalogApp(
   if (isReservedAppId(app.id)) {
     throw new Error(`"${app.id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
   }
+  const address = addressForNewApp(app.id);
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
   // Fabric capabilities are opt-in per app. An app that uses SSO, notifications,
@@ -852,12 +858,14 @@ export async function installCatalogApp(
   writeEnvFile(app.id, {
     ...settings,
     ...platformEnv(app.id, baseUrl, ssoSecret),
-    OPENMASJID_PUBLIC_URL: intendedPublicUrl(app.id, exposed),
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(app.id, exposed, address.path),
   });
+  noteDisplacedAddress(app.id, address);
   saveMeta({
     id: app.id,
     name: app.name,
     kind: 'catalog',
+    path: address.path,
     icon: app.icon,
     category: app.category,
     version: app.version,
@@ -908,6 +916,7 @@ async function installStack(opts: {
   baseUrl?: string | null;
   expose?: boolean;
 }): Promise<InstalledApp> {
+  assertAppFree(opts.id, 'install');
   const { id, name, kind, composeText, env, icon, baseUrl, expose } = opts;
   // Before anything is written: a custom/community id the admin chose freely must
   // not be a word the platform uses for itself (it would shadow `!os` in a
@@ -915,15 +924,17 @@ async function installStack(opts: {
   if (isReservedAppId(id)) {
     throw new Error(`"${id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
   }
+  const address = addressForNewApp(id);
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
   writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
+  noteDisplacedAddress(id, address);
   // Record the exposure decision EXPLICITLY, exactly like the catalog path
   // (`exposed = expose === true`). Omitting the key used to leave it `undefined`,
   // which the old grandfather rule read as "public" — so every pasted or
   // community stack was internet-facing without anyone being asked.
   const exposed = expose === true;
-  saveMeta({ id, name, kind, icon, exposed, createdAt: new Date().toISOString() });
+  saveMeta({ id, name, kind, icon, exposed, path: address.path, createdAt: new Date().toISOString() });
   if (exposed) log.warn(`Third-party app ${id} was installed shared over the internet, at the admin's request.`);
 
   const res = await composeUp(projectOf(id), composePath(id), envPath(id));
@@ -945,6 +956,16 @@ export function installCustomApp(opts: {
   return installStack({ ...opts, kind: 'custom' });
 }
 
+/** Say why a new app did not get its own name as its address, where an admin looks. */
+function noteDisplacedAddress(id: string, address: { path?: string; displaced?: string }): void {
+  if (!address.displaced || !address.path) return;
+  log.warn(
+    address.displaced === 'OpenMasjidOS'
+      ? `"${id}" cannot use /${id} (OpenMasjidOS uses it), so it gets /${address.path}. Change it in Settings → Remote access.`
+      : `"${id}" cannot use /${id} (the app "${address.displaced}" already does), so it gets /${address.path}. Change either in Settings → Remote access.`,
+  );
+}
+
 export function installCommunityApp(opts: {
   id: string;
   name: string;
@@ -964,18 +985,51 @@ export function installCommunityApp(opts: {
  * reliable way to corrupt a SQLite database. Stop first, refill, then reup.
  * Best-effort per app — one stubborn stack must not abort the restore.
  */
-export async function stopAllApps(onLine: (s: string) => void): Promise<void> {
+export async function stopAllApps(onLine: (s: string) => void): Promise<string[]> {
+  // The apps that could NOT be paused, by name: their data was put back under a running
+  // container, so a restore that touched them is not "complete". `composeStop` reports a
+  // failure in its exit code and never throws, so the catch below alone never fired —
+  // and a container Docker refused to stop was listed as paused.
+  const notPaused: string[] = [];
   const ids = listMetaIds();
-  if (ids.length === 0) return;
+  if (ids.length === 0) return notPaused;
   onLine('Pausing your apps while the data is put back…');
   for (const id of ids) {
     const name = loadMeta(id)?.name ?? id;
+    // A pause the restore asked for is not an outage (system/alert-monitor.ts skips its
+    // checks for the whole restore too).
+    suppressOfflineAlert(id);
+    let problem: string | null = null;
     try {
-      await composeStop(projectOf(id));
-      onLine(`• ${name}`);
+      const res = await composeStop(projectOf(id));
+      if (res.code !== 0) problem = res.stderr.trim().split('\n')[0] || 'error';
     } catch (err) {
-      log.warn(`Restore: could not stop ${id} before restoring its data.`, err);
+      problem = (err as Error).message;
+    }
+    if (problem === null) {
+      onLine(`• ${name}`);
+    } else {
+      log.warn(`Restore: could not stop ${id} before restoring its data — ${problem}`);
       onLine(`• ${name} (couldn't pause it — its data may not restore cleanly)`);
+      notPaused.push(name);
+    }
+  }
+  return notPaused;
+}
+
+/**
+ * Record a fresh review verdict for every app with a compose file (`reviewCompose`) — for a
+ * restore, straight after it moves the backup's apps/ into place, so the verdict on disk is
+ * this platform's own from that moment rather than the backup's. A compose that cannot
+ * even be read is logged and left to `reupAllApps`, which holds it.
+ */
+export function reviewEveryApp(): void {
+  for (const id of listMetaIds()) {
+    if (!fs.existsSync(composePath(id))) continue;
+    try {
+      reviewCompose(id);
+    } catch (err) {
+      log.warn(`Restore: could not check ${id}'s compose file.`, err);
     }
   }
 }
@@ -985,11 +1039,14 @@ export async function stopAllApps(onLine: (s: string) => void): Promise<void> {
  * restore so apps run with the restored data (and so a fresh-box restore
  * actually recreates them). Streams a friendly line per app via onLine.
  */
-export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
+export async function reupAllApps(onLine: (s: string) => void): Promise<string[]> {
+  // The apps it could NOT start — held for review, or refused by Docker — by name. A
+  // restore that left the donations page down must not end on "Restore complete."
+  const notStarted: string[] = [];
   const ids = listMetaIds().filter((id) => fs.existsSync(composePath(id)));
   if (ids.length === 0) {
     onLine('No apps to restart.');
-    return;
+    return notStarted;
   }
   for (const id of ids) {
     const name = loadMeta(id)?.name ?? id;
@@ -1018,6 +1075,7 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
     }
     if (review) {
       onLine(`  (not started — needs review: ${review.reasons[0]})`);
+      notStarted.push(name);
       continue;
     }
     // Migration fix: a backup restored onto a NEW machine carries the old
@@ -1041,11 +1099,14 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
       const res = await composeUp(projectOf(id), composePath(id), envPath(id));
       if (res.code !== 0) {
         onLine(`  (couldn't start — ${res.stderr.trim().split('\n')[0] || 'error'})`);
+        notStarted.push(name);
       }
     } catch (err) {
       onLine(`  (couldn't start — ${(err as Error).message})`);
+      notStarted.push(name);
     }
   }
+  return notStarted;
 }
 
 /**
@@ -1093,13 +1154,64 @@ export function getAppPath(id: string): string {
   return clean || id;
 }
 
-/** Set an app's public path (or reset to the id when blank). Returns the effective path. */
+/**
+ * Set an app's public path (or reset to the id when blank). Returns the effective path.
+ *
+ * Refuses a path another installed app already answers to. Two apps on one address
+ * used to be possible and silent: the routing table kept whichever it met last, so
+ * an app nobody had shared could take a shared app's public page offline, with
+ * Settings still showing the shared one as published (system/ingress.ts `placeRoute`
+ * now keeps a shared app's path either way, for installs that already have a clash).
+ */
 export function setAppPath(id: string, path: string): string {
   const meta = loadMeta(id);
   if (!meta) throw new Error('That app is not installed.');
   const clean = sanitizePath(path);
+  const effective = clean || id;
+  if (isReservedPathSegment(effective)) {
+    throw new Error(`/${effective} is used by OpenMasjidOS itself. Choose a different address for this app.`);
+  }
+  if (pathTakenBy(effective, id)) {
+    throw new Error(`Another app already uses /${effective}. Choose a different address for this one.`);
+  }
   saveMeta({ ...meta, path: clean || undefined });
-  return clean || id;
+  return effective;
+}
+
+/** The installed app (other than `exceptId`) that answers to `seg`, or null. */
+function pathTakenBy(seg: string, exceptId: string): string | null {
+  for (const other of listMetaIds()) {
+    if (other === exceptId || RESERVED_APP_IDS.has(other)) continue;
+    if (getAppPath(other) === seg) return other;
+  }
+  return null;
+}
+
+/**
+ * The address a NEW app gets: its own id when that is free (stored as nothing, so it
+ * keeps following the id), otherwise the id with the first free number after it.
+ *
+ * Installing used to take the id unconditionally, and that is the half of "no two
+ * apps on one address" that `setAppPath` could not see. Give a community app the
+ * address /donations, install the official Donations app later, and the two shared
+ * one address: the newer one took the public page, Settings listed both as published
+ * there, and opening the older one from outside opened the other. Decided before
+ * anything is written, so a refused install leaves nothing behind.
+ */
+function addressForNewApp(id: string): { path?: string; displaced?: string } {
+  const existing = loadMeta(id)?.path;
+  if (existing) return { path: existing }; // a reinstall keeps the address it had
+  const taken = isReservedPathSegment(id) ? 'OpenMasjidOS' : pathTakenBy(id, id);
+  if (!taken) return {};
+  for (let n = 2; n < 1000; n++) {
+    // Room for the number inside sanitizePath's 40 characters, so what is stored is
+    // exactly what getAppPath will read back.
+    const candidate = sanitizePath(`${id.slice(0, 34)}-${n}`);
+    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) {
+      return { path: candidate, displaced: taken };
+    }
+  }
+  throw new Error('Every address for this app is taken. Change another app’s address in Settings → Remote access, then try again.');
 }
 
 /**
@@ -1285,6 +1397,7 @@ export function acknowledgeReview(id: string): void {
  * the dashboard, which is where a person can actually read what they are agreeing to.
  */
 export async function startApp(id: string, acknowledgeRisk = false): Promise<void> {
+  assertAppFree(id, 'start');
   const held = startBlockedReason(id);
   if (held) {
     if (!acknowledgeRisk || held.kind === 'refusal') throw new AppNeedsReviewError(held);
@@ -1311,6 +1424,7 @@ export async function restartApp(id: string): Promise<void> {
   // deliberately not allowed to consent to one, using the neighbouring verb.
   // There is no `acknowledgeRisk` here on purpose: agreeing is Start's job, and
   // a Restart that silently doubled as consent would be the same trap again.
+  assertAppFree(id, 'start');
   const held = startBlockedReason(id);
   if (held) throw new AppNeedsReviewError(held);
   suppressOfflineAlert(id); // brief intended downtime
@@ -1417,12 +1531,21 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
 }
 
 /**
+ * How an app's update ended, for whoever is watching (api/app-update.ts turns it into the
+ * window's close code). `updated`; `unchanged` — refused, already current, or put back
+ * after a download or start that failed, so the version that was running still is; or
+ * `not-running` — updated, but the new version does not stay up. The window used to say
+ * "<app> is up to date now." whatever had happened.
+ */
+export type AppUpdateOutcome = 'updated' | 'unchanged' | 'not-running';
+
+/**
  * Update a catalog app to the store's current version, streaming progress via
  * onLine. The user's existing settings (.env) are kept; only the compose +
  * image change. Re-runs `pull` then `up -d` so the new image is fetched and the
  * container recreated.
  */
-export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<void> {
+export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<AppUpdateOutcome> {
   // One at a time per app. Two of these at once rewrite the same compose.yml while two
   // `compose up` runs race for the same project — which is how an app stops coming back
   // after its progress window was closed and the update pressed again.
@@ -1431,16 +1554,16 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   );
 }
 
-async function updateCatalogAppInner(id: string, onLine: (s: string) => void): Promise<void> {
+async function updateCatalogAppInner(id: string, onLine: (s: string) => void): Promise<AppUpdateOutcome> {
   const meta = loadMeta(id);
   if (!meta || meta.kind !== 'catalog') {
     onLine('This app cannot be updated from the store.');
-    return;
+    return 'unchanged';
   }
   const app = await findCatalogApp(id);
   if (!app) {
     onLine("Could not find this app in the store anymore. Nothing was changed.");
-    return;
+    return 'unchanged';
   }
 
   const channel = getSettings().updateChannel;
@@ -1460,7 +1583,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   // stop here rather than pull-and-recreate on the chance something changed.
   if (!switching && !isNewerVersion(meta.version ?? '', app.version)) {
     onLine(`${meta.name} is already up to date (v${app.version}).`);
-    return;
+    return 'unchanged';
   }
 
   // Re-apply the INSTALL-TIME risk gate. The refreshed catalog entry is fresh
@@ -1474,14 +1597,14 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     ({ dangers, refusals } = checkCompose(app.compose));
   } catch (err) {
     onLine(`The update couldn't be checked safely, so nothing was changed. (${(err as Error).message})`);
-    return;
+    return 'unchanged';
   }
   const blocking = [...refusals, ...dangers];
   if (blocking.length > 0) {
     onLine('This update asks for powerful permissions, so it was blocked for safety.');
     onLine(`Reason: ${blocking[0]}`);
     onLine(`Nothing was changed — ${meta.name} is still running its current version.`);
-    return;
+    return 'unchanged';
   }
 
   if (switching) {
@@ -1590,7 +1713,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     onLine('Could not download the update. Please check the connection and try again.');
     // Nothing was applied, so leave nothing new behind for a later Start to pick up.
     rollback();
-    return;
+    return 'unchanged';
   }
 
   onLine('');
@@ -1602,7 +1725,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     // The old container is still the running one; put its compose back so a later Start
     // recreates THAT, not the version that just failed to come up.
     rollback();
-    return;
+    return 'unchanged';
   }
 
   saveMeta({
@@ -1656,11 +1779,12 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     onLine('');
     onLine('The last thing it printed before stopping:');
     for (const line of crash.split('\n').slice(-12)) onLine(`  ${line}`);
-    return;
+    return 'not-running';
   }
 
   onLine('');
   onLine(`Done — ${meta.name} is now on v${app.version}.`);
+  return 'updated';
 }
 
 /**
@@ -1668,6 +1792,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
  * When deleteData is true, also remove its volumes and on-disk files.
  */
 export async function removeApp(id: string, deleteData = false): Promise<void> {
+  assertAppFree(id, 'remove');
   stopProxy(id); // tear down any per-app HTTPS proxy first
   const file = fs.existsSync(composePath(id)) ? composePath(id) : undefined;
   // When deleting data, also drop the app's images so the space is reclaimed.

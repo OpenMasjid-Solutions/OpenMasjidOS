@@ -6,8 +6,11 @@
  */
 import { lazy, Suspense } from 'react';
 import { Routes, Route } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { trpc } from './lib/trpc';
 import { getCsrf } from './lib/session';
+import { setRemoteOpener, setRemoteSession } from './lib/apps';
+import { useToast } from './components/ToastProvider';
 import { AuthScreen } from './components/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { Splash } from './components/Splash';
@@ -49,6 +52,8 @@ export function Root() {
   });
   const utils = trpc.useUtils();
   const reload = () => utils.auth.me.invalidate();
+  const { toast } = useToast();
+  const { t } = useTranslation();
 
   if (me.isLoading) return <Splash />;
 
@@ -59,6 +64,22 @@ export function Root() {
   if (!data || data.setupRequired || !data.authenticated || !getCsrf()) {
     return <AuthScreen setupRequired={data?.setupRequired ?? true} onAuthed={reload} />;
   }
+
+  // Before the shell renders, so no Open button can be pressed with the wrong idea of
+  // where apps are: from outside, they open on the apps' own hostname, through a
+  // one-use address the platform hands out (lib/apps.ts says why).
+  setRemoteSession(data.remote === true, data.appOrigin ?? null);
+  setRemoteOpener(
+    async (id) => (await utils.client.apps.openRemote.mutate({ id })).url,
+    // Our own server's message only when it IS one (it carries a tRPC code). Anything
+    // else is the transport's — "Unable to transform response from server" for a
+    // closed door, a JSON parse error for Cloudflare's 502 page while the core
+    // restarts — and is no use to an admin.
+    (err) => {
+      const e = err as { message?: string; data?: { code?: string } | null };
+      toast(e?.data?.code && e.message ? e.message : t('errors.openApp'), 'error');
+    },
+  );
 
   return (
     <AppShell onSignedOut={reload}>

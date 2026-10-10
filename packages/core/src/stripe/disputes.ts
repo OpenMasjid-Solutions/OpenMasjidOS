@@ -10,8 +10,9 @@
  * would either double-fire or, if that app happened to be stopped, never fire at all
  * — and chargebacks arrive days or weeks after the payment, when the app may well be
  * off. A webhook would also need a publicly reachable platform route, and
- * `CLAUDE.md §15` allows exactly two public routes over the tunnel
- * (`/api/public/appearance`, `/api/public/logo`); adding a third would breach that,
+ * `CLAUDE.md §15` keeps those to presentation assets that carry nothing and the one
+ * address that does nothing without a ticket the platform itself minted
+ * (`/_omos/open`); a route accepting Stripe's POSTs from anyone would breach that,
  * and would still leave every LAN-only masjid with no alerts at all. Polling is
  * outbound-only, needs no new attack surface, works on a box with no remote access,
  * and requires no change to any app. The cost is latency — up to one poll interval —

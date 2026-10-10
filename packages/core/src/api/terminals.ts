@@ -12,7 +12,7 @@ import { getSettings } from '../settings/store';
 import { rootTerminal, appTerminal, type TermSession } from '../docker/terminal';
 import { isAllowedWsOrigin } from '../util/origin';
 import { isValidAppId } from '../util/id';
-import { wsAuthed, requestCsrfOk } from './ws-auth';
+import { wsAuthed, requestCsrfOk, requestUser } from './ws-auth';
 import { log } from '../logger';
 
 function clampDim(n: unknown): number {
@@ -21,7 +21,13 @@ function clampDim(n: unknown): number {
   return Math.max(1, Math.min(1000, v));
 }
 
-function bridge(socket: WebSocket, session: TermSession): void {
+/**
+ * Pipe a terminal session to a socket. `stillAllowed` is asked before every keystroke
+ * reaches the shell: a terminal is one request that can last all day, and checking
+ * only when it opened let a root shell opened from outside go on taking input after
+ * the admin turned remote administration off, signed out, or changed the password.
+ */
+function bridge(socket: WebSocket, session: TermSession, stillAllowed: () => boolean): void {
   const closeSocket = () => {
     try {
       socket.close();
@@ -40,6 +46,14 @@ function bridge(socket: WebSocket, session: TermSession): void {
     closeSocket();
   });
   socket.on('message', (data: Buffer) => {
+    if (!stillAllowed()) {
+      try {
+        socket.close(4401, 'Please sign in.');
+      } catch {
+        /* already closed */
+      }
+      return;
+    }
     const str = data.toString();
     if (str.startsWith('{')) {
       try {
@@ -69,7 +83,7 @@ export function registerTerminals(server: FastifyInstance): void {
     if (!requestCsrfOk(req)) return socket.close(4403, 'This request came from an unexpected place.');
     if (!getSettings().rootTerminal) return socket.close(4403, 'Root terminal is turned off.');
     try {
-      bridge(socket, await rootTerminal());
+      bridge(socket, await rootTerminal(), () => Boolean(requestUser(req)) && getSettings().rootTerminal);
     } catch (err) {
       log.error('root terminal failed', err);
       try {
@@ -92,7 +106,7 @@ export function registerTerminals(server: FastifyInstance): void {
       const id = (req.params as { id: string }).id;
       if (!isValidAppId(id)) return socket.close(4400, 'Invalid app id.');
       try {
-        bridge(socket, await appTerminal(id));
+        bridge(socket, await appTerminal(id), () => Boolean(requestUser(req)) && getSettings().webTerminal);
       } catch (err) {
         try {
           socket.send(`\r\n${(err as Error).message}\r\n`);

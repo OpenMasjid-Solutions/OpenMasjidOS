@@ -8,7 +8,9 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { ZodError } from 'zod';
 import type { Context } from './context';
-import { verifyCsrf } from '../auth/sessions';
+import { isRemoteSession, verifyCsrf } from '../auth/sessions';
+import { remoteDoorOpen } from '../system/remote-admin';
+import { finishing, finishingMessage, isUpdating } from '../system/update-lock';
 
 const t = initTRPC.context<Context>().create({
   // Input-validation (zod) failures otherwise reach the client as a raw JSON
@@ -48,7 +50,43 @@ const isAuthed = t.middleware(({ ctx, next }) => {
   if (!verifyCsrf(ctx.sessionToken, ctx.csrf)) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
   }
+  // From the remote dashboard, the door and the session are checked again on EVERY
+  // call. The context was built when the request — or, for a WebSocket, the whole
+  // connection — began, and a review found a connection opened before remote
+  // administration was turned off still able to call anything, including the switch
+  // that turns it back on. HTTP requests are gated one by one at the front door; this
+  // is what holds for the ones that are not (system/remote-sockets.ts closes them).
+  if (ctx.handedOver && !(remoteDoorOpen(ctx.host) && isRemoteSession(ctx.sessionToken))) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
+  }
   return next({ ctx: { ...ctx, username: ctx.username } });
 });
 
-export const protectedProcedure = t.procedure.use(isAuthed);
+/**
+ * NOTHING CHANGES WHILE A RESTORE RUNS. A restore replaces config/ and apps/ whole: a
+ * change made before the swap is silently overwritten by the backup's — an admin who
+ * changed the password and shut the door on an unexpected restore got the old password
+ * and an open door back — and the settings this process holds in memory are the
+ * PRE-restore ones, so a change made after the swap wrote them back over the restored
+ * file. So every signed-in change waits for the restore to finish (queries still answer,
+ * and signing in and out are not protected procedures). The restore's own work is not a
+ * tRPC call.
+ *
+ * Two mutations change nothing a restore replaces and go ahead: turning an app OFF
+ * (stopping must always work, and is what a restore does to every app anyway) and minting
+ * the one-use ticket that opens an app from outside (it writes nothing).
+ */
+const ALLOWED_DURING_RESTORE = new Set(['apps.stop', 'apps.openRemote']);
+const noChangesDuringRestore = t.middleware(({ type, path, next }) => {
+  if (type === 'mutation' && isUpdating('restore') && !ALLOWED_DURING_RESTORE.has(path)) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: finishing('restore')
+        ? finishingMessage('restore')
+        : 'A backup is being restored right now. Please try this again once it has finished.',
+    });
+  }
+  return next();
+});
+
+export const protectedProcedure = t.procedure.use(isAuthed).use(noChangesDuringRestore);

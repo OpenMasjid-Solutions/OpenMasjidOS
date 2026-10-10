@@ -19,9 +19,10 @@
  */
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { isPrerelease } from '../lib/version';
+import { appUpdateEnding } from '../lib/update-endings';
 import { LogStream } from './LogStream';
 
 interface PendingApp {
@@ -72,6 +73,15 @@ export function ChannelMigrate({
   const apps = plan?.apps ?? [];
   const current = apps[index];
   const appsDone = plan !== null && index >= apps.length;
+  // What each stream said, not that it ended (lib/update-endings.ts): "All your apps are
+  // now on Stable" was shown over a run in which one had been refused or put back — and
+  // "Now updating OpenMasjidOS itself" over an OS step that changed nothing.
+  const [moved, setMoved] = useState(0);
+  const [osUnchanged, setOsUnchanged] = useState(false);
+  const allMoved = moved === apps.length;
+  const appsSummary = allMoved
+    ? t('settings.channelMigrateDone', { label: channelLabel })
+    : t('settings.channelMigratePartial', { moved, total: apps.length, label: channelLabel });
 
   // Once every app has moved, bring the OS across too. Automatic rather than
   // another button: the admin already confirmed the channel change, and leaving the
@@ -93,8 +103,12 @@ export function ChannelMigrate({
       <p className="setting-row__hint" style={{ marginBlockEnd: '0.7rem' }}>
         {appsDone
           ? osStarted
-            ? t('settings.channelMigrateOs', { label: channelLabel })
-            : t('settings.channelMigrateDone', { label: channelLabel })
+            ? osUnchanged
+              ? `${allMoved ? '' : `${appsSummary} `}${t('settings.channelMigrateOsUnchanged')}`
+              : allMoved
+                ? t('settings.channelMigrateOs', { label: channelLabel })
+                : `${appsSummary} ${t('settings.channelMigrateOsNow')}`
+            : appsSummary
           : t('settings.channelMigrateProgress', {
               current: index + 1,
               total: apps.length,
@@ -109,21 +123,34 @@ export function ChannelMigrate({
         <LogStream
           key={current.id}
           wsPath={`/api/apps/update?id=${encodeURIComponent(current.id)}`}
-          onClosed={() => {
+          onClosed={(code, opened) => {
+            if (appUpdateEnding(code, opened) === 'updated') setMoved((n) => n + 1);
             utils.apps.get.invalidate({ id: current.id });
             setIndex((i) => i + 1);
           }}
         />
       )}
 
-      {/* The OS last: this stream ends with the dashboard restarting under us, which
-          LogStream's reconnect already handles for the ordinary update path. */}
-      {appsDone && osStarted && <LogStream wsPath="/api/update" />}
+      {/* The OS last: this stream ends with the dashboard restarting under us. A close
+          that says nothing was changed (any 4xxx — refused from outside, already there,
+          a download that failed), or one that never connected, is said so. */}
+      {appsDone && osStarted && (
+        <LogStream
+          wsPath="/api/update"
+          onClosed={(code, opened) => {
+            if (!opened || (code >= 4000 && code <= 4999)) setOsUnchanged(true);
+          }}
+        />
+      )}
 
       {appsDone && !plan?.os && (
         <p style={{ marginBlockStart: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
-          {t('settings.channelMigrateDone', { label: channelLabel })}
+          {allMoved ? (
+            <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
+          ) : (
+            <AlertTriangle size={16} style={{ color: 'var(--color-warning)' }} />
+          )}
+          {appsSummary}
         </p>
       )}
     </div>

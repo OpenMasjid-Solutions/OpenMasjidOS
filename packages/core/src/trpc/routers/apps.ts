@@ -19,6 +19,8 @@ import {
   checkCatalogUpdate,
   AppNeedsReviewError,
 } from '../../apps/manager';
+import { APP_OPEN_PATH, mintAppTicket } from '../../system/app-access';
+import { appHostname, remoteAdminEnabled } from '../../system/remote-admin';
 
 // App ids are used as filesystem segments + compose project names, so they are
 // strictly validated to a kebab-case allowlist (no slashes/dots/traversal).
@@ -41,12 +43,49 @@ async function wrap<T>(fn: () => Promise<T>): Promise<T> {
         message: err.message,
       });
     }
+    // Refused because a restore or this app's update is under way (system/update-lock.ts
+    // assertAppFree): information to say plainly, not a fault.
+    if ((err as Error).name === 'UpdateBusyError') {
+      throw new TRPCError({ code: 'CONFLICT', message: (err as Error).message });
+    }
     throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
   }
 }
 
 export const appsRouter = router({
   list: protectedProcedure.query(() => listInstalled()),
+
+  /**
+   * Open an app from OUTSIDE the masjid: a one-use address on the apps' hostname that
+   * signs this browser in to this one app (system/app-access.ts says how, and why the
+   * dashboard's own cookie is never what an app sees).
+   *
+   * Only from the remote dashboard, and only for an app with a web port — the tunnel
+   * reaches an app through the same port the masjid's network does. On the masjid's
+   * network an app is opened at its own port and needs none of this.
+   */
+  openRemote: protectedProcedure.input(idInput).mutation(async ({ input, ctx }) => {
+    // The remote dashboard — a request the front door handed over — and nothing that
+    // merely LOOKS remote: a reverse proxy on the masjid's own network sends
+    // `X-Forwarded-Proto: https` too, and its admin opens apps at their own ports.
+    if (!ctx.handedOver || !remoteAdminEnabled()) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Apps open this way only when you are managing from outside.' });
+    }
+    const host = appHostname();
+    if (!host) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Your apps have no web address yet. Set one in Settings → Remote access.',
+      });
+    }
+    const app = await getInstalled(input.id).catch(() => null);
+    if (!app || app.openPort == null) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'That app has no page to open.' });
+    }
+    const ticket = mintAppTicket(ctx.sessionToken ?? '', input.id);
+    if (!ticket) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
+    return { url: `https://${host}${APP_OPEN_PATH}?t=${encodeURIComponent(ticket)}` };
+  }),
 
   get: protectedProcedure.input(idInput).query(({ input }) => getInstalled(input.id)),
 

@@ -16,10 +16,12 @@
  *     candidates and restart apps in a loop),
  *   - it only restarts apps that are ALREADY RUNNING — never resurrects one the
  *     admin deliberately stopped,
- *   - it re-runs the compose risk gate first, because `startApp` does not
- *     (CLAUDE.md §15). `reupAllApps` leaves a refused, dangerous compose on disk
- *     precisely so it is NOT started; an unattended timer must not become the
- *     thing that starts it,
+ *   - it re-runs the compose risk gate first, as well as `startApp`'s own check of the
+ *     persisted verdict (CLAUDE.md §15): `reupAllApps` leaves a refused, dangerous
+ *     compose on disk precisely so it is NOT started, and an unattended timer must not
+ *     become the thing that starts it,
+ *   - it stands aside while a restore runs: the apps' files are being replaced, and a
+ *     rewrite of their settings then lands in a tree about to be swapped out,
  *   - and it suppresses the offline alert around the restart, so a reconnect
  *     never emails the admin that their app went down.
  */
@@ -28,6 +30,7 @@ import { listInstalled, reconcileBaseUrls, startApp, composePathOf } from '../ap
 import { checkCompose } from '../apps/compose-validate';
 import { suppressOfflineAlert } from './offline-suppress';
 import { desiredAddress } from './platform-address';
+import { isUpdating } from './update-lock';
 import { log } from '../logger';
 
 /** First check shortly after boot — the common case is "rebooted on a new
@@ -84,6 +87,7 @@ export async function reconcileNow(): Promise<{ updated: string[]; restarted: st
 }
 
 async function tick(): Promise<void> {
+  if (isUpdating('restore')) return;
   try {
     const addr = desiredAddress();
     if (!addr) return;

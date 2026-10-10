@@ -8,13 +8,12 @@
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
-import { requestCsrfOk } from './ws-auth';
+import { requestCsrfOk, requestUser } from './ws-auth';
 import { isAllowedOrigin } from '../util/origin';
 import { resolveFile, uploadPath, rawMime, FileError } from '../files/manager';
 
 function authed(req: FastifyRequest): boolean {
-  return Boolean(getSessionUser(req.cookies?.[COOKIE_NAME]));
+  return Boolean(requestUser(req));
 }
 
 /** 404 when it's missing, 403 for platform-owned state the explorer may not touch

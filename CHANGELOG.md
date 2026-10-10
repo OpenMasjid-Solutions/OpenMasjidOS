@@ -13,6 +13,1106 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 > docs, dependencies. At release time it is rewritten into a `## X.Y.Z` section holding only
 > what a masjid would notice (CLAUDE.md §18).
 
+### Managing OpenMasjidOS from outside the masjid
+
+Manage OpenMasjidOS from anywhere, over the same secure Cloudflare tunnel your shared apps
+already use. **Off by default.** Turn it on in **Settings → Remote access**, once two-step
+sign-in is set up.
+
+- **From outside, your dashboard has a web address of its own**, separate from the one your apps
+  use — for example `admin.example.org` beside `omos.example.org`. In Cloudflare, add a second
+  public hostname to your tunnel, exactly like the first one; then type it into
+  **Settings → Remote access → Dashboard address** and press Save. The page shows the Cloudflare
+  steps, and the **Manage OpenMasjidOS from outside** switch tells you if anything is still
+  missing.
+  - **Why a second address:** your browser keeps each website's private data apart by its address
+    alone — the `/donate` or `/display` part after it doesn't count. With the dashboard and your
+    apps at one address, a page from one of your apps could have used the dashboard as you. At the
+    masjid that has never been possible, because each app has its own port number; from outside, a
+    separate address does the same job.
+- **With two-step sign-in set up, almost everything works from outside**, not just the dashboard's
+  pages (the few exceptions are listed further down):
+  - **Opening an app.** Press Open as usual: the app opens in a new tab at your apps' address, and
+    apps that sign you in through OpenMasjidOS still do. If an app can't be opened, the dashboard
+    says so.
+  - **Apps you haven't shared online open too — for you alone.** Each Open uses a link that works
+    once, within a minute; after that the app stays open in that browser only while you're signed
+    in from outside. For anyone else there is no page at its address.
+  - **Files, terminals, backups, restoring a backup, updating OpenMasjidOS and your apps**, and
+    changing the masjid logo.
+- **It will not switch on without two-step sign-in**, and if you ever remove two-step sign-in the
+  dashboard closes itself to the internet again. A password on its own is not enough to put a
+  masjid's server on the internet, and the screen tells you if the two ever disagree rather than
+  quietly claiming to be on.
+- **Signing in from outside always needs a two-step code as well as your password**, and a sign-in
+  made at the masjid can't be used from outside. Anything you have open from outside closes within
+  seconds when you sign out, change your password or switch remote management off — a terminal
+  included, and the live connection of any app you opened from there, right through to the app.
+  Only something already being sent to you, such as a download, can still finish. Changing
+  two-step sign-in (a new phone, new backup codes) signs out every other sign-in from outside, but
+  not the one you made the change from, so you can still write the new codes down.
+- **Too many wrong sign-ins from one place lock that place out** for a while. This only works from
+  outside, where we can tell one visitor from another — and it can never lock you out from
+  somewhere else, which is exactly why it is safe to switch on here and not on your own network.
+- **From outside, switching off anything that would cut you off asks first.** Turning remote
+  access off, turning **Manage OpenMasjidOS from outside** off, or removing the tunnel ends the
+  very connection you are using, and only someone at the masjid can turn it back on — so from
+  outside each one asks before it happens. At the masjid they stay one click. Turning two-step
+  sign-in off from outside says the same, and points you at **Use a different phone** if you are
+  only changing phones, which keeps you signed in. And when switching remote access off or
+  removing the tunnel takes the connection down before its answer gets back, the window says the
+  change was made instead of showing an error.
+- **From outside, the dashboard won't move OpenMasjidOS to a version that can't be managed from
+  outside.** For now that means Stable, which doesn't have remote management yet: switching back
+  to Stable from outside is refused and nothing is changed — make that switch at the masjid. If
+  the dashboard can't find out which version a switch would bring, it changes nothing and asks
+  you to try again later. Once a Stable release has remote management, the switch works from
+  outside too. An update started from outside checks the same thing before it downloads anything.
+- **Restoring a backup from outside only goes ahead if it keeps your way back in** — the same
+  password, the same authenticator app and the same remote-access settings you use now. If it
+  doesn't, nothing is changed: restore it at the masjid instead. That includes every backup made
+  before you set up the Dashboard address.
+- **The restore window now says how a restore ended**, at the masjid as well as from outside. One
+  that was refused, turned out to be empty or couldn't connect at all says straight away that
+  nothing was changed; before, it waited four minutes and then said "Restore complete." One that
+  finished but couldn't pause some apps first, couldn't put back some app data, or couldn't start
+  some apps afterwards says so — the messages above it say which — and **the dashboard reminds you
+  which apps need a look** after you sign in again, until you tell it you have checked them. One
+  that put everything back but couldn't restart OpenMasjidOS says so, and that restarting the
+  machine finishes it. If the dashboard hasn't restarted after about half a minute, the window says
+  so and suggests reloading, instead of looking certain. If the window lost touch with the restore
+  before hearing how it went, it says exactly that once OpenMasjidOS is back, and asks you to check
+  your apps and settings, instead of "Restore complete." And a moment's hiccup in the connection is
+  no longer taken for the restart.
+- **The update window now says how an update ended**, at the masjid as well as from outside. When
+  nothing was changed — already up to date, a download that failed, an update refused from outside,
+  a newest version that couldn't be checked (which it used to call "already up to date"), a machine
+  pinned to one exact build, or a window that couldn't connect at all — it says so straight away and
+  lets you close it. It says the update worked only once it has seen OpenMasjidOS come back, and a
+  moment's hiccup in the connection no longer counts as that: if no restart shows after about half a
+  minute it says so and suggests reloading, and if OpenMasjidOS came back on the old version it says
+  so about half a minute later, rather than keeping the window shut. Before, it said it was
+  restarting, wouldn't close for three minutes, and then said "Update applied." whatever had
+  happened.
+- **Updating an app now says what really happened**, and so do **Update all apps** and the window
+  that moves your apps between Stable and Development. An app update that was refused, couldn't
+  download, or was put back after failing to start says "Nothing was changed"; one that updated but
+  won't stay running says so; the totals count only the apps that really were updated or moved
+  ("3 of 4 apps updated…"); and the channel window says when OpenMasjidOS itself was not changed.
+  Before, every app was reported as updated, whatever had happened. The WhatsApp reply to
+  `!os update` no longer claims an update that didn't happen, either.
+- **An update and a restore can no longer run at the same time**, at the masjid as well as from
+  outside, and no app can be updated during either. Whichever is started second is turned away with
+  a message saying what is in the way, and nothing is changed. That now lasts until OpenMasjidOS has
+  actually restarted, not just until it starts to: in the minute or so in between you are told
+  "OpenMasjidOS is restarting to finish an update. Please try again in a minute or two." (or "…to
+  finish restoring your backup…"). Before, pressing Update during a restore could restart
+  OpenMasjidOS while your app data was still being put back, leaving every app switched off.
+- **While a backup is being restored, nothing can be changed.** Settings, passwords, the logo and
+  starting, installing or removing an app all wait (turning one off still works), with "A backup
+  is being restored right now. Please try this again once it has finished." (and, while
+  OpenMasjidOS restarts at the end,
+  "OpenMasjidOS is restarting to finish restoring your backup. Please try again in a minute or
+  two."). Looking around still works. The restore starts your apps again itself when it has
+  finished. Before, a change made during a restore was quietly undone by it (an old password could
+  work again afterwards), and an app started part-way ran over data still being put back. The alert
+  that an app "has stopped" and the off-site backup wait too, while a restore has your apps paused.
+- **A backup and a restore no longer run at the same time.** A backup asked for during a restore
+  says "A backup is being restored right now. Please make a backup once it has finished.", and a
+  restore asked for while a backup is being made says "A backup is being made right now. Please
+  restore once it has finished. Nothing was changed." Before, a backup taken during a restore
+  copied your data half put back and still said it had worked.
+- **A restore turned away because OpenMasjidOS is being updated** says so straight away —
+  "OpenMasjidOS is being updated right now. Please restore your backup once it has finished.
+  Nothing was changed." — and a backup file it had already received is deleted, not left on the
+  server holding every password and key in it. One left behind by a restore that never finished,
+  after a power cut say, is removed the next time OpenMasjidOS starts, and **Files** keeps it
+  private meanwhile.
+- **Restoring a backup changes less behind your back**, at the masjid as well as from outside. A
+  backup with nothing in it to restore no longer switches every app off first and leaves them off.
+  And a restore now brings OpenMasjidOS back on the version you are running. It used to go back to
+  whichever version the installer had last downloaded, which was usually older — and if that one
+  had no remote management, a restore made from outside would have locked you out.
+- **Downloading a backup from outside starts straight away**, and the file follows once the backup
+  is made — Cloudflare gives up on a page that takes more than 100 seconds to start.
+- **A backup that fails part-way now shows as a failed download**, at the masjid as well as from
+  outside. Before, it could arrive as a file that looked complete but was missing data, and you
+  would only have found out when you tried to restore it.
+- **Two apps can no longer share an address.** Settings → Remote access refuses an address another
+  app already uses, or one OpenMasjidOS keeps for itself (`/api`, `/trpc`, `/assets`). Installing
+  an app whose name another app's address already uses gives the new one the next free address
+  (`donations-2`, say), which you can change there once that app is shared online. Before, the
+  later app quietly took the address over, which could take a shared app's public page offline.
+- **Pasting the tunnel token is safer**, at the masjid too. Paste Cloudflare's whole install command
+  and the token is picked out of it; a token copied without the "=" signs at its end, which a
+  double-click leaves behind, is put right; paste something that isn't a whole token and you are
+  told so, with nothing changed. Before, a half-copied token was saved anyway and took every shared
+  app offline while Settings still said the tunnel was running. And a tunnel that is switched on but
+  not connecting — one that keeps restarting, say — is no longer called running or turned off:
+  Settings says "Tunnel is turned on but isn't connecting. Check that the tunnel token is the right
+  one."
+- **A terminal opened from outside no longer closes itself in a pause.** Cloudflare drops a
+  connection that carries nothing for about 100 seconds, so a terminal left at a prompt or in an
+  editor was cut off, and an update's progress could drop in a quiet stretch. The dashboard now
+  keeps its connections alive.
+- **Still needs you at the masjid:** changing the Dashboard address or replacing the tunnel token
+  (a mistake in either, made from outside, would cut you off); uploading a file or restoring a
+  backup larger than 100 MB (Cloudflare's free plan refuses anything bigger, and the dashboard now
+  says so before it starts); restoring a backup that would change how you get in; switching back
+  to Stable, for now (above); apps from outside the OpenMasjidOS store that can't run under a
+  sub-address; and OpenWA's own screen (everything WhatsApp needs is in Settings). On a very large
+  install a backup download from outside can still be cut off while the app data is being copied,
+  because Cloudflare also drops a connection that stays silent for about 100 seconds.
+- **Getting in at the masjid doesn't change.** Same address, same sign-in, no extra code, and apps
+  still open at their own port. The installer's Update and Repair now end by showing that address as
+  `https://…`; they showed `http://…`, which only worked by being redirected.
+- **Already managing a box from outside on Development build 13, 14 or 15?** Those builds put the
+  dashboard at your apps' address, so the weakness above was real there: while you were signed in
+  from outside, a page from any app you had shared online could have used your dashboard as you.
+  After this update the dashboard is no longer at that address — an old bookmark shows "There is no
+  page at this address" — and the new **Dashboard address** can only be filled in from the
+  dashboard at the masjid. Until it is, there is no way in from outside; **Recently turned away**
+  and the switch both say what is missing. Those builds can't install updates from outside anyway,
+  so: add the second hostname in Cloudflare whenever suits you, and when you update at the masjid,
+  fill in the Dashboard address before you leave. The **Manage OpenMasjidOS from outside** switch
+  stays on, so that is all it takes. Apart from this note nothing says so — no alert, no email, and
+  on the dashboard only Settings → Remote access once someone opens it — so tell whoever looks after
+  such a box. If it is updated some other way while nobody is there, someone at the masjid will need
+  to fill the address in before anyone can manage it from outside again.
+
+### Two-step sign-in
+
+- **You can set two-step sign-in up**, in Settings → Account. Scan the square code with an
+  authenticator app on your phone — Google Authenticator, Authy, 1Password and most password
+  managers all work — or type the key in by hand if there is no camera to hand.
+- Ten one-time **backup codes** come with it, for the day the phone is lost or replaced. They are
+  shown once and only once, so that window will not close until you have ticked that they are
+  saved; there are Copy and Download buttons beside them.
+- **A code emailed to you can be allowed as a backup to the authenticator app** — never instead of
+  it. It needs an email provider set up and an email address on your account — the panel says
+  which is missing — because a code that cannot be delivered is a lockout with extra steps.
+- **Emailed codes pause if your email address or your email service changes** (Settings → Account,
+  Settings → Email), until you turn them on again in Settings → Account, which asks for your
+  password and a code from your authenticator app. Otherwise whoever made that change could have
+  the next sign-in code sent to themselves. The two-step panel says when they are paused.
+- Changing any of this asks for your password **and** a current code. That is not box-ticking: it
+  is what stops someone who reaches an already-signed-in dashboard from quietly pointing two-step
+  sign-in at their own phone. If two-step sign-in is changed somewhere else while you are
+  confirming a change, you are asked to try again. And while a backup is being restored it can't
+  be changed at all — you are asked to try again once the restore has finished. Signing in still
+  works then.
+- **Lost the phone *and* the backup codes?** Run the same install command again on the server and
+  choose **Reset sign-in**. Along with the new password, it now asks whether to turn two-step
+  sign-in off as well — only when two-step sign-in is on, and it stays on unless you say yes.
+  Before, there was no simple way out of that: changing two-step sign-in needs a current code, at
+  the masjid too. Managing OpenMasjidOS from outside stays off until you set two-step sign-in up
+  again.
+- A code can only be used once, even within the minute it is valid for.
+- **On the masjid's own network you sign in exactly as before.** The extra code is only ever asked
+  for from outside, so a volunteer who left their phone at home is never locked out of the
+  dashboard in the building.
+
+**Fixed, from a report on a real masjid's server:** signing in from outside could get stuck saying
+*"That sign-in attempt has expired"* when it plainly had not.
+
+- After five wrong codes the sign-in really was finished — but the screen kept offering **Sign in**,
+  which could no longer work, and said the attempt had expired rather than saying why. It now takes
+  you back to the password step and tells you what happened.
+- A wrong code now says **how many tries you have left**, so running out is not a surprise.
+- If a code keeps being refused because the **server's clock is wrong**, it says so, and by how
+  much. A wrong clock and a mistyped code look identical while you are typing, and the fixes are
+  opposite.
+
+**Technical detail** for both sections above (for whoever cuts the release). dev.13–15 published
+the first version; dev.16 is the redesign below, reworked after more than one adversarial review,
+and supersedes it.
+
+- **Why the dashboard moved: the review.** dev.13–15 — and this build as first written, never
+  published — served the remote dashboard at the root of the apps' hostname
+  (`https://omos.example.org/`), with every app beside it at `/<path>/`. An adversarial review
+  found that this made every app page the dashboard's ORIGIN: a browser draws that boundary by
+  scheme + host + port, never by path. Script on any app page the admin opened, or a
+  cross-site-scripting bug in any public one, could read the dashboard key from `localStorage`,
+  send same-origin requests carrying the admin's cookie, pass the origin check (Origin and Host
+  agreed) and drive the whole admin API — in the first cut, turn the root terminal on and open it
+  (host root: the core holds the Docker socket) and download a backup (every secret). dev.13–15
+  carried the same exposure through tRPC alone, from any shared app's page, and tRPC alone is
+  enough for host root. On the LAN the boundary was always there (dashboard `https://<ip>`, each
+  app `http://<ip>:<port>`); through the tunnel the only way to draw it is a different HOSTNAME.
+- **Two hostnames.** Remote administration needs a second Cloudflare public hostname on the same
+  tunnel — the Dashboard address, `settings.cloudflare.adminHost` (e.g. `admin.example.org`),
+  Type HTTP, URL `localhost:80`, exactly like the apps' one. The dashboard (the SPA, `/trpc`,
+  `DASHBOARD_API`, its sockets) is served over the tunnel ONLY on that hostname; asked for on any
+  other — the apps' one above all — it gets the ordinary 404, recorded as `dashboard-elsewhere`.
+  App content is never served on the admin hostname — shared or private, token or not, HTTP or
+  WebSocket — and is recorded as `app-on-admin-host`. The apps' hostname
+  (`settings.cloudflare.domain`, now labelled "Your apps' address") still serves the apps.
+  Both are stored as bare hostnames (`hostnameOfDomain` + `normalizeHost`: scheme, path, port and
+  trailing dots dropped, lower-cased) — the apps' address used to lose only its scheme and trailing
+  slashes. `validateAdminHost` requires a dotted DNS name that is not an IP address and refuses the
+  apps' hostname in any spelling; `cloudflare.save` refuses moving the apps' hostname onto the
+  admin one too, and `remoteAdminEnabled()` re-checks that the two differ, so settings that make
+  them equal some other way (a restore at the masjid, say) shut the door rather than share an
+  origin.
+- **The door.** `remoteAdminEnabled()` is `settingsOpenTheDoor(…)`, `twoFactorActive()` and
+  `isConfigured()` together — five conditions, all re-read per request: the tunnel on, the switch
+  on, a dashboard address that is set and differs from the apps' one, a second factor enrolled, and
+  an admin that exists. `settingsOpenTheDoor` is the settings half as one pure function (strict
+  `=== true`), so the restore check below asks the very same rule rather than a copy.
+  `remoteAdminBlockedReason()` adds `'no-admin-host'`, which `cloudflare.setRemoteAdmin`
+  refuses with PRECONDITION_FAILED; `cloudflare.status` returns `adminHost` and no longer
+  `lanOnly`. `remoteDoorOpen(host)` — `remoteAdminEnabled()` and `isAdminHost(host)` — is the
+  question every long-lived connection keeps asking. `doorClosedReason()` says why a shut door
+  refused: `no-admin-host` when the tunnel and the switch are on, an admin exists, two-step
+  sign-in is set up, and only the dashboard's own address is missing (or equal to the apps'),
+  otherwise `lan-only-route`; only the record differs.
+- **The front door decides and hands over; it serves no dashboard of its own.** It no longer
+  registers tRPC or the UI (Fastify's 1 MB body limit there now covers only its own routes).
+  `frontDoorDecision` — one pure function, called by `index.ts` and the tests — answers `pass` (no
+  spelling is a dashboard path: the front door's own routes and the ingress), `lan-https` (308 to
+  the HTTPS dashboard, as always), `refuse` (the door shut, `dashboard-elsewhere`, or
+  `plain-http-no-host` — now reached only by a request target starting `//`, which cannot be put
+  after a scheme and a host), `upgrade` (a plain-`http://` tunnel visit, 308 to the CONFIGURED
+  admin hostname — the target never comes from the request, and with none configured nothing is
+  served or upgraded) or `serve`. A served request is marked (`markHandedOver` — a `WeakSet` of
+  Node requests, which no header can forge), hijacked, and emitted body-unread as a `request`
+  event on the dashboard listener, so the remote dashboard IS the LAN dashboard: same routes,
+  limits and checks. With no SPA served from the front door any more, `isDashboardPath` decides
+  nothing at runtime: what is handed over is decided by `touchesDashboardPath` (ANY spelling), and
+  the dashboard listener's own guards — request target, hand-over, Fabric, origin — run on it
+  exactly as on LAN traffic. A dashboard socket is claimed only when `claimsDashboardSocket` says
+  so, and that now needs EVERY spelling of the URL to be one of `DASHBOARD_SOCKETS` (`/trpc`,
+  `/api/update`, `/api/apps/update`, `/api/restore/run`, `/api/terminal`) as well as the gate's
+  `serve`: with `some`, `/<private app>/../trpc` was claimed and answered while `/<private app>`
+  was destroyed, which told a stranger which apps were installed. It also needs a signed-in remote
+  session (`hasRemoteSession`): every one of those sockets is useless without one, and handing
+  over anyone's let a stranger hold any number open and push frames the dashboard had to buffer
+  and parse — the attack the 64 KB body limit below exists to stop, through the one door it did
+  not cover. So the dashboard's tRPC socket is now lazy (`ui/src/lib/trpcClient.ts`,
+  `lazy: { enabled: true, closeMs: 10_000 }`): it opens only while something is subscribed and
+  closes ten seconds after the last subscription ends, so the sign-in page holds none. A declined
+  socket — an app's that the ingress would not serve, or a stranger's dashboard one — is destroyed
+  exactly like one for an address with nothing at it; a claimed one is marked, tracked
+  (`trackHandedOverSocket`) and emitted as an `upgrade` event. The dashboard's `/api` routes
+  joined the allow-list (`DASHBOARD_API`); `LAN_ONLY_FEATURES` is gone. Nothing else under `/api`
+  did: the Fabric, `/api/auth/session`, `/api/health` and `/api/ready` are refused over the tunnel
+  on both listeners whatever the switch says. New on the dashboard listener, straight after the
+  request-target guard: `registerHandoffOnlyGuard` refuses any request carrying `cf-ray` that the
+  front door did not hand over (an upgrade is closed), recorded as `wrong-port`, so a tunnel
+  pointed at port 443 by mistake cannot walk round the gate — the switch, the hostname, all of it.
+- **Remote sessions.** The remote dashboard's cookie is `__Host-omos_session`
+  (`REMOTE_COOKIE_NAME`: Secure, `Path=/`, no `Domain`, so a sibling hostname cannot plant or
+  shadow it), set and read only for handed-over requests — i.e. on the admin hostname; the LAN
+  cookie stays `omos_session`. A session minted by `completeLogin` over the tunnel records
+  `remote: true`, `tf` — the second-factor epoch its code was checked against
+  (`VerifyResult.epoch`) — and `handedOver` when the front door handed that sign-in over, i.e. the
+  remote dashboard made it (`createSession` requires `tf` and `handedOver` with `remote: true`);
+  `changePassword` carries the old session's grant over exactly (`remoteGrantOf` → `{ tf,
+  handedOver }`), and `loadAtBoot` believes only a literal `true`. From the tunnel only a remote
+  session whose `tf` matches `secondFactorEpoch()` counts (`getSessionUserFor`); a LAN session is
+  refused there, not discarded. Everything the remote dashboard does also needs `handedOver`
+  (`isRemoteSession`: its routes and sockets, the sweep, `claimsDashboardSocket`, `mintAppTicket`
+  and the app access tokens). A sign-in through a reverse proxy at the masjid passes the second
+  factor and keeps working through that proxy, but is never handed over, and its token lives in
+  the LAN cookie, which every app opened from that page receives (cookies ignore ports): a review
+  showed any one of those apps could compute an access token for EVERY app from it, by the public
+  formula, and use it from the internet, private apps included. For a handed-over request, tRPC's
+  context and the raw routes (`api/ws-auth.ts` `requestUser`: files, terminals, backup, restore,
+  updates, the logo) also require `remoteDoorOpen(host)`, and `isAuthed` in `trpc/trpc.ts`
+  re-checks door and session on EVERY protected call — a WebSocket context lives as long as its
+  connection, and a review found one still able to switch remote administration back on after it
+  had been turned off.
+  What the dashboard does DIFFERENTLY from outside goes by the hand-over mark, never by
+  `viaTunnel`: `auth.me`'s `remote` and `appOrigin` (`ctx.handedOver`), `apps.openRemote` (refused
+  without it), `cloudflare.save`'s from-outside refusals, the restore's `remote` flag
+  (`wasHandedOver(req.raw)`) and the update and channel-switch guards (below). A reverse proxy the
+  masjid runs on its own network (nginx, Caddy, Tailscale Serve) sends `X-Forwarded-Proto: https`,
+  so `viaTunnel` is true behind it — and answering "remote" there sent every Open button down the
+  from-outside path, where it was refused, at the masjid. The security rules keep `viaTunnel`: the
+  second factor at sign-in, the per-IP lockout, marking a session remote, the first-run refusals
+  and the session rule above.
+- **Long-lived connections.** A terminal checks `requestUser` and its own Advanced switch before
+  every keystroke (on the LAN too). `system/remote-sockets.ts` tracks every handed-over socket and
+  closes it within ~5 s (`SWEEP_MS`) of its door shutting or its session ending — and at once on
+  sign-out, a password change, any second-factor change, remote administration switched off, the
+  tunnel switched on or off or cleared, and any save of the tunnel settings (a changed admin
+  hostname among them). An app's socket opened through the tunnel WITH the admin's access token is
+  tracked too (`trackAppSocket`) and closed by the same sweep when that sign-in ends or the door
+  shuts: before, the dashboard's sockets closed on all of the above while an app's stayed open,
+  and a review found a private app still answering a socket opened before the admin signed out.
+  A public socket, with no token, is left alone. Closing an app's socket now closes the app's end
+  too (`system/socket-relay.ts` `closeTogether`, shared by the ingress and the per-app TLS proxy):
+  the relay was two pipes, and a pipe passes on only an END, while a destroyed socket emits
+  `close` and never `end` — so the sweep cut the browser off and the core went on holding the
+  connection to the app, open, until the app noticed by itself. Now either side going takes the
+  other with it, except that after a polite end the browser's side is left to finish sending. Its
+  HTTP twin is new too: a browser that leaves part-way now ends the app's response
+  (`res.once('close')` destroys the upstream unless the response finished, in `proxyHttp` and the
+  per-app TLS proxy) — `pipe()` only paused it, so a live event stream, a long poll or a big
+  download held the app's connection until the app gave up. The table is capped at 200
+  (`MAX_TRACKED_SOCKETS`), because it is filled from the internet, and app sockets may hold at
+  most 150 of the places (`MAX_APP_SOCKETS`), so the dashboard's own always have room: a hostile
+  or leaky app's page could fill all 200, after which every terminal, update and restore from
+  outside failed to start, on every device. A socket refused for either is destroyed, and the
+  refusal logged at most once a minute. A sweep reads the door once per pass, and the
+  second-factor epoch once for all the dashboard's sockets (`isRemoteSessionAt`), rather than once
+  per open socket — a file read per socket, every five seconds, on the daemon's only thread; an
+  app socket's check (`appAccessUser`) still reads the epoch for itself. An update or a restore
+  keeps running when its progress socket is closed. And every dashboard WebSocket, LAN ones
+  included, is pinged every 30 s (`DASHBOARD_WS_HEARTBEAT_MS`,
+  `startDashboardHeartbeat(server.websocketServer)` in `index.ts`): Cloudflare closes a WebSocket
+  that carries nothing either way for about 100 s, so a remote terminal at a prompt or in an
+  editor printed "[Session closed]" in any pause, leaving whatever ran in it out of reach, and an
+  update's progress could drop between download lines. A browser answers a ping by itself. Apps'
+  own sockets are not pinged — their bytes only pass through the relay — so an app that wants a
+  quiet socket to survive Cloudflare sends its own heartbeat.
+- **Opening an app from outside** (`system/app-access.ts`). dev.13–15 built
+  `http://<hostname>:<app port>`, a port the tunnel does not carry, so no app opened from outside.
+  Now the dashboard asks `apps.openRemote` for a ticket — refused unless the front door handed the
+  request over (the remote dashboard) with remote administration on, and only for an app with a
+  web port while the apps' hostname is set. `mintAppTicket` mints one only for a live remote
+  session the remote dashboard made: one use, `TICKET_TTL_MS` (60 s), bound to that session and
+  that app, at most 200 outstanding. The dashboard opens a blank tab first (a pop-up blocker allows
+  one only in direct response to the click), cuts its `opener`, and sends it with
+  `location.replace` to `https://<apps' hostname>/_omos/open?t=<ticket>` (`APP_OPEN_PATH`,
+  `registerAppOpen` on the HTTP front door); when no ticket can be had, the tab closes and a toast
+  says so. No app is ever routed at `_omos`: the ingress routes only the shape an install or
+  Settings gives an app (`apps/paths.ts` `isAppPathShape`, `^[a-z0-9][a-z0-9-]{0,79}$`). An app is
+  also recovered from any `omos-*` project Docker reports, under that project's name, and Docker
+  allows `_` in one, so a stack started by hand as `omos-_omos` was routed at `/_omos`:
+  `sanitizePath` cleans only an address someone set, not the id an app falls back to. Spending the
+  ticket sets the app's access token as `omos_session` with `Path=/<app path>`, `Secure`,
+  `HttpOnly`, `SameSite=Lax` and a `Max-Age` no longer than the session, and 303s to
+  `/<app path>/` — with `NO_STORE_HEADERS` (`Cache-Control: private, no-store` plus
+  `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store`) and `Referrer-Policy:
+  no-referrer`. It is refused with the ordinary tunnel 404 on the admin hostname and with remote
+  administration off (recorded as `no-app-at-path`), and with a plain 404 on the LAN; a spent or
+  expired ticket, or one whose session has ended, gets a friendly 410 page ("This link has
+  expired").
+- **The access token** (`auth/sessions.ts` `appAccessToken` / `appAccessUser`) is
+  `a1.<session handle>.<HMAC-SHA256 keyed by the session token over the app id>`. It is valid only
+  for that app, only while its remote session is (same password, same second-factor epoch, not
+  signed out or expired, and made by the remote dashboard — a reverse proxy's sign-in yields none,
+  Remote sessions above), and only while remote administration is on (`appAccessFromCookie`,
+  `appAccessSsoUser`). It cannot be turned back into the session or into another app's token, and
+  it is not a dashboard session: `getSessionUser` returns null for it, so no dashboard route
+  accepts it. Session handles are memoised (`sessionHandle`, pruned to the live sessions) —
+  without that, each token-shaped cookie value cost a SHA-256 per stored session, which a review
+  measured at ~5 ms of the daemon's one thread per request with a 16 KB Cookie header — and at
+  most eight `omos_session` values per request are checked as tokens (`MAX_TOKEN_CANDIDATES`).
+- **What apps see through the tunnel** (`system/ingress.ts`, `cookieHeaderForApp`). Every
+  platform session cookie — `omos_session` of any value, `__Host-omos_session` — is removed from
+  the `Cookie` header relayed to an app, on the HTTP and the WebSocket path, and the app's own
+  valid access token, if the request carried one, is put back FIRST (every OpenMasjid app forwards
+  the first `omos_session` it finds). So a LAN, password-only cookie presented through the tunnel
+  never reaches an app; before, a shared app's single sign-on would have accepted it with no
+  second factor. Every app with a web port is now in the routing table, carrying `exposed`: one
+  that is not shared online is served through the tunnel only with a valid token for THAT app, and
+  anyone else gets the identical 404, recorded as `app-not-shared` (the LAN front door still does
+  not serve it at all). Identical includes the body: such a request is declined before the
+  `/fabric` refusal and before anything reads its body, so it takes the same road as an empty
+  address. The first cut refused a private app's `/fabric` path before the body was read, while
+  an empty address's broken or oversized POST got Fastify's 400 or 413 — which told a stranger
+  which apps were installed. Single sign-on needs no app change: `GET /api/auth/session` (LAN-only,
+  app secret) accepts the token for the app it was made for (`api/fabric.ts`, via
+  `appAccessSsoUser`). And `X-Forwarded-Prefix` is now stripped from what reaches an app, like the
+  other forwarding headers — by the ingress (HTTP and WebSocket) and by the per-app TLS proxy
+  alike: some frameworks take their base path from it, and the platform never sends one, so one
+  arriving was typed by the visitor.
+- **What apps may send back, and what may be cached.** Through the tunnel, `Set-Cookie` for the
+  platform's cookie names and `Service-Worker-Allowed` are stripped from app responses — one app
+  could otherwise set `omos_session` on another's path (signing the admin out of it, or into an
+  account of its choosing), or register a service worker over the whole hostname, `/_omos/open`
+  included. Stripping the header only confines a worker whose script lives UNDER `/<path>/`, and a
+  review found an app could serve its script at the BARE address instead — `/<path>` with nothing
+  after it but a query (`isBareAppAddress`) — whose directory is `/`, the whole apps hostname. So
+  at a bare address a service worker's script fetch (`isWorkerScriptFetch`:
+  `Service-Worker: script` or `Sec-Fetch-Dest: serviceworker` — no page can put the latter on an
+  ordinary fetch) never reaches the app: it gets a worker that removes itself
+  (`SELF_REMOVING_WORKER`, sent by `answerBareWorkerFetch` as 200 `text/javascript` with
+  `NO_STORE_HEADERS`), which unregisters on activation and touches nothing else — no caches, which
+  belong to the apps. It is the same answer at a shared app's bare address, a private app's with
+  or without its token, an address with nothing at it (the front door's not-found handler gives it
+  too) and on the masjid's network, so it says nothing about what is installed. A 404, the answer
+  before it, stops a NEW registration; but by the Service Workers specification an update check
+  that fetches no script leaves an EXISTING registration in place, and every earlier build —
+  Stable 0.51.1 included, which also passed `Service-Worker-Allowed` through — let an app's page
+  register a worker over the whole apps' address from its bare one. The browser's next update
+  check now installs this one instead. Everything else at the bare address is proxied to the app
+  as before, with `NO_STORE_HEADERS` whatever the app says (`noStore`), so no cached copy can stand
+  in for a worker fetch later — through the tunnel and on the LAN front door alike. It is recorded,
+  as `worker-at-bare-address`, only when it came through the tunnel (`answerBareWorkerFetch`'s
+  `record`, through `recordRefusal`, the recorder `refuseOverTunnel` uses too), because the record
+  is a list of what came in from outside. Under `/<path>/` a worker is the app's own business.
+  Neither the 404 nor the first fix shipped: that one 308-redirected a GET or HEAD of the bare
+  address to `/<path>/` instead of proxying it, and a review found it loops for ever for an app
+  that sends `/<path>/` back to `/<path>` (Next.js with a base path does, by default), taking its
+  public page down.
+  A private page, or anything served to a token, gets `NO_STORE_HEADERS` (Cloudflare keys its
+  cache on the address alone), as does every tunnel refusal; every response the remote dashboard
+  sends gets `CDN-Cache-Control` / `Cloudflare-CDN-Cache-Control: no-store`. From outside, an
+  app's own favicon — the fallback when it has no catalogue icon — is loaded only for a SHARED
+  app, from the apps' hostname (`lib/app-url.ts` `appBaseUrl`).
+- **Body limits.** A handed-over request without a live remote session (`hasRemoteSession`) may
+  carry at most 64 KB (`ANONYMOUS_BODY_LIMIT`) — a stranger only ever needs to send a sign-in and
+  a code. A larger, or unreadable, declared `Content-Length` is refused 413 at the front door,
+  unread (`anonymousBodyRefusal`); an undeclared (chunked) body is counted as it arrives by a
+  `preParsing` hook and stopped at 413 (`registerDashboardRequestLimits`). Without this, the
+  dashboard listener's 25 MB limit was open to anyone who could reach the sign-in page. And any
+  `/trpc` request other than GET, HEAD or OPTIONS must be `application/json` or gets 415, whoever
+  sends it: tRPC's multipart path read bodies of any size into memory, and nothing in the
+  dashboard uses it. Every message on a dashboard WebSocket is capped at 1 MiB
+  (`DASHBOARD_WS_MAX_PAYLOAD`, the dashboard listener's `maxPayload`), whoever sends it: the
+  dashboard only sends small frames over a socket, and the library's default let any socket make
+  the daemon buffer and parse 100 MB a message.
+- **The second factor has an epoch** (`TwoFactorConfig.epoch`, `secondFactorEpoch()`),
+  re-randomised on enrolling an authenticator (first or replacement), replacing backup codes,
+  switching emailed codes on or off, and turning two-step sign-in off — never by using a factor.
+  Every remote session made under the old epoch, and every app token derived from one, stops
+  working from outside; before, a session made with a lost phone or with backup codes someone had
+  found ran its full seven days. On the masjid's network such a session goes on working, as every
+  session does there: LAN validity is bound to the password alone, and a password change is what
+  ends a session everywhere. The admin who made the change FROM OUTSIDE keeps theirs
+  (`rebindRemoteSession`), or the backup codes shown once would be unmounted before they were
+  written down.
+- **Emailed codes are bound to where they go**: the admin's address and the mail account they are
+  sent through (`emailBoundTo`; `emailDeliveryFingerprint` — provider plus SMTP host/port/TLS/user,
+  or a hash of the Resend key; not the From address, not the SMTP password). Changing either needs
+  only a signed-in session — a password-only one, on the LAN — which could otherwise quietly
+  redirect the next sign-in code, so the factor would no longer mean what the admin switched on.
+  (That is all the binding does: it is not what stands between a dashboard session at the masjid
+  and signing in from outside, since such a session can download a backup, which holds the
+  authenticator's secret.) Either change now PAUSES emailed codes (`emailUsable`;
+  `twoFactorStatus().emailPaused`), and turning them on again asks for the password and an
+  authenticator or backup code. Configurations from before the binding are adopted at boot
+  (`adoptLegacyEmailBinding`), so the upgrade pauses nothing. And `setEmailFactor`
+  now refuses to switch them on without an enrolled authenticator (PRECONDITION_FAILED). The screen
+  only ever offered them alongside one, but the API did not check, and as the ONLY factor they are
+  pausable: after a pause nothing is enrolled, the next change needs only the password, and that
+  change could point the codes somewhere else.
+- **A factor change that lands while `requireSudo` checks the password is refused.** It captures
+  `secondFactorEpoch()` and `twoFactorActive()` before argon2 and throws CONFLICT ("Two-step
+  sign-in was changed somewhere else a moment ago. Please try again.") if either has moved. Without
+  it, an admin turning two-step sign-in OFF to evict someone who held a remote session and the
+  password could lose the race to that person's own change, begun a moment earlier: it then found
+  nothing enrolled, skipped the code, switched emailed codes back on and kept its session under the
+  new epoch — the door reopened with them inside while the admin was told it was shut. The review
+  reproduced it three times out of three.
+- **The installer's Reset sign-in can turn two-step sign-in off** (`reset-auth.ts`). It asks only
+  when two-step sign-in is on, and the answer is no unless the admin answers yes: "Turn off two-step
+  sign-in as well? Choose this if the phone with your authenticator app is lost and you have no
+  backup codes." That situation had no proper way out: the dashboard asks for a current code to
+  change two-step sign-in, on the LAN as well, so an admin who had lost the phone AND the backup
+  codes could never remove or replace it there. Whoever runs the reset already has the server
+  itself, so it gives nothing away. `disableTwoFactor()` leaves nothing but a new epoch, so remote
+  administration stays shut until two-step sign-in is set up again (the tool says so), and the
+  reset signs every session out as before. `reset-password.ts`, the password-only tool, leaves the
+  second factor as it is and now says where the full reset is when two-step sign-in is on.
+- **Settings → Remote access checks everything, then writes once.** `cloudflare.save` works out the
+  final apps' address and dashboard address, validates the dashboard address against the apps'
+  address as it will END UP (`validateAdminHost(input, appsHost)`), and only then calls `setToken`
+  and one `updateCloudflare` — so a refused save changes nothing: not the addresses, not the token,
+  not the door. It used to write the apps' address first and refuse the dashboard address
+  afterwards; a save reported as refused had already put the apps on the dashboard's hostname, which
+  switches remote administration off, and from outside only someone at the masjid could undo it.
+  Three reviewers found it separately. From OUTSIDE the dashboard address cannot be moved or cleared
+  at all (FORBIDDEN: "Change the dashboard address at the masjid — changing it from here would cut
+  you off."); sending it unchanged, or not at all, is not a move. The tunnel token is checked the
+  same way, because saving one recreates the cloudflared container — the connection a request from
+  outside came through. Everywhere, a paste that is not a whole token is refused before anything is
+  written (`system/cloudflared.ts` `normalizeTunnelToken`: base64 of a JSON object `{a, t, s}`, `t`
+  a UUID), and Cloudflare's whole install command — `… --token X`, `--token=X` or `service install
+  X` — is reduced to its token: cloudflared refuses anything else and, under `restart:
+  unless-stopped`, retries for ever, so a half-copied token took every shared app offline while the
+  platform logged "Cloudflare tunnel is running." Only the canonical form passes (`isTunnelToken`:
+  whole four-character blocks that encode back to exactly the same string), because cloudflared
+  decodes with Go's padded standard base64, which refuses a last block without its "=" padding or
+  with too much, while Node's decoder takes both — so the check passed tokens cloudflared then
+  refused. And a token whose padding was left behind (a double-click selects letters and digits
+  only) is repaired rather than refused: trailing "=" are dropped and put back by length — two
+  characters short gets "==", one short "=", and a length of 4n+1 cannot be base64 at all — so an
+  extra "=" is put right too. `cloudflaredRunning()` now asks `tunnelContainerUp` (`Running` and not
+  `Restarting`): Docker reports a container in its restart loop — a refused token's — as running, so
+  Settings said "Tunnel is running." over a tunnel that never connected. That fixed, it said "Tunnel
+  is set up but turned off." over a tunnel switched on, so one that is on but not up now says
+  "Tunnel is turned on but isn't connecting. Check that the tunnel token is the right one."
+  (`settings.cfNotConnecting`; the red dot was already right). And starting
+  the tunnel logs "Cloudflare tunnel started." (`ensureCloudflared`), not "Cloudflare tunnel is
+  running.", which a refused token got too. From outside only the token already in use is accepted
+  (`isCurrentTunnelToken`; re-pasting it, with or without its padding, changes nothing), and a
+  different one is FORBIDDEN ("Replace the tunnel token at the masjid — if the new one didn't work,
+  this window and every shared app would go offline until someone there fixed it.").
+- **A restore started from outside is refused before anything is stopped or replaced** unless the
+  backup keeps the way back in (`system/restore.ts` `remoteRestoreProblem`, run when `runRestore`
+  gets `remote: wasHandedOver(req.raw)` — the front door's hand-over, so a restore through the
+  masjid's own reverse proxy counts as the restore at the masjid that it is). The staged settings
+  must pass `settingsOpenTheDoor`, the very rule the live box applies, and name the same admin
+  hostname — the first cut's hand-written copy of the rule missed "dashboard address equals apps'
+  address", and a restore it allowed shut the remote dashboard behind the admin. Then the same
+  tunnel token (`tunnelTokenMatches`); a username AND the same password hash (a backup with no
+  username restores a box nobody can sign in to); and the same authenticator
+  (`sameSecondFactorAs`, which requires one on BOTH sides — an emailed-codes-only configuration is
+  refused, since whether a restored emailed factor would deliver depends on the restored address
+  and mail account, and nobody could repair a wrong guess from outside). Backup codes are not
+  compared: they come back with the backup (see the residuals below). A restore replaces `config/`
+  whole and most backups predate remote administration, so restoring one from outside would switch
+  the door off behind the admin. A backup with no `config/` is not affected; at the masjid this
+  check does not apply.
+- **During a restore the second-factor epoch is held** (`holdSecondFactorEpoch`, taken beside
+  `holdForRestore` once the apps are stopped, just before `config/` is replaced, and released in
+  the same `finally`). The restored `twofactor.json` can carry an older epoch, and the restoring
+  admin was being signed out mid-restore — the sweep closed their progress window and every line
+  after it was lost. A sign-in completed during the restore is bound to the HELD epoch too
+  (`verifySecondFactor` reports it), not the restored file's, or its session was refused from its
+  first request. Once a backup's `config/` is in place the epoch is RENEWED
+  (`renewSecondFactorEpoch`), at the masjid as well, and the restoring admin's remote session is
+  moved onto it (`rebindRemoteSession`, in the `finally` while both holds still stand, with the
+  caller's token passed from `api/restore.ts` via `requestSessionToken`) — but only if that
+  session still counts at that moment (`remoteGrantOf(callerToken) !== null`, judged against the
+  held epoch), so one shut out while the restore ran stays out instead of being carried onto the
+  new epoch with it. Releasing the hold would otherwise have handed the box the backup's epoch:
+  every remote session made under the factor as it stood when the backup was taken — one the admin
+  had since shut out by replacing the factor included — would have counted from outside again,
+  while the admin restoring was shut out. **Nothing about the second factor can be CHANGED for the
+  whole restore**, not only while the epoch is held (`secondFactorHeld() ||
+  isUpdating('restore')`): before the swap a change would simply be overwritten by the backup's
+  factor. `refuseDuringRestore` in `trpc/routers/twofactor.ts` throws CONFLICT ("A backup is being
+  restored right now. Please try this again once it has finished.") at the start of
+  `requireSudo`, again once the password has been checked (a restore can begin while argon2
+  runs), and at the start of `confirm` — so enrolling, confirming, turning two-step sign-in off,
+  new backup codes and switching emailed codes are all refused before any code is spent. The
+  first cut let such a change through: written during the hold, it did not count until the
+  release, and the admin who made it — moved onto the held epoch — was signed out from outside
+  the moment the restore let go. Signing in still works during a restore.
+- **A restore brings the core back on the build it is running** (`docker/update.ts` `recreateCore`
+  with no tag), whatever the core's compose file says. That file is not a record of what runs: an
+  update whose helper could not start had already pointed it at the version it was going to, and
+  the installer's Update wrote it before downloading. So `pinComposeToRunningBuild` tags the
+  running container's image, by ID, as `<the compose file's repo>:<running VERSION>` (`docker
+  tag`) and points the compose line at that tag (`alignComposeImage(VERSION)`), and the helper runs
+  from that same image ID (else the compose file's reference, `composeImageRef`; the channel alias
+  only as a last resort, when there is neither). A reference pinned to a digest, or a container
+  that cannot be inspected, is left alone. It used to aim at the channel's alias (`:latest`,
+  `:dev`) WITHOUT pulling it, and dashboard updates pull exact versions (the alias only for a
+  channel move whose version could not be read), so that tag named whatever build the installer
+  had last fetched — and every restore quietly put the box back on it: often an older one, and
+  from outside usually one with no remote dashboard at all. A dashboard update still passes its
+  exact version, and now puts the compose file back as it was if its helper cannot be started, so
+  "nothing was changed" stays true. And the installer's Update (`install.sh` `do_update`) now
+  decides the image (`resolve_image`), downloads it, and only then writes the compose file: under
+  `set -e`, a failed download used to leave the file naming the new image, for the core's next
+  restart to come back on.
+- **A restore says how it ended** (`RestoreOutcome`; the close codes are `RESTORE_CLOSE` in
+  `api/restore.ts`): 1000 `restarting`; 4003 `restarting-with-problems` — the same, but some app
+  could not be paused first (below), some app data could not be put back, or some app could not be
+  started afterwards (held for review, or `compose up` failed: `reupAllApps` now returns their
+  names); 4001 `unchanged` — refused, busy (another restore, or an update in the way: below), or an
+  unreadable, invalid or empty file, each found before anything is touched; 4002 `not-restarted` —
+  it stopped on an error part-way; 4004 `restored-not-restarted` — everything was put back, but the
+  helper that restarts the core could not be started. The first cut of these codes gave that last
+  one 4002 too, so the window said the restore had stopped, inviting a second restore that stops
+  every app again when only a restart was missing. A backup with nothing usable in it is now found
+  BEFORE any app is stopped ("That backup had nothing to restore. Nothing has been changed."); it
+  used to be found only afterwards, so a `volumes/`-only backup with nothing restorable stopped
+  every app and left them stopped. One list of volume archives (`stagedVolumeArchives`) serves that
+  check and the work, so the two cannot disagree about what a backup holds. Every refusal made
+  before a restore starts (4401, 4403) now sends its reason as a line before closing ("… Nothing has
+  been changed."), because the window shows what the stream sent. `RestoreModal` reads the code: a
+  stream that never connected (`LogStream` now says whether it ever opened) says it couldn't
+  connect, so nothing was changed; 4002 says the restore stopped before it could finish; 4004 says
+  the backup was restored but OpenMasjidOS couldn't restart itself, and that restarting the machine
+  — or the installer's Repair — finishes it; any other 4xxx but 4003 (a sign-in or origin refusal
+  included) says nothing was changed; a normal close, a 4003 or a dropped stream waits for the
+  restart — saying after ~30 s that the dashboard hasn't restarted yet and to reload if nothing
+  changes, while it goes on waiting. The core counts as down only after TWO failed checks of
+  `/trpc/auth.me` in a row, a good answer starting the count again: one failed check used to count,
+  so a single blip read as the restart and the window said "Restore complete." while the old core
+  was still about to be replaced. Once it has seen the restart, a 1000 ends on "Restore complete.",
+  a 4003 on "The restore finished, but some of your apps or their data need attention — the messages
+  above say which. Please check them before relying on this restore. The dashboard will remind you
+  after you sign in again.", and a dropped stream — a close other than 1000 outside 4000–4999, so
+  the window never heard how the restore ended — on a new neutral ending, `restore.lost`:
+  "OpenMasjidOS has restarted, but this window lost touch with the restore before it said how it
+  went. Please reload, sign in again and check that your apps and settings look right." That one
+  used to say "Restore complete." too. It never says any of them without having seen the restart. It
+  used to treat every ending as a restart and announce "Restore complete." after four minutes,
+  refused restores included, on the LAN as well. `LogStream` passes the close code on and no longer
+  reports its own unmount as the stream ending, and a wait left over from an earlier run cannot
+  write into a new one. The "Affected:" line names apps, not Docker volumes.
+- **The dashboard remembers what a restore could not do.** The window naming the apps is gone within
+  a minute of the core restarting — every session ends then — and nothing recorded which apps came
+  back empty. So when apps could not be paused, app data could not be put back or apps did not
+  start, the restore writes `config/restore-report.json` (0600; `{at, appsWithoutData,
+  appsNotStarted, appsNotPaused}`, app names — the first mapped from their `omos-<id>_…` volumes)
+  and logs each failure with `log.warn`; a restore with nothing to report removes any older report,
+  including one that came back inside the backup's own `config/`. `backups.restoreReport` /
+  `backups.dismissRestoreReport` (both protected) feed a warning banner on the dashboard after the
+  next sign-in — "Your last restore needs a look", naming the apps — until the admin presses "I've
+  checked them". Its no-data line reads "These apps' data couldn't be put back, so they have
+  whatever was already on this machine: …" — the first cut said they "started with" it, which was
+  false for an app that also failed to start.
+- **An app that could not be paused is a problem, not a footnote.** `stopAllApps` never read
+  `composeStop`'s exit code (it reports a failure there and never throws), so a container Docker
+  refused to stop was listed as paused and had its data refilled under it. It now checks the code,
+  prints "• <Name> (couldn't pause it — its data may not restore cleanly)", logs a warning and
+  returns the names; they count towards `restarting-with-problems` (4003), go into the report as
+  `appsNotPaused`, and the banner adds "These apps couldn't be paused for the restore, so their data
+  may not have been put back cleanly: … Please check them." (`dashboard.restoreReportNotPaused`).
+- **An update or a channel switch made from outside may not move the box to a version that
+  cannot be managed from outside** (`system/remote-admin.ts` `FIRST_REMOTE_ADMIN_VERSION` =
+  `0.51.2-dev.16`, the first build with a dashboard address of its own, and `managesFromOutside`,
+  a semver `>=`). Stable is 0.51.1, which has no remote dashboard at all, so an admin managing from
+  outside who switched back to Stable and let the dashboard move the OS across would have brought
+  the core back without one — every window from outside cut off until someone at the masjid moved
+  the box on again. `runUpdate(onLine, { remote })` — the core update route passes
+  `remote: wasHandedOver(req.raw)` — checks the version it would install
+  (`checkForUpdate().latest`) after the "already up to date" and "couldn't check" stops (next
+  bullet) and BEFORE anything is pulled: unknown (by then, in practice, a channel move whose
+  target could not be read), it says "Couldn't check which version this would install, so it
+  can't be done from outside right now."; older, "Version X can't be managed from outside the
+  masjid, so installing it from here would cut you off." — each followed by a line ending
+  "Nothing was changed." And
+  `system.setUpdateChannel` from outside (`ctx.handedOver`) first reads the TARGET channel's
+  published version (`system/system.ts` `publishedVersion`, factored out of `checkForUpdate`):
+  unreadable is SERVICE_UNAVAILABLE, older is FORBIDDEN ("Stable (version 0.51.1) can't be
+  managed from outside the masjid, so switching to it from here would cut you off. Please make
+  this change at the masjid. Nothing was changed."). Refusing the switch itself, rather than only
+  the OS step at its end, keeps the apps and the platform on one channel. At the masjid both go
+  ahead as before, and once Stable is 0.51.2 or later the switch is allowed from outside too.
+- **An update says how it ended** (`docker/update.ts` `UpdateOutcome`; the close codes are
+  `UPDATE_CLOSE` in `api/update.ts`): 1000 `restarting` — the helper is replacing the core — or 4001
+  `unchanged`: already up to date, a download that failed, an updater that could not start, a
+  refusal from outside, a core pinned to a digest (below), a restore or an app's update in the way
+  (below), or an error. A newest version that could not be read, on the same channel, is no longer
+  "already up to date": it says "Couldn't check for the latest version just now, so nothing was
+  changed." and nothing is pulled, as before (a channel move still goes, to the channel's alias).
+  The same update asked for twice closes with 1000, since that other update may restart the core —
+  "An update is already running. It will finish on its own." while it runs, and "OpenMasjidOS is
+  restarting to finish an update. Please try again in a minute or two. Nothing was changed." once it
+  has handed the core to its helper (the lock is held until the core is replaced, below). The
+  route's refusals before it starts (4401, 4403) now send their reason as a line first ("Please sign
+  in again, then start the update once more. Nothing was changed."). `UpdateModal` reads the code: a
+  stream that never connected says it couldn't connect, so nothing was changed; any 4xxx ends in a
+  new `unchanged` phase — unlocked, "Nothing was changed. The messages above say why." and a Close
+  button — and 1000 or a dropped stream waits for the restart, saying the update worked only on
+  EVIDENCE: a new version answering `auth.me`, or the core seen to go down and come back — down
+  meaning TWO failed checks in a row, a good answer starting the count again; one used to be enough,
+  so a single 502 or Wi-Fi blip kept the dialog locked for three minutes and could claim a restart
+  that never happened. With no sign of a restart after ~30 s it says, unlocked and still watching,
+  that OpenMasjidOS hasn't restarted yet and to reload if nothing changes; after ~3 min it ends
+  there. Once the core is back on the SAME version it watches ~30 s more (15 polls) for another
+  restart and then ends, unlocked, on "OpenMasjidOS restarted, but it is still on v… Reload this
+  page, then try the update again." — it used to hold the dialog for the rest of the three minutes
+  first. It used to treat every ending as a restart, so an update that changed nothing held the
+  dialog locked on "restarting" for three minutes and then said "Update applied.", at the masjid too
+  — and said the same over an update still downloading, or one that had failed. The channel switch's
+  window (`ChannelMigrate`) now reads its OS step's close too: any 4xxx, or a stream that never
+  connected, says "OpenMasjidOS itself was not changed — the messages above say why."
+- **An app's update says how it ended**, too. `apps/manager.ts` `updateCatalogApp` returns
+  `AppUpdateOutcome` (`updated`, `unchanged`, `not-running`), and `api/app-update.ts` closes with
+  `APP_UPDATE_CLOSE`: 1000 updated; 4001 nothing was changed (refused, already current, put back
+  after a failed download or start, already being updated, or a core update or restore under way);
+  4003 updated but not staying up; 4002 stopped part-way, on an error. Its refusals before it
+  starts say why as a line and close 4401 or 4403, and an impossible app id 4400 ("That app could
+  not be found. Nothing was changed."). It used to close with no code, and the window said "<app>
+  is up to date now." whatever had happened. `ui/src/lib/update-endings.ts` (React-free, so a core
+  test holds it to the server's codes) turns a close into an ending for the three windows that
+  stream app updates: the app's own (`AppUpdate`) says it is up to date, that nothing was changed,
+  that it updated but isn't staying running, that the update stopped part-way, that the window
+  lost touch with it ("it may still be finishing"), or that it couldn't connect; **Update all apps**
+  (`UpdateAllApps`) counts the apps that really updated — "All N apps updated." only when all did,
+  otherwise "N of M apps updated. The messages above say what happened to the others." with a
+  warning icon — and the channel switch (`ChannelMigrate`) counts the apps that really moved the
+  same way. The WhatsApp `!os update` command reports it too: "<app> wasn't updated, so nothing
+  was changed. Have a look on the dashboard to see why." where it used to say the app was updated.
+- **A core update, a restore and an app's update never overlap** (`system/update-lock.ts`). The keys
+  `core` and `restore` are now EXCLUSIVE: either is refused while anything else runs, and anything
+  is refused while either runs; two different apps' updates may still run together. The refusal is
+  an `UpdateBusyError` with `clash: true` and a message naming what is in the way — "A backup is
+  being restored right now. Please update OpenMasjidOS once it has finished. Nothing was changed.",
+  and likewise for each pair — while the same work asked for twice is still "An update is already
+  running. It will finish on its own." (both give way to the "restarting to finish" message once the
+  work is done, next bullet). Why: a review pressed Update 300 ms into a restore, and the update's
+  helper replaced the core while the restore was still refilling app data — cut off part-way, every
+  app left stopped, a database half put back. A clash closes the core update window 4001; the
+  restore says the clash, removes the backup it was given (below) and ends `unchanged`; an app's
+  update ends `unchanged` too.
+- **A core update or a restore keeps its lock until the core is replaced** — not until it hands that
+  job to the helper. `withUpdateLock(key, busy, fn, { holdAfter })` keeps the key held for
+  `holdAfter(result)` ms once `fn` resolves, released by an unref'd timer; a throw never holds.
+  `runUpdate` holds for `restarting`, `runRestore` for `restarting` and `restarting-with-problems`,
+  each for `HOLD_UNTIL_REPLACED_MS` (5 minutes). The old core goes on running ~12 s after handing
+  its replacement over (the helper's `sleep 2`, then compose's 10 s stop timeout, because the core
+  is `node` as PID 1 and ignores SIGTERM), and releasing at the hand-off accepted a restore, an app
+  update or a second core update in that gap, which the replacement then killed part-way: a review
+  launched three helpers, and cut a restore off with one app's data half put back and every app left
+  stopped. During the hold the work is DONE and only waits for the core to be replaced, and the
+  refusals say so (`finishing(key)`, `finishingMessage(key)`): "OpenMasjidOS is restarting to finish
+  an update. Please try again in a minute or two. Nothing was changed." or "OpenMasjidOS is
+  restarting to finish restoring your backup. …". In the hold only, that replaces the clash message,
+  the same-work one (still not a clash, so the update window waits for the restart, close 1000),
+  `assertAppFree`'s, the restore's dashboard refusal and the logo routes' (below), and the restore
+  upload's "A restore is already running" (409); while the work is still RUNNING the earlier
+  messages stand ("A backup is being restored right now…", "OpenMasjidOS is being updated right
+  now…") — "being restored right now" over a restore that had finished sent the admin to wait for
+  something that was not happening. The timer means a helper that never replaces the core cannot
+  wedge the box — though until it fires, updates and restores stay refused, and after a restore so
+  does every change from the dashboard. The header of `system/update-lock.ts`, which said the lock
+  died with the process at the hand-off, is corrected.
+- **No app is started, restarted, installed or removed under a restore or under its own update.**
+  `assertAppFree(id, 'start' | 'install' | 'remove')` throws a clashing `UpdateBusyError` and is
+  called FIRST in `startApp` and `restartApp` (both `'start'`: a restart starts a stopped app),
+  `removeApp`, `installCatalogApp` and `installStack`; `stopApp` is never refused. During a restore
+  a start gets "A backup is being restored right now. Your apps will start again on their own when
+  it has finished. Nothing was changed." and an install or a removal "A backup is being restored
+  right now. Please install (remove) this app once it has finished. Nothing was changed."; during
+  that app's own update (`app:<id>`) anything gets "This app is being updated right now. Please try
+  again once it has finished. Nothing was changed."; and during a core update an install or a
+  removal — not a start — gets "OpenMasjidOS is being updated right now. Please install (remove)
+  this app once it has finished. Nothing was changed." Once the restore or the core update is done
+  and only waiting for the core to be replaced, each of those becomes the "restarting to finish"
+  message above (a start is still allowed in a core update's hold). Every caller already handled it:
+  tRPC's `wrap` makes it CONFLICT, `!os start` and `!os restart` reply with the message, and the
+  address monitor and the Remote access re-ups catch it and skip. Why: a restore stops every app and
+  refills its data — a review's Start, accepted mid-refill, ran `compose up` before the refill had
+  finished — and, worse, a compose that came in with the backup and had not been checked yet could
+  be started with no consent (`privileged: true`, host root), from WhatsApp too, which must never be
+  able to consent; and Start during an app's own update brought up the compose that update was about
+  to put back. On the dashboard, during a restore, the next bullet's refusal answers first.
+- **Nothing is changed from the dashboard while a restore runs.** `protectedProcedure` is now
+  `t.procedure.use(isAuthed).use(noChangesDuringRestore)` (`trpc/trpc.ts`): while
+  `isUpdating('restore')` every protected MUTATION gets CONFLICT "A backup is being restored right
+  now. Please try this again once it has finished." — or, in the hold after it, "OpenMasjidOS is
+  restarting to finish restoring your backup. Please try again in a minute or two. Nothing was
+  changed." Queries still answer, and signing in and out (public procedures) still work. That covers
+  the dashboard's Start, Install and Remove. Two mutations change nothing a restore replaces and go
+  ahead (`ALLOWED_DURING_RESTORE`): `apps.stop`, because turning an app off must always work, and
+  `apps.openRemote`, which only mints a one-use ticket in memory. The logo routes
+  (`api/branding.ts`, outside tRPC, writing
+  `config/branding/`) refuse the same way, 409 with the same messages, after their origin, session
+  and key checks. Why: a restore replaces `config/` whole, and a password, a setting or
+  `setRemoteAdmin(false)` made during it was accepted and then silently undone — in the review the
+  old password worked again after the restart, and remote administration came back on.
+- **The restored settings are put in place at once.** The stores read their file once at boot and
+  kept a copy, so a write after the swap put the PRE-restore settings back over the restored file —
+  in the review the root terminal came back ON after restoring a backup in which it was off, because
+  someone changed the theme mid-restore. Straight after the swap, when `config/` was moved, the
+  restore calls `reloadSettings()`, `reloadEmailConfig()`, `reloadStripeConfig()`,
+  `reloadWhatsAppConfig()` and `reloadCommandConfig()` (the admin store already re-reads by itself;
+  the second factor has its own hold and renewal, above).
+- **A restored app's compose is checked the moment `apps/` is in place**, not after its data is
+  back: `reviewEveryApp()` (`apps/manager.ts`, a failure logged) runs `reviewCompose` for every app
+  with a compose file straight after the `config/` + `apps/` rename, before `restoreVolumes`, so the
+  persisted verdict (`AppMeta.review`) is this platform's own from that moment rather than the
+  backup's. `reupAllApps` still reviews again at the end.
+- **The monitors stand aside during a restore.** The offline-alert check (`system/alert-monitor.ts`)
+  returns at once while a restore runs — a restore pauses every app on purpose, and the
+  `app-offline` alert ("… has stopped", "Then press Start.") told the admin to start an app over
+  data being put back — and `stopAllApps` also suppresses that alert for each app it pauses. The
+  off-site backup scheduler (`system/backup-upload.ts`) skips its tick while a restore or a core
+  update runs; the next tick runs it. And the address monitor (`system/address-monitor.ts`) skips
+  its tick during a restore: it rewrites apps' settings, which would land in a tree about to be
+  swapped out.
+- **A backup and a restore never overlap.** `backupStream` refuses while a restore runs
+  (`backupRefusal`: "A backup is being restored right now. Please make a backup once it has
+  finished.", or the restarting-to-finish sentence in the hold) — the download from outside asks
+  before its headers go, so it is still a proper 409 — and a restore refuses while a backup is
+  being made (`BACKUP_RUNNING`, in the upload route and first thing in `restoreOnce`, which then
+  removes the upload). A backup taken during a restore copied data half put back and reported
+  success; a restore during a backup replaced what it was copying. `test/remote-restore.test.ts`
+  (*A BACKUP AND A RESTORE NEVER OVERLAP*). The store, custom and community install routes and
+  the WhatsApp gateway's restart now turn a refusal from the update lock into CONFLICT, not
+  INTERNAL_SERVER_ERROR (`test/update-lock.test.ts`).
+- **A refused restore leaves no backup behind.** Refused because OTHER work is in the way, or in the
+  hold after a restore that has finished (`err.clash || finishing('restore')` — that restore removed
+  its own file on the way out, so anything at the path is the refused request's), `runRestore` now
+  removes the uploaded `.restore.tar.gz` — every secret on the box, unencrypted — but not when
+  another restore is still RUNNING, which is reading it. The upload route refuses up front, 409,
+  while an update is in the way (`clashFor('restore')`, with the clash message, checked before the
+  file is read), and in a restore's hold says the "restarting to finish" message instead of "A
+  restore is already running". At boot (`index.ts` `main`, once the data folders exist)
+  `removeRestoreLeftovers()` deletes a `.restore.tar.gz` and a `.restore-staging` that a restore
+  never got to remove (a power cut, say), logging "Removed <name> left behind by a restore that did
+  not finish." And the File Explorer (`files/manager.ts`) keeps both private, like
+  `.backup-staging`: "This is a backup being restored, so it is kept private. It is removed when the
+  restore finishes." Each holds a whole backup: every password hash, key and token, possibly another
+  box's.
+- **A core pinned to a digest is not "updated" onto itself.** When the core's compose line names a
+  digest (`composeImageRef()` contains `@`), `runUpdateInner` refuses before anything is downloaded
+  — after the up-to-date and from-outside checks — with "OpenMasjidOS is pinned to one exact build
+  on this machine, so it can't update itself from here. Nothing was changed." (4001). Before, every
+  press pulled that same build and restarted the dashboard onto it, signing everyone out, while the
+  banner went on offering the update (it still does: residuals below).
+- **The installer's Update and Repair print the dashboard's real address**: "Open it at:
+  https://<ip>" (`TLS_PORT`, with a port only when it is not 443). They printed `http://` on `PORT`,
+  which reached the dashboard only through the port-80 redirect.
+- **Downloading a backup from outside sends its headers before the backup is made**
+  (`api/backup-download.ts` `remoteBackupDownload` / `sendBackupEarly`, which the `/api/backup`
+  route uses for a handed-over request): copying every app's data can outlast the 100 seconds
+  Cloudflare gives an origin to start answering, after which it shows its own error page. "Already
+  running" is still a proper 409, because `backupInProgress()` (new in `system/backup.ts`) is asked
+  before anything is sent; a failure after the headers breaks the download off (`res.destroy()`)
+  rather than saving a partial file the admin would trust. A browser that leaves at any point now
+  ends the backup: the `close` listener goes on before the backup starts, and the archive is handed
+  to `sendBackup`, which tears tar down whichever side fails. The first cut noticed leaving only
+  once the backup existed — by then the one `close` had already fired — so tar blocked on a full
+  pipe for ever and the one-backup-at-a-time flag stayed set: every later backup, the nightly
+  off-site one included, was refused as "already running" until a restart, with a staged copy of
+  every app's data left on disk. Cancelling a download stuck at 0 bytes was enough, and so was
+  Cloudflare dropping a silent connection. **And a download now ends only once tar has said it
+  succeeded**, on the LAN as well (`sendBackup`, used by both). tar's output ends BEFORE tar
+  exits, so a response ended with the output — by a pipe, or by Fastify's `reply.send(stream)` on
+  the LAN — was delivered whole and clean for a backup tar had FAILED: a file it could not read
+  left out, an archive cut short. The browser said "done", the log said "Backup failed", and the
+  admin found out at the restore. Now the end waits for the output to finish AND `done.ok`, and
+  anything else breaks the download off, which a browser reports as failed. The LAN route hijacks
+  the reply instead of `reply.send(stream)`, with `cache-control: private, no-store`.
+- **App addresses.** ONE list of reserved first segments, `RESERVED_PATH_SEGMENTS` in
+  `apps/paths.ts` (`api`, `trpc`, `assets`), read by the ingress (which never routes them) and by
+  `setAppPath`, which now refuses them ("/api is used by OpenMasjidOS itself…") — before, only the
+  ingress knew, so an app could be given `/api` and then had no public page at all. `setAppPath`
+  also refuses an address another installed app answers to. An install (catalog, community or
+  custom) whose id is another app's address, or a reserved word, gets the next free `<id>-N`
+  (`addressForNewApp`) — decided before anything is written, logged (`noteDisplacedAddress`), and,
+  for a catalogue app (the only kind given `OPENMASJID_PUBLIC_URL` at install), used in it
+  (`intendedPublicUrl` now takes the path, because the app's `meta.json` does not exist yet); a
+  reinstall keeps its address. Installs used to take their id regardless: give a community app
+  `/donations`, install the official Donations app later, and the two shared one address. With
+  every app in the routing table, `placeRoute` keeps a shared app's path whatever the order
+  (otherwise the later app wins, as before) and logs a clash once.
+  `isRouted(appId)` is true only for the app that actually HOLDS the route and is shared: a private
+  app has no public URL even when opened remotely, and when two apps answer to one path only the
+  holder is told it is published there — the other's Stripe return links and QR codes would
+  otherwise point at someone else's app. `InstalledApp.path` (new) carries each app's address to
+  the dashboard.
+- **Refusals.** Every tunnel refusal answers through one responder (`refuseOverTunnel`), so a
+  browser gets the same page from every guard — before, the gate and the Fabric guard answered JSON
+  while the not-found handler answered HTML, which told a visitor which kind of address they had
+  hit. It also sends `NO_STORE_HEADERS`, so Cloudflare never keeps a 404 to hand the admin later.
+  The not-found handler takes its reason from `notFoundReason`, which the tests call too. Six
+  reasons are new, ten in all: `app-not-shared`, `dashboard-elsewhere`, `app-on-admin-host`,
+  `no-admin-host` (`doorClosedReason`, above), `wrong-port` (`registerHandoffOnlyGuard`: a
+  Cloudflare hostname pointed at the HTTPS port) and `worker-at-bare-address` (above: the one
+  recorded reason not answered with the 404 — it gets the worker that removes itself — and the one
+  that can also happen on the masjid's network, where it is not recorded). Each has its own words in
+  "Recently turned away" — in the first cut two of them fell back to "Local network only", which
+  said nothing about what to fix — and the `wrong-port` label names the fix: Type HTTP, URL
+  `localhost:<port>`. The `worker-at-bare-address` label reads "A background worker asked for at an
+  app's bare address — answered with one that removes itself, as it could reach every app"; the
+  first cut said an app had tried to install one and been refused, which is no longer what happens.
+  `plain-http-no-host` is now reached only by a request target starting `//`, and its label was
+  rewritten to match ("Opened over http:// at an address that couldn't be moved to https:// — use
+  the https:// address"); it used to tell the admin to set a domain. The record is shown to any
+  signed-in admin — on the masjid's network, or from outside behind the second factor.
+- **UI.** Settings → Remote access: "Your domain" is now **Your apps' address**; a new **Dashboard
+  address** field comes with the Cloudflare steps and is disabled from outside with the reason
+  beside it, as is the tunnel-token field. Each address is sent to the server only when it was
+  edited (sending the value the page loaded with undid a change made on another device — for the
+  apps' address, every shared app's public links with it); a successful save refills both fields
+  from what the server stored, and a refused one re-reads the stored status, though the fields keep
+  what was typed. From outside, switching remote access off, switching **Manage OpenMasjidOS from
+  outside** off and **Remove tunnel** each open a confirmation first (`ConfirmDialog`: this window's
+  connection ends, and only the masjid can undo it); at the masjid they stay one click. When
+  switching remote access off or removing the tunnel takes the connection down before the answer
+  arrives — Cloudflare sends its own page instead — the panel says it is done ("Done — this window
+  can't reach the dashboard any more…") rather than showing a parse error with the dialog still
+  armed. The switch says why it is blocked, `'no-admin-host'` included; the address it shows is
+  `https://<admin hostname>/`; the turn-on dialog says nearly everything works from outside — apps,
+  files, terminals, backups and updates — that an update to a version that can't be managed from
+  outside has to be done at the masjid, and that apps open at the apps' address only
+  (`settings.cfRemoteAdminAsk3`); the per-app wording says a private app still opens for the admin
+  from outside, and in the routes table that sentence now wraps instead of making the table scroll
+  sideways on a phone. Remote Open goes through `apps.openRemote` (`lib/apps.ts`, wired in
+  `Root.tsx`, whose toast shows the server's own message when there is one and "That app couldn't be
+  opened" otherwise). The new `lib/app-url.ts` builds only LAN addresses and a shared app's public
+  base. The File Explorer, terminals and backup/restore are no longer hidden or disabled remotely
+  (`settings.remoteOnlyLan` and `remoteOnlyLanHint` are gone). From outside, the File Explorer
+  upload and the restore upload refuse a file over 100 MB before sending it (`REMOTE_UPLOAD_LIMIT`,
+  Cloudflare's free-plan limit) and recognise Cloudflare's own 413 page, each saying to do it at the
+  masjid rather than showing a generic error; the restore dialog's warning from outside
+  (`restoreConfirmRemote`) mentions the limit. OpenWA's Open button is disabled from outside, with
+  the reason — its own screen does not work under a path. The update and restore dialogs poll
+  `/trpc/auth.me` instead of `/api/health`, which stays refused over the tunnel; `auth.me` now
+  returns `version` to a signed-in session (the update dialog reads it from tRPC's `result.data`
+  envelope — the first cut read the top level, found nothing, and never showed the new version) and
+  `appOrigin` to a remote one. The update dialog is locked only while the update runs and while the
+  core restarts, and ends on "Nothing was changed" with a Close button when the server says so
+  (above). The two-step panel shows its "paused" hint only when emailed codes are possible —
+  otherwise it names what is missing, an email provider or an email address on the account
+  (`auth.twoFactor.status` `emailMissing`; it used to ask for a provider even when only the address
+  was missing) — and its status refreshes after a profile or email-provider save; from outside, its
+  turn-off dialog says that turning two-step sign-in off shuts this window out at once, points a
+  phone change at **Use a different phone**, and adds "Only someone at the masjid can turn it back
+  on." A tunnel request no longer feeds `observeDashboardHost`.
+- `auth.setup` and the first-run restore routes refuse tunnel traffic outright. The second factor
+  lives in its own file, so a box whose admin record went missing would otherwise have offered
+  first-run setup — reachable over the tunnel since dev.13 — and now first-run restore to the
+  internet; `remoteAdminEnabled()` requiring an admin (`isConfigured`) closes the same gap from
+  the other side.
+- **Migration — Development only; none of this reached Stable.** dev.13–15 served the remote
+  dashboard at the apps' hostname. After updating to dev.16, every dashboard path there answers the
+  ordinary 404 — recorded as `no-admin-host` while no Dashboard address is set (the tunnel, the
+  switch and two-step sign-in are all still on; `doorClosedReason`), with a label saying to set it,
+  and as `dashboard-elsewhere` once one is. There is no remote dashboard anywhere until the admin
+  creates the second Cloudflare hostname and enters it under Dashboard address. Settings says the
+  same under the switch ("Give the dashboard an address of its own first"). Only the masjid's
+  network can do that: `adminHost` is written by `cloudflare.save` (and by a restore), both
+  reached from outside only through the remote dashboard, which stays off until it is set — and
+  `cloudflare.save` refuses to change it from outside anyway; a tunnel pointed at the dashboard's
+  own port is refused by `registerHandoffOnlyGuard`; no WhatsApp command, installer option or other
+  route sets it; and the field does not exist before this build, so it cannot be filled in ahead of
+  the update either.
+  dev.13–15 could not run an update from outside (`/api/update` was on the LAN listener alone), so
+  in practice this update is started at the masjid — but one started another way (the installer
+  over a remote shell) leaves a remotely-managed box unreachable from outside until someone at the
+  masjid enters the address. **Not implemented:** an alert, a dashboard notice or an installer
+  option for this move, so whoever updates such a box has to be told. The switch is left on, so
+  entering the address is all it takes; sessions from those builds carry no `remote` flag, so a
+  fresh sign-in is needed anyway.
+- Comments that no longer matched the code were corrected, with no change in behaviour: the refusal
+  record and `cloudflare.refusals` are for any signed-in admin, not the LAN alone; the logo routes
+  are reachable from outside only through the hand-over; the comment on starting the tunnel says the
+  tunnel-facing port hands the dashboard over through the gate, rather than serving app paths alone;
+  `/api/fabric/site`'s `basePath` can be `<id>-N`; and the `emailBinding` comment no longer claims
+  the binding stops a dashboard session at the masjid from reaching remote access — such a session
+  can download a backup, which holds the authenticator's secret, and what two-step sign-in protects
+  is remote access from someone who knows the password but cannot reach the masjid's network. Later,
+  likewise: three doc comments that had slipped above the wrong function are back above their own
+  (`isBareAppAddress` in `system/ingress.ts`, `holdSecondFactorEpoch` in `auth/twofactor.ts`,
+  `requestUser` in `api/ws-auth.ts`); `responseHeadersForTunnel` no longer says an app's bare
+  address is redirected; the `routes` comment in `trpc/routers/cloudflare.ts` names the second
+  hostname, for the dashboard; the `system/cloudflared.ts` header no longer calls path-based routing
+  a planned enhancement; `Tracked.token` in `system/remote-sockets.ts` and the `claimUpgrade`
+  comment in `index.ts` say a dashboard socket is handed over only to a signed-in remote session;
+  `Viewpoint.remote` in `ui/src/lib/app-url.ts` says it follows the hand-over; the Settings
+  `TunnelRefusals` comment no longer puts the list behind a LAN-only dashboard; and a test title in
+  `tunnel-refusals.test.ts` now says the record is readable by a signed-in admin, not over the LAN
+  alone. And last: the `api/branding.ts` header says the same of the logo routes as `index.ts` does;
+  the `index.ts` header describes two listeners, not one server on one port; the
+  `stripe/disputes.ts` header counts `/_omos/open` among the public routes;
+  `FIRST_REMOTE_ADMIN_VERSION`'s says dev.13–15 served the dashboard beside the apps (not that they
+  could not be managed from outside) and that its guard covers the dashboard's update and channel
+  switch, not a root terminal; the `trpc/routers/twofactor.ts` header names `confirm` as the one
+  change without `requireSudo`, by design; and the `CloudflarePanel` comment says a refused save
+  refreshes the status while the fields keep what was typed. After a further review: comments that
+  had drifted away from their code in `Dashboard.tsx` and in `index.ts`'s not-found handler are back
+  beside it; the Dashboard's comments say "Settings → Advanced", not a "Settings → Updates" that
+  does not exist; `recreateCore`'s comment no longer claims dashboard updates never pull the
+  channel's alias; `system/restore.ts`'s comment on keeping the restoring admin signed in no longer
+  gives a wrong example; and the `SELF_REMOVING_WORKER` comment in `system/ingress.ts` states its
+  residual (below).
+- **Accepted residuals and honest limits.** The apps share ONE origin with each other on the apps'
+  hostname, so isolation between apps is weaker than on the LAN, where each has its own port: a
+  malicious app's page could act within another app the admin has opened there — never as the
+  dashboard. A WebSocket's `101` response is relayed verbatim, so its `Set-Cookie` is not filtered.
+  Only sockets are closed when a sign-in ends: a long-lived HTTP response — an app's event stream
+  opened with the admin's token, or a download from the dashboard — runs on until it ends. A
+  masjid's own LAN reverse proxy sending `x-forwarded-proto: https` is still treated as tunnel
+  traffic by the security rules — signing in through it asks for the second factor (and is refused
+  while none is enrolled), and a password-only session presented through it reads as signed out —
+  though no longer by what the dashboard does differently from outside (Remote sessions, above).
+  `/_omos/open` does not check that it was asked for on the apps' hostname, so a ticket spends just
+  as well on any other hostname routed to the tunnel but the admin one (the dashboard only ever
+  builds the link on the apps' one); and while the door is open a bad ticket gets the 410 page where
+  a shut door gives the ordinary 404, so a stranger can tell whether remote administration is
+  switched on. A restore brings back the backup codes as they were when the backup was made, so
+  codes used or replaced since then work again; a restore from outside compares only the
+  authenticator, so it does not stop for that. Cloudflare's free plan refuses request bodies over
+  100 MB, and Cloudflare drops a connection that stays silent for about 100 seconds, which a large
+  install's backup download from outside can still hit while the app data is being copied. Apps that
+  are not base-path aware break under `/<path>/`. An older configuration with emailed codes as its
+  ONLY factor (Settings never offered it, but the API allowed it before this round) keeps working
+  until the admin's address or mail account changes; then it pauses, remote administration closes,
+  and turning it back on now needs an authenticator first — enrolled at the masjid. The worker that
+  removes itself reaches only a worker whose script is AT a bare address: one an older build let an
+  app register over the whole apps' address from a script under its own path (with
+  `Service-Worker-Allowed: /`) now fails its update check, which leaves it running in the browsers
+  that hold it until their data for the apps' address is cleared. A core pinned to a digest is still
+  offered an update by the banner and the alert (`checkForUpdate` did not change); only the update
+  itself refuses. A helper that never replaces the core leaves updates and restores refused — and,
+  after a restore, every change from the dashboard — until the five-minute hold runs out. The File
+  Explorer's own writes (uploading, renaming or deleting the masjid's files) are not refused during
+  a restore; `config/` and the platform's per-app files are protected from it anyway. And
+  `api/restore.ts` still closes 4002 ("stopped before it could finish") on an unexpected exception
+  even when nothing had been changed yet — the cautious reading.
+- **Tests.** New: `remote-apps.test.ts` (private apps and what apps receive, access tokens, tickets
+  and `/_omos/open`, single sign-on with a token, caching, a private app's address answering exactly
+  as an empty one — `/fabric`, broken and oversized bodies included — the bare app address (a
+  worker's script answered there by one that removes itself, the same at a shared, a private and an
+  empty address and on the masjid's network, and recorded only when it came from outside; nothing
+  answered there cached; `isWorkerScriptFetch` and `isBareAppAddress` spelling by spelling),
+  `isRouted` naming the holder, the eight-token cap, the session rule in tRPC and the raw routes,
+  the per-call and per-keystroke re-checks, a reverse proxy on the masjid's own network not counting
+  as outside, a sign-in made through one never usable from outside, and a browser that leaves
+  part-way ending the app's response), `remote-restore.test.ts` (`remoteRestoreProblem` against real
+  files — the live rule, the username, an authenticator on both sides — that it runs before anything
+  is stopped or replaced, the epoch hold, a sign-in during a restore bound to the held epoch, how a
+  restore ends and is reported, a backup with nothing to restore stopping no app, a restore whose
+  app data did not all come back ending as `restarting-with-problems` with the core recreated on the
+  build it was running, the epoch renewed and only the restoring admin moved onto it, an app that
+  did not start reported to the dashboard until a clean restore clears it, "restored but not
+  restarted" told apart from "stopped part-way", a caller shut out while it ran not carried back in,
+  and — after a further review — a restore that restarts the core keeping its lock until the core is
+  replaced, one refused for an update in its way saying so and leaving no backup behind, nothing
+  changed from the dashboard while a restore runs, its settings put in place at once, an app that
+  could not be paused not "complete", an unfinished restore's leftovers removed at boot, neither the
+  offline alerts nor the off-site backup running during a restore, and a restored app's compose
+  checked the moment it is in place), `remote-backup.test.ts` (headers first, a browser that leaves
+  before or part-way ends the backup, one case with the real backup and real tar, and a backup tar
+  failed never delivered as a whole file), `remote-settings.test.ts` (a refused save changes
+  nothing, the dashboard address locked from outside, a dev.13–15 box recorded as `no-admin-host`,
+  one rule for the live box and a restore, `normalizeTunnelToken` — a token missing its "=" padding
+  repaired, the same bytes spelt any other way refused — a paste that is not a whole token refused
+  at the masjid and a different token refused from outside, a tunnel stuck restarting shown as
+  neither running nor turned off but "isn't connecting", "from outside" meaning the hand-over, and
+  the panel sending each address only when edited), `remote-update.test.ts` (`managesFromOutside`;
+  from outside, an update and a channel switch to a version that cannot be managed from outside — or
+  whose version cannot be read — refused before anything is downloaded or saved, while at the masjid
+  both go ahead; the update window's close codes; a version that cannot be read never "already up to
+  date"; an app's update window reading the server's codes; a restore coming back on the running
+  build whatever the compose file says; an update whose helper could not start putting the compose
+  file back; the installer's Update downloading before it writes the compose file; a core pinned to
+  one exact build not "updated" onto that same build; and both windows counting the core as down
+  only after two failed checks, the restore window ending on `lost` when its stream dropped) and
+  `app-paths.test.ts` (`setAppPath`'s refusals, reserved words, the address an install is given, and
+  only an app path's shape ever routed). Updated: `front-door-websocket.test.ts` (two hostnames, the
+  progress streams handed over, a private app's socket with its token, the cookies an app receives,
+  sockets closed when the door shuts or the session ends, dot-segment spellings that must not tell a
+  private app from nothing, no dashboard socket for a stranger, the 1 MiB message cap, the bounded
+  socket table and the apps' share of it, an app socket opened with the admin's token closed at both
+  ends when that sign-in ends while a public socket's app end is left open, and a quiet dashboard
+  socket pinged), `remote-admin.test.ts` (the five conditions, `isAdminHost` / `validateAdminHost`,
+  the dashboard never on the apps' hostname, the hand-over, `registerHandoffOnlyGuard`, the body
+  limits and the 415, the lazy dashboard socket), `twofactor.test.ts` (the epoch, the emailed-code
+  binding, `sameSecondFactorAs`), `twofactor-router.test.ts` (the caller keeps their session through
+  a factor change, the race in `requireSudo`, emailed codes never the only factor, the panel told
+  which is missing — the mail account or the address — and nothing about the factor changing during
+  a restore, before it holds the epoch as well as while it does — no code spent, and one that begins
+  while the password is checked caught after it), `tunnel-refusals.test.ts` (one page from every
+  refusal; all ten reasons, read from the type, each with its own words), `remote-login.test.ts`
+  (first-run setup and restore refused from outside), `credential-binding.test.ts` (re-anchored to
+  `createSession`'s third parameter, and the full sign-in reset turning two-step sign-in off, driven
+  through the real tool's prompts), `audit-hardening.test.ts` (re-anchored to the new WebSocket
+  branch, and `X-Forwarded-Prefix` stripped on every proxy path), `update-lock.test.ts` (the update
+  dialog locked only while it runs and while the core restarts, a core update, a restore and an
+  app's update never overlapping, a core update or a restore keeping its lock until the core is
+  replaced — refusals meanwhile saying it is restarting to finish — and no app started, installed or
+  removed under a restore or its own update, while stopping never is), `files-guard.test.ts` (a
+  backup waiting to be restored, and its unpacked copy, private), `update-idempotent.test.ts` (an
+  unreadable version pulls nothing on the same channel and is never "up to date"),
+  `update-channel.test.ts` (re-anchored to `publishedVersion`), and `update-rollback.test.ts` and
+  `app-stayed-up.test.ts` (re-anchored to the update's new return values). All are registered in
+  `packages/core/package.json`; the cases that need GNU tar or a POSIX shell skip on Windows and run
+  in WSL. The fixes from that further review were mutation-checked — all 51 deliberate breakages of
+  them caught, each test file passing first — and a run of the real built daemon, against a stand-in
+  Docker that refills a volume slowly and refuses to stop one app, showed them end to end: the
+  pinned core's update refused with nothing asked of Docker; mid-restore, Start, a setting, a new
+  password, removing the logo and a second upload all refused while `auth.me` still answered and
+  nothing was started; the restore closing 4003, the report naming the app it could not pause; the
+  restored setting in use at once; no `.restore*` file left; after the hand-off, an update, Start
+  and a new upload each answered with the "restarting to finish" message; and leftovers planted
+  before a restart removed at boot.
+
 ### Signing in to apps
 
 - **Opening an app from the dashboard signs you in reliably now.** Sometimes an app would ask for
@@ -51,8 +1151,8 @@ sysadmin. One `## <version>` heading per release, then short bullets.
   failed but half-happened: you were signed out, your old password was refused, and the new one
   stopped working after a restart.
 - **Remote access fixes for Development builds 13 and 14:**
-  - With remote access switched **off**, parts of the dashboard could still be reached from the
-    internet by writing its address in an unusual way. They can't any more.
+  - With **Manage OpenMasjidOS from outside** switched off, parts of the dashboard could still be
+    reached from the internet by writing its address in an unusual way. They can't any more.
   - Apps that keep a live connection open (live displays, anything that updates without
     refreshing) stopped working over your public address. They work again.
 
@@ -68,8 +1168,9 @@ sysadmin. One `## <version>` heading per release, then short bullets.
   file never re-opens first-run setup. A restore holds the store and refuses account writes.
 - A restore leaves `config/sessions.reset`; the next boot starts with no sessions.
 - The front-door gate decides whether to look at a request with `touchesDashboardPath` (ANY
-  spelling); serving still needs `isDashboardPath` (EVERY spelling). `/%74rpc/auth.me` reached
-  tRPC over the tunnel with the feature off, because one predicate answered both questions.
+  spelling); serving the SPA from the front door needed `isDashboardPath` (EVERY spelling) until
+  dev.16 stopped the front door serving one (see the technical detail above). `/%74rpc/auth.me`
+  reached tRPC over the tunnel with the feature off, because one predicate answered both questions.
 - `@fastify/websocket` is no longer registered on the HTTP front door; it routed every upgrade
   through Fastify, so app sockets were handled twice. The ingress listener is the one upgrade
   owner and claims the dashboard socket via `claimsDashboardSocket`, which asks the same
@@ -105,53 +1206,34 @@ sysadmin. One `## <version>` heading per release, then short bullets.
 
 ### Security and dependencies
 
-- Updated four bundled libraries to pick up security fixes, including the one that sends your
-  email. Nothing about how OpenMasjidOS works changes.
+- Updated bundled libraries to pick up security fixes — among them the web server itself, the part
+  that sends your email and the part that reads uploaded files. Nothing about how OpenMasjidOS
+  works changes.
 
-### Remote administration
+**Technical detail** (for whoever cuts the release):
 
-Manage OpenMasjidOS from outside the masjid, over the same secure tunnel your apps already use.
-**Off by default.** Turn it on in Settings → Remote access, once two-step sign-in is set up.
-
-- **Your dashboard can now be opened from anywhere**, at the same web address your apps use —
-  `https://your-domain/`. You do not add anything in Cloudflare: the route you already have
-  covers it.
-- **It will not switch on without two-step sign-in**, and it switches itself back off if you ever
-  remove it. A password on its own is not enough to put a masjid's server on the internet, and the
-  screen tells you if the two ever disagree rather than quietly claiming to be on.
-- **Too many wrong sign-ins from one place lock that place out** for a while. This only works from
-  outside, where we can tell one visitor from another — and it can never lock you out from
-  somewhere else, which is exactly why it is safe to switch on here and not on your own network.
-- **Files, terminals and backups stay at the masjid.** They are not available from outside at all,
-  on purpose: between them they reach every password and key the server holds. The dashboard hides
-  them when you are away rather than offering a button that fails.
-- **Nothing changes for anyone at the masjid.** Same address, same sign-in, no extra code.
-
-**Fixed, from a report on a real masjid's server:** signing in from outside could get stuck saying
-*"That sign-in attempt has expired"* when it plainly had not.
-
-- After five wrong codes the sign-in really was finished — but the screen kept offering **Sign in**,
-  which could no longer work, and said the attempt had expired rather than saying why. It now takes
-  you back to the password step and tells you what happened.
-- A wrong code now says **how many tries you have left**, so running out is not a surprise.
-- If a code keeps being refused because the **server's clock is wrong**, it says so, and by how much.
-  A wrong clock and a mistyped code look identical while you are typing, and the fixes are opposite.
-- **You can set two-step sign-in up now**, in Settings → Account. Scan the square code with
-  an authenticator app on your phone — Google Authenticator, Authy, 1Password and most
-  password managers all work — or type the key in by hand if there is no camera to hand.
-- Ten one-time **backup codes** come with it, for the day the phone is lost or replaced. They
-  are shown once and only once, so that window will not close until you have ticked that they
-  are saved; there are Copy and Download buttons beside them.
-- A code emailed to you can be allowed as a second way in. It needs an email provider set up
-  first, because a code that cannot be delivered is a lockout with extra steps.
-- Changing any of this asks for your password **and** a current code. That is not box-ticking:
-  it is what stops someone who reaches an already-signed-in dashboard from quietly pointing
-  two-step sign-in at their own phone and keeping a way in from anywhere.
-- A code can only be used once, even within the minute it is valid for.
-- **Nothing about signing in changes today.** On the masjid's own network you sign in exactly
-  as before, and that stays true after this feature is finished — the extra code is only ever
-  asked for on connections from outside, so a volunteer who left their phone at home is never
-  locked out of the dashboard in the building.
+- dev.11 (`c19ccec`): nodemailer 9.0.3 → 9.1.1, fast-uri 3.1.5 → 3.1.8, browserslist 4.28.2 →
+  4.29.1 and baseline-browser-mapping 2.10.38 → 2.11.26, which cleared every high advisory at the
+  time.
+- dev.16: `fastify` `^5.1.0` → `^5.12.5` (lockfile 5.8.5 → 5.12.5, bringing its own fast-uri
+  4.2.1 and fast-json-stringify 7.0.1, and moving process-warning 5.0.0 → 5.1.0) and `nodemailer`
+  `^9.0.3` → `^10.0.15` (lockfile 9.1.1 → 10.0.15, a major version; it needs Node 20, which the
+  image runs; `notify/email.ts` did not change, and `test/email-render.test.ts` is the test that
+  drives nodemailer directly). A root `overrides` entry for `concurrently` moves `shell-quote` from
+  1.9.0 to 1.12.0: concurrently 9.2.4 pins it exactly, so an override is the only way to move it,
+  and it is development tooling (`npm run dev`) that never reaches the image. The lockfile also
+  moved @fastify/busboy 3.2.0 → 3.2.2 (multipart uploads, through @fastify/multipart),
+  @grpc/grpc-js 1.14.4 → 1.14.5 (through dockerode), brace-expansion 5.0.9 → 5.0.12 (through
+  @fastify/static's glob, so it ships) and source-map-js 1.2.1 → 1.2.2 (the UI build only).
+- `npm audit --package-lock-only`, run on 2026-10-06: dev.15's lockfile has 11 vulnerable
+  packages — two critical (shell-quote, and concurrently through it), six high (fastify,
+  nodemailer, @fastify/busboy, @grpc/grpc-js, brace-expansion, source-map-js) and three moderate
+  (uuid, dockerode through it, and esbuild). This round's has only those three moderate ones. They
+  are below CI's `--audit-level=high`, and dev.11 recorded why they are inert here: dockerode
+  imports only `uuid.v4`, and the esbuild one concerns `esbuild serve`, which nothing here runs.
+- **Never run `npm audit fix` in this repo.** At dev.11 its dry-run downgraded dockerode 4.0.12 →
+  4.0.2 and tar-fs 2.1.4 → 2.0.1, landing three HIGH tar path-traversal advisories on the
+  container-archive path of a daemon that runs as root with the Docker socket.
 
 ### Design system (in progress)
 
@@ -169,9 +1251,8 @@ which is deliberate: the foundations and the safety checks go in before anything
   below the accessibility standard, on two of the most consequential buttons in the dashboard.
 - Everything else so far is plumbing: the component toolkit's setup, the design tokens wired
   to it, and a shared package the other OpenMasjid apps will be able to use.
-- Automatic checks now guard the things that break quietly — right-to-left layout (so Arabic
-  and Urdu keep working), colours only ever coming from the one theme file, and text staying
-  readable on every background.
+- Automatic checks now guard the things that break quietly — right-to-left layout, colours only
+  ever coming from the one theme file, and text staying readable on every background.
 
 - There is now a **Design system** page at `/design-system` showing every shared control in
   dark and light and in both left-to-right and right-to-left, so a layout problem can be seen
@@ -182,14 +1263,15 @@ which is deliberate: the foundations and the safety checks go in before anything
   most are the ones confirming you want to delete an app's data or remove WhatsApp entirely.
 - Fixed a bug where closing a dialog did not put the keyboard back on the button you opened
   it from — it looked right in the code and did nothing at all.
-- Fixed a switch that slid out of its own track when the dashboard is set to a right-to-left
-  language. It affected every switch in Settings.
+- Fixed a switch that slid out of its own track in a right-to-left layout. Every switch in Settings
+  had it; with English the only language, only the Design system page shows anything right to left
+  today.
 - **Every dialog now keeps the keyboard inside it.** This matters most during an update: the
   dialog that says "do not interrupt" could be tabbed out of, and pressing Enter on something
   behind it navigated away and dismissed it mid-update. It cannot be now. Closing a dialog
   also puts the keyboard back on whatever opened it.
-- **The two menus in the dashboard — the ⋮ on each app card and the account menu at the top
-  right — now work properly with a keyboard.** Arrow keys move between items, Escape closes,
+- **The two menus in the dashboard now work properly with a keyboard** — the ⋮ on each app card
+  and the account menu at the top right. Arrow keys move between items, Escape closes,
   and the focus ring comes back to the button you opened it from. Screen readers announce them
   correctly for the first time. They should look the same as before.
 
@@ -216,6 +1298,10 @@ which is deliberate: the foundations and the safety checks go in before anything
     a `danger` an app was legitimately installed with stays startable, as before.
   - **WhatsApp cannot acknowledge.** Possession of a phone must not be enough to consent to a
     root-capable compose, so `!os start` reports the hold and points at the dashboard.
+  - **The check now runs the moment the backup's `apps/` is in place** (`reviewEveryApp`, before any
+    app data is refilled), so the verdict on disk is this platform's from then on, not the backup's
+    — and no app can be started at all while a restore runs, from the dashboard or over WhatsApp
+    (`assertAppFree`; on the dashboard every change waits for the restore anyway).
   - Honest residual: an app restored by an **older** build carries no marker and stays
     startable; it gains one the next time a restore runs.
 - New `test/app-review-gate.test.ts` (21 tests, registered, all eight defects below
@@ -246,6 +1332,11 @@ things **worse** than the bug being fixed. Recorded because they are the interes
 
 ### Docs
 
+- **Remote administration on a hostname of its own is written down** in CLAUDE.md,
+  `docs/REMOTE_ADMIN.md` (with the operator's Cloudflare steps and a section on moving a box from
+  dev.13–15), `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, `docs/NETWORKING.md` (its remote-access
+  section no longer says the dashboard is never exposed through the tunnel),
+  `docs/FABRIC_APP_LINK_AND_TUNNEL.md` and `docs/APP_MANIFEST_SPEC.md`.
 - **`CLAUDE.md` §15: three claims corrected.** Each asserted a containment that does not hold,
   which is worse than a documented gap because it is what stops anyone re-examining it.
   - The `startApp` bullet said restore passes the compose gate. It does not (above).

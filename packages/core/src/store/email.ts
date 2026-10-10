@@ -11,6 +11,7 @@
  * (which returns a sanitized view: provider + from + host/port/user + "is set"
  * flags). The full config leaves this module only to the sender (notify/email.ts).
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
@@ -53,6 +54,11 @@ function withDefaults(e: Partial<EmailConfig> | undefined): EmailConfig {
 
 let cache: EmailConfig = withDefaults(readJson<EmailFile>(EMAIL_PATH, { email: DEFAULT_CONFIG }).email);
 
+/** Re-read the email configuration from disk — for a restore, which replaces it under this process. */
+export function reloadEmailConfig(): void {
+  cache = withDefaults(readJson<EmailFile>(EMAIL_PATH, { email: DEFAULT_CONFIG }).email);
+}
+
 function persist(): void {
   writeJson(EMAIL_PATH, { email: cache });
   try {
@@ -65,6 +71,28 @@ function persist(): void {
 /** Full config incl. secrets — ONLY for the sender (notify/email.ts). */
 export function getEmailConfig(): EmailConfig {
   return cache;
+}
+
+/**
+ * A fingerprint of WHERE mail goes: the provider and the account it is sent
+ * through. Not the From address (that changes what a recipient sees, not who can
+ * read what was sent) and not the SMTP password (rotating it keeps the same
+ * mailbox). The Resend key IS included, hashed: it names the account, and a
+ * Resend account shows every message it sent in its own dashboard.
+ *
+ * What the emailed second factor is bound to (auth/twofactor.ts): a session that
+ * points mail at a relay it controls must not thereby receive sign-in codes.
+ */
+export function emailDeliveryFingerprint(): string {
+  const c = cache;
+  const key = c.resend.apiKey ? crypto.createHash('sha256').update(c.resend.apiKey).digest('hex') : '';
+  const parts =
+    c.provider === 'smtp'
+      ? ['smtp', c.smtp.host.trim().toLowerCase(), String(c.smtp.port), String(c.smtp.secure), c.smtp.user.trim()]
+      : c.provider === 'resend'
+        ? ['resend', key]
+        : ['none'];
+  return crypto.createHash('sha256').update(`omos-email-delivery:${parts.join('\n')}`).digest('hex');
 }
 
 /** True when a usable provider is configured (has the creds it needs + a from). */

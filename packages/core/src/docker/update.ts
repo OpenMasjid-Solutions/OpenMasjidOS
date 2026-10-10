@@ -20,7 +20,9 @@ import { getSettings } from '../settings/store';
 import { coreImageTag, coreTargetTag } from '../system/channel';
 import { checkForUpdate } from '../system/system';
 import { isPrerelease } from '../util/version';
-import { withUpdateLock } from '../system/update-lock';
+import { HOLD_UNTIL_REPLACED_MS, withUpdateLock } from '../system/update-lock';
+import { managesFromOutside } from '../system/remote-admin';
+import { VERSION } from '../version';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
@@ -46,6 +48,20 @@ function retarget(image: string, tag: string): string {
   return `${repo}:${tag}`;
 }
 
+/** The core's image line in its own compose file: our repo, then `:tag`, `@digest` or nothing. */
+const CORE_IMAGE_LINE = /^(\s*image:\s*)(\S*openmasjid-core)(:[^\s@]+|@\S+)?(\s*)$/m;
+const COMPOSE_FILE = path.join(DATA_DIR, 'docker-compose.yml');
+
+/** The image reference the core's compose file names (`repo:tag` or `repo@digest`), or null. */
+export function composeImageRef(): string | null {
+  try {
+    const m = CORE_IMAGE_LINE.exec(fs.readFileSync(COMPOSE_FILE, 'utf8'));
+    return m ? `${m[2]}${m[3] ?? ''}` : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Point the core's OWN compose file at a specific image tag.
  *
@@ -67,7 +83,7 @@ function retarget(image: string, tag: string): string {
  * Returns true if the file now names the wanted tag (including "already did").
  */
 export function alignComposeImage(want: string): boolean {
-  const file = path.join(DATA_DIR, 'docker-compose.yml');
+  const file = COMPOSE_FILE;
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -83,7 +99,7 @@ export function alignComposeImage(want: string): boolean {
   // Matching BOTH forms matters — an earlier version only matched `:tag`, so a
   // digest-pinned line failed to match at all and was reported as "image line not
   // found", which is both wrong and alarming in the log.
-  const re = /^(\s*image:\s*)(\S*openmasjid-core)(:[^\s@]+|@\S+)?(\s*)$/m;
+  const re = CORE_IMAGE_LINE;
   const m = re.exec(text);
   if (!m) {
     log.warn('Could not find the core image line in docker-compose.yml — leaving it alone.');
@@ -103,6 +119,24 @@ export function alignComposeImage(want: string): boolean {
   } catch (err) {
     log.error('Could not update docker-compose.yml with the wanted image tag.', err);
     return false;
+  }
+}
+
+/**
+ * The image to run the helper from when the core must come back on EXACTLY what it is
+ * running: the running container's own image, by ID — present locally for as long as
+ * the container exists, whatever has happened to the tags since. If the container
+ * cannot be inspected, the reference its compose file names, which is the build it was
+ * last started from.
+ */
+async function inspectSelfAsIs(): Promise<{ image: string; hostDataDir: string | null }> {
+  const fallback = composeImageRef() ?? `${CORE_REPO}:${coreImageTag(getSettings().updateChannel)}`;
+  try {
+    const info = await docker.getContainer(CORE_CONTAINER).inspect();
+    const mount = (info.Mounts ?? []).find((m) => m.Destination === '/data');
+    return { image: info.Image || info.Config?.Image || fallback, hostDataDir: mount?.Source ?? null };
+  } catch {
+    return { image: fallback, hostDataDir: null };
   }
 }
 
@@ -142,20 +176,65 @@ export function streamSpawn(cmd: string, args: string[], onLine: (s: string) => 
 }
 
 /**
+ * Make the core's compose file name EXACTLY the build that is running — for a restore,
+ * which must come back on it.
+ *
+ * The file is not a reliable record of that. An update that pointed it at a new version
+ * and then could not start its helper left it naming a build the core never ran (it is
+ * put back now, below), and the installer's Update used to write it before pulling, so a
+ * failed download left it naming the channel's alias — whatever build the installer had
+ * last fetched. A restore that trusted the file brought the core back on another build:
+ * from outside, possibly one with no remote dashboard. So the running image, by ID, is
+ * tagged with the running VERSION and the file pointed at that tag. Left alone when the
+ * line is pinned to a digest (the operator's choice) or the container cannot be
+ * inspected (no Docker API: local development).
+ */
+async function pinComposeToRunningBuild(): Promise<void> {
+  let ref: string | undefined;
+  let id: string | undefined;
+  try {
+    const info = await docker.getContainer(CORE_CONTAINER).inspect();
+    ref = info.Config?.Image;
+    id = info.Image;
+  } catch {
+    return;
+  }
+  const named = composeImageRef();
+  if (!ref || !id || ref.includes('@') || named === null || named.includes('@')) return;
+  const tagged = retarget(named, VERSION);
+  if ((await streamSpawn('docker', ['tag', id, tagged], () => undefined)) === 0) alignComposeImage(VERSION);
+}
+
+/**
  * Recreate the core via a DETACHED helper container (it survives the core's
  * restart). Used by both the live update and restore. Returns true once the
  * helper is launched; the core will then be restarted under us.
  *
- * `tag` is the image tag to come back on. Omitted (restore) it defaults to the
- * channel's moving alias, which is what restore has always done: a restored box has
- * no particular build in mind, and the alias resolves to the newest one on its
- * channel. The live update passes the exact version it just pulled.
+ * `tag` is the image tag to come back on: the live update passes the exact version
+ * it has just pulled. If the helper cannot be started, the compose file is put back
+ * as it was, so "nothing was changed" stays true.
+ *
+ * Omitted (restore), the core comes back on EXACTLY THE BUILD IT IS RUNNING: the
+ * compose file is pointed at it (`pinComposeToRunningBuild`) and the helper runs from
+ * the running container's own image. A restore used to aim at the channel's alias
+ * (`:latest`, `:dev`) without pulling it, and the alias names whatever build the
+ * installer or a channel move whose version could not be read last fetched (every other
+ * dashboard update pulls an exact version) — so
+ * a restore could quietly put the box back on an older build: from outside, onto one
+ * with no remote dashboard, locking the admin out of the very address the restore had
+ * promised to keep.
  */
 export async function recreateCore(onLine: (s: string) => void, tag?: string): Promise<boolean> {
-  const want = tag ?? coreImageTag(getSettings().updateChannel);
-  const { image, hostDataDir } = await inspectSelf(want);
-  // Must happen BEFORE the compose up below, or it recreates from the old tag.
-  alignComposeImage(want);
+  const { image, hostDataDir } = tag ? await inspectSelf(tag) : await inspectSelfAsIs();
+  let before: string | null = null;
+  try {
+    before = fs.readFileSync(COMPOSE_FILE, 'utf8');
+  } catch {
+    /* no compose file: alignComposeImage says what that means */
+  }
+  // Must happen BEFORE the compose up below, or it recreates from the old reference.
+  if (tag) alignComposeImage(tag);
+  else await pinComposeToRunningBuild();
   const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
   if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
   args.push(
@@ -166,22 +245,47 @@ export async function recreateCore(onLine: (s: string) => void, tag?: string): P
     `sleep 2; docker compose -p ${CORE_PROJECT} -f /data/docker-compose.yml up -d --force-recreate`,
   );
   const code = await streamSpawn('docker', args, onLine);
+  if (code !== 0 && tag && before !== null) {
+    // Nothing was recreated, so the file must not name the version we were going to: the
+    // next restart that reads it — a restore's, or the installer's — would come back on
+    // a build this core never ran.
+    try {
+      fs.writeFileSync(COMPOSE_FILE, before, 'utf8');
+    } catch (err) {
+      log.error('Could not put the core compose file back after the update could not start.', err);
+    }
+  }
   return code === 0;
 }
+
+/**
+ * How an update ended, for the window watching it (api/update.ts turns it into the
+ * socket's close code). `restarting`: the helper is replacing the core, so the window
+ * waits for it to come back. `unchanged`: nothing was touched — already up to date, a
+ * download that failed, a refusal — and the window says so at once. It used to treat
+ * every ending as a restart, and sat locked on "restarting…" for three minutes after
+ * an update that had changed nothing.
+ */
+export type UpdateOutcome = 'restarting' | 'unchanged';
 
 /** Run the update, streaming progress through onLine. Resolves once the helper
  *  has been launched (the core will then be restarted under us).
  *
  *  Single-flight: a second call while one is in flight is REFUSED, not queued. Two
  *  helpers each running `compose up --force-recreate` against the same container is how
- *  a box ends up not coming back — see `system/update-lock.ts`. */
-export async function runUpdate(onLine: (s: string) => void): Promise<void> {
-  return withUpdateLock('core', 'An update is already running. It will finish on its own.', () =>
-    runUpdateInner(onLine),
-  );
+ *  a box ends up not coming back — see `system/update-lock.ts`.
+ *
+ *  `remote`: started from the remote dashboard, which may only move the box to a version
+ *  that can itself be managed from outside (system/remote-admin.ts `managesFromOutside`). */
+export async function runUpdate(onLine: (s: string) => void, opts: { remote?: boolean } = {}): Promise<UpdateOutcome> {
+  // Held past the hand-off to the helper: the old core runs on for some seconds, and work
+  // started then would be cut off when it is replaced (system/update-lock.ts).
+  return withUpdateLock('core', 'An update is already running. It will finish on its own.', () => runUpdateInner(onLine, opts), {
+    holdAfter: (outcome) => (outcome === 'restarting' ? HOLD_UNTIL_REPLACED_MS : 0),
+  });
 }
 
-async function runUpdateInner(onLine: (s: string) => void): Promise<void> {
+async function runUpdateInner(onLine: (s: string) => void, opts: { remote?: boolean }): Promise<UpdateOutcome> {
   const channel = getSettings().updateChannel;
 
   onLine('Checking for the latest version…');
@@ -193,7 +297,7 @@ async function runUpdateInner(onLine: (s: string) => void): Promise<void> {
 
   // Refuse to "update" to what is already running. Without this, every connection to
   // /api/update performs a full pull + recreate, and the recreate restarts the core —
-  // which drops every in-memory session, signs the dashboard out, and unmounts the
+  // which (while sessions lived only in memory) signed the dashboard out and unmounted the
   // window that opened the stream. Signing back in remounted it and started the whole
   // thing again: an endless revert loop after returning to Stable, escapable only by
   // closing the window in the seconds before the restart landed.
@@ -206,11 +310,49 @@ async function runUpdateInner(onLine: (s: string) => void): Promise<void> {
   if (info) {
     const runningIsDev = isPrerelease(info.current);
     const wrongChannel = runningIsDev !== (channel === 'dev');
+    // The newest version could not be read. Nothing is pulled — that guard is what stops
+    // the loop above — but "already up to date" would be the window asserting something
+    // nobody knows, and it was what an admin read after pressing "Update now" for a
+    // version found a moment earlier, when the next check happened to fail.
+    if (info.latest === null && !wrongChannel) {
+      onLine('');
+      onLine("Couldn't check for the latest version just now, so nothing was changed.");
+      onLine('Please check the internet connection and try again in a little while.');
+      return 'unchanged';
+    }
     if (!info.updateAvailable && !wrongChannel) {
       onLine('');
       onLine(`OpenMasjidOS is already up to date (v${info.current}). Nothing was changed.`);
-      return;
+      return 'unchanged';
     }
+  }
+  // From OUTSIDE, only to a version that can be managed from outside. Going back to
+  // Stable before Stable had remote administration would otherwise bring the core back
+  // with no remote dashboard at all, and this window — every window from outside — cut
+  // off until someone at the masjid moved it on again. A version that could not be read
+  // is refused too: from out there, nobody could put a wrong guess right.
+  if (opts.remote) {
+    const target = info?.latest ?? null;
+    if (target === null) {
+      onLine('');
+      onLine("Couldn't check which version this would install, so it can't be done from outside right now.");
+      onLine('Please try again in a little while. Nothing was changed.');
+      return 'unchanged';
+    }
+    if (!managesFromOutside(target)) {
+      onLine('');
+      onLine(`Version ${target} can't be managed from outside the masjid, so installing it from here would cut you off.`);
+      onLine('Please do this at the masjid. Nothing was changed.');
+      return 'unchanged';
+    }
+  }
+  // Pinned to one exact build (a digest on the compose line — the operator's choice, which
+  // alignComposeImage leaves alone): an update would pull that same build and restart the
+  // dashboard onto it, for nothing, every time it was pressed.
+  if (composeImageRef()?.includes('@')) {
+    onLine('');
+    onLine("OpenMasjidOS is pinned to one exact build on this machine, so it can't update itself from here. Nothing was changed.");
+    return 'unchanged';
   }
   const tag = coreTargetTag(channel, info?.latest ?? null);
   const pinned = tag !== coreImageTag(channel);
@@ -232,16 +374,17 @@ async function runUpdateInner(onLine: (s: string) => void): Promise<void> {
     } else {
       onLine('Could not download the update. Please check the internet connection and try again.');
     }
-    return;
+    return 'unchanged';
   }
 
   onLine('');
   onLine('Download complete. Applying the update and restarting…');
   if (!(await recreateCore(onLine, tag))) {
     onLine('Could not start the updater. You can update by re-running the installer.');
-    return;
+    return 'unchanged';
   }
 
   onLine('');
   onLine('The dashboard is restarting now — this page will reconnect automatically.');
+  return 'restarting';
 }

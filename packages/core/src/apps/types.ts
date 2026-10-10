@@ -306,6 +306,12 @@ export interface InstalledApp {
    *  Grandfathered true for apps installed before per-app exposure existed. */
   exposed: boolean;
   /**
+   * The path the app is served under through the tunnel (`getAppPath`) — where a
+   * REMOTE session opens it, shared online or not, because the app's own port does
+   * not exist on the tunnel hostname.
+   */
+  path: string;
+  /**
    * True only when this app opted into the OpenMasjidOS Fabric (sso and/or
    * notifications) — i.e. an official catalog app that understands the platform.
    * The dashboard uses this to decide whether to hand off appearance prefs on

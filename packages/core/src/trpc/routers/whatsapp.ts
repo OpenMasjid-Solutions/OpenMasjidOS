@@ -51,6 +51,7 @@ import { setCommandsEnabled, clearCommandPeople } from '../../store/commands';
 import { reconcileWhatsAppInbound } from '../../notify/whatsapp-inbound';
 import { OPENWA_APP_ID } from '../../apps/managed';
 import { whatsAppHealth, clearWhatsAppIncident, checkWhatsAppHealthNow } from '../../system/whatsapp-monitor';
+import { UpdateBusyError } from '../../system/update-lock';
 
 /** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
  *  only so the UI gets a friendly error instead of a silent clamp. */
@@ -128,7 +129,9 @@ export const whatsappRouter = router({
       if (app.running) await restartApp(OPENWA_APP_ID);
       else await startApp(OPENWA_APP_ID);
     } catch (err) {
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+      // The gateway's own update in the way is a refusal, not a fault (system/update-lock.ts).
+      const code = err instanceof UpdateBusyError ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR';
+      throw new TRPCError({ code, message: (err as Error).message });
     }
     const output = await verifyStayedUp(OPENWA_APP_ID);
     return { ok: output === null, output: output ?? undefined };

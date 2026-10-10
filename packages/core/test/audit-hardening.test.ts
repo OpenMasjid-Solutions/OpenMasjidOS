@@ -85,18 +85,20 @@ test('A WEBSOCKET UPGRADE TO A NON-APP PATH IS CLOSED, never abandoned', () => {
   // unauthenticated file-descriptor exhaustion lever against a root daemon.
   const src = read('system', 'ingress.ts');
   const handler = src.slice(src.indexOf("front.server.on('upgrade'"));
-  // Scoped to the NOT-AN-APP branch alone. A slice reaching as far as the fabric
-  // refusal below it would pass on that branch's own (legitimate) socket.destroy()
-  // and never notice this one had gone back to a bare return.
+  // Scoped to the NOT-AN-APP branch alone — from where a request turns out not to be
+  // an app socket THIS request may open, to where the proxying starts. A slice
+  // reaching as far as the fabric refusal would pass on that branch's own
+  // (legitimate) socket.destroy() and never notice this one had gone back to a bare
+  // return.
   const notAnApp = handler.slice(
-    handler.indexOf('if (port == null)'),
-    handler.indexOf('isFabricSubpath'),
+    handler.indexOf('if (!route) {'),
+    handler.indexOf('const port = route.port'),
   );
   assert.ok(notAnApp.length > 0, 'located the non-app branch');
   assert.match(notAnApp, /socket\.destroy\(\)/, 'the non-app branch must destroy the socket');
   assert.doesNotMatch(
     notAnApp,
-    /if \(port == null\) return;/,
+    /if \(!route\) return;/,
     'a bare return here leaks the connection',
   );
 });
@@ -108,7 +110,7 @@ test('spoofable client-IP headers are stripped on EVERY proxy path', () => {
     ['ingress', read('system', 'ingress.ts')],
     ['app-proxy', read('system', 'app-proxy.ts')],
   ] as const) {
-    for (const header of ['x-real-ip', 'true-client-ip', 'cf-connecting-ip']) {
+    for (const header of ['x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'x-forwarded-prefix']) {
       const count = [...src.matchAll(new RegExp(`'${header}'`, 'g'))].length;
       assert.ok(count >= 2, `${label}: '${header}' must appear in BOTH the HTTP and WebSocket lists`);
     }

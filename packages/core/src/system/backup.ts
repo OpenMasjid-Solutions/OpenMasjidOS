@@ -46,6 +46,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { DATA_DIR } from '../config';
 import { log } from '../logger';
+import { finishing, finishingMessage, isUpdating } from './update-lock';
 
 const STAGING = path.join(DATA_DIR, '.backup-staging');
 // A tiny image with `tar` to copy volume contents in/out. Pulled once; override
@@ -65,8 +66,8 @@ function sh(cmd: string, args: string[]): Promise<{ code: number; stdout: string
 /** Raised when a second backup starts while one is already running. The two would
  *  share the single fixed staging path and corrupt each other's archive. */
 export class BackupBusyError extends Error {
-  constructor() {
-    super('A backup is already running. Please wait for it to finish and try again.');
+  constructor(message = 'A backup is already running. Please wait for it to finish and try again.') {
+    super(message);
     this.name = 'BackupBusyError';
   }
 }
@@ -88,6 +89,25 @@ export interface BackupHandle {
 
 /** Only one backup at a time: manual download and the scheduler share STAGING. */
 let running = false;
+
+/** Is a backup being made right now? Lets a caller refuse before committing to a response. */
+export function backupInProgress(): boolean {
+  return running;
+}
+
+/**
+ * Why a backup cannot be made right now, or null. Not while a restore runs: it stops the
+ * apps and refills their data, so a backup taken then copies data half replaced — and
+ * reports success, which the admin would trust (the off-site scheduler skips the same).
+ */
+export function backupRefusal(): string | null {
+  if (isUpdating('restore')) {
+    return finishing('restore')
+      ? finishingMessage('restore')
+      : 'A backup is being restored right now. Please make a backup once it has finished.';
+  }
+  return running ? new BackupBusyError().message : null;
+}
 
 function cleanupStaging(): void {
   try {
@@ -244,7 +264,8 @@ export function backupTarArgs(haveVolumes: boolean): string[] {
 }
 
 export async function backupStream(): Promise<BackupHandle> {
-  if (running) throw new BackupBusyError();
+  const refused = backupRefusal();
+  if (refused) throw new BackupBusyError(refused);
   running = true;
 
   let haveVolumes = false;

@@ -385,3 +385,144 @@ test('begin returns a scannable grid and the key for typing in by hand', async (
   assert.equal(begun.account, 'admin@masjid.test', 'the authenticator should name the account usefully');
   assert.match(begun.uri, /issuer=OpenMasjidOS/);
 });
+
+test('CHANGING THE FACTOR FROM OUTSIDE KEEPS THE CALLER SIGNED IN — and nobody else made under the old one', async () => {
+  // New backup codes, a new authenticator, emailed codes on or off: each ends every
+  // remote session made with the old factor (auth/twofactor.ts `epoch`). The admin
+  // doing it from outside is reading the result — a fresh set of codes, shown once —
+  // and signing THEM out would unmount it before it was written down.
+  const { backupCodes } = await enrol(signedIn());
+  const epoch = tf.secondFactorEpoch();
+  const mine = sessions.createSession('admin', sessions.currentCredential(), { remote: true, tf: epoch, handedOver: true });
+  const other = sessions.createSession('admin', sessions.currentCredential(), { remote: true, tf: epoch, handedOver: true });
+  const remoteCaller = authRouter.createCaller({
+    username: 'admin',
+    sessionToken: mine.token,
+    csrf: mine.csrf,
+    isWebSocket: false,
+    ip: '172.17.0.1',
+    host: 'admin.example.org',
+    viaTunnel: true,
+    handedOver: false,
+    remoteIp: '203.0.113.7',
+    setSessionCookie: () => {},
+    clearSessionCookie: () => {},
+  } as never);
+  const res = await remoteCaller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: backupCodes[0]! });
+  assert.equal(res.backupCodes.length, tf.BACKUP_CODE_COUNT);
+  assert.notEqual(tf.secondFactorEpoch(), epoch, 'precondition: the factor changed');
+  assert.equal(sessions.isRemoteSession(mine.token), true, 'the admin who made the change was signed out by it');
+  assert.equal(sessions.isRemoteSession(other.token), false, 'another remote session outlived the old factor');
+});
+
+test('A CHANGE THAT LANDS WHILE THE PASSWORD IS BEING CHECKED IS REFUSED, not built on', async () => {
+  // The race a review reproduced: the admin turns two-step sign-in OFF to evict
+  // someone holding a remote session and the password, while that someone's own
+  // change — begun a moment earlier — is still in argon2. Without this check their
+  // change then found "nothing enrolled", skipped the code, and kept their session
+  // under the new epoch: the door open again, with them inside, and the admin told
+  // it was shut.
+  const caller = signedIn();
+  const { backupCodes } = await enrol(caller);
+  const epoch = tf.secondFactorEpoch();
+  const pending = caller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: backupCodes[0]! });
+  // Let the procedure reach the password check (argon2 runs off the main thread),
+  // then change the factor underneath it.
+  await new Promise((r) => setImmediate(r));
+  tf.disableTwoFactor();
+  await assert.rejects(pending, (e: { code?: string; message?: string }) => e.code === 'CONFLICT' && /changed somewhere else/.test(e.message ?? ''));
+  assert.equal(tf.twoFactorActive(), false, 'the change it raced must stand');
+  assert.notEqual(tf.secondFactorEpoch(), epoch);
+});
+
+test('NOTHING ABOUT THE SECOND FACTOR CHANGES WHILE A RESTORE HOLDS IT — and signing in still works', async () => {
+  // A restore holds the epoch until it is done. A change made then was written but did
+  // not count until the release, and the admin who made it — moved onto the held epoch —
+  // was signed out from outside the moment the restore let go.
+  const caller = signedIn();
+  const { secret, backupCodes } = await enrol(caller);
+  const before = JSON.stringify(tf.twoFactorStatus());
+  const DURING = (e: { code?: string; message?: string }) =>
+    e.code === 'CONFLICT' && /being restored right now/.test(e.message ?? '');
+  const release = tf.holdSecondFactorEpoch();
+  try {
+    await assert.rejects(caller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: backupCodes[0]! }), DURING);
+    await assert.rejects(caller.twoFactor.disable({ password: PASSWORD, code: backupCodes[1]! }), DURING);
+    await assert.rejects(caller.twoFactor.setEmailFactor({ enabled: false, password: PASSWORD, code: backupCodes[2]! }), DURING);
+    await assert.rejects(caller.twoFactor.begin({ password: PASSWORD, code: backupCodes[3]! }), DURING);
+    await assert.rejects(caller.twoFactor.confirm({ code: nextCode(secret) }), DURING);
+    assert.equal(JSON.stringify(tf.twoFactorStatus()), before, 'the factor changed during a restore');
+    // Refused before the code was looked at: none of them was spent.
+    assert.equal(tf.verifySecondFactor(backupCodes[0]!).ok, true, 'a refused change spent a backup code');
+  } finally {
+    release();
+  }
+  // A restore that begins while the password is being checked is caught after it.
+  const pending = caller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: nextCode(secret) });
+  await new Promise((r) => setImmediate(r));
+  const late = tf.holdSecondFactorEpoch();
+  try {
+    await assert.rejects(pending, DURING);
+  } finally {
+    late();
+  }
+  // And for the WHOLE restore, not only once it holds the epoch: before it swaps the
+  // backup's settings in, a change is simply overwritten by the backup's factor.
+  const lock = req('../src/system/update-lock') as typeof import('../src/system/update-lock');
+  let finish = () => {};
+  const restoring = lock.withUpdateLock('restore', 'busy', () => new Promise<void>((r) => (finish = r)));
+  try {
+    await assert.rejects(caller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: backupCodes[1]! }), DURING);
+    await assert.rejects(caller.twoFactor.confirm({ code: nextCode(secret) }), DURING);
+  } finally {
+    finish();
+    await restoring;
+  }
+  // And once it is over, changes go through again.
+  const { backupCodes: fresh } = await caller.twoFactor.regenerateBackupCodes({ password: PASSWORD, code: backupCodes[1]! });
+  assert.equal(fresh.length, backupCodes.length);
+});
+
+test('EMAILED CODES ARE NEVER THE ONLY FACTOR — not through the screen, not through the API', async () => {
+  // As the only factor they are pausable by changing the admin's address — after
+  // which nothing is enrolled, the next change needs only the password, and that
+  // change could point the codes somewhere else. With an authenticator always
+  // there, turning them back on always needs a current code.
+  const caller = signedIn();
+  tf.disableTwoFactor();
+  await assert.rejects(
+    caller.twoFactor.setEmailFactor({ enabled: true, password: PASSWORD }),
+    (e: { code?: string; message?: string }) => e.code === 'PRECONDITION_FAILED' && /authenticator app first/.test(e.message ?? ''),
+  );
+  assert.equal(tf.twoFactorStatus().email, false);
+  assert.equal(tf.twoFactorActive(), false);
+});
+
+test('when emailed codes cannot be used, the panel is told WHICH is missing — the mail account or the address', async () => {
+  // Both are needed. The panel said "set up email first" to an admin whose mail account
+  // worked and whose own address was what was missing, which sent them to the wrong page.
+  const email = req('../src/store/email') as typeof import('../src/store/email');
+  const store = req('../src/auth/store') as typeof import('../src/auth/store');
+  const caller = signedIn();
+  const before = store.getAdminEmail();
+  try {
+    email.saveEmailConfig({ provider: 'none' });
+    let s = await caller.twoFactor.status();
+    assert.equal(s.emailPossible, false);
+    assert.equal(s.emailMissing, 'provider');
+    email.saveEmailConfig({ provider: 'smtp', fromEmail: 'alerts@masjid.test', smtp: { host: 'smtp.masjid.test', port: 587 } });
+    s = await caller.twoFactor.status();
+    assert.equal(s.emailPossible, true);
+    assert.equal(s.emailMissing, null);
+    store.setProfile({ email: '' });
+    s = await caller.twoFactor.status();
+    assert.equal(s.emailPossible, false);
+    assert.equal(s.emailMissing, 'address', 'a working mail account was reported missing');
+  } finally {
+    store.setProfile({ email: before ?? '' });
+    email.saveEmailConfig({ provider: 'none' });
+  }
+  // And the panel says the one that is missing.
+  const panel = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'components', 'TwoFactorPanel.tsx'), 'utf8');
+  assert.match(panel, /s\.emailMissing === 'address'\s*\? t\('settings\.twoFactor\.emailNoAddress'\)\s*: t\('settings\.twoFactor\.emailUnavailable'\)/);
+});

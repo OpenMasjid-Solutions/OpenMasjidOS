@@ -414,7 +414,7 @@ test('the Development channel reports updates exactly like Stable', () => {
   assert.match(src, /channelMismatch && latest != null/, 'a channel move still needs a version to move to');
   // A prerelease must survive the VERSION-file sanity check, or dev reads its own
   // version file as junk and goes quiet — silently, since the check fails soft.
-  const re = /if \(\/(\^.*?)\/\.test\(raw\)\) latest = raw;/.exec(src);
+  const re = /if \(\/(\^.*?)\/\.test\(raw\)\) return raw;/.exec(src);
   assert.ok(re, 'the VERSION sanity regex must still be there');
   assert.match('0.50.0-dev.12', new RegExp(re[1]!), 'a prerelease must be accepted');
   assert.match('0.50.0', new RegExp(re[1]!), 'and so must a plain release');

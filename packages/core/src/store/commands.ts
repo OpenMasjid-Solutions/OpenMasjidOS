@@ -128,6 +128,11 @@ let cache: CommandConfig = withDefaults(
   readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands,
 );
 
+/** Re-read the commands configuration from disk — for a restore, which replaces it under this process. */
+export function reloadCommandConfig(): void {
+  cache = withDefaults(readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands);
+}
+
 function persist(): void {
   writeJson(COMMANDS_PATH, { commands: cache });
   try {

@@ -13,11 +13,13 @@
 // AppRouter from here), and there the augmentation wasn't loaded. Declaring the
 // dependency where it's used fixes that without emitting a runtime import.
 import type {} from '@fastify/cookie';
+import type { IncomingMessage } from 'node:http';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { TRPCError } from '@trpc/server';
-import { COOKIE_NAME, CSRF_HEADER, getSessionUser, SESSION_TTL_MS } from '../auth/sessions';
+import { COOKIE_NAME, CSRF_HEADER, REMOTE_COOKIE_NAME, getSessionUserFor, SESSION_TTL_MS } from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
 import { isViaTunnel, visitorScheme } from '../system/via-tunnel';
+import { remoteDoorOpen, wasHandedOver } from '../system/remote-admin';
 import { observeDashboardHost } from '../system/platform-address';
 
 const COOKIE_OPTS = {
@@ -80,6 +82,14 @@ function cookieOptsFor(req: { headers?: NodeJS.Dict<string | string[]> }) {
   return { ...COOKIE_OPTS, secure: COOKIE_OPTS.secure || httpsTunnelVisitor };
 }
 
+/**
+ * The remote dashboard's cookie: `__Host-omos_session` (auth/sessions.ts says why
+ * that name), which a browser accepts only when it is Secure, has Path=/ and names
+ * no Domain. Always Secure, because the front door upgrades every plain-http visit
+ * to the admin hostname before it can reach a sign-in.
+ */
+const REMOTE_COOKIE_OPTS = { ...COOKIE_OPTS, secure: true, path: '/' };
+
 export interface Context {
   username: string | null;
   sessionToken: string | null;
@@ -98,6 +108,14 @@ export interface Context {
   /** Did this request arrive through the Cloudflare tunnel? Decided once, by the
    *  shared detector, so no router re-derives it (see the value's comment). */
   viaTunnel: boolean;
+  /**
+   * Handed over by the front door's remote-administration gate — i.e. the remote
+   * dashboard on the admin hostname. Not a header anyone can send: only the gate
+   * marks a request (system/remote-admin.ts `markHandedOver`). Every protected call
+   * on such a context re-checks that the door is still open (trpc/trpc.ts), because
+   * a WebSocket context lives for as long as the connection does.
+   */
+  handedOver: boolean;
   /** Cloudflare's client IP, and only over the tunnel — off-tunnel the header is
    *  attacker-supplied. This is what lets remote sign-in have a per-IP lockout. */
   remoteIp: string | null;
@@ -136,9 +154,23 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Bad origin.' });
   }
 
+  // On the HTTP path `req` is a Fastify request wrapping Node's; on the WebSocket path
+  // it IS Node's. The hand-over mark is on Node's request either way.
+  const raw = (req as { raw?: IncomingMessage }).raw ?? (req as unknown as IncomingMessage);
+  const handedOver = wasHandedOver(raw);
+  // The remote dashboard reads its own cookie and nothing else — a cookie planted for
+  // the parent domain by a sibling hostname cannot stand in for it (auth/sessions.ts).
+  const cookieName = handedOver ? REMOTE_COOKIE_NAME : COOKIE_NAME;
   const token =
-    (req.cookies && req.cookies[COOKIE_NAME]) ?? parseCookie(req.headers?.cookie, COOKIE_NAME);
-  const username = getSessionUser(token);
+    (req.cookies && req.cookies[cookieName]) ?? parseCookie(req.headers?.cookie, cookieName);
+  // From the tunnel, only a session that passed the second factor counts (see
+  // getSessionUserFor). A LAN session presented there reads as signed out. And from
+  // the remote dashboard, only while its door is open on this hostname — and only a
+  // session it made itself (auth/sessions.ts Session.handedOver).
+  const username =
+    handedOver && !remoteDoorOpen(req.headers?.host)
+      ? null
+      : getSessionUserFor(token, { viaTunnel: isViaTunnel(req), handedOver });
   // The dashboard key. A WebSocket handshake cannot carry a custom header, so the
   // key rides in `?k=` there — the same convention api/ws-auth.ts already uses for
   // every other raw WS route, and for the plain-<a> backup download. Accepting
@@ -172,9 +204,11 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   // for a signed-in admin, and `observeDashboardHost` keeps just bare IP literals
   // — a name that resolves in the admin's browser usually does not resolve inside
   // an app container. This is what lets apps re-find the dashboard after a subnet
-  // move without anyone re-running the installer. /trpc is on the LAN listener
-  // only (never the tunnel front door), so the value can't come from the internet.
-  if (username) observeDashboardHost(req.headers?.host ?? null);
+  // move without anyone re-running the installer. Never from a tunnel request: the
+  // dashboard is handed over from the tunnel's front door now (remote
+  // administration), and what a remote admin's browser calls this box is the public
+  // hostname, not an address an app container could ever use.
+  if (username && !isViaTunnel(req)) observeDashboardHost(req.headers?.host ?? null);
 
   return {
     username,
@@ -205,9 +239,18 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
      * by varying one header.
      */
     remoteIp: isViaTunnel(req) ? (firstHeader(req.headers?.['cf-connecting-ip']) ?? null) : null,
+    handedOver,
     setSessionCookie: canMutateCookies
-      ? (t: string) => res.setCookie(COOKIE_NAME, t, cookieOptsFor(req))
+      ? (t: string) =>
+          handedOver
+            ? res.setCookie(REMOTE_COOKIE_NAME, t, REMOTE_COOKIE_OPTS)
+            : res.setCookie(COOKIE_NAME, t, cookieOptsFor(req))
       : undefined,
-    clearSessionCookie: canMutateCookies ? () => res.clearCookie(COOKIE_NAME, { path: '/' }) : undefined,
+    clearSessionCookie: canMutateCookies
+      ? () =>
+          handedOver
+            ? res.clearCookie(REMOTE_COOKIE_NAME, { path: '/', secure: true })
+            : res.clearCookie(COOKIE_NAME, { path: '/' })
+      : undefined,
   };
 }
