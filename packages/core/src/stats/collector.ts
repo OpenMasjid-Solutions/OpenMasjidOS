@@ -32,8 +32,13 @@ export interface StatsSnapshot {
   cpuSpeedGHz: number;
   memUsed: number;
   memTotal: number;
+  /** The filesystem the masjid's data lives on. Every storage percentage and warning
+   *  divides these two, and nothing else (`pickDisk`). */
   diskUsed: number;
   diskTotal: number;
+  /** The machine's physical disks added together (sysfs), or null when unknown.
+   *  Display only: never part of a percentage or a warning. */
+  diskDeviceBytes: number | null;
   cpuTempC: number | null;
   uptimeSec: number;
   appsRunning: number;
@@ -306,7 +311,7 @@ async function getCpuInfo(): Promise<{ cores: number; speedGHz: number }> {
  * ours: the Storage card counts down to "full" 16 GB early, and the low-storage warning
  * fires while there is still room to fix things.
  *
- * On a disk under 64 GB the reserve is a quarter of it instead: a whole 16 GB left a
+ * Under 64 GB of room the reserve is a quarter of it instead: a whole 16 GB left a
  * "16 GB" SD card (14.8 GiB) — the platform's main hardware — with a total of 0, so its
  * card read "6 GB / 0 B" and the low-storage warning could never fire.
  *
@@ -316,13 +321,13 @@ async function getCpuInfo(): Promise<{ cores: number; speedGHz: number }> {
 const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
 
 /**
- * Total capacity of the machine's real disks, read from sysfs.
+ * Total capacity of the machine's real disks, read from sysfs: shown beside the Storage
+ * figures (`diskDeviceBytes`), and never part of a percentage.
  *
- * WHY NOT THE FILESYSTEM: the card was reporting a figure far smaller than the machine's
- * actual disk. Inside the core container `si.fsSize()` sees the container's mounts, and
- * which of them best represents "this masjid's storage" is a guess that goes wrong on
- * partitioned disks, on overlay filesystems, and wherever the data directory sits on
- * something small. The device is the thing an admin can actually look up on an invoice.
+ * It was the Storage total for a while, divided into the data filesystem's usage — two
+ * different disks' numbers. On Ubuntu Server's default LVM (a ~100 GB volume on a 256 GB
+ * disk) a full volume read ~40%, so no warning ever fired; a second disk did the same, a
+ * NAS-backed /data read 100%, and in a Proxmox LXC /sys/block is the node's disks.
  *
  * `/sys/block` is readable from inside the container (Docker mounts /sys, and block
  * devices are not namespaced), and `size` is in 512-byte sectors regardless of the
@@ -334,8 +339,7 @@ const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
  *                         them as well would double the total
  *   removable           : a USB stick plugged in today is not the masjid's storage
  *
- * Returns null when sysfs tells us nothing, so the caller can fall back rather than
- * reporting zero — a Storage card reading "0" is worse than one reading conservatively.
+ * Returns null when sysfs tells us nothing (a non-Linux dev box), rather than zero.
  */
 const VIRTUAL_BLOCK = /^(loop|ram|zram|fd|sr|dm-|md|nbd)/;
 const SECTOR_BYTES = 512;
@@ -345,7 +349,7 @@ export function physicalDiskBytes(sysBlock = '/sys/block'): number | null {
   try {
     names = fs.readdirSync(sysBlock);
   } catch {
-    return null; // no sysfs (a non-Linux dev box) — the caller falls back
+    return null; // no sysfs (a non-Linux dev box)
   }
   let total = 0;
   let found = 0;
@@ -372,15 +376,20 @@ function mountContains(mount: string, p: string): boolean {
   return p === mount || p.startsWith(mount.endsWith('/') ? mount : `${mount}/`);
 }
 
+/**
+ * The Storage figures. `used` and `total` both come from ONE filesystem, the one the
+ * masjid's data lives on, so the card's gauge, the low-storage warning and `!os stats`
+ * all agree with `df` there. The drive's size travels alongside, for display only.
+ */
 function pickDisk(
   list: Systeminformation.FsSizeData[],
   // A parameter rather than reading DATA_DIR directly, so the choice can be tested on any
   // platform: DATA_DIR is path-resolved, and on Windows `/data` becomes `C:\data`.
   dataDir: string = DATA_DIR,
-  // Injectable so the device-vs-filesystem precedence is testable without a real /sys.
+  // Injectable so each case can be tested without a real /sys.
   deviceBytes: number | null = physicalDiskBytes(),
-): { used: number; total: number } {
-  if (!list || list.length === 0) return { used: 0, total: 0 };
+): { used: number; total: number; device: number | null } {
+  if (!list || list.length === 0) return { used: 0, total: 0, device: deviceBytes };
   // Prefer the filesystem the masjid's data actually lives on, and among candidates the
   // most specific mount — `/` contains everything, so a plain "contains" test would pick
   // it over the dedicated volume that /data is really on.
@@ -389,21 +398,16 @@ function pickDisk(
   const root = list.find((d) => d.mount === '/' && d.size > 0);
   const largest = [...list].sort((a, b) => (b.size || 0) - (a.size || 0))[0];
   const chosen = byData ?? root ?? largest;
-  // The DEVICE's capacity is the headline figure: it is what an admin can look up, and
-  // it does not depend on guessing which of a container's mounts represents the masjid's
-  // storage. The filesystem is the fallback when sysfs tells us nothing.
-  //
-  // Known limit, stated rather than hidden: in a Proxmox LXC, /sys/block shows the HOST
-  // NODE's disks, which can be far larger than the container's allotted storage. That
-  // over-reports, and over-reporting means the low-storage warning arrives too late. If a
-  // masjid sees a total that matches their Proxmox host rather than their container,
-  // that is this, and the fix is to prefer the filesystem there.
-  const size = deviceBytes ?? chosen?.size ?? 0;
+  if (!chosen) return { used: 0, total: 0, device: deviceBytes };
+  // What `df` divides by: used + available, so the filesystem's own root reserve (5% on
+  // ext4) is not counted as room. The size, where `available` is unknown.
+  const capacity = Number.isFinite(chosen.available) ? chosen.used + chosen.available : chosen.size;
   return {
-    used: chosen?.used ?? 0,
-    // Less the host OS's reserve, at most a quarter of the disk — so never negative,
-    // and never zero for a disk that has room.
-    total: size - Math.min(HOST_OS_RESERVE_BYTES, size / 4),
+    used: chosen.used,
+    // Less the host OS's reserve, at most a quarter — so never negative, and never zero
+    // for a filesystem that has room.
+    total: capacity - Math.min(HOST_OS_RESERVE_BYTES, capacity / 4),
+    device: deviceBytes,
   };
 }
 
@@ -474,6 +478,7 @@ async function collectOnce(): Promise<StatsSnapshot> {
     memTotal: memory.total,
     diskUsed: disk.used,
     diskTotal: disk.total,
+    diskDeviceBytes: disk.device,
     cpuTempC,
     uptimeSec: readHostUptime() ?? Math.round(si.time().uptime ?? 0),
     appsRunning,
@@ -512,9 +517,9 @@ export function __readHostMemoryForTests(): { total: number; used: number } | nu
   return readHostMemory();
 }
 export function __pickDiskForTests(
-  list: { mount: string; size: number; used: number }[],
+  list: { mount: string; size: number; used: number; available?: number }[],
   dataDir = '/data',
   deviceBytes: number | null = null,
-): { used: number; total: number } {
+): { used: number; total: number; device: number | null } {
   return pickDisk(list as unknown as Systeminformation.FsSizeData[], dataDir, deviceBytes);
 }
