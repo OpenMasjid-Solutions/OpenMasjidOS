@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerStaticUI } from '../src/api/static-ui';
 
@@ -35,6 +36,7 @@ before(async () => {
   fs.mkdirSync(path.join(uiDir, 'assets'), { recursive: true });
   fs.writeFileSync(path.join(uiDir, 'index.html'), '<!doctype html><title>OpenMasjidOS</title>');
   fs.writeFileSync(path.join(uiDir, 'assets', 'index-abc123.js'), 'console.log(1)');
+  fs.writeFileSync(path.join(uiDir, 'assets', 'index-abc123.js.gz'), zlib.gzipSync('console.log(1)'));
   fs.writeFileSync(path.join(uiDir, 'favicon.svg'), '<svg/>');
   fs.writeFileSync(path.join(secretDir, 'secret.txt'), 'TOP-SECRET-CONFIG');
 
@@ -74,6 +76,23 @@ test('a missing bundle 404s — never index.html served as if it were JavaScript
     assert.equal(res.statusCode, 404, url);
     assert.deepEqual(res.json(), { error: 'Not found' }, url);
   }
+});
+
+test('a bundle goes compressed to a browser that accepts it, and plain to one that does not', async () => {
+  const gz = await app.inject({ method: 'GET', url: '/assets/index-abc123.js', headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(gz.statusCode, 200);
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.match(String(gz.headers['content-type']), /javascript/);
+  assert.match(String(gz.headers.vary), /accept-encoding/i);
+  assert.equal(zlib.gunzipSync(gz.rawPayload).toString(), 'console.log(1)');
+  assert.equal(gz.headers['cache-control'], 'public, max-age=31536000, immutable');
+  const plain = await app.inject({ method: 'GET', url: '/assets/index-abc123.js' });
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(plain.body, 'console.log(1)');
+  // A file with no compressed copy is sent as it is, whatever the browser accepts.
+  const page = await app.inject({ method: 'GET', url: '/', headers: { 'accept-encoding': 'br, gzip' } });
+  assert.equal(page.statusCode, 200);
+  assert.match(page.body, /OpenMasjidOS/);
 });
 
 test('a non-asset file at the root is served but not cached', async () => {

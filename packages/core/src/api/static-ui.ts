@@ -33,6 +33,9 @@ async function registerStaticFiles(server: FastifyInstance, uiDir: string): Prom
       root: uiDir,
       prefix: '/',
       wildcard: false,
+      // The UI build writes .br/.gz beside each bundle; a browser that accepts one gets it
+      // (about a third of the bytes on the masjid's network), and anything else gets the file.
+      preCompressed: true,
       cacheControl: false,
       // Vite fingerprints everything under /assets/ — cache those forever so
       // repeat visits are instant. index.html must always revalidate so a new
