@@ -45,7 +45,7 @@ export function addRootSshKey(key: string): Promise<void> {
       `OMOS_SSH_KEY=${clean}`,
       '-v',
       '/root:/hostroot',
-      'alpine:3.20',
+      process.env.OPENMASJID_BACKUP_IMAGE ?? 'alpine',
       'sh',
       '-c',
       script,

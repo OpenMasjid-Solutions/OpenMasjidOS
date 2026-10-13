@@ -56,38 +56,57 @@ function capture(cmd: string, args: string[]): Promise<{ code: number; out: stri
   });
 }
 
+const TOO_LARGE = 'That backup is too large to restore safely (it would fill the disk).';
+
+/** What `tar -tzvf` lists in an archive: its lines, and the sizes they add up to (the 3rd
+ *  whitespace field, for GNU and busybox tar alike). `ok` is false when tar could not read it all. */
+async function listArchive(file: string): Promise<{ ok: boolean; entries: number; bytes: number }> {
+  const res = await capture('tar', ['-tzvf', file]);
+  let entries = 0;
+  let bytes = 0;
+  for (const line of res.out.split('\n')) {
+    if (!line.trim()) continue;
+    entries++;
+    const size = Number(line.trim().split(/\s+/)[2]);
+    if (Number.isFinite(size) && size > 0) bytes += size;
+  }
+  return { ok: res.code === 0, entries, bytes };
+}
+
+/** The upload's listing, kept so the restore need not unpack it once more to measure it.
+ *  Keyed on the file's size and time: a new upload is measured anew. */
+let uploadListing: { size: number; mtimeMs: number; bytes: number } | null = null;
+
 /** Cheap sanity check at upload time: is this a readable, non-empty gzip tar?
  *  This is NOT a security check — that happens at restore time on the real
  *  extracted files. Returns an error message, or null. */
 export async function quickCheckArchive(): Promise<string | null> {
   if (!fs.existsSync(RESTORE_PATH)) return 'No backup file was uploaded.';
-  const res = await capture('tar', ['-tzf', RESTORE_PATH]);
-  if (res.code !== 0) return "That file isn't a valid backup archive.";
-  if (res.out.split('\n').some((l) => l.trim())) return null;
-  return 'That backup is empty.';
+  const { size, mtimeMs } = fs.statSync(RESTORE_PATH);
+  const listing = await listArchive(RESTORE_PATH);
+  if (!listing.ok) return "That file isn't a valid backup archive.";
+  if (listing.entries === 0) return 'That backup is empty.';
+  uploadListing = { size, mtimeMs, bytes: listing.bytes };
+  return null;
 }
 
-/** Reject before extracting if the archive's total uncompressed size would
- *  exceed a hard ceiling or most of the free disk. Sizes come from `tar -tzvf`
- *  (3rd whitespace field for both GNU and busybox tar). Returns an error, or null. */
-async function archiveTooLarge(): Promise<string | null> {
-  const res = await capture('tar', ['-tzvf', RESTORE_PATH]);
-  if (res.code !== 0) return null; // listing already validated by quickCheckArchive
-  let total = 0;
-  for (const line of res.out.split('\n')) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 3) continue;
-    const size = Number(parts[2]);
-    if (Number.isFinite(size)) total += size;
-  }
-  let cap = MAX_UNCOMPRESSED_BYTES;
+/** What the uploaded backup unpacks to. A listing that fails counts nothing: the
+ *  extraction then fails and says so. */
+async function uploadedBytes(): Promise<number> {
+  const { size, mtimeMs } = fs.statSync(RESTORE_PATH);
+  if (uploadListing?.size === size && uploadListing.mtimeMs === mtimeMs) return uploadListing.bytes;
+  const listing = await listArchive(RESTORE_PATH);
+  return listing.ok ? listing.bytes : 0;
+}
+
+/** The most a restore may unpack: the hard ceiling, or 90% of the free disk if that is less. */
+function restoreCap(): number {
   try {
     const st = fs.statfsSync(DATA_DIR);
-    cap = Math.min(cap, Math.floor(st.bsize * st.bavail * 0.9));
+    return Math.min(MAX_UNCOMPRESSED_BYTES, Math.floor(st.bsize * st.bavail * 0.9));
   } catch {
-    /* statfs unavailable — fall back to the hard ceiling alone */
+    return MAX_UNCOMPRESSED_BYTES; // statfs unavailable — the hard ceiling alone
   }
-  return total > cap ? 'That backup is too large to restore safely (it would fill the disk).' : null;
 }
 
 /** Validate the REAL extracted tree: only config/, apps/ or volumes/ at the top,
@@ -129,10 +148,6 @@ function validateExtracted(root: string): string | null {
   return null;
 }
 
-/** Recreate each app's Docker volume from volumes/<name>.tar.gz and refill it via
- *  a throwaway container. Best-effort per volume so one bad entry can't abort the
- *  whole restore — but every failure is REPORTED, both per-volume and in the
- *  summary, so "restore finished" can never mean "your app data didn't come back". */
 /**
  * The app-volume archives in a backup that a restore would actually put back: regular
  * `.tar.gz` files named for an app's volume, never the platform's own (cloudflared).
@@ -154,6 +169,38 @@ function stagedVolumeArchives(volDir: string): string[] {
   }
 }
 
+/** What the app-data archives in a backup unpack to, from what tar can list — of one it
+ *  cannot read to the end too: its refill fails, but may unpack that much first. */
+async function stagedVolumeBytes(volDir: string): Promise<number> {
+  let total = 0;
+  for (const f of stagedVolumeArchives(volDir)) total += (await listArchive(path.join(volDir, f))).bytes;
+  return total;
+}
+
+/** The labels compose gives a volume it makes (`omos-donations_data` is project
+ *  `omos-donations`'s volume `data`), so one a restore makes is no different. */
+function composeVolumeLabels(vol: string): string[] {
+  const m = /^(omos-[a-z0-9-]+)_(.+)$/.exec(vol);
+  return m ? ['--label', `com.docker.compose.project=${m[1]}`, '--label', `com.docker.compose.volume=${m[2]}`] : [];
+}
+
+/** Refill a volume (`$1`) from the archive on stdin into a fresh folder, swapped in only once tar
+ *  has succeeded: unpacked over the old data, a stale SQLite `-wal` was replayed onto the restored
+ *  database, and a failure part-way left old and new mixed. */
+export const VOLUME_REFILL = [
+  'new=$(mktemp -d "$1/.omos-restore.XXXXXX") || exit 1',
+  // The volume's own owner and mode, unless the archive brings its own ("./").
+  'chown "$(stat -c %u:%g "$1")" "$new"; chmod "$(stat -c %a "$1")" "$new"',
+  'if ! tar -xzf - -C "$new"; then rm -rf "$new"; exit 1; fi',
+  'for f in "$1"/* "$1"/.[!.]* "$1"/..?*; do if [ "$f" != "$new" ] && { [ -e "$f" ] || [ -L "$f" ]; }; then rm -rf "$f" || exit 1; fi; done',
+  'for f in "$new"/* "$new"/.[!.]* "$new"/..?*; do if [ -e "$f" ] || [ -L "$f" ]; then mv "$f" "$1"/ || exit 1; fi; done',
+  'chown "$(stat -c %u:%g "$new")" "$1"; chmod "$(stat -c %a "$new")" "$1"; rmdir "$new"',
+].join('; ');
+
+/** Recreate each app's Docker volume from volumes/<name>.tar.gz and refill it via
+ *  a throwaway container. Best-effort per volume so one bad entry can't abort the
+ *  whole restore — but every failure is REPORTED, both per-volume and in the
+ *  summary, so "restore finished" can never mean "your app data didn't come back". */
 async function restoreVolumes(
   volDir: string,
   onLine: (s: string) => void,
@@ -168,9 +215,9 @@ async function restoreVolumes(
   for (const f of files) {
     const vol = f.replace(/\.tar\.gz$/, '');
     onLine(`• ${vol}`);
-    await capture('docker', ['volume', 'create', vol]);
+    await capture('docker', ['volume', 'create', ...composeVolumeLabels(vol), vol]);
     const ok = await new Promise<boolean>((resolve) => {
-      const child = spawn('docker', ['run', '--rm', '-i', '-v', `${vol}:/to`, VOL_IMAGE, 'tar', '-xzf', '-', '-C', '/to']);
+      const child = spawn('docker', ['run', '--rm', '-i', '-v', `${vol}:/to`, VOL_IMAGE, 'sh', '-c', VOLUME_REFILL, 'sh', '/to']);
       child.on('error', () => resolve(false));
       child.on('close', (code) => resolve(code === 0));
       // A file that cannot be read fails THIS volume. With no handler, its error went
@@ -364,6 +411,13 @@ export function restoreInProgress(): boolean {
 }
 
 /**
+ * `remote`: started from the remote dashboard (its safety rule, `remoteRestoreProblem`).
+ * `callerToken`: the session of whoever started it, kept signed in from outside once the
+ * second factor's epoch is renewed (`renewSecondFactorEpoch`).
+ */
+type RestoreOptions = { remote?: boolean; callerToken?: string | null };
+
+/**
  * Extract the backup, validate the result, move it into place, restart apps,
  * recreate the core. Streams progress through onLine.
  *
@@ -375,13 +429,6 @@ export function restoreInProgress(): boolean {
  * lesson, and the same lock, as system/update-lock.ts: the server is the first line
  * of defence, the locked dialog the second.
  */
-/**
- * `remote`: started from the remote dashboard (its safety rule, `remoteRestoreProblem`).
- * `callerToken`: the session of whoever started it, kept signed in from outside once the
- * second factor's epoch is renewed (`renewSecondFactorEpoch`).
- */
-type RestoreOptions = { remote?: boolean; callerToken?: string | null };
-
 export async function runRestore(onLine: (s: string) => void, opts: RestoreOptions = {}): Promise<RestoreOutcome> {
   try {
     // Held past the hand-off to the helper, as a core update's is (system/update-lock.ts).
@@ -426,9 +473,12 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
       return 'unchanged';
     }
     onLine('Checking your backup…');
-    const tooLarge = await archiveTooLarge();
-    if (tooLarge) {
-      onLine(tooLarge);
+    // Measured before anything is unpacked, so a small archive that would balloon (a gzip
+    // bomb) cannot fill the data disk and take the platform offline.
+    const cap = restoreCap();
+    const unpacked = await uploadedBytes();
+    if (unpacked > cap) {
+      onLine(TOO_LARGE);
       return 'unchanged';
     }
     fs.rmSync(STAGING_DIR, { recursive: true, force: true });
@@ -471,6 +521,14 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
         onLine(problem);
         return 'unchanged';
       }
+    }
+
+    // The app data in it is still compressed, and its refill unpacks it onto the disk: that
+    // has to fit as well. Counted at its compressed size, a well-compressing volume passed,
+    // then filled the disk once settings and apps had already been replaced.
+    if (unpacked + (await stagedVolumeBytes(path.join(STAGING_DIR, 'volumes'))) > cap) {
+      onLine(TOO_LARGE);
+      return 'unchanged';
     }
 
     // Quiesce first. Refilling a Docker volume underneath a RUNNING container

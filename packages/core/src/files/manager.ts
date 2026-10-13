@@ -194,6 +194,18 @@ function assertAllowed(full: string): void {
 /** Largest file we'll load into the in-browser text editor (2 MiB). */
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Open flags for a write that NEVER follows a symlink at the final component: open() fails
+ * with ELOOP instead, so a link planted by an app or a backup cannot redirect the write
+ * outside the sandbox. O_NOFOLLOW is 0 where it does not exist (Windows dev); production is
+ * Linux. Typed as a string because `createWriteStream` declares `flags` so, though fs.open
+ * takes the number it really is.
+ */
+export const NOFOLLOW_WRITE = (fs.constants.O_WRONLY |
+  fs.constants.O_CREAT |
+  fs.constants.O_TRUNC |
+  (fs.constants.O_NOFOLLOW ?? 0)) as unknown as string;
+
 function within(p: string): boolean {
   return isInside(ROOT, p);
 }
@@ -234,40 +246,46 @@ function relOf(full: string): string {
   return '/' + rel;
 }
 
-export function listDir(rel: string): { path: string; entries: FileEntry[] } {
+/** A folder's entries. Asynchronous: a folder of thousands of photos on an SD card, read
+ *  one stat at a time on the daemon's only thread, stalled everything else meanwhile. */
+export async function listDir(rel: string): Promise<{ path: string; entries: FileEntry[] }> {
   const full = resolve(rel);
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(full);
+    stat = await fs.promises.stat(full);
   } catch {
     throw new FileError('That folder does not exist.', 'NOT_FOUND');
   }
   if (!stat.isDirectory()) throw new FileError('That is a file, not a folder.', 'NOT_DIR');
 
-  const entries: FileEntry[] = [];
-  for (const name of fs.readdirSync(full)) {
-    try {
-      // lstat (not stat) so a symlink reports ITSELF, never the metadata of an
-      // out-of-sandbox target. Navigating into it still goes through resolve(),
-      // whose realpath check blocks any escape.
-      const child = path.join(full, name);
-      const s = fs.lstatSync(child);
-      // Lexical check only for the listing marker: it decides whether to draw a
-      // lock, and resolving every entry's symlink target would add a syscall per
-      // file in folders that can hold thousands. Enforcement on actual access uses
-      // the full realpath-aware check.
-      const locked = classifyProtected(child) !== null;
-      entries.push({
-        name,
-        isDir: s.isDirectory(),
-        size: s.size,
-        modified: s.mtime.toISOString(),
-        ...(locked ? { protected: true } : {}),
-      });
-    } catch {
-      /* skip entries we can't stat */
-    }
-  }
+  const listed = await Promise.all(
+    (await fs.promises.readdir(full)).map(async (name): Promise<FileEntry | null> => {
+      try {
+        // lstat (not stat) so a symlink reports ITSELF, never the metadata of an
+        // out-of-sandbox target. Navigating into it still goes through resolve(),
+        // whose realpath check blocks any escape.
+        const child = path.join(full, name);
+        const s = await fs.promises.lstat(child);
+        // Lexical check only for the listing marker: it decides whether to draw a
+        // lock, and resolving every entry's symlink target would add a syscall per
+        // file in folders that can hold thousands. Enforcement on actual access uses
+        // the full realpath-aware check. An app's own folder is not locked: it stays
+        // browsable, and only removing or renaming it is refused.
+        const why = classifyProtected(child);
+        const locked = why !== null && why !== APP_DIR_SENTINEL;
+        return {
+          name,
+          isDir: s.isDirectory(),
+          size: s.size,
+          modified: s.mtime.toISOString(),
+          ...(locked ? { protected: true } : {}),
+        };
+      } catch {
+        return null; // skip entries we can't stat
+      }
+    }),
+  );
+  const entries = listed.filter((e): e is FileEntry => e !== null);
   entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
   return { path: relOf(full) === '/.' ? '/' : relOf(full), entries };
 }
@@ -366,8 +384,8 @@ export function readTextFile(rel: string): { content: string } {
  *  the realpath/symlink check), then attach the safe basename. Resolving the
  *  file path directly would skip the symlink check for a not-yet-existing file,
  *  letting a symlinked parent (e.g. planted by a malicious app/backup) redirect
- *  the write outside the sandbox. We also refuse to follow a symlink target that
- *  escapes, and never overwrite a directory. */
+ *  the write outside the sandbox. The file itself is opened without following a
+ *  link (NOFOLLOW_WRITE), and a directory is never overwritten. */
 export function writeTextFile(rel: string, content: string): void {
   if (typeof content !== 'string') throw new FileError('Nothing to save.', 'BAD_NAME');
   if (Buffer.byteLength(content, 'utf8') > MAX_TEXT_BYTES) {
@@ -390,17 +408,16 @@ export function writeTextFile(rel: string, content: string): void {
   // check — the parent (apps/<id>/) is legitimately writable, the leaf may not be.
   assertAllowed(full);
 
-  if (fs.existsSync(full)) {
-    const st = fs.lstatSync(full);
-    if (st.isDirectory()) throw new FileError('That is a folder, not a file.', 'IS_DIR');
-    if (st.isSymbolicLink()) {
-      // Don't write through a symlink that points outside the sandbox.
-      const real = fs.realpathSync(full);
-      if (!within(real)) throw new FileError('Path is outside the allowed area.', 'OUTSIDE');
-    }
+  // Never THROUGH a link, as uploads: a dangling one passed every check above (realpath
+  // fails, existsSync says "nothing there") and the write created its target, wherever it pointed.
+  try {
+    fs.writeFileSync(full, content, { encoding: 'utf8', flag: NOFOLLOW_WRITE });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP') throw new FileError("That is a link to another file, so it can't be changed here.", 'OUTSIDE');
+    if (code === 'EISDIR') throw new FileError('That is a folder, not a file.', 'IS_DIR');
+    throw err;
   }
-
-  fs.writeFileSync(full, content, 'utf8');
 }
 
 /** Content-type for inline viewing of known media. Anything not listed is

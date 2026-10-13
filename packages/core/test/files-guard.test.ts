@@ -95,12 +95,15 @@ function isProtectedError(fn: () => unknown): boolean {
   }
 }
 
-test('reading a protected path is refused on every read verb', () => {
+/** The same question of a verb that answers later (listDir reads the folder asynchronously). */
+const protectedRefusal = (err: unknown) => err instanceof Error && (err as { code?: string }).code === 'PROTECTED';
+
+test('reading a protected path is refused on every read verb', async () => {
   const { m } = freshManager();
   for (const p of PROTECTED) {
     assert.ok(isProtectedError(() => m.readTextFile(p)), `readTextFile must refuse ${p}`);
     assert.ok(isProtectedError(() => m.resolveFile(p)), `download/raw must refuse ${p}`);
-    assert.ok(isProtectedError(() => m.listDir(p)), `listDir must refuse ${p}`);
+    await assert.rejects(m.listDir(p), protectedRefusal, `listDir must refuse ${p}`);
   }
 });
 
@@ -158,7 +161,7 @@ test('the compose-gate bypass is closed: no verb can plant a compose.yml', () =>
   assert.ok(isProtectedError(() => m.uploadPath('/apps/evil', 'compose.yml')));
 });
 
-test('a symlink pointing at platform state is refused, not followed', (t) => {
+test('a symlink pointing at platform state is refused, not followed', async (t) => {
   // The realpath half of the guard. The link lives in the app's own data folder, so
   // it is legitimately INSIDE the sandbox — a guard that only checked the requested
   // path would resolve it happily and hand over the file it points at.
@@ -180,7 +183,29 @@ test('a symlink pointing at platform state is refused, not followed', (t) => {
   // A link to a protected DIRECTORY must not become a way to browse it either.
   const dirLink = path.join(dir, 'apps', 'donations', 'data', 'peekdir');
   fs.symlinkSync(path.join(dir, 'config'), dirLink);
-  assert.ok(isProtectedError(() => m.listDir('/apps/donations/data/peekdir')), 'must not list through the link');
+  await assert.rejects(m.listDir('/apps/donations/data/peekdir'), protectedRefusal, 'must not list through the link');
+});
+
+test('a DANGLING link is never written through — the write would create its target, wherever it points', (t) => {
+  // existsSync follows the link and says "nothing there", and realpath fails, so every check
+  // before the write let it pass and writeFileSync created the target outside the sandbox.
+  const { m, dir } = freshManager();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-outside-'));
+  const target = path.join(outside, 'planted.txt');
+  const link = path.join(dir, 'apps', 'donations', 'data', 'dangling');
+  try {
+    fs.symlinkSync(target, link);
+    // One into the platform's own state too, where a file does not exist yet.
+    fs.symlinkSync(path.join(dir, 'config', 'planted.json'), path.join(dir, 'apps', 'donations', 'data', 'dangling2'));
+  } catch {
+    t.skip('cannot create symlinks on this platform (needs Linux or Developer Mode)');
+    return;
+  }
+  assert.throws(() => m.writeTextFile('/apps/donations/data/dangling', 'written through'), /link/);
+  assert.equal(fs.existsSync(target), false, 'the write created a file outside the sandbox');
+  assert.throws(() => m.writeTextFile('/apps/donations/data/dangling2', '{"planted":true}'), /link/);
+  assert.equal(fs.existsSync(path.join(dir, 'config', 'planted.json')), false, 'the write created a file in config/');
+  assert.equal(fs.lstatSync(link).isSymbolicLink(), true, 'and the link itself is left alone');
 });
 
 test('case variations do not slip past on a case-insensitive filesystem', () => {
@@ -191,16 +216,13 @@ test('case variations do not slip past on a case-insensitive filesystem', () => 
   }
 });
 
-test('the explorer still works for everything that is actually the masjid’s', () => {
+test('the explorer still works for everything that is actually the masjid’s', async () => {
   // A security fix that quietly breaks the feature is not a fix. This is the
   // regression guard for normal use.
   const { m, dir } = freshManager();
   for (const p of ALLOWED) {
-    assert.doesNotThrow(() => {
-      const st = fs.statSync(path.join(dir, p));
-      if (st.isDirectory()) m.listDir(p);
-      else m.resolveFile(p);
-    }, `must still be usable: ${p}`);
+    if (fs.statSync(path.join(dir, p)).isDirectory()) await assert.doesNotReject(m.listDir(p), `must still be usable: ${p}`);
+    else assert.doesNotThrow(() => m.resolveFile(p), `must still be usable: ${p}`);
   }
   // And the full round trip on a user file.
   assert.equal(m.readTextFile('/notes.txt').content, 'khutbah notes');
@@ -218,15 +240,20 @@ test('the explorer still works for everything that is actually the masjid’s', 
   assert.doesNotThrow(() => m.uploadPath('/apps/donations/data', 'upload.bin'));
 });
 
-test('the listing marks platform state without hiding it, and leaks no names', () => {
+test('the listing marks platform state without hiding it, and leaks no names', async () => {
   const { m } = freshManager();
-  const root = m.listDir('/');
+  const root = await m.listDir('/');
   const byName = new Map(root.entries.map((e) => [e.name, e]));
   assert.equal(byName.get('config')?.protected, true, 'config is shown but locked');
   assert.equal(byName.get('apps')?.protected, undefined, 'apps must stay browsable');
   assert.equal(byName.get('notes.txt')?.protected, undefined, "the masjid's own file is not locked");
 
-  const app = m.listDir('/apps/donations');
+  // An app's own folder is browsable too. It was drawn locked — the File Explorer could not
+  // open ANY app's folder — because the marker for "not removable" counted as a lock.
+  const apps = await m.listDir('/apps');
+  assert.equal(apps.entries.find((e) => e.name === 'donations')?.protected, undefined, "an app's folder was locked");
+
+  const app = await m.listDir('/apps/donations');
   const appByName = new Map(app.entries.map((e) => [e.name, e]));
   for (const n of ['compose.yml', '.env', 'meta.json']) {
     assert.equal(appByName.get(n)?.protected, true, `${n} must be marked protected`);
@@ -236,21 +263,21 @@ test('the listing marks platform state without hiding it, and leaks no names', (
 
   // Listing config is refused outright, so the filenames inside it (which reveal
   // which providers are configured) never reach the client.
-  assert.ok(isProtectedError(() => m.listDir('/config')));
+  await assert.rejects(m.listDir('/config'), protectedRefusal);
 });
 
-test('the backup staging folder is left alone while a backup runs', () => {
+test('the backup staging folder is left alone while a backup runs', async () => {
   // system/backup.ts stages volume archives in <data>/.backup-staging. Deleting it
   // mid-run would fail the backup, and it is platform state, not a masjid file.
   const { m, dir } = freshManager();
   fs.mkdirSync(path.join(dir, '.backup-staging', 'volumes'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.backup-staging', 'volumes', 'v.tar.gz'), 'partial');
   assert.ok(isProtectedError(() => m.removeEntry('/.backup-staging')));
-  assert.ok(isProtectedError(() => m.listDir('/.backup-staging')));
+  await assert.rejects(m.listDir('/.backup-staging'), protectedRefusal);
   assert.ok(isProtectedError(() => m.resolveFile('/.backup-staging/volumes/v.tar.gz')));
 });
 
-test('a backup waiting to be restored, and its unpacked copy, are private', () => {
+test('a backup waiting to be restored, and its unpacked copy, are private', async () => {
   // Each is a whole backup — every password hash, key and token, possibly another box's —
   // and a restore refused for an update in its way used to leave the upload behind, listed
   // at the top of the File Explorer and downloadable.
@@ -260,16 +287,16 @@ test('a backup waiting to be restored, and its unpacked copy, are private', () =
   fs.writeFileSync(path.join(dir, '.restore-staging', 'config', 'auth.json'), '{"passwordHash":"$argon2id$SECRET"}');
   assert.ok(isProtectedError(() => m.resolveFile('/.restore.tar.gz')));
   assert.ok(isProtectedError(() => m.removeEntry('/.restore.tar.gz')), 'a restore that is waiting reads it');
-  assert.ok(isProtectedError(() => m.listDir('/.restore-staging')));
+  await assert.rejects(m.listDir('/.restore-staging'), protectedRefusal);
   assert.ok(isProtectedError(() => m.resolveFile('/.restore-staging/config/auth.json')));
   assert.doesNotThrow(() => m.resolveFile('/notes.txt'), 'a neighbour is still the masjid’s');
 });
 
-test('the apps folder itself cannot be renamed or deleted', () => {
+test('the apps folder itself cannot be renamed or deleted', async () => {
   const { m } = freshManager();
   assert.ok(isProtectedError(() => m.removeEntry('/apps')));
   assert.ok(isProtectedError(() => m.renameEntry('/apps', 'apps-old')));
-  assert.doesNotThrow(() => m.listDir('/apps'), 'but browsing it still works');
+  await assert.doesNotReject(m.listDir('/apps'), 'but browsing it still works');
 });
 
 test('backup and restore do not depend on this module', () => {
