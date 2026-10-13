@@ -6,7 +6,6 @@
  * sets OPENMASJID_DATA_DIR; in local dev we fall back to a ./.data folder.
  */
 import path from 'node:path';
-import os from 'node:os';
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -48,6 +47,3 @@ export const UI_DIR = process.env.OPENMASJID_UI_DIR
 
 /** True when running the production build inside the container. */
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-
-/** Hostname of the machine, used for the "network info" panel. */
-export const MACHINE_HOSTNAME = os.hostname();

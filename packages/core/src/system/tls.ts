@@ -32,7 +32,6 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Server as HttpsServer } from 'node:https';
 import { CONFIG_DIR } from '../config';
-import { networkInfo } from './system';
 import { desiredAddress } from './platform-address';
 import { log } from '../logger';
 
@@ -81,16 +80,16 @@ function writeMeta(meta: CertMeta): void {
 
 /** The names/addresses the self-signed cert should be valid for. */
 function subjectAltNames(): string {
-  const info = networkInfo();
-  const dns = new Set<string>(['openmasjidos.local', info.localDomain, 'localhost']);
   // In the container the interfaces are the bridge's; the LAN address everyone opens
   // comes from the installer (or the last address the dashboard was reached on).
   const lan = desiredAddress();
-  const ips = new Set<string>(['127.0.0.1', '::1', ...info.addresses, ...(lan ? [lan] : [])]);
+  const ips = ['127.0.0.1', '::1', ...(lan ? [lan] : [])];
   return [
-    ...[...dns].filter(Boolean).map((d) => `DNS:${d}`),
+    // .local is not answered yet (no mDNS), but named so it works the day it is.
+    'DNS:openmasjidos.local',
+    'DNS:localhost',
     // IP literals only: one bad `IP:` entry makes openssl fail, and the box drops to plain HTTP.
-    ...[...ips].filter((ip) => net.isIP(ip) !== 0).map((ip) => `IP:${ip}`),
+    ...ips.filter((ip) => net.isIP(ip) !== 0).map((ip) => `IP:${ip}`),
   ].join(',');
 }
 

@@ -99,14 +99,19 @@ async function uploadedBytes(): Promise<number> {
   return listing.ok ? listing.bytes : 0;
 }
 
-/** The most a restore may unpack: the hard ceiling, or 90% of the free disk if that is less. */
-function restoreCap(): number {
+/** 90% of the data disk's free space right now — Infinity when it cannot be read. */
+function freeSpaceCap(): number {
   try {
     const st = fs.statfsSync(DATA_DIR);
-    return Math.min(MAX_UNCOMPRESSED_BYTES, Math.floor(st.bsize * st.bavail * 0.9));
+    return Math.floor(st.bsize * st.bavail * 0.9);
   } catch {
-    return MAX_UNCOMPRESSED_BYTES; // statfs unavailable — the hard ceiling alone
+    return Infinity; // statfs unavailable: the hard ceiling alone guards the upload
   }
+}
+
+/** The most the uploaded backup may unpack to: the hard ceiling, or the free space if less. */
+function restoreCap(): number {
+  return Math.min(MAX_UNCOMPRESSED_BYTES, freeSpaceCap());
 }
 
 /** Validate the REAL extracted tree: only config/, apps/ or volumes/ at the top,
@@ -525,8 +530,10 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
 
     // The app data in it is still compressed, and its refill unpacks it onto the disk: that
     // has to fit as well. Counted at its compressed size, a well-compressing volume passed,
-    // then filled the disk once settings and apps had already been replaced.
-    if (unpacked + (await stagedVolumeBytes(path.join(STAGING_DIR, 'volumes'))) > cap) {
+    // then filled the disk once settings and apps had already been replaced. Against the
+    // free space left NOW, after the staging copy — not the 8 GiB ceiling, which is for the
+    // upload: a masjid's app data may rightly unpack to more than that.
+    if ((await stagedVolumeBytes(path.join(STAGING_DIR, 'volumes'))) > freeSpaceCap()) {
       onLine(TOO_LARGE);
       return 'unchanged';
     }

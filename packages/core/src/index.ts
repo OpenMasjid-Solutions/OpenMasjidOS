@@ -27,7 +27,7 @@ import { ensureDir } from './util/json-store';
 import { appRouter, type AppRouter } from './trpc/router';
 import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
-import { backupStream, backupFilename, BackupBusyError } from './system/backup';
+import { backupStream, backupFilename, BackupBusyError, removeBackupLeftovers } from './system/backup';
 import { remoteBackupDownload, sendBackup } from './api/backup-download';
 import { removeRestoreLeftovers } from './system/restore';
 import { startBackupScheduler } from './system/backup-upload';
@@ -85,8 +85,10 @@ function buildServer(tls: { key: Buffer; cert: Buffer } | null) {
 async function main() {
   ensureDir(CONFIG_DIR);
   ensureDir(APPS_DIR);
-  // An archive and a staging copy a restore never got to remove (system/restore.ts).
+  // An archive and a staging copy a restore never got to remove (system/restore.ts), and the
+  // staging copy of a backup cut off by a restart (system/backup.ts): every app's data, unencrypted.
   removeRestoreLeftovers();
+  removeBackupLeftovers();
   // Config holds every platform secret (admin password hash, Stripe keys, the
   // Cloudflare tunnel token, the notification webhook). Lock the directory to
   // root-only, so even if an individual secret file is briefly created with the

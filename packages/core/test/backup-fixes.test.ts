@@ -210,6 +210,33 @@ test('A BACKUP WHOSE APP DATA WOULD FILL THE DISK IS REFUSED — before any app 
   }
 });
 
+test('APP DATA THAT UNPACKS PAST 8 GiB STILL RESTORES WHEN THE DISK HAS ROOM', POSIX_ONLY, async () => {
+  // The 8 GiB ceiling guards the upload itself (a small file that balloons). Applied to the
+  // app data inside as well, it refused every larger install's backup with plenty of disk free.
+  const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
+  const docker = standIn('docker');
+  uploadBackup({ 'volumes/omos-donations_data.tar.gz': volumeArchive({ 'db.sqlite': 'x' }) });
+  // The volume's archive lists 9 GiB; everything else is the real tar.
+  const tar = standIn(
+    'tar',
+    `case "$1 $2" in "-tzvf "*omos-donations_data.tar.gz) echo "-rw-r--r-- root/root 9663676416 2026-01-01 00:00 ./db.sqlite"; exit 0;; esac\nexec '${realTar}' "$@"`,
+  );
+  const realStatfs = fs.statfsSync;
+  // 100 GiB free.
+  fs.statfsSync = (() => ({ bsize: 1024, bavail: 100 * 1024 * 1024 })) as unknown as typeof fs.statfsSync;
+  try {
+    const lines: string[] = [];
+    await restore.runRestore((l) => lines.push(l));
+    assert.ok(!lines.some((l) => /too large to restore safely/.test(l)), lines.join(' | '));
+    assert.match(docker.log(), /volume create .*omos-donations_data/, 'the app data was not put back');
+  } finally {
+    fs.statfsSync = realStatfs;
+    fs.rmSync(restore.RESTORE_PATH, { force: true });
+    tar.restore();
+    docker.restore();
+  }
+});
+
 test('THE UPLOADED BACKUP IS NOT UNPACKED AGAIN JUST TO MEASURE IT', POSIX_ONLY, async () => {
   const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
   const docker = standIn('docker');
@@ -324,6 +351,9 @@ test('A BACKUP CUT OFF BY A RESTART LEAVES NO COPY OF THE APP DATA BEHIND', () =
   backup.removeBackupLeftovers();
   assert.equal(fs.existsSync(path.join(DATA, '.backup-staging')), false);
   backup.removeBackupLeftovers(); // nothing there is fine
+  // …and it runs at boot, as the restore's does.
+  const index = fs.readFileSync(path.join(__dirname, '../src/index.ts'), 'utf8');
+  assert.match(index.slice(index.indexOf('async function main')), /removeBackupLeftovers\(\);/);
 });
 
 test('THE CORE IS NOT UPDATED UNDER A BACKUP BEING MADE — it would be cut off, an off-site one left half-uploaded', POSIX_ONLY, async () => {
