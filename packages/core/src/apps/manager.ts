@@ -1546,6 +1546,8 @@ export async function appLogs(id: string, tail = 200): Promise<string> {
 /** How long to give a container to prove it is going to stay up. */
 const SETTLE_MS = 3_000;
 const SETTLE_SAMPLES = 3;
+/** Shown where an app's last log lines would be, when it is down and left none to read. */
+const NO_LOGS_TO_SHOW = "(It isn't running, and it left no logs we could read.)";
 
 /**
  * Did the app actually STAY running?
@@ -1561,7 +1563,8 @@ const SETTLE_SAMPLES = 3;
  * Sampled a few times rather than once, because a crash-loop spends part of its cycle
  * genuinely `running` and a single check can land in that window.
  *
- * Returns null when it is up, or the last few log lines when it is not.
+ * Returns null when it is up, or the last few log lines when it is not (a sentence
+ * saying so when there are none to show).
  */
 export async function verifyStayedUp(id: string): Promise<string | null> {
   let up = false;
@@ -1571,11 +1574,11 @@ export async function verifyStayedUp(id: string): Promise<string | null> {
     if (!up) break; // one bad sample is enough — a healthy app is up on every one
   }
   if (up) return null;
+  // Every caller reads null as "it stayed up", so an app that is down always gets words.
   try {
-    const logs = await composeLogs(projectOf(id), 40);
-    return logs.trim() || null;
+    return (await composeLogs(projectOf(id), 40)).trim() || NO_LOGS_TO_SHOW;
   } catch {
-    return null;
+    return NO_LOGS_TO_SHOW;
   }
 }
 

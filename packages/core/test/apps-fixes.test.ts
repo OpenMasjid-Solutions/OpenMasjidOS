@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import Module, { createRequire } from 'node:module';
 
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-apps-fixes-'));
 process.env.OPENMASJID_DATA_DIR = DATA;
@@ -313,4 +313,42 @@ test('a reinstall keeps its address — unless OpenMasjidOS has since taken it',
   await manager.installCustomApp({ id: 'kiosk', name: 'Kiosk', composeText: 'services: {}\n', env: {} });
   assert.equal(manager.getAppPath('kiosk'), 'kiosk');
   assert.equal(metaOf('kiosk').path, undefined, 'it follows its id again');
+});
+
+// ── "It stayed up" is said only of an app that did ────────────────────────────
+
+/** A second copy of the manager, whose `docker compose` calls are `overrides`. */
+function managerWith(overrides: Partial<typeof import('../src/docker/compose')>): typeof import('../src/apps/manager') {
+  const composePath = req.resolve('../src/docker/compose');
+  const managerPath = req.resolve('../src/apps/manager');
+  const real = { compose: req.cache[composePath], manager: req.cache[managerPath] };
+  const stub = new Module(composePath);
+  stub.filename = composePath;
+  stub.loaded = true;
+  stub.exports = { ...req('../src/docker/compose'), ...overrides };
+  req.cache[composePath] = stub;
+  delete req.cache[managerPath];
+  try {
+    return req('../src/apps/manager');
+  } finally {
+    req.cache[composePath] = real.compose;
+    req.cache[managerPath] = real.manager;
+  }
+}
+
+test('AN APP THAT IS DOWN IS NEVER "STAYED UP" — not even when it left no logs to read', async () => {
+  // Every caller reads null as "it stayed up": an update said Done, `!os start` said it
+  // was running, and the WhatsApp gateway's restart said it had started.
+  seed('silent-app');
+  const original = client.docker.listContainers;
+  client.docker.listContainers = () => Promise.resolve([]); // nothing is running
+  try {
+    const said = await Promise.all([
+      managerWith({ composeLogs: async () => '  \n' }).verifyStayedUp('silent-app'),
+      managerWith({ composeLogs: () => Promise.reject(new Error('docker went away')) }).verifyStayedUp('silent-app'),
+    ]);
+    for (const words of said) assert.match(words ?? 'null, which reads as "it stayed up"', /isn't running/);
+  } finally {
+    client.docker.listContainers = original;
+  }
 });
