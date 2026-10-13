@@ -105,6 +105,17 @@ export function splitPhone(e164: string): { dial: string; national: string } {
   return hit ? { dial: hit.dial, national: d.slice(hit.dial.length) } : { dial: '', national: d };
 }
 
+/**
+ * The national number as it is written after a country code. A trunk prefix — the 0 a
+ * number is dialled with at home, as in the UK's "07700 900123" — is never part of it
+ * abroad, so it is dropped: kept, +44 07700… was stored as 4407700…, a number WhatsApp does
+ * not know, and every message to it vanished. Italy (+39) keeps its 0, which is part of the
+ * number there. With no country chosen the whole number is typed, and nothing is dropped.
+ */
+export function nationalPart(dial: string, digits: string): string {
+  return dial && dial !== '39' ? digits.replace(/^0+/, '') : digits;
+}
+
 /** The one dial code with a national format worth special-casing. See `group`. */
 const NANP_DIAL = '1';
 

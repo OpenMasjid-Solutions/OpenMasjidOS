@@ -19,7 +19,7 @@
  */
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, splitPhone } from '../lib/phone';
+import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, nationalPart, splitPhone } from '../lib/phone';
 
 interface PhoneFieldProps {
   /** E.164 digits, no `+`. Empty string when unset. */
@@ -61,7 +61,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
 
   function setDial(next: string) {
     setOther(next === '');
-    onChange(next ? `${next}${digitsOnly(national)}` : digitsOnly(national));
+    onChange(next ? `${next}${nationalPart(next, digitsOnly(national))}` : digitsOnly(national));
   }
 
   function setNational(raw: string) {
@@ -73,7 +73,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
       setOther(!splitPhone(typed).dial);
       return onChange(typed);
     }
-    onChange(`${dial}${typed}`);
+    onChange(`${dial}${nationalPart(dial, typed)}`);
   }
 
   return (

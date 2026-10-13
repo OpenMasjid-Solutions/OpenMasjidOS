@@ -146,8 +146,15 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
     },
     onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
-  const stop = trpc.apps.stop.useMutation({ onSuccess: refresh });
-  const restart = trpc.apps.restart.useMutation({ onSuccess: refresh });
+  // Docker can refuse a stop or a restart; say so, as Start does, rather than nothing.
+  const stop = trpc.apps.stop.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  const restart = trpc.apps.restart.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
 
   // An app held for review after a restore never starts from a plain click. Its
   // compose was written to disk by the restore WITHOUT passing the risk gate, so

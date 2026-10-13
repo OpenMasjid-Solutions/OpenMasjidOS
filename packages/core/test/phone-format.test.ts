@@ -29,7 +29,7 @@ const req = createRequire(__filename);
 const phone = req(
   path.join(__dirname, '..', '..', 'ui', 'src', 'lib', 'phone.ts'),
 ) as typeof import('../../ui/src/lib/phone');
-const { COUNTRIES, digitsOnly, splitPhone, group, formatPhone } = phone;
+const { COUNTRIES, digitsOnly, splitPhone, group, formatPhone, nationalPart } = phone;
 
 test('a US number is written the way North America writes it', () => {
   assert.equal(formatPhone('15550101234'), '+1 (555) 010-1234');
@@ -91,6 +91,16 @@ test('an unknown dial code is shown plainly rather than grouped as a guess', () 
 test('an empty number renders as nothing, never a lone +', () => {
   assert.equal(formatPhone(''), '');
   assert.equal(formatPhone('abc'), '');
+});
+
+test('a 0 typed at the start of a number is left off after the country code — except in Italy', () => {
+  // "07700 900123" is how a UK number is written at home; kept after +44 it became
+  // 4407700900123, which WhatsApp does not know, and every message to it vanished.
+  assert.equal(nationalPart('44', '07700900123'), '7700900123');
+  assert.equal(nationalPart('92', '03001234567'), '3001234567');
+  assert.equal(nationalPart('1', '5550101234'), '5550101234', 'nothing to drop');
+  assert.equal(nationalPart('39', '0612345678'), '0612345678', "Italy's 0 is part of the number");
+  assert.equal(nationalPart('', '0044770090012'), '0044770090012', 'no country chosen: typed whole');
 });
 
 test('the country picker labels stay short', () => {

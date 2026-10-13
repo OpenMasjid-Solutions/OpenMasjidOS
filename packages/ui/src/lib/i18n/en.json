@@ -171,7 +171,8 @@
       "apps": "Apps running",
       "cores_one": "{{count}} core",
       "cores_other": "{{count}} cores",
-      "coresSpeed": "{{cores}} · {{speed}} GHz"
+      "coresSpeed": "{{cores}} · {{speed}} GHz",
+      "diskOfDrive": "{{total}} · {{drive}} of disk"
     },
     "installedApps": "Your apps",
     "noAppsTitle": "No apps installed yet",
@@ -709,7 +710,7 @@
     "phoneCountry": "Country",
     "phoneCountryOther": "Other country",
     "phoneNumberPlaceholder": "555 010 1234",
-    "phoneHint": "Pick the country, then type the rest of the number as you'd normally write it.",
+    "phoneHint": "Pick the country, then type the rest of the number as you'd normally write it. A 0 at the start is left off.",
     "phoneHintOther": "Type the whole number including its country code.",
     "whatsappGroups": "Groups",
     "whatsappGroupsHint": "Apps can post announcements to a group you approve here — one message reaches everyone in it. Give each one a nickname; that is the name apps see. Nothing else on your phone is visible to apps.",
