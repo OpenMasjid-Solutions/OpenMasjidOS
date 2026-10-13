@@ -98,14 +98,16 @@ test('THE MAP IS BOUNDED — a spray cannot grow memory without limit', () => {
   );
 });
 
-test('a locked-out address survives the sweep that bounds the map', () => {
-  // Eviction must not be a way to clear your own lockout by spraying. The most
-  // recently seen entries are kept, and a live lockout was by definition seen
-  // recently — so the entry that matters is the last one dropped, not the first.
+test('the sweep drops the least recently seen first — a lockout outlives every address seen before it', () => {
+  // What the bound promises, and what it does not. Addresses seen BEFORE a lockout go
+  // first. Enough addresses seen AFTER it do push it out: the residual ip-lockout.ts
+  // accepts (IP_MAX_TRACKED), since it buys the sprayer nothing a new address would not.
   L.clearAllIpFailures();
   for (let i = 0; i < L.IP_MAX_FAILURES; i++) L.noteIpFailure(IP, T + L.IP_MAX_TRACKED + i);
   assert.equal(L.ipLockedOut(IP, T + L.IP_MAX_TRACKED), true);
-  // Now spray from older timestamps: these are less recent, so they go first.
   for (let i = 0; i < L.IP_MAX_TRACKED; i++) L.noteIpFailure(`198.51.100.${i}`, T + i);
-  assert.equal(L.ipLockedOut(IP, T + L.IP_MAX_TRACKED), true, 'the lockout was evicted by a spray');
+  assert.equal(L.ipLockedOut(IP, T + L.IP_MAX_TRACKED), true, 'the lockout went before older entries');
+  const later = T + L.IP_MAX_TRACKED + L.IP_MAX_FAILURES;
+  for (let i = 0; i < L.IP_MAX_TRACKED; i++) L.noteIpFailure(`192.0.2.${i}`, later + i);
+  assert.equal(L.ipLockedOut(IP, later + L.IP_MAX_TRACKED), false, 'the accepted residual no longer holds — update this test and ip-lockout.ts together');
 });

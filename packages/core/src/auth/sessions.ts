@@ -502,22 +502,19 @@ export function cookieValues(header: string | string[] | undefined, name: string
 }
 
 /** The session token in a raw `Cookie` header, for code that sees only Node's request. */
-export function sessionTokenFromCookieHeader(
-  header: string | string[] | undefined,
-  name: string = COOKIE_NAME,
-): string | null {
+export function sessionTokenFromCookieHeader(header: string | string[] | undefined, name: string): string | null {
   return cookieValues(header, name)[0] ?? null;
 }
 
 // ── Opening an app from outside: per-app access tokens ─────────────────────
 //
-// The remote dashboard lives on its own hostname so that no app page shares its
-// origin (system/remote-admin.ts). So its cookie never reaches an app — and an app
-// that is not shared online, or one that signs the admin in through the platform,
-// needs SOMETHING from the admin's browser to go on. That is this: a token for ONE
-// app, which the platform sets on the apps' hostname when the admin presses Open
-// (system/app-access.ts) and which the app forwards for single sign-on exactly as it
-// forwards the session cookie on the LAN.
+// The remote dashboard shares the apps' hostname, so the browser sends its cookie
+// (Path=/) with app paths too — but the ingress removes it before anything reaches an
+// app (system/app-access.ts `cookieHeaderForApp`). So an app that is not shared online, or
+// one that signs the admin in through the platform, needs SOMETHING else from the
+// admin's browser to go on. That is this: a token for ONE app, which the platform sets
+// on the app's path when the admin presses Open (system/app-access.ts) and which the app
+// forwards for single sign-on exactly as it forwards the session cookie on the LAN.
 //
 // What it is NOT is the session. It is derived from one — an HMAC keyed by the
 // session token over the app's id — so it is honoured only while that remote session

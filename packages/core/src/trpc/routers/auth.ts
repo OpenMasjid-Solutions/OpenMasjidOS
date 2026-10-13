@@ -302,8 +302,8 @@ export const authRouter = router({
       if (ctx.viaTunnel) {
         // Fail CLOSED. If a tunnel request reaches the login at all and no second
         // factor is enrolled, refuse — rather than handing out a session because
-        // the feature that was supposed to gate this is half-configured. The
-        // setting that opens the door will require enrolment first (Slice 3);
+        // the feature that was supposed to gate this is half-configured. Remote
+        // administration already requires a second factor (system/remote-admin.ts);
         // this is the backstop for every path that does not go through it.
         if (!twoFactorActive()) {
           throw new TRPCError({
@@ -314,11 +314,7 @@ export const authRouter = router({
         // The challenge carries the credential the password was verified against,
         // so completing it after a password change cannot mint a session bound to
         // the NEW password (completeLogin checks it).
-        const challenge = createChallenge(input.username, {
-          cred: verified.cred,
-          viaTunnel: true,
-          remoteIp: ctx.remoteIp,
-        });
+        const challenge = createChallenge(input.username, { cred: verified.cred, viaTunnel: true });
         // No session, no cookie. The caller holds an opaque id, not credentials.
         return {
           authenticated: false as const,
@@ -364,8 +360,7 @@ export const authRouter = router({
           message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
         });
       }
-      const origin = { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp };
-      const claim = claimChallenge(input.challenge, origin);
+      const claim = claimChallenge(input.challenge, ctx);
       if (!claim.ok) {
         /**
          * THE CHALLENGE IS GONE, SO SAY SO AS A STATE CHANGE RATHER THAN AN ERROR.
@@ -424,10 +419,7 @@ export const authRouter = router({
         if (result.skewSteps != null && Math.abs(result.skewSteps) >= 2) {
           const mins = Math.round((Math.abs(result.skewSteps) * 30) / 60);
           const dir = result.skewSteps < 0 ? 'fast' : 'slow';
-          skewNote =
-            mins >= 1
-              ? ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`
-              : ` That code would have been right if this server's clock were correct — it is about half a minute ${dir}.`;
+          skewNote = ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`;
           log.warn(
             `Two-step sign-in: a code was refused, but it matches ${result.skewSteps} step(s) away. This server's clock is probably wrong.`,
           );
@@ -502,7 +494,7 @@ export const authRouter = router({
   sendLoginEmailCode: publicProcedure
     .input(z.object({ challenge: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
-      const claim = claimChallenge(input.challenge, { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp });
+      const claim = claimChallenge(input.challenge, ctx);
       if (!claim.ok) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',

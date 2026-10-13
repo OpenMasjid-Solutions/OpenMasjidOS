@@ -43,7 +43,6 @@ import {
   otpauthUri,
   timingSafeEqualString,
   verifyTotp,
-  TOTP_STEP_SECONDS,
 } from './totp';
 
 const FILE = path.join(CONFIG_DIR, 'twofactor.json');
@@ -588,9 +587,4 @@ export function disableTwoFactor(): void {
   const cfg: TwoFactorConfig = {};
   bumpEpoch(cfg);
   save(cfg);
-}
-
-/** Seconds until the current TOTP step rolls over — for "this code expires in…". */
-export function secondsUntilNextStep(nowMs: number = Date.now()): number {
-  return TOTP_STEP_SECONDS - (Math.floor(nowMs / 1000) % TOTP_STEP_SECONDS);
 }
