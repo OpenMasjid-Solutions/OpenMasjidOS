@@ -118,6 +118,14 @@ error() {
   exit 1
 }
 
+# has_tty — true when there is a terminal to ask questions on. `[ -r /dev/tty ]` is not
+# enough: the device exists even with no terminal at all (automation, cron), and only
+# OPENING it fails ("No such device or address"). `true`, not `:`, so a failed open can
+# never end the script, even when bash runs in POSIX mode.
+has_tty() {
+  { true </dev/tty; } 2>/dev/null
+}
+
 # print_mosque — a little decorative masjid, shown in the banner and success box.
 print_mosque() {
   printf "${CLR_CYAN}"
@@ -875,7 +883,7 @@ is_installed() {
 # keyboard. /dev/tty is the actual controlling terminal. With no terminal
 # (CI/automation) we fall back to a safe default.
 menu_fresh() {
-  if [ ! -r /dev/tty ]; then echo "install"; return; fi
+  if ! has_tty; then echo "install"; return; fi
   {
     echo ""
     printf "${CLR_CYAN}${CLR_BOLD}  ┌─ Welcome! Let's get you set up ───────────────${CLR_RESET}\n"
@@ -894,7 +902,7 @@ menu_fresh() {
 }
 
 menu_existing() {
-  if [ ! -r /dev/tty ]; then echo "update"; return; fi
+  if ! has_tty; then echo "update"; return; fi
   {
     echo ""
     printf "${CLR_CYAN}${CLR_BOLD}  ┌─ OpenMasjidOS is already installed ───────────${CLR_RESET}\n"
@@ -923,14 +931,18 @@ menu_existing() {
 # machine): set a new admin password, drop all sessions, and rotate every app's
 # Fabric key. Runs the interactive CLI inside the core container. KEEPS all data.
 do_reset_signin() {
+  check_root
   echo ""
   info "Resetting the sign-in layer (your apps and their data are kept)."
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^openmasjid-core$'; then
     warn "OpenMasjidOS isn't running. Starting it first…"
     do_repair
   fi
-  # -it gives the CLI a TTY for the password prompts; fall back without it.
-  if [ -t 0 ] && [ -t 1 ]; then
+  # The reset asks questions, so it reads the TERMINAL: under `curl … | sudo bash` stdin is
+  # the pipe the script arrived on, already at its end, and the reset would read nothing and
+  # quietly change nothing. -t gives the prompts a real terminal. With no terminal at all
+  # (automation), the answers come from stdin.
+  if has_tty; then
     docker exec -it openmasjid-core node packages/core/dist/reset-auth.js < /dev/tty
   else
     docker exec -i openmasjid-core node packages/core/dist/reset-auth.js
@@ -1034,7 +1046,7 @@ do_uninstall() {
   echo ""
 
   local confirm=""
-  if [ -r /dev/tty ]; then
+  if has_tty; then
     printf "  Also remove ALL installed apps and their data? This cannot be undone.\n  Type %sDELETE%s to confirm, or press Enter to keep everything: " "${CLR_BOLD}" "${CLR_RESET}" > /dev/tty
     read -r confirm < /dev/tty || confirm=""
   fi
@@ -1086,6 +1098,11 @@ main() {
       # masjid between channels on its own.
       --channel=*)          want_channel="${arg#--channel=}" ;;
       --dev)                want_channel="dev" ;;
+      # Said out loud rather than skipped: a run that quietly ignores what it was told
+      # (here, `--channel main` with a space) does something the operator didn't ask for.
+      --channel)            error "Use --channel=main or --channel=dev." ;;
+      --)                   ;;  # end of options, e.g. `bash install.sh -- --channel=dev`
+      *)                    error "Unknown option: ${arg}" ;;
     esac
   done
   if [ -n "${want_channel}" ]; then
