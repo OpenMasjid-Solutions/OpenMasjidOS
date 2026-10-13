@@ -233,16 +233,21 @@ detect_os() {
       OS_ID="fedora"
       ;;
     rhel | centos | rocky | almalinux)
-      # RHEL-family — treat like fedora (dnf-based)
-      OS_ID="fedora"
+      # RHEL-family — dnf like Fedora, but NOT Fedora's Docker repository: that one is
+      # keyed on Fedora's release numbers, so an EL "9" fetches a Fedora 9 that isn't there.
+      OS_ID="rhel"
       ;;
     *)
-      # Fall back to ID_LIKE — e.g. Linux Mint says ID_LIKE="ubuntu"
+      # Fall back to ID_LIKE — e.g. Linux Mint says ID_LIKE="ubuntu". EL rebuilds also list
+      # "fedora", so they are matched first.
       case "$os_id_like" in
         *ubuntu* | *debian*)
           OS_ID="debian"
           ;;
-        *fedora* | *rhel*)
+        *rhel* | *centos*)
+          OS_ID="rhel"
+          ;;
+        *fedora*)
           OS_ID="fedora"
           ;;
         *)
@@ -253,7 +258,8 @@ detect_os() {
           echo "    • Ubuntu 20.04 / 22.04 / 24.04"
           echo "    • Debian 11 / 12"
           echo "    • Raspberry Pi OS (Bookworm / Bullseye)"
-          echo "    • Fedora 38+"
+          echo "    • Fedora (a release that is still supported)"
+          echo "    • Rocky Linux / AlmaLinux / RHEL 8+"
           echo ""
           echo "  If you would like support for your distribution, please open an issue at:"
           echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
@@ -302,17 +308,25 @@ install_docker() {
 
   info "Checking for Docker..."
 
+  # Installed but stopped is not "missing": start it rather than reinstalling over it.
+  if command -v docker &>/dev/null && ! docker info &>/dev/null && command -v systemctl &>/dev/null; then
+    systemctl start docker &>/dev/null || true
+  fi
+
   # Check if the docker CLI exists and the daemon is reachable
-  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  if command -v docker &>/dev/null && docker info &>/dev/null; then
     info "Docker is already installed — skipping installation."
   else
-    warn "Docker not found. Installing Docker now (this may take a minute)..."
+    # Update and Repair arrive here without having looked at the system yet.
+    [ -n "$OS_ID" ] || detect_os
+    warn "Docker isn't installed (or isn't working). Installing Docker now (this may take a minute)..."
     echo ""
 
     case "$OS_ID" in
-      ubuntu | debian | raspbian)
+      ubuntu | debian | raspbian | fedora)
         # Use Docker's official convenience script — it is the recommended path
-        # for non-interactive installs and handles all the APT repository setup.
+        # for non-interactive installs and handles all the repository setup, including
+        # Fedora 41+'s dnf5, whose "add a repository" command is spelled differently.
         # Users can inspect it at https://get.docker.com
         if command -v curl &>/dev/null; then
           curl -fsSL https://get.docker.com | sh
@@ -322,31 +336,41 @@ install_docker() {
           error "Neither curl nor wget is available. Please install one and re-run."
         fi
         ;;
-      fedora)
-        # On Fedora/RHEL-family we use dnf and the official Docker CE repository
+      rhel)
+        # Rocky / Alma / RHEL / CentOS: Docker's RHEL repository, which follows EL release
+        # numbers. These still ship dnf 4, so --add-repo is the right spelling here.
         dnf -y install dnf-plugins-core
-        dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+        dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
         dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
         ;;
     esac
 
+    command -v docker &>/dev/null \
+      || error "Docker could not be installed automatically. Please install it (https://docs.docker.com/engine/install/) and run this again."
     info "Docker installed successfully."
   fi
 
   # --- Ensure the docker compose plugin is present ---
   # 'docker compose' (v2 plugin) is different from the older 'docker-compose' binary.
   # We require the v2 plugin.
-  if ! docker compose version &>/dev/null 2>&1; then
+  if ! docker compose version &>/dev/null; then
     warn "The 'docker compose' plugin is not available. Installing it..."
+    [ -n "$OS_ID" ] || detect_os
 
+    # docker-compose-plugin exists only in Docker's own repository. A distro's Docker
+    # (docker.io, moby-engine) pairs with its own package instead, so try that next.
     case "$OS_ID" in
       ubuntu | debian | raspbian)
-        apt-get install -y docker-compose-plugin
+        apt-get update -y || true
+        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose-v2 || true
         ;;
-      fedora)
-        dnf -y install docker-compose-plugin
+      fedora | rhel)
+        dnf -y install docker-compose-plugin || dnf -y install docker-compose || true
         ;;
     esac
+
+    docker compose version &>/dev/null \
+      || error "The 'docker compose' plugin could not be installed automatically. Please install it (https://docs.docker.com/compose/install/linux/) and run this again."
   fi
 
   info "Docker Compose plugin is available."
