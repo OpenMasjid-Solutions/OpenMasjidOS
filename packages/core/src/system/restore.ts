@@ -21,6 +21,7 @@ import { reloadEmailConfig } from '../store/email';
 import { reloadStripeConfig } from '../store/stripe';
 import { reloadWhatsAppConfig } from '../store/whatsapp';
 import { reloadCommandConfig } from '../store/commands';
+import { reloadAlertChannels } from '../notify/alerts';
 import { endAllSessionsAtNextBoot, rebindRemoteSession, remoteGrantOf } from '../auth/sessions';
 import { getPasswordHash, holdForRestore } from '../auth/store';
 import { holdSecondFactorEpoch, renewSecondFactorEpoch, sameSecondFactorAs } from '../auth/twofactor';
@@ -529,6 +530,7 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
       reloadStripeConfig();
       reloadWhatsAppConfig();
       reloadCommandConfig();
+      reloadAlertChannels();
     }
 
     // Every restored app's compose is checked NOW, not after its data is back. The verdict

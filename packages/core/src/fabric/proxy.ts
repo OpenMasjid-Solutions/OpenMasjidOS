@@ -80,7 +80,17 @@ export function proxyToTarget(opts: {
   maxResponseBytes?: number;
 }): Promise<ProxyResult> {
   const maxResponse = opts.maxResponseBytes ?? FABRIC_MAX_BODY;
-  return new Promise((resolve, reject) => {
+  return new Promise<ProxyResult>((settleOk, settleErr) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Every way out stops the clock, so a settled call leaves no timer behind.
+    const resolve = (r: ProxyResult) => {
+      clearTimeout(timer);
+      settleOk(r);
+    };
+    const reject = (e: CodedError) => {
+      clearTimeout(timer);
+      settleErr(e);
+    };
     const upstream = http.request(
       {
         host: opts.host,
@@ -103,16 +113,20 @@ export function proxyToTarget(opts: {
         let size = 0;
         let tooBig = false;
         res.on('data', (c: Buffer) => {
+          if (tooBig) return;
           size += c.length;
           if (size > maxResponse) {
             tooBig = true;
+            // Settle BEFORE destroying: a response destroyed mid-body emits neither
+            // 'end' nor 'error', so nothing later would.
+            reject(new CodedError('response_too_large'));
             res.destroy();
             return;
           }
           chunks.push(c);
         });
         res.on('end', () => {
-          if (tooBig) return reject(new CodedError('response_too_large'));
+          if (tooBig) return;
           resolve({
             status: res.statusCode ?? 502,
             contentType: typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined,
@@ -123,10 +137,12 @@ export function proxyToTarget(opts: {
       },
     );
     upstream.on('error', () => reject(new CodedError('target_unreachable')));
-    upstream.setTimeout(opts.timeoutMs, () => {
-      upstream.destroy();
+    // A wall-clock limit on the whole call. The request's own `setTimeout` is an IDLE
+    // timer, which an app trickling bytes never trips.
+    timer = setTimeout(() => {
       reject(new CodedError('timeout'));
-    });
+      upstream.destroy();
+    }, opts.timeoutMs);
     upstream.end(opts.body);
   });
 }

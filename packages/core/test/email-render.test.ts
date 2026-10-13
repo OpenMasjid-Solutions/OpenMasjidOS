@@ -184,6 +184,27 @@ test('the logo becomes a REMOTE image once remote access is configured', () => {
   settings.updateCloudflare({ enabled: false, domain: '' });
 });
 
+test('the logo URL is the apps\' hostname, however the address was typed — one helper for email and webhook', () => {
+  // Two copies each cleaned the address partly: a path or a capital letter went straight
+  // into the URL. Both now use notify.ts publicLogoUrl, built on appHostname().
+  const branding = req('../src/store/branding') as typeof import('../src/store/branding');
+  const settings = req('../src/settings/store') as typeof import('../src/settings/store');
+  const notify = req('../src/notify/notify') as typeof import('../src/notify/notify');
+  branding.saveLogo(
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64'),
+    'image/png',
+  );
+  settings.updateCloudflare({ enabled: true, domain: 'HTTPS://Masjid.Example.org/donate/' });
+  try {
+    assert.equal(notify.publicLogoUrl(), 'https://masjid.example.org/api/public/logo');
+    assert.match(email.brandedEmail(copy.coreUpdate('1', '2')).html, /<img src="https:\/\/masjid\.example\.org\/api\/public\/logo"/);
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'src', 'notify', 'email.ts'), 'utf8'), /\/api\/public\/logo`/, 'one copy, in notify.ts');
+  } finally {
+    branding.removeLogo();
+    settings.updateCloudflare({ enabled: false, domain: '' });
+  }
+});
+
 test("app mail never goes through the platform's branded template", () => {
   // §3: apps stay at arm's length — the platform must not rewrite an app's HTML,
   // and app mail must not pick up the masjid wordmark or logo. Asserted

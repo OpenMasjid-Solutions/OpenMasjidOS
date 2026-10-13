@@ -61,14 +61,18 @@ export const stripeRouter = router({
         label: z.string().trim().min(1, 'Give this account a name.').max(60),
         // Publishable key may be left blank on update (keeps the existing one).
         publishableKey: z.string().trim().max(255),
-        // Secret/webhook blank on update = keep existing; required on create.
+        // Secret key: blank on update = keep existing; required on create.
+        // Webhook secret: omitted = keep existing; '' = clear it (it is optional).
         secretKey: z.string().trim().max(255).optional(),
         webhookSecret: z.string().trim().max(255).optional(),
       }),
     )
     .mutation(({ input }) => {
       try {
-        return upsertAccount(input);
+        const saved = upsertAccount(input);
+        // The dot must show the new key's answer now, not the old key's for up to a minute.
+        statusCache.delete(saved.id);
+        return saved;
       } catch (err) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
       }
@@ -78,6 +82,7 @@ export const stripeRouter = router({
     .input(z.object({ id: z.string().min(1) }))
     .mutation(({ input }) => {
       removeAccount(input.id);
+      statusCache.delete(input.id);
       return { ok: true };
     }),
 });
