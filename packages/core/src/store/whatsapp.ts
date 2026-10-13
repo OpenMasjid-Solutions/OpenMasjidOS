@@ -182,10 +182,9 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
 };
 
 /**
- * Keep an admin's edits inside safe bounds. The limits are configurable so a masjid
- * can be MORE careful; they are clamped so a stray edit (or a copied config from a
- * bulk-sending tutorial) cannot turn the platform into a blaster. A UI can't be the
- * only guard — the Fabric writes here too.
+ * Keep stored limits inside safe bounds, so a hand-edited file (or a config copied from a
+ * bulk-sending tutorial) cannot turn the platform into a blaster if they are ever
+ * enforced again. Nothing in the dashboard edits them today.
  */
 export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLimits {
   const n = (v: unknown, def: number) => (typeof v === 'number' && Number.isFinite(v) ? v : def);

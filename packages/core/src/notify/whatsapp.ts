@@ -2025,7 +2025,9 @@ export function __resetPacingForTests(): void {
  * them would silently widen what a test resets, or narrow what a delete clears.
  *
  * `running` is left alone: it belongs to the pump loop, and forcing it false while a send
- * is in flight would let a second pump start alongside the first.
+ * is in flight would let a second pump start alongside the first. The pause and the
+ * send-path evidence are NOT left alone: kept, a fresh setup's first message saved
+ * `paused: true` and every message after it was held.
  */
 export function clearWhatsAppRuntime(): void {
   queue.length = 0;
@@ -2036,4 +2038,10 @@ export function clearWhatsAppRuntime(): void {
   onWhatsApp.clear();
   lidPhones.clear();
   presenceOn = false;
+  paused = false;
+  pausedSince = null;
+  sendSignals.authFailures = 0;
+  sendSignals.lastAuthFailAt = 0;
+  waitingFor = null;
+  foundGateway = null;
 }

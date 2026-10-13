@@ -460,6 +460,51 @@ test('the cause apps are told comes from the status code, never from the wording
 
 // ── turning it off, and the outage record ────────────────────────────────────────
 
+function signedIn() {
+  const sessions = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
+  const { whatsappRouter } = req('../src/trpc/routers/whatsapp') as typeof import('../src/trpc/routers/whatsapp');
+  const { token, csrf } = sessions.createSession('admin', sessions.currentCredential());
+  return whatsappRouter.createCaller({
+    username: 'admin',
+    sessionToken: token,
+    csrf,
+    isWebSocket: false,
+    ip: '172.17.0.1',
+    host: 'openmasjidos.local',
+    viaTunnel: false,
+    handedOver: false,
+    remoteIp: null,
+  } as never);
+}
+
+test('"MAY NOT HAVE ARRIVED" COMES FROM THE OUTAGE ITSELF — not a recount of a one-day history', async () => {
+  // Recounted from the outcome history, which keeps a day, it read 0 after a weekend
+  // outage: exactly when the admin came to look.
+  const held = await signedIn().held();
+  assert.equal(held.health.down, true, 'precondition: an outage is open');
+  assert.deepEqual(
+    held.suspect.map((s) => [s.source, s.count]),
+    [['students', 9]],
+  );
+});
+
+test('TURNING WHATSAPP OFF CLOSES THE OUTAGE — the dashboard banner cannot outlive the feature', async () => {
+  // The monitor stops looking once WhatsApp is off, so nothing else would ever clear it.
+  await signedIn().disable({ deleteEverything: false });
+  const health = mon.whatsAppHealth();
+  assert.equal(health.down, false);
+  assert.equal(health.incidents.length, 1, 'the record of what happened is kept for the apps that ask');
+});
+
+test('deleting WhatsApp closes the outage too, before the gateway app goes', () => {
+  // Driven structurally: the delete branch removes a Docker app, which a test must not do.
+  const src = codeOf('trpc/routers/whatsapp.ts');
+  const runtime = src.indexOf('clearWhatsAppRuntime()');
+  const incident = src.indexOf('clearWhatsAppIncident()', runtime);
+  const remove = src.indexOf('removeApp(OPENWA_APP_ID');
+  assert.ok(runtime > 0 && incident > runtime && incident < remove);
+});
+
 test('A FULL OR READ-ONLY CARD CANNOT STOP AN OUTAGE BEING HANDLED — saving the link state never throws', async () => {
   // save() threw between pausing the queue and telling the admin; every later tick then saw
   // `down` and returned. Paused, with nobody told.
@@ -481,6 +526,28 @@ test('A FULL OR READ-ONLY CARD CANNOT STOP AN OUTAGE BEING HANDLED — saving th
     }
   } finally {
     wa.releaseQueue(); // the confirmed outage paused it
+    await gw.close();
+  }
+});
+
+test('DELETING WHATSAPP FORGETS THE PAUSE — the next setup’s first message is not held', async () => {
+  const gw = await stubGateway((_m, url) => (url.endsWith('/messages/send-text') ? { status: 401 } : undefined));
+  try {
+    wa.__resetPacingForTests();
+    const r = wa.enqueue({ to: PARENT, text: 'turned down', source: 'students' });
+    await waitFor('the refusal to be recorded', () => wa.whatsappOutcome(r.id!, 'students')?.state === 'failed');
+    assert.equal(wa.sendPathSignals().authFailures, 1, 'precondition: the send path saw a refused key');
+    wa.pauseQueue('test');
+
+    wa.clearWhatsAppRuntime();
+    assert.equal(wa.isQueuePaused(), false);
+    assert.deepEqual(wa.sendPathSignals(), { authFailures: 0, lastAuthFailAt: 0 });
+
+    wa.enqueue({ to: PARENT, text: 'a fresh start', source: 'students' });
+    const saved = JSON.parse(fs.readFileSync(path.join(CONFIG, 'whatsapp-queue.json'), 'utf8')) as { paused: boolean };
+    assert.equal(saved.paused, false, 'it is saved as running, not held for an outage that was deleted');
+  } finally {
+    await settle();
     await gw.close();
   }
 });
