@@ -164,6 +164,18 @@ const image = (id: string) => ({
 });
 const noHistory = () => ({ sends: [], groupSends: [], lastPerRecipient: new Map<string, number>(), outcomes: [] });
 
+test('A NUMBER STARTING WITH 0 IS REFUSED — no country code starts with one', () => {
+  // "07700 900123" (a national number) and "0044 7700 900123" (a dialling prefix) were both
+  // accepted, answered 202, and became a chat id WhatsApp can never deliver to.
+  assert.equal(phone.toDigits('07700 900123'), null);
+  assert.equal(phone.toDigits('0044 7700 900123'), null);
+  assert.equal(phone.toDigits('+44 7700 900123'), '447700900123', 'written properly it still works');
+  store.saveWhatsAppConfig({ provider: 'openwa', apiKey: 'k', baseUrl: 'http://127.0.0.1:1' });
+  const r = wa.enqueue({ to: '0044 7700 900123', text: 'hello', source: 'students' });
+  assert.equal(r.queued, false, 'refused at the door, while the app is still listening');
+  assert.match(String(r.error), /country code/);
+});
+
 // ── the inbound socket ───────────────────────────────────────────────────────────
 
 /**
