@@ -62,7 +62,10 @@ function dashboardContext(): never {
 function installApp(id: string, secret: string, caps: Record<string, boolean>): void {
   const dir = path.join(DATA, 'apps', id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ id, name: id, kind: 'catalog', ssoSecret: secret, ...caps }));
+  fs.writeFileSync(
+    path.join(dir, 'meta.json'),
+    JSON.stringify({ id, name: id, kind: 'catalog', createdAt: '2026-01-01T00:00:00.000Z', ssoSecret: secret, ...caps }),
+  );
   manager.invalidateFabricIndex();
 }
 
@@ -311,4 +314,45 @@ test("A STRIPE KEY JUST SAVED SHOWS ITS OWN STATUS, NOT THE OLD KEY'S", async ()
       await caller.remove({ id });
     },
   );
+});
+
+// ── the address monitor ─────────────────────────────────────────────────────────
+
+const POSIX_ONLY = { skip: process.platform === 'win32' ? 'needs a POSIX shell for the fake docker — run the suite in WSL' : false } as const;
+
+test('AN APP NOT RUNNING WHEN THE ADDRESS CHANGED IS RESTARTED ONCE IT IS', POSIX_ONLY, async () => {
+  // The repair ran once: it rewrote every app's .env but restarted only the apps running
+  // at that moment, so one caught between crash-loop restarts kept the old address for good.
+  const client = req('../src/docker/client') as { docker: { listContainers: unknown } };
+  const monitor = req('../src/system/address-monitor') as typeof import('../src/system/address-monitor');
+  const dir = path.join(DATA, 'apps', 'display');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ id: 'display', name: 'Display', kind: 'catalog', createdAt: '2026-01-01T00:00:00.000Z' }));
+  fs.writeFileSync(path.join(dir, 'compose.yml'), 'services:\n  app:\n    image: nginx:1.27\n    environment:\n      OPENMASJID_BASE_URL: ${OPENMASJID_BASE_URL}\n');
+  fs.writeFileSync(path.join(dir, '.env'), 'OPENMASJID_BASE_URL=http://10.0.0.5\n');
+
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-fake-docker-'));
+  const calls = path.join(bin, 'calls.log');
+  fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\necho "$*" >> "${calls}"\nexit 0\n`, { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, base: process.env.OPENMASJID_BASE_URL, list: client.docker.listContainers };
+  process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
+  process.env.OPENMASJID_BASE_URL = 'http://192.168.7.20';
+  let state = 'restarting';
+  client.docker.listContainers = async () => [{ Labels: { 'com.docker.compose.project': 'omos-display' }, State: state, Ports: [] }];
+  try {
+    const first = await monitor.reconcileNow();
+    assert.ok(first.updated.includes('display'), 'precondition: the new address was written');
+    assert.deepEqual(first.restarted, [], 'caught between restarts, so not restarted yet');
+    state = 'running';
+    const second = await monitor.reconcileNow();
+    assert.deepEqual(second.restarted, ['display'], 'it was forgotten once its .env had been rewritten');
+    assert.match(fs.readFileSync(calls, 'utf8'), /compose -p omos-display .*up -d/);
+    assert.deepEqual((await monitor.reconcileNow()).restarted, [], 'and it is done once it has been recreated');
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.base === undefined) delete process.env.OPENMASJID_BASE_URL;
+    else process.env.OPENMASJID_BASE_URL = saved.base;
+    client.docker.listContainers = saved.list;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
