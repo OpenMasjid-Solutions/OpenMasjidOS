@@ -18,10 +18,14 @@
  * number stored as "555 0123" could be in any country, and quietly prefixing the
  * platform's guess would send a masjid's fee reminder to a stranger. No country code
  * (fewer than 8 digits) is a refusal, not a repair.
+ *
+ * So is a leading 0: no country code starts with one, so "07700 900123" (a national
+ * number) and "0044 7700 900123" (a dialling prefix) were accepted and then never arrived.
  */
 export function toDigits(raw: string): string | null {
   const digits = String(raw ?? '').replace(/[^0-9]/g, '');
   if (digits.length < 8 || digits.length > 15) return null; // E.164 allows max 15
+  if (digits.startsWith('0')) return null;
   return digits;
 }
 

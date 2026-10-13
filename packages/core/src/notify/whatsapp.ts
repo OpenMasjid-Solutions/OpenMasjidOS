@@ -13,8 +13,9 @@
  * If the students app and a donations app each send "politely" at the same moment, the
  * number still emits a burst; WhatsApp sees a phone number, not our request
  * boundaries. So every message the whole platform sends — OS alerts and every app's
- * Fabric call alike — goes through the ONE serialised queue below. Nothing is ever in
- * flight concurrently.
+ * Fabric call alike — goes through the ONE serialised queue below, one at a time. The
+ * only sends beside it are the admin's own (`sendImmediate`: the test button and command
+ * replies), each an answer to something the admin just did.
  *
  * This is also why we do NOT use OpenWA's `POST .../messages/send-bulk`. It paces
  * within a single request (3s default + jitter), which is fine in isolation and useless
@@ -29,9 +30,9 @@
  * the most dangerous kind of stale comment, because it is the first thing anyone reads
  * before deciding whether a change here is safe.
  *
- *  1. **Serialised.** One message in flight, ever. This is the one that still carries
- *     real weight: ban risk attaches to the NUMBER, so two callers each sending
- *     "politely" at once is still a burst.
+ *  1. **Serialised.** The queue sends one message at a time, whoever asked. This is the
+ *     one that still carries real weight: ban risk attaches to the NUMBER, so two callers
+ *     each sending "politely" at once is still a burst.
  *  2. **Typing indicator**, for a duration scaled to the message length (people take
  *     longer over longer messages), then `paused`, then the send. With everything below
  *     gone, this is now the ONLY delay between two messages — a few seconds.
@@ -68,10 +69,11 @@ import {
   saveQueueState,
   trimOutcomes,
   bankPausedTime,
+  effectiveHeldMs,
   MAX_HELD_MS,
+  type ItemRef,
   type OutcomeRecord,
   type OutcomeState,
-  type StoredItem,
 } from './whatsapp-queue-store';
 import { getInstalled } from '../apps/manager';
 import { OPENWA_APP_ID } from '../apps/managed';
@@ -87,8 +89,10 @@ import {
   type WhatsAppLimits,
 } from '../store/whatsapp';
 
-/** How long to wait on any single gateway call. */
+/** How long to wait on a gateway call. */
 const HTTP_TIMEOUT_MS = 15_000;
+/** …and on a send, which may be carrying a 2 MB image out to WhatsApp. */
+const SEND_TIMEOUT_MS = 120_000;
 /** Cap the queue so a looping app can't grow it without bound. */
 const MAX_QUEUE = 500;
 /** A text longer than this is refused: WhatsApp's own limit is far higher, but a
@@ -101,10 +105,9 @@ const MAX_ATTEMPTS = 5;
  * Who a message is for.
  *
  * A group is not "a recipient with a funny number": it has its own address space
- * (`@g.us` rather than `@c.us`), its own rate budget (one message reaches everyone, so
- * it must not spend the allowance individual reminders need), and `contacts/check` is
- * meaningless for it. Making the distinction a type rather than a string test means
- * every place that treats the two differently has to say so.
+ * (`@g.us` rather than `@c.us`), only a group the admin approved may be named, and
+ * `contacts/check` is meaningless for it. Making the distinction a type rather than a
+ * string test means every place that treats the two differently has to say so.
  */
 export type Target = { kind: 'person'; digits: string } | { kind: 'group'; groupId: string };
 
@@ -136,9 +139,9 @@ export const MAX_CAPTION = 1024;
 /**
  * How many image messages may sit in the queue at once.
  *
- * Queued items are persisted, and a cap or the warm-up ramp can hold them — on a Raspberry
- * Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3 the
- * bytes). Beyond that an app is REFUSED with a clear message rather than the platform
+ * A queued image is held in memory until it goes, and an outage can hold it for days — on a
+ * Raspberry Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3
+ * the bytes). Beyond that an app is REFUSED with a clear message rather than the platform
  * quietly growing; a refusal it can retry is better than an out-of-memory kill that takes
  * the masjid's whole dashboard with it.
  */
@@ -210,8 +213,8 @@ export function mediaProblem(m: OutgoingMedia): string | null {
   return null;
 }
 
-/** The pacing key for a target — also the cooldown map's key, so a person and a group
- *  can never collide (`@g.us` cannot appear in a digits-only string). */
+/** The key the send history records a target under. A person and a group can never
+ *  collide (`@g.us` cannot appear in a digits-only string). */
 function targetKey(t: Target): string {
   return t.kind === 'person' ? t.digits : `group:${t.groupId}`;
 }
@@ -222,9 +225,10 @@ export interface SendOutcome {
   /** Present when the gateway refused or was unreachable. Never includes the body. */
   error?: string;
   /**
-   * True when the failure is worth retrying: rate limiting, a 5xx, or a network error.
-   * FALSE for a refusal that will never succeed (a malformed request, a number that is
-   * not on WhatsApp) — retrying those just burns the number's allowance.
+   * True when the failure is worth retrying: rate limiting, a 5xx, or a network error —
+   * but not a send that timed out, which may have gone (see `sendOne`). FALSE for a refusal
+   * that will never succeed (a malformed request, a number that is not on WhatsApp) —
+   * retrying those is only more traffic from the number, for nothing.
    */
   retryable?: boolean;
 }
@@ -288,8 +292,17 @@ export { OPENWA_APP_ID };
  */
 export type GatewayAddress = { url: string; reason?: undefined } | { url: null; reason: string };
 
+/**
+ * The last address found, reused for a few seconds. Finding it asks Docker and reads every
+ * app's meta.json, and one queued message makes about five gateway calls. Forgotten the
+ * moment a call cannot reach it.
+ */
+let foundGateway: { url: string; at: number } | null = null;
+const GATEWAY_ADDRESS_TTL_MS = 5_000;
+
 export async function resolveBaseUrl(cfg: WhatsAppConfig): Promise<GatewayAddress> {
   if (cfg.baseUrl) return { url: cfg.baseUrl };
+  if (foundGateway && Date.now() - foundGateway.at < GATEWAY_ADDRESS_TTL_MS) return { url: foundGateway.url };
   let app;
   try {
     app = await getInstalled(OPENWA_APP_ID);
@@ -300,7 +313,8 @@ export async function resolveBaseUrl(cfg: WhatsAppConfig): Promise<GatewayAddres
   if (!app.running) return { url: null, reason: 'OpenWA is installed but not running' };
   const port = app.ports[0];
   if (!port) return { url: null, reason: 'OpenWA is running but is not publishing a port' };
-  return { url: appOrigin(port) };
+  foundGateway = { url: appOrigin(port), at: Date.now() };
+  return { url: foundGateway.url };
 }
 
 /**
@@ -334,7 +348,8 @@ async function call(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
-): Promise<{ ok: boolean; status: number; json: unknown; error?: string }> {
+  timeoutMs = HTTP_TIMEOUT_MS,
+): Promise<{ ok: boolean; status: number; json: unknown; error?: string; timedOut?: boolean }> {
   const addr = await resolveBaseUrl(cfg);
   if (!addr.url) {
     return { ok: false, status: 0, json: null, error: addr.reason };
@@ -349,7 +364,7 @@ async function call(
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     let json: unknown = null;
     try {
@@ -370,7 +385,8 @@ async function call(
     // from a gateway that is simply down.
     const reason = describeFetchError(err);
     log.warn(`WhatsApp: gateway ${method} ${path} failed — ${reason} (${base}).`);
-    return { ok: false, status: 0, json: null, error: reason };
+    foundGateway = null; // it may have moved; look it up again next time
+    return { ok: false, status: 0, json: null, error: reason, timedOut: (err as Error)?.name === 'TimeoutError' };
   }
 }
 
@@ -614,12 +630,10 @@ async function ensureStarted(cfg: WhatsAppConfig): Promise<{ ok: boolean; ready?
  * Creates the session if needed, starts it, then asks — the exact order OpenWA documents.
  */
 export async function requestPairingCode(phone: string): Promise<{ ok: boolean; code?: string; error?: string }> {
-  const cfg0 = getWhatsAppConfig();
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(phone);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
 
-  void cfg0;
   // Two passes at most: if the id we hold turns out to name a session the gateway no
   // longer has, `ensureStarted` clears it and the second pass creates a fresh one. A
   // masjid should never have to know that happened, let alone fix it by hand.
@@ -628,7 +642,7 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
   for (let pass = 0; pass < 2; pass += 1) {
     const session = await ensureSession();
     if (!session.ok) return { ok: false, error: session.error };
-    // ensureSession may have just recorded a new id, so re-read rather than reusing cfg0.
+    // ensureSession may have just recorded a new id, so re-read the config.
     cfg = getWhatsAppConfig();
     started = await ensureStarted(cfg);
     if (started.error !== 'stale-session') break;
@@ -637,7 +651,11 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
     return { ok: false, error: started.error === 'stale-session' ? 'Could not create a WhatsApp session.' : started.error };
   }
   if (started.ready) {
-    return { ok: false, error: 'A phone is already linked. Unlink it in OpenWA first if you want to change it.' };
+    // Never "in OpenWA": the platform owns the session, and OpenWA's own screen is off-limits for it.
+    return {
+      ok: false,
+      error: 'A phone is already linked. To use a different one, press "Unlink this number" in Settings → WhatsApp first.',
+    };
   }
 
   // Starting is asynchronous: the engine exists moments before it can talk to WhatsApp,
@@ -792,28 +810,13 @@ function rememberRegistration(digits: string, yes: boolean, now: number): void {
   onWhatsApp.set(digits, { yes, at: now });
 }
 
-/**
- * Note a `contacts/check` that could not answer. Proceeding anyway is right — a
- * hiccup must not stop all sending.
- *
- * The counter is recorded and surfaced for diagnostics, and is deliberately NOT read
- * by the health monitor as a dead-link verdict. An unanswerable check is exactly the
- * "could not ask" case (CLAUDE.md §13.2d): it is inconclusive, so it must not decide
- * anything on its own. This comment previously promised the monitor consumed it,
- * which it never has — and a signal documented as load-bearing but wired to nothing
- * is worse than no signal, because it stops anyone looking for the real one.
- */
-function noteCheckFailure(ok: boolean): void {
-  if (ok) sendSignals.checkFailures = 0;
-  else sendSignals.checkFailures += 1;
-}
-
 async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boolean | null> {
   const now = Date.now();
   const cached = cachedRegistration(digits, now);
   if (cached !== undefined) return cached;
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/check/${digits}`);
-  noteCheckFailure(r.ok);
+  // A check that could not answer proceeds, and decides nothing: "could not ask" is not a
+  // dead link (CLAUDE.md §13.2d), so it is not counted as evidence of one either.
   if (!r.ok) return null;
   const j = r.json as { exists?: unknown; isRegistered?: unknown; registered?: unknown; numberExists?: unknown } | null;
   const yes = j?.exists ?? j?.isRegistered ?? j?.registered ?? j?.numberExists;
@@ -823,29 +826,31 @@ async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boo
 }
 
 // ── pacing ───────────────────────────────────────────────────────────────────────
+//
+// What this number sent in the last day, persisted with the queue. A RECORD, not an
+// allowance: nothing brakes on it any more (see the header). It is what a ceiling would be
+// built on if one ever returns, so it is kept — and kept to a day, like any record of who
+// the masjid messaged.
 
-/** Individual sends within the last rolling day, newest last. Used for both caps. */
+/** Individual sends within the last rolling day, newest last. */
 const sentAt: number[] = [];
-/**
- * Group posts within the last rolling day. SEPARATE from `sentAt` on purpose: one group
- * message reaches everyone, so it must not consume the allowance that fee reminders need
- * — and equally it needs a brake of its own, since a group posted to every few minutes is
- * the kind of spam people actually complain about.
- */
+/** Group posts within the last rolling day — apart from `sentAt`, because one reaches everyone. */
 const groupSentAt: number[] = [];
-/** target key → last send, for the per-recipient / per-group cooldown. */
+/** target key → its last send within the last rolling day. */
 const lastToRecipient = new Map<string, number>();
 
 function prune(now: number): void {
   const dayAgo = now - 86_400_000;
   while (sentAt.length > 0 && sentAt[0]! < dayAgo) sentAt.shift();
   while (groupSentAt.length > 0 && groupSentAt[0]! < dayAgo) groupSentAt.shift();
+  // It names the people messaged, so it must not outlive the day the arrays above keep.
+  for (const [key, at] of lastToRecipient) if (at < dayAgo) lastToRecipient.delete(key);
 }
 
 /**
- * The warm-up multiplier. A number linked today gets a quarter of the allowance; by
- * the end of the ramp it gets all of it. Returns 1 when nothing is known about when
- * the link happened — an unknown link date shouldn't lock a working masjid out.
+ * The warm-up multiplier. INERT: the ramp it fed is gone and nothing calls this; it is
+ * kept for the reasoning and its tests. A number linked today got a quarter of the
+ * allowance; by the end of the ramp, all of it. 1 when the link date is unknown.
  */
 export function warmupFactor(linkedAt: string | null, limits: WhatsAppLimits, now: number): number {
   if (!linkedAt || limits.warmupDays <= 0) return 1;
@@ -878,10 +883,8 @@ export function warmupFactor(linkedAt: string | null, limits: WhatsAppLimits, no
 // about who a recipient is, so it is the wrong place to make that judgement.
 
 /**
- * The hour/day caps alone, warm-up applied. Split out of `blockedReason` so the cap
- * arithmetic exists in ONE place and the reply lane can ask the cap question without
- * also asking about the per-recipient cooldown, which does not
- * applies to answering someone who just messaged us (see `replyTo`).
+ * Where an hourly or daily ceiling would be decided, if one is ever reinstated. INERT: it
+ * always answers null, and its only caller is `blockedReason`.
  */
 export function capExceeded(
   now: number,
@@ -890,17 +893,16 @@ export function capExceeded(
   linkedAt: string | null,
   history: { sends: number[]; groupSends: number[] },
 ): 'hour' | 'day' | null {
-  // INDIVIDUAL messages are deliberately uncapped. Spacing is the whole brake for them:
-  // the randomised 6-20s gap plus the per-recipient cooldown. Removed at the maintainer's
-  // decision after the caps repeatedly blocked ordinary use — with the warm-up ramp they
-  // came to 3/hour on a freshly linked number, which is unusable even for testing, and a
-  // masjid messaging parents one at a time is not the threat the caps were written for.
+  // INDIVIDUAL messages are deliberately uncapped, removed at the maintainer's decision
+  // after the caps repeatedly blocked ordinary use — with the warm-up ramp they came to
+  // 3/hour on a freshly linked number, which is unusable even for testing, and a masjid
+  // messaging parents one at a time is not the threat the caps were written for.
   //
   // Known trade-off, recorded because it is not the admin's mistake if it bites: the queue
-  // is shared, so an app looping over 200 parents will now send all 200, spaced but
-  // unbounded. Ban risk attaches to the NUMBER and a ban is terminal, so if this proves
-  // too loose the fix is a cap here, not a per-app one — a per-app limiter cannot see the
-  // number's total traffic.
+  // is shared, so an app looping over 200 parents will now send all 200, back to back, as
+  // fast as the typing indicator allows. Ban risk attaches to the NUMBER and a ban is
+  // terminal, so if this proves too loose the fix is a cap here, not a per-app one — a
+  // per-app limiter cannot see the number's total traffic.
   // GROUP caps are gone too, at the maintainer's decision, and they were the LAST thing
   // that could hold a message for an hour with nothing telling the sender why. 4/hour and
   // 10/day, quartered by the warm-up ramp to as little as 1/hour on a recently linked
@@ -947,9 +949,8 @@ export function blockedReason(
   // with the head-of-line bug that used to be in `pump` one group image could hold up every
   // other app's messages for that entire window.
   //
-  // `lastToRecipient` is still WRITTEN, deliberately. It costs nothing, `sendImmediate`
-  // documents relying on the write, and it is what any future per-recipient policy would
-  // need. Nothing READS it as a brake any more.
+  // `lastToRecipient` is still WRITTEN, deliberately. It is pruned to a day, and it is what
+  // any future per-recipient policy would need. Nothing READS it as a brake any more.
   return null;
 }
 
@@ -1001,14 +1002,14 @@ let pausedSince: number | null = null;
 /**
  * Evidence from the SEND path that the link is dead, for the health monitor to read.
  *
- * The monitor's own probe is the primary detector, but these two are things only the
- * sender sees, and both used to be discarded: a 401/403 is classed non-retryable so the
- * message is dropped after one attempt with a single log line, and a `contacts/check` that
- * cannot answer returns null and the send proceeds regardless. Neither should be the last
- * anyone hears of it.
+ * The monitor's own probe is the primary detector, but only the sender sees a run of
+ * 401/403s: each is classed non-retryable, so the message is dropped after one attempt
+ * with a single log line. That should not be the last anyone hears of it.
  */
-const sendSignals = { authFailures: 0, checkFailures: 0, lastAuthFailAt: 0 };
+const sendSignals = { authFailures: 0, lastAuthFailAt: 0 };
 let presenceOn = false;
+/** What the pump is waiting on, so the log says it once rather than every minute. */
+let waitingFor: string | null = null;
 
 /**
  * Recent per-message outcomes, so an app can find out what became of a `202`.
@@ -1019,7 +1020,7 @@ let presenceOn = false;
  */
 const outcomes: OutcomeRecord[] = [];
 
-/** Persist queue + pacing history + outcomes. Called after every mutation. */
+/** Persist queue + send history + outcomes. Called after every mutation. */
 function persist(): void {
   saveQueueState({
     queue,
@@ -1032,7 +1033,7 @@ function persist(): void {
   });
 }
 
-function noteOutcome(item: QueueItem, state: OutcomeState, reason?: string): void {
+function noteOutcome(item: ItemRef, state: OutcomeState, reason?: string): void {
   const existing = outcomes.find((o) => o.id === item.id);
   if (existing) {
     existing.state = state;
@@ -1092,18 +1093,17 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
 
   // Anything held longer than a day is not sent. Recorded as an outcome rather than
   // vanishing, so an app that asks gets a real answer instead of silence.
-  for (const stale of state.expired) {
-    noteOutcome(
-      stale as QueueItem,
-      'expired',
-      'It waited more than 24 hours of working connection, so it was not sent.',
-    );
+  noteExpired(state.expired);
+  // An image is kept in a file of its own; one that cannot be read back (a restore put an
+  // older config/ in place, say) fails that message alone.
+  const damaged = queue.filter((item) => item.media && mediaProblem(item.media));
+  const unreadable: ItemRef[] = [...state.lost, ...damaged];
+  for (const item of unreadable) {
+    noteOutcome(item, 'failed', 'Its image could not be read back after a restart, so it was not sent.');
   }
-  if (state.expired.length > 0) {
-    log.warn(
-      `WhatsApp: dropped ${state.expired.length} message(s) held longer than ` +
-        `${Math.round(MAX_HELD_MS / 3_600_000)}h — releasing a backlog at once is what gets a number restricted.`,
-    );
+  if (unreadable.length > 0) {
+    log.warn(`WhatsApp: ${unreadable.length} queued image(s) could not be read back after a restart; not sent.`);
+    queue.splice(0, queue.length, ...queue.filter((item) => !damaged.includes(item)));
   }
   if (queue.length > 0) {
     log.info(`WhatsApp: restored ${queue.length} queued message(s) from the previous run.`);
@@ -1116,8 +1116,33 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
       void pump();
     }
   }
-  if (state.expired.length > 0 || queue.length > 0) persist();
+  if (state.expired.length > 0 || unreadable.length > 0 || queue.length > 0) persist();
   return { restored: queue.length, expired: state.expired.length };
+}
+
+const HELD_TOO_LONG = 'It waited more than 24 hours of working connection, so it was not sent.';
+
+/** Record messages dropped for waiting longer than `MAX_HELD_MS`. */
+function noteExpired(items: ItemRef[]): void {
+  if (items.length === 0) return;
+  for (const item of items) noteOutcome(item, 'expired', HELD_TOO_LONG);
+  log.warn(
+    `WhatsApp: dropped ${items.length} message(s) held longer than ` +
+      `${Math.round(MAX_HELD_MS / 3_600_000)}h — releasing a backlog at once is what gets a number restricted.`,
+  );
+}
+
+/**
+ * The same bound while the core stays up. Checked only at boot, it let a core that ran
+ * through a long gateway outage send the whole backlog back to back once the gateway
+ * returned. Only called while the queue runs, so no pause is in progress.
+ */
+function expireHeldTooLong(now: number): void {
+  const stale = queue.filter((item) => effectiveHeldMs(item, now, null) > MAX_HELD_MS);
+  if (stale.length === 0) return;
+  noteExpired(stale);
+  queue.splice(0, queue.length, ...queue.filter((item) => !stale.includes(item)));
+  persist();
 }
 
 export function queueDepth(): number {
@@ -1125,7 +1150,7 @@ export function queueDepth(): number {
 }
 
 /** Evidence the SEND path has gathered that the link may be dead. Read by the monitor. */
-export function sendPathSignals(): { authFailures: number; checkFailures: number; lastAuthFailAt: number } {
+export function sendPathSignals(): { authFailures: number; lastAuthFailAt: number } {
   return { ...sendSignals };
 }
 
@@ -1145,15 +1170,26 @@ export function isQueuePaused(): boolean {
  * A 503 from `/chats` is OpenWA telling us the engine's WhatsApp connection is gone. Any
  * other failure is inconclusive and must NOT be reported as a dead link -- "could not ask"
  * is never an answer (CLAUDE.md §13.2d).
+ *
+ * `cause` is what apps are told (the monitor's `LinkFailureCause`), so it is decided here
+ * from the status code, never read back out of the wording.
  */
-export async function probeLink(): Promise<{ alive: boolean | null; detail?: string }> {
+export async function probeLink(): Promise<{
+  alive: boolean | null;
+  detail?: string;
+  cause?: 'session-expired' | 'key-rejected';
+}> {
   const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured() || !cfg.sessionId) return { alive: null, detail: 'not configured' };
   // limit=1: this is a liveness question, not a data fetch.
   const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats?limit=1`);
   if (r.ok) return { alive: true };
-  if (r.status === 503) return { alive: false, detail: "the gateway's connection to WhatsApp has died" };
-  if (r.status === 401 || r.status === 403) return { alive: false, detail: 'the gateway rejected our key' };
+  if (r.status === 503) {
+    return { alive: false, detail: "the gateway's connection to WhatsApp has died", cause: 'session-expired' };
+  }
+  if (r.status === 401 || r.status === 403) {
+    return { alive: false, detail: 'the gateway rejected our key', cause: 'key-rejected' };
+  }
   // 409 = still starting, 0 = transport, 5xx = restarting: all inconclusive.
   return { alive: null, detail: r.error ?? `the gateway answered ${r.status}` };
 }
@@ -1196,8 +1232,12 @@ export function releaseQueue(): { released: number } {
  *  answer rather than the 404 an unknown id produces. */
 export function discardHeldMessages(): { discarded: number } {
   const n = queue.length;
+  // Settings offers Discard whenever anything is waiting, not only during an outage.
+  const reason = paused
+    ? 'It was discarded by an admin after the WhatsApp link was lost.'
+    : 'It was discarded by an admin before it was sent.';
   for (const item of queue) {
-    noteOutcome(item, 'failed', 'It was discarded by an admin after the WhatsApp link was lost.');
+    noteOutcome(item, 'failed', reason);
   }
   queue.length = 0;
   if (paused) {
@@ -1281,9 +1321,10 @@ export function outcomesInWindow(
 }
 
 /**
- * Enqueue a message. Returns immediately — this is a QUEUE, not a send. Human pacing
- * means delivery is seconds to hours away (a cap, the warm-up ramp), so nothing auth-critical may
- * depend on it. That contract is stated to apps in `docs/WHATSAPP.md`.
+ * Enqueue a message. Returns immediately — this is a QUEUE, not a send. Delivery is
+ * seconds away on a healthy link and can be hours or days away on a broken one (a paused
+ * queue, a gateway that is down), so nothing auth-critical may depend on it. That contract
+ * is stated to apps in `docs/WHATSAPP.md`.
  */
 export function enqueue(req: SendRequest): { queued: boolean; error?: string; id?: string } {
   if (!isWhatsAppConfigured()) return { queued: false, error: 'WhatsApp is not set up.' };
@@ -1368,8 +1409,39 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string; id
 }
 
 /**
- * Drain the queue, one message at a time, pausing for whatever the policy says. Never
- * runs twice concurrently — `running` is the whole point of this module.
+ * The first item that may go now, or — when none may — the soonest moment one will.
+ *
+ * The first SENDABLE item, never simply the head. Reading `queue[0]` and waiting on it was
+ * a head-of-line block: one message waiting out its backoff held up every app's traffic
+ * behind it. A waiting message is DELAYED, never dropped: it stays on the persisted queue
+ * and is reconsidered every pass.
+ */
+function nextSendable(cfg: WhatsAppConfig, now: number): { index: number; wakeAt: number } {
+  const history = { sends: sentAt, groupSends: groupSentAt, lastPerRecipient: lastToRecipient };
+  let wakeAt = Infinity;
+  for (let i = 0; i < queue.length; i++) {
+    const notBefore = queue[i]!.notBefore ?? 0;
+    if (notBefore > now) {
+      wakeAt = Math.min(wakeAt, notBefore);
+      continue;
+    }
+    // Where a ceiling would be applied if one ever returns; nothing blocks today.
+    if (blockedReason(now, queue[i]!.target, cfg.limits, cfg.linkedAt, history) === null) {
+      return { index: i, wakeAt: now };
+    }
+  }
+  return { index: -1, wakeAt };
+}
+
+/** Say what the pump is waiting on once, not once a minute; null when it is not waiting. */
+function noteWaiting(why: string | null): void {
+  if (why && why !== waitingFor) log.warn(`WhatsApp: ${why}; waiting.`);
+  waitingFor = why;
+}
+
+/**
+ * Drain the queue, one message at a time. Never runs twice concurrently — `running` is
+ * the whole point of this module.
  */
 async function pump(): Promise<void> {
   if (running) return;
@@ -1395,48 +1467,17 @@ async function pump(): Promise<void> {
       }
       const now = Date.now();
       prune(now);
+      expireHeldTooLong(now);
+      if (queue.length === 0) break;
 
-      // Find the first SENDABLE item, rather than stalling on the head of the queue.
-      //
-      // This was a head-of-line block, and it is the mechanism behind "one app's message
-      // never arrives while another app's later messages do". The loop read `queue[0]`, and
-      // if that item could not go yet it slept and `continue`d — re-reading the SAME item.
-      // So one message that was waiting held up every message behind it, from every app, for
-      // as long as its own wait lasted. With the 30-minute per-group cooldown that meant a
-      // single group post stopped all WhatsApp traffic for half an hour.
-      //
-      // Skipping keeps the property that matters — a blocked message is DELAYED, never
-      // dropped; it stays on the persisted queue and is reconsidered every pass — and drops
-      // the one that never made sense: one target's limit applying to every other target.
-      let index = -1;
-      let firstReason: string | null = null;
-      let soonest = Infinity;
-      for (let i = 0; i < queue.length; i++) {
-        const waitUntil = queue[i]!.notBefore ?? 0;
-        if (waitUntil > now) {
-          soonest = Math.min(soonest, waitUntil);
-          firstReason ??= 'a previous attempt failed; backing off';
-          continue;
-        }
-        const reason = blockedReason(now, queue[i]!.target, cfg.limits, cfg.linkedAt, {
-          sends: sentAt,
-          groupSends: groupSentAt,
-          lastPerRecipient: lastToRecipient,
-        });
-        if (!reason) {
-          index = i;
-          break;
-        }
-        firstReason ??= reason;
-      }
+      let { index, wakeAt } = nextSendable(cfg, now);
       if (index < 0) {
-        // Nothing can go right now. Sleep only until the soonest item is due, so a short
-        // backoff is not rounded up to a whole minute — with a floor so this can never
-        // become a busy loop.
-        const nap = Number.isFinite(soonest) ? Math.min(60_000, Math.max(1_000, soonest - now)) : 60_000;
+        // Nothing can go right now. Sleep until the soonest item is due — at most a minute,
+        // so a message enqueued meanwhile is not kept waiting behind a long backoff, and at
+        // least a second, so this can never become a busy loop.
+        const nap = Math.min(60_000, Math.max(1_000, wakeAt - now));
         log.info(
-          `WhatsApp: ${queue.length} message(s) waiting — ${firstReason ?? 'rate limited'}. ` +
-            `Retrying in ${Math.round(nap / 1000)}s.`,
+          `WhatsApp: ${queue.length} message(s) waiting to be retried. Next try in ${Math.round(nap / 1000)}s.`,
         );
         await setPresence(cfg, false);
         await sleep(nap);
@@ -1449,7 +1490,7 @@ async function pump(): Promise<void> {
       if (!cfg.sessionId) {
         const s = await ensureSession();
         if (!s.ok) {
-          log.warn(`WhatsApp: no usable session yet (${s.error ?? 'unknown'}); will retry.`);
+          noteWaiting(`no usable session yet (${s.error ?? 'unknown'})`);
           await sleep(60_000);
           continue;
         }
@@ -1469,14 +1510,27 @@ async function pump(): Promise<void> {
       // retry attempts. `ensureStarted` also recovers a stopped-but-credentialled session.
       const live = await ensureStarted(cfg);
       if (!live.ready) {
-        log.warn(`WhatsApp: session not ready to send (${live.error ?? 'not linked yet'}); waiting.`);
+        noteWaiting(`session not ready to send (${live.error ?? 'not linked yet'})`);
         await setPresence(cfg, false);
         await sleep(60_000);
         continue;
       }
+      noteWaiting(null);
 
       await setPresence(cfg, true);
       const outcome = await sendOne(cfg, item);
+
+      // Find it again: the queue can change during the send (an admin's Discard empties it
+      // while apps go on enqueueing), and the old index may now name a newer message.
+      index = queue.indexOf(item);
+      if (index < 0) {
+        // Discarded mid-send. Its record keeps the admin's decision, unless it went out anyway.
+        if (outcome.ok && outcomes.some((o) => o.id === item.id)) {
+          noteOutcome(item, 'sent');
+          persist();
+        }
+        continue;
+      }
 
       // TRANSIENT failures must not lose the message. The first version shifted the item
       // off the queue whatever happened, so a 429 (or a restarting gateway, or a dropped
@@ -1506,16 +1560,14 @@ async function pump(): Promise<void> {
 
       queue.splice(index, 1);
       if (outcome.ok) {
-        // Count against the budget the target actually spends.
+        // Recorded under the kind of target it was, for the send history.
         (item.target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
         lastToRecipient.set(targetKey(item.target), Date.now());
         noteOutcome(item, 'sent');
       } else {
         noteOutcome(item, 'failed', outcome.error ?? 'The gateway would not accept it.');
       }
-      // The queue and the pacing history both just changed. Persisting here is what makes
-      // the caps real across a restart: without it a box in a restart loop would forget
-      // every send it had made and could blow through its daily allowance repeatedly.
+      // The message has left the queue: on disk too, so a restart never sends it twice.
       persist();
       // No inter-message gap. There was a randomised 6-20s sleep here; it is gone at the
       // maintainer's decision. With several apps sharing one queue it made delivery
@@ -1577,22 +1629,34 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
   // caption alone would let an app report that a poster went out when only a sentence
   // did — the masjid would believe the timetable had been published.
   const r = item.media
-    ? await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-image`, {
-        chatId,
-        base64: item.media.data,
-        // OpenWA spells this all-lowercase; our own API uses `mimeType`. Deliberate — do
-        // not "fix" either side to match the other.
-        mimetype: item.media.mimeType,
-        ...(item.media.filename ? { filename: item.media.filename } : {}),
-        ...(item.text ? { caption: item.text } : {}),
-      })
-    : await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-text`, {
-        chatId,
-        text: item.text,
-        // No link preview: fetching one is an extra outbound request from the number and
-        // makes an automated message look more like a broadcast.
-        linkPreview: false,
-      });
+    ? await call(
+        cfg,
+        'POST',
+        `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-image`,
+        {
+          chatId,
+          base64: item.media.data,
+          // OpenWA spells this all-lowercase; our own API uses `mimeType`. Deliberate — do
+          // not "fix" either side to match the other.
+          mimetype: item.media.mimeType,
+          ...(item.media.filename ? { filename: item.media.filename } : {}),
+          ...(item.text ? { caption: item.text } : {}),
+        },
+        SEND_TIMEOUT_MS,
+      )
+    : await call(
+        cfg,
+        'POST',
+        `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-text`,
+        {
+          chatId,
+          text: item.text,
+          // No link preview: fetching one is an extra outbound request from the number and
+          // makes an automated message look more like a broadcast.
+          linkPreview: false,
+        },
+        SEND_TIMEOUT_MS,
+      );
   if (!r.ok) {
     // A 401/403 is classed non-retryable, so this message is about to be dropped after a
     // single attempt. Record it: on its own it looks like a config mistake, but a run of
@@ -1601,6 +1665,19 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     if (r.status === 401 || r.status === 403) {
       sendSignals.authFailures += 1;
       sendSignals.lastAuthFailAt = Date.now();
+    }
+    if (r.timedOut) {
+      // The gateway usually sends it anyway, so trying again could put a second copy in
+      // front of a whole group — the worse failure, and a ban signal. Reported, not retried.
+      log.warn(
+        `WhatsApp: the gateway did not answer in time about ${item.media ? 'an image' : 'a message'} ` +
+          `for ${item.source}; it may have been sent, so it was not sent again.`,
+      );
+      return {
+        ok: false,
+        error: 'The gateway did not answer in time, so it may or may not have arrived. It was not sent again, so nobody gets it twice.',
+        retryable: false,
+      };
     }
     if (item.media) {
       // Named distinctly in the log, because "the image failed" and "the message failed"
@@ -1631,11 +1708,24 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
  * behind a backlog.
  */
 export async function sendTestMessage(to: string, text: string): Promise<SendOutcome> {
-  const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   const digits = toDigits(to);
   if (!digits) return { ok: false, error: 'That phone number needs a country code.' };
+  const blocker = await testBlocker();
+  if (blocker) return { ok: false, error: blocker };
   return sendTestTo({ kind: 'person', digits }, text);
+}
+
+/**
+ * Why a test cannot go out right now, or null. Asked first: a test before a phone was
+ * linked showed seconds of "typing" and then a bare "the gateway returned 404".
+ */
+async function testBlocker(): Promise<string | null> {
+  const s = await gatewayStatus();
+  if (s.state === 'ready') return null;
+  if (s.state === 'unreachable') return `Couldn't reach the WhatsApp gateway (${s.detail}).`;
+  if (s.state === 'bad-key') return 'The WhatsApp gateway turned down the API key. Paste it again in Settings → WhatsApp.';
+  return 'Link a phone first (Settings → WhatsApp), then send the test again.';
 }
 
 /**
@@ -1651,6 +1741,8 @@ export async function sendTestMessage(to: string, text: string): Promise<SendOut
 export async function sendTestToGroup(groupId: string, text: string): Promise<SendOutcome> {
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   if (!isApprovedGroup(groupId)) return { ok: false, error: 'That group has not been approved for sending.' };
+  const blocker = await testBlocker();
+  if (blocker) return { ok: false, error: blocker };
   return sendTestTo({ kind: 'group', groupId }, text);
 }
 
@@ -1664,9 +1756,10 @@ export async function sendTestToGroup(groupId: string, text: string): Promise<Se
  * should have to know about. Asking over REST works on an install as it stands today,
  * with no app update.
  *
- * Cached, INCLUDING misses: an unmapped sender is usually permanently unmapped, and
- * re-asking on every message would spend the gateway's rate limit to keep learning
- * the same nothing.
+ * Cached, INCLUDING a sender the gateway answers has no number: an unmapped sender is
+ * usually permanently unmapped, and re-asking on every message would spend the gateway's
+ * rate limit to keep learning the same nothing. A lookup that FAILED is not an answer,
+ * though, and is asked again — caching one shut a trustee out until the core restarted.
  *
  * Best-effort by design — never throws, returns null on anything unexpected. A null
  * means "cannot identify", which the caller must treat as "not authorised".
@@ -1682,20 +1775,17 @@ export async function resolveLidPhone(jid: string): Promise<string | null> {
   const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured() || !cfg.sessionId) return null;
 
-  let phone: string | null = null;
+  let path: string;
   try {
-    const r = await call(
-      cfg,
-      'GET',
-      `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/${encodeURIComponent(jid)}/phone`,
-    );
-    if (r.ok) {
-      const raw = (r.json as { phone?: unknown })?.phone;
-      phone = typeof raw === 'string' ? toDigits(raw) : null;
-    }
+    // encodeURIComponent throws on a malformed string (a lone surrogate) from the frame.
+    path = `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/${encodeURIComponent(jid)}/phone`;
   } catch {
-    /* best effort — an unresolvable sender is simply unauthorised */
+    return null;
   }
+  const r = await call(cfg, 'GET', path);
+  if (!r.ok && r.status !== 404) return null; // the gateway restarting, a 409, a 5xx: ask again next time
+  const raw = r.ok ? (r.json as { phone?: unknown } | null)?.phone : null;
+  const phone = typeof raw === 'string' ? toDigits(raw) : null;
 
   if (lidPhones.size >= LID_CACHE_MAX) lidPhones.clear();
   lidPhones.set(jid, phone);
@@ -1841,14 +1931,11 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
  * Send one message and WAIT — the ONE non-queued path, shared by the admin's test
  * button and the command reply lane.
  *
- * Bypasses the queue. There is no longer any budget to bypass: the hour/day caps this
- * used to be metered against are gone (see the header), so `sentAt` / `groupSentAt` are
- * now a record of what was sent, not an allowance being spent. Kept because the history
- * is what any future ceiling would have to be built on, and because it is the honest
- * answer to "how much has this number sent recently?".
- *
- * It also writes `lastToRecipient`, which nothing reads any more — the per-recipient
- * cooldown that consumed it was removed. Kept for the same reason.
+ * Bypasses the queue. There is no budget to bypass: the hour/day caps are gone (see the
+ * header), so what it adds to `sentAt` / `groupSentAt` / `lastToRecipient` is a record of
+ * what was sent, not an allowance spent. NOT persisted from here: nothing reads that
+ * record, the next queue write saves it, and rewriting the whole store for every command
+ * reply cost an SD card a full write for nothing.
  *
  * What bounds this path is therefore NOT a cap. It is that a reply is only ever sent in
  * answer to an inbound message from an already-authorised sender, and the inbound rate
@@ -1872,10 +1959,6 @@ export async function sendImmediate(target: Target, text: string, source: string
   if (outcome.ok) {
     (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
-    // Persisted so the send history survives a restart. Not a budget any more (there
-    // are no caps), but it is the record any future ceiling would have to be built on,
-    // and a box in a restart loop that forgets what it sent has no history at all.
-    persist();
   }
   return outcome;
 }
@@ -1889,17 +1972,12 @@ async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
  *
  * Takes DIGITS, never a JID, so it is structurally incapable of posting into a group.
  *
- * Why this is allowed to skip the pacing at all: a solicited reply to a known contact
- * is the LOWEST-risk traffic this number can emit — it is the same shape WhatsApp's
- * own commercial API models as a customer-service window. What gets a number flagged
- * is unsolicited volume to non-contacts, which is the opposite. And a reply that
- * arrives forty minutes later, behind a backlog, is not a reply;
- * it is a bug. The cooldown protects a recipient from noise they did not
- * ask for — someone who typed a command at 23:00 is not being woken by the answer.
- *
- * The per-recipient cooldown is deliberately NOT consulted: it exists to stop three
- * apps independently messaging one parent, and applied here it would make a
- * back-and-forth impossible (`!os stats`, answer, then 55 seconds of silence).
+ * Why it skips the queue: a solicited reply to a known contact is the LOWEST-risk
+ * traffic this number can emit — it is the same shape WhatsApp's own commercial API
+ * models as a customer-service window. What gets a number flagged is unsolicited volume
+ * to non-contacts, which is the opposite. And a reply that arrives forty minutes later,
+ * behind a backlog, is not a reply; it is a bug. What bounds it is the inbound rate limit
+ * in commands/gate.ts (see `sendImmediate`).
  */
 export async function replyTo(digits: string, text: string): Promise<SendOutcome> {
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
@@ -1937,7 +2015,9 @@ export function __resetPacingForTests(): void {
  * them would silently widen what a test resets, or narrow what a delete clears.
  *
  * `running` is left alone: it belongs to the pump loop, and forcing it false while a send
- * is in flight would let a second pump start alongside the first.
+ * is in flight would let a second pump start alongside the first. The pause and the
+ * send-path evidence are NOT left alone: kept, a fresh setup's first message saved
+ * `paused: true` and every message after it was held.
  */
 export function clearWhatsAppRuntime(): void {
   queue.length = 0;
@@ -1948,4 +2028,10 @@ export function clearWhatsAppRuntime(): void {
   onWhatsApp.clear();
   lidPhones.clear();
   presenceOn = false;
+  paused = false;
+  pausedSince = null;
+  sendSignals.authFailures = 0;
+  sendSignals.lastAuthFailAt = 0;
+  waitingFor = null;
+  foundGateway = null;
 }
