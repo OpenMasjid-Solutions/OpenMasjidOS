@@ -730,10 +730,16 @@ function pickHttpsPort(): number | null {
   return allocateHttpsPort(used);
 }
 
+/** How long to wait before asking Docker again, when it could not be read at boot. */
+const PROXY_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
+
 /** Re-establish the TLS proxy for every flagged app on boot (their ports are
- *  fixed, so this points each proxy at the app's published HTTP port again). */
-export async function restoreAppProxies(): Promise<void> {
-  const apps = await listInstalled();
+ *  fixed, so this points each proxy at the app's published HTTP port again).
+ *  `attempt` counts the earlier tries Docker could not be read for. */
+export async function restoreAppProxies(attempt = 0): Promise<void> {
+  const { apps, discoveryOk } = await listInstalledWithHealth();
+  // Docker unreadable is not "no app has a port": decide nothing, and ask again.
+  if (!discoveryOk) return retryAppProxies(attempt);
   for (const a of apps) {
     const meta = loadMeta(a.id);
     if (meta?.https && meta.httpsPort && a.ports[0] != null) {
@@ -746,6 +752,20 @@ export async function restoreAppProxies(): Promise<void> {
       }
     }
   }
+}
+
+/** Try restoreAppProxies again after the next wait; after the last, say whose HTTPS is down. */
+function retryAppProxies(attempt: number): void {
+  const flagged = listMetas().filter(({ meta }) => meta?.https && meta.httpsPort);
+  if (flagged.length === 0) return; // no app has an HTTPS address to restore
+  const wait = PROXY_RETRY_MS[attempt];
+  if (wait === undefined) {
+    const names = flagged.map(({ id, meta }) => meta?.name ?? id).join(', ');
+    log.warn(`Docker could not be read, so the HTTPS address of ${names} was not restored. Restarting OpenMasjidOS tries again.`);
+    return;
+  }
+  const retry = () => restoreAppProxies(attempt + 1).catch((err) => log.error('Could not restore app HTTPS proxies.', err));
+  setTimeout(retry, wait).unref(); // never what keeps the process (or a test) alive
 }
 
 /** Merge on-disk metadata with live Docker state; recover orphans. */

@@ -317,22 +317,29 @@ test('a reinstall keeps its address — unless OpenMasjidOS has since taken it',
 
 // ── "It stayed up" is said only of an app that did ────────────────────────────
 
-/** A second copy of the manager, whose `docker compose` calls are `overrides`. */
-function managerWith(overrides: Partial<typeof import('../src/docker/compose')>): typeof import('../src/apps/manager') {
-  const composePath = req.resolve('../src/docker/compose');
+/** A second copy of the manager, seeing these in place of its `docker compose` calls
+ *  and its HTTPS proxies. */
+function managerWith(stubs: {
+  compose?: Partial<typeof import('../src/docker/compose')>;
+  proxy?: Partial<typeof import('../src/system/app-proxy')>;
+}): typeof import('../src/apps/manager') {
+  const files = { compose: '../src/docker/compose', proxy: '../src/system/app-proxy' } as const;
   const managerPath = req.resolve('../src/apps/manager');
-  const real = { compose: req.cache[composePath], manager: req.cache[managerPath] };
-  const stub = new Module(composePath);
-  stub.filename = composePath;
-  stub.loaded = true;
-  stub.exports = { ...req('../src/docker/compose'), ...overrides };
-  req.cache[composePath] = stub;
+  const saved = new Map([[managerPath, req.cache[managerPath]]]);
+  for (const [name, overrides] of Object.entries(stubs) as [keyof typeof files, object][]) {
+    const file = req.resolve(files[name]);
+    const stub = new Module(file);
+    stub.filename = file;
+    stub.loaded = true;
+    stub.exports = { ...req(file), ...overrides };
+    saved.set(file, req.cache[file]);
+    req.cache[file] = stub;
+  }
   delete req.cache[managerPath];
   try {
     return req('../src/apps/manager');
   } finally {
-    req.cache[composePath] = real.compose;
-    req.cache[managerPath] = real.manager;
+    for (const [file, real] of saved) req.cache[file] = real;
   }
 }
 
@@ -344,10 +351,36 @@ test('AN APP THAT IS DOWN IS NEVER "STAYED UP" — not even when it left no logs
   client.docker.listContainers = () => Promise.resolve([]); // nothing is running
   try {
     const said = await Promise.all([
-      managerWith({ composeLogs: async () => '  \n' }).verifyStayedUp('silent-app'),
-      managerWith({ composeLogs: () => Promise.reject(new Error('docker went away')) }).verifyStayedUp('silent-app'),
+      managerWith({ compose: { composeLogs: async () => '  \n' } }).verifyStayedUp('silent-app'),
+      managerWith({ compose: { composeLogs: () => Promise.reject(new Error('docker went away')) } }).verifyStayedUp('silent-app'),
     ]);
     for (const words of said) assert.match(words ?? 'null, which reads as "it stayed up"', /isn't running/);
+  } finally {
+    client.docker.listContainers = original;
+  }
+});
+
+// ── A boot that could not read Docker comes back for the HTTPS proxies ────────
+
+test("AN APP'S HTTPS ADDRESS IS RESTORED ONCE DOCKER ANSWERS — not given up at the first try", async () => {
+  // At boot, "could not ask Docker" came back as every app with no port, so no proxy was
+  // restored and nothing tried again: the app's HTTPS address stayed dead after a reboot.
+  seed('card-reader', { https: true, httpsPort: 8449 });
+  const restored: string[] = [];
+  const mgr = managerWith({ proxy: { ensureProxy: (id, httpsPort, port) => void restored.push(`${id} ${httpsPort}→${port}`) } });
+  let asked = 0;
+  const original = client.docker.listContainers;
+  client.docker.listContainers = () =>
+    ++asked === 1
+      ? Promise.reject(new Error('docker is still starting'))
+      : Promise.resolve([{ Labels: { 'com.docker.compose.project': 'omos-card-reader' }, State: 'running', Ports: [{ PublicPort: 8095 }] }]);
+  try {
+    await mgr.restoreAppProxies();
+    assert.deepEqual(restored, [], 'nothing is decided while Docker cannot be read');
+    for (const until = Date.now() + 10_000; restored.length === 0 && Date.now() < until; ) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.deepEqual(restored, ['card-reader 8449→8095'], 'restored once Docker answered');
   } finally {
     client.docker.listContainers = original;
   }
