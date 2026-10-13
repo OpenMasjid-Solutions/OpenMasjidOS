@@ -4,7 +4,7 @@
 import type { FastifyRequest } from 'fastify';
 import { COOKIE_NAME, CSRF_HEADER, REMOTE_COOKIE_NAME, getSessionUserFor, verifyCsrf } from '../auth/sessions';
 import { isViaTunnel } from '../system/via-tunnel';
-import { remoteDoorOpen, wasHandedOver } from '../system/remote-admin';
+import { remoteAdminEnabled, wasHandedOver } from '../system/remote-admin';
 
 function parseCookie(header: string | undefined, name: string): string | null {
   if (!header) return null;
@@ -44,11 +44,11 @@ export function requestSessionToken(req: FastifyRequest): string | null {
  * from outside now on exactly that condition.
  */
 export function requestUser(req: FastifyRequest): string | null {
-  // Handed over by the remote-administration gate: only while its door is still open
-  // on this hostname. Asked on every use, not only at the start — a terminal asks it
-  // for each keystroke (api/terminals.ts).
+  // Handed over by the remote-administration gate: only while its door is still open.
+  // Asked on every use, not only at the start — a terminal asks it for each keystroke
+  // (api/terminals.ts).
   const handedOver = wasHandedOver(req.raw);
-  if (handedOver && !remoteDoorOpen(req.headers?.host)) return null;
+  if (handedOver && !remoteAdminEnabled()) return null;
   return getSessionUserFor(tokenOf(req), { viaTunnel: isViaTunnel(req), handedOver });
 }
 

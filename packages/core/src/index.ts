@@ -37,12 +37,11 @@ import { notFoundReason, refuseOverTunnel } from './system/tunnel-refusals';
 import { registerFabricTunnelGuard, registerOriginFormGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI } from './api/static-ui';
 import {
-  adminHost,
   anonymousBodyRefusal,
+  appHostname,
   claimsDashboardSocket,
   DASHBOARD_WS_MAX_PAYLOAD,
   startDashboardHeartbeat,
-  doorClosedReason,
   frontDoorDecision,
   hasRemoteSession,
   markHandedOver,
@@ -355,7 +354,7 @@ async function main() {
         // Declining is not "leave it": the ingress destroys anything not claimed.
         const ok = claimsDashboardSocket(req.url ?? '', req.headers, {
           remoteAdminEnabled: remoteAdminEnabled(),
-          adminHost: adminHost(),
+          appsHost: appHostname(),
         });
         if (!ok) return false;
         // Recorded, so it is closed the moment the door shuts or its session ends
@@ -435,8 +434,7 @@ async function main() {
       const d = frontDoorDecision(req.url, req.headers, {
         viaTunnel: isViaTunnel(req),
         remoteAdminEnabled: remoteAdminEnabled(),
-        adminHost: adminHost(),
-        closedReason: doorClosedReason(),
+        appsHost: appHostname(),
       });
       switch (d.kind) {
         case 'pass':
@@ -506,8 +504,8 @@ async function main() {
       // spellings `forwardedProtoIsHttps` exists to catch).
       if (isViaTunnel(req)) {
         // Only the record tells these apart: an app that is installed but not shared
-        // online, an app asked for on the admin hostname, a platform route probed from
-        // outside, or an address with nothing at it. The caller gets the same answer
+        // online, a platform route probed from outside, or an address with nothing at
+        // it. The caller gets the same answer
         // for all of them.
         return refuseOverTunnel(req, reply, notFoundReason(req.url, declinedReason(req.raw)));
       }

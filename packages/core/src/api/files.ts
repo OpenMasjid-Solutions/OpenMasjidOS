@@ -73,6 +73,9 @@ export function registerFiles(server: FastifyInstance): void {
       reply.header('X-Content-Type-Options', 'nosniff');
       reply.header('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox");
       reply.header('Cache-Control', 'private, no-store');
+      // This address carries the dashboard key (?k=). From outside the apps share its
+      // origin, so an image an SVG loads from an app's path would tell that app the key.
+      reply.header('Referrer-Policy', 'no-referrer');
       reply.header('Content-Disposition', `inline; filename="${encodeURIComponent(name)}"`);
       reply.type(mime ?? 'application/octet-stream');
       return reply.send(fs.createReadStream(full));

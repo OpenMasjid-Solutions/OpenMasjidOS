@@ -19,7 +19,7 @@ import { TRPCError } from '@trpc/server';
 import { COOKIE_NAME, CSRF_HEADER, REMOTE_COOKIE_NAME, getSessionUserFor, SESSION_TTL_MS } from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
 import { isViaTunnel, visitorScheme } from '../system/via-tunnel';
-import { remoteDoorOpen, wasHandedOver } from '../system/remote-admin';
+import { remoteAdminEnabled, wasHandedOver } from '../system/remote-admin';
 import { observeDashboardHost } from '../system/platform-address';
 
 const COOKIE_OPTS = {
@@ -86,7 +86,7 @@ function cookieOptsFor(req: { headers?: NodeJS.Dict<string | string[]> }) {
  * The remote dashboard's cookie: `__Host-omos_session` (auth/sessions.ts says why
  * that name), which a browser accepts only when it is Secure, has Path=/ and names
  * no Domain. Always Secure, because the front door upgrades every plain-http visit
- * to the admin hostname before it can reach a sign-in.
+ * to https before it can reach a sign-in.
  */
 const REMOTE_COOKIE_OPTS = { ...COOKIE_OPTS, secure: true, path: '/' };
 
@@ -110,7 +110,7 @@ export interface Context {
   viaTunnel: boolean;
   /**
    * Handed over by the front door's remote-administration gate — i.e. the remote
-   * dashboard on the admin hostname. Not a header anyone can send: only the gate
+   * dashboard, from outside. Not a header anyone can send: only the gate
    * marks a request (system/remote-admin.ts `markHandedOver`). Every protected call
    * on such a context re-checks that the door is still open (trpc/trpc.ts), because
    * a WebSocket context lives for as long as the connection does.
@@ -165,10 +165,10 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
     (req.cookies && req.cookies[cookieName]) ?? parseCookie(req.headers?.cookie, cookieName);
   // From the tunnel, only a session that passed the second factor counts (see
   // getSessionUserFor). A LAN session presented there reads as signed out. And from
-  // the remote dashboard, only while its door is open on this hostname — and only a
-  // session it made itself (auth/sessions.ts Session.handedOver).
+  // the remote dashboard, only while its door is open — and only a session it made
+  // itself (auth/sessions.ts Session.handedOver).
   const username =
-    handedOver && !remoteDoorOpen(req.headers?.host)
+    handedOver && !remoteAdminEnabled()
       ? null
       : getSessionUserFor(token, { viaTunnel: isViaTunnel(req), handedOver });
   // The dashboard key. A WebSocket handshake cannot carry a custom header, so the

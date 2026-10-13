@@ -27,7 +27,7 @@ import { holdSecondFactorEpoch, renewSecondFactorEpoch, sameSecondFactorAs } fro
 import { readJson, writeJson } from '../util/json-store';
 import { log } from '../logger';
 import { tunnelTokenMatches } from './cloudflared';
-import { adminHost, normalizeHost, settingsOpenTheDoor } from './remote-admin';
+import { settingsOpenTheDoor } from './remote-admin';
 import { HOLD_UNTIL_REPLACED_MS, finishing, withUpdateLock, isUpdating, UpdateBusyError } from './update-lock';
 import { backupInProgress } from './backup';
 
@@ -291,13 +291,12 @@ const REMOTE_RESTORE_CREDENTIALS =
  * OUTSIDE? Null when it would not.
  *
  * A restore replaces `config/` whole, and nothing carries the current remote-access
- * setup across: not the switch, the admin hostname, the tunnel token, the password or
- * the second factor. Done at the masjid, that is what restoring means. Done from
+ * setup across: not the switch, the tunnel token, the password or the second factor. Done at the masjid, that is what restoring means. Done from
  * outside, a backup taken before remote administration was set up — which is most of
  * them, the feature being new — turns the door off behind the admin, and getting back
  * in needs someone in the building. So from outside a restore goes ahead only if the
- * door will still be there afterwards, with the same address, the same tunnel, and
- * the same password and second factor to open it with. A backup with no `config/`
+ * door will still be there afterwards, with the same tunnel, and the same password and
+ * second factor to open it with. A backup with no `config/`
  * touches none of that and is never refused here.
  */
 export function remoteRestoreProblem(stagingRoot: string): string | null {
@@ -323,11 +322,9 @@ export function remoteRestoreProblem(stagingRoot: string): string | null {
 
   const cf = (json('settings.json')?.cloudflare ?? null) as Record<string, unknown> | null;
   // The SAME rule the live box applies (remote-admin.ts `settingsOpenTheDoor`), not a
-  // copy of it: a hand-written copy here missed "the dashboard's address equals the
-  // apps' address", and a restore it allowed shut the remote dashboard behind the admin.
+  // copy of it: a hand-written copy here once missed a condition, and a restore it
+  // allowed shut the remote dashboard behind the admin.
   if (!cf || !settingsOpenTheDoor(cf)) return REMOTE_RESTORE_OFF;
-  const theirHost = normalizeHost(typeof cf.adminHost === 'string' ? cf.adminHost : '');
-  if (theirHost !== adminHost()) return REMOTE_RESTORE_OFF;
   if (!tunnelTokenMatches(read('cloudflare/.env'))) return REMOTE_RESTORE_OFF;
 
   // An admin who can sign in: a username AND the same password (isConfigured needs both).

@@ -12,8 +12,21 @@
  *
  * Kept apart from apps/manager.ts and system/ingress.ts because the ingress already
  * imports the manager, and the manager importing the ingress would be a cycle.
+ *
+ * From outside the dashboard shares the apps' address, so its own pages are here too
+ * (system/remote-admin.ts `DASHBOARD_SEGMENTS`; test/app-paths.test.ts keeps the two in
+ * step): an app at `/settings` would have taken the dashboard's Settings page on reload.
  */
-export const RESERVED_PATH_SEGMENTS: ReadonlySet<string> = new Set(['api', 'trpc', 'assets']);
+export const RESERVED_PATH_SEGMENTS: ReadonlySet<string> = new Set([
+  'api',
+  'trpc',
+  'assets',
+  'store',
+  'apps',
+  'files',
+  'settings',
+  'design-system',
+]);
 
 export function isReservedPathSegment(seg: string): boolean {
   return RESERVED_PATH_SEGMENTS.has(seg);

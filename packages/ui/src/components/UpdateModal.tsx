@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from './Modal';
 import { LogStream } from './LogStream';
+import { getCsrf } from '../lib/session';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -84,7 +85,8 @@ export function UpdateModal({
         // `auth.me` reports the version to a signed-in session, inside tRPC's
         // envelope — reading it off the top level found nothing, so the new version
         // was never shown and a missed restart left this dialog waiting minutes.
-        const res = await fetch('/trpc/auth.me', { cache: 'no-store' });
+        // With the key: from outside, `auth.me` answers signed-in only to a caller holding it.
+        const res = await fetch('/trpc/auth.me', { cache: 'no-store', headers: { 'x-omos-csrf': getCsrf() } });
         if (!res.ok) throw new Error(String(res.status));
         failures = 0;
         const body = (await res.json()) as { result?: { data?: { version?: string | null } } };

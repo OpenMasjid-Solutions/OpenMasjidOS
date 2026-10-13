@@ -45,11 +45,10 @@ export type RefusalReason =
   /** An exposed app's own `/fabric/*` space, which is LAN-only. */
   | 'app-fabric-lan-only'
   /**
-   * The dashboard, asked for over plain http:// at an address that cannot safely be
-   * turned into an https:// one — and serving the sign-in page in clear is not an
-   * option. With the dashboard on an address of its own this is reached only by an
-   * odd request target (one starting `//`): an ordinary plain-http visit is upgraded
-   * to the dashboard's https address instead.
+   * The dashboard, asked for over plain http:// when it cannot safely be turned into an
+   * https:// address — no apps' address is set, or the request target starts `//` —
+   * and serving the sign-in page in clear is not an option. An ordinary plain-http
+   * visit is upgraded to https on the apps' address instead.
    */
   | 'plain-http-no-host'
   /**
@@ -59,24 +58,6 @@ export type RefusalReason =
    * only place the difference shows.
    */
   | 'app-not-shared'
-  /**
-   * The dashboard, asked for on a hostname that is not the admin hostname — usually
-   * the apps' one, which is where it used to be. The dashboard is served only at its
-   * own address, so that no app page ever shares its origin (system/remote-admin.ts).
-   */
-  | 'dashboard-elsewhere'
-  /**
-   * An app path asked for on the ADMIN hostname. Apps are never served there, for
-   * the same reason: that origin holds the dashboard's key and cookie.
-   */
-  | 'app-on-admin-host'
-  /**
-   * The dashboard, asked for from outside while remote administration is switched on
-   * but has no dashboard address of its own yet (or one equal to the apps' address) —
-   * a box managed remotely before addresses were separated looks exactly like this
-   * after updating.
-   */
-  | 'no-admin-host'
   /**
    * Cloudflare traffic that reached the dashboard's own HTTPS port directly instead of
    * being handed over by the front door: a public hostname pointed at the wrong port.

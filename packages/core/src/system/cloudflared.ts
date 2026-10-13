@@ -13,8 +13,8 @@
  *
  * Cloudflare's own dashboard sends the tunnel's public hostnames to the box's front
  * door (HTTP localhost:80); from there the OS routes each app by its path
- * (system/ingress.ts) and, when the admin has set one up, serves the dashboard on a
- * hostname of its own (system/remote-admin.ts). Each app learns its public URL over
+ * (system/ingress.ts) and, when the admin switches it on, serves the dashboard at the
+ * root of the same address (system/remote-admin.ts). Each app learns its public URL over
  * the Fabric (GET /api/fabric/site).
  */
 import fs from 'node:fs';

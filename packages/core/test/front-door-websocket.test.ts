@@ -18,11 +18,10 @@
  * against a real upstream app socket. `remote-admin.test.ts` pins the index.ts wiring
  * that this cannot see; this pins what the wiring has to achieve.
  *
- * The two hostnames are the security boundary (system/remote-admin.ts): the
- * dashboard's sockets only on the ADMIN hostname, an app's only on the apps' one. And
- * an app that is not shared online opens only with ITS access token — the one the
- * remote dashboard's Open button hands the browser (system/app-access.ts) — never
- * with a session cookie, LAN or remote.
+ * Both live on the same tunnel hostname: the claim tells them apart by path and by
+ * session, never by Host (system/remote-admin.ts). And an app that is not shared online
+ * opens only with ITS access token — the one the remote dashboard's Open button hands
+ * the browser (system/app-access.ts) — never with a session cookie, LAN or remote.
  */
 import { test, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -82,19 +81,16 @@ const totpLib = req('../src/auth/totp') as typeof import('../src/auth/totp');
 const sessions = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
 const store = req('../src/auth/store') as typeof import('../src/auth/store');
 
-/** The dashboard's hostname, and the apps'. */
-const ADMIN = 'admin.example.org';
+/** The tunnel hostname: the apps', and the dashboard's from outside too. */
 const APPS = 'omos.example.org';
 const VIA = { 'cf-ray': '7a1b2c3d4e5f-LHR', 'cf-visitor': '{"scheme":"https"}' };
-/** A tunnel request for the dashboard's hostname. */
-const TO_ADMIN = { ...VIA, host: ADMIN };
-/** A tunnel request for the apps' hostname. */
+/** A tunnel request for that hostname. */
 const TO_APPS = { ...VIA, host: APPS };
 
 /** Remote administration on or off, for real: the tunnel, the switch, a second factor. */
 function setRemoteAdmin(on: boolean): void {
   if (!store.isConfigured()) store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
-  settings.updateCloudflare({ enabled: true, remoteAdmin: on, domain: APPS, adminHost: ADMIN });
+  settings.updateCloudflare({ enabled: true, remoteAdmin: on, domain: APPS });
   if (!tf.twoFactorActive()) {
     const { secret } = tf.beginEnrolment('admin');
     tf.confirmEnrolment(totpLib.totp(secret, Date.now()));
@@ -104,7 +100,7 @@ setRemoteAdmin(true);
 
 const remoteSession = () =>
   sessions.createSession('admin', sessions.currentCredential(), { remote: true, tf: tf.secondFactorEpoch(), handedOver: true });
-/** The remote dashboard's own cookie — on the admin hostname only, in real life. */
+/** The remote dashboard's own cookie — set only through the tunnel, in real life. */
 const dashCookie = (s: { token: string }) => ({ cookie: `${sessions.REMOTE_COOKIE_NAME}=${s.token}` });
 /** A LAN session's cookie. */
 const lanCookie = (s: { token: string }) => ({ cookie: `${sessions.COOKIE_NAME}=${s.token}` });
@@ -175,7 +171,7 @@ async function frontDoor(): Promise<{ url: string; close: () => Promise<void> }>
     claimUpgrade: (r, socket, head) => {
       const ok = ra.claimsDashboardSocket(r.url ?? '', r.headers, {
         remoteAdminEnabled: ra.remoteAdminEnabled(),
-        adminHost: ra.adminHost(),
+        appsHost: ra.appHostname(),
       });
       if (!ok) return false;
       if (!remoteSockets.trackHandedOverSocket(r, socket)) return false;
@@ -285,7 +281,7 @@ test("the dashboard's socket is answered by tRPC over the tunnel when the featur
   const fd = await frontDoor();
   const r = await connect(
     `${fd.url}/trpc`,
-    { ...TO_ADMIN, ...dashCookie(remoteSession()) },
+    { ...TO_APPS, ...dashCookie(remoteSession()) },
     JSON.stringify({ id: 1, method: 'query', params: { path: 'hello', input: undefined } }),
     1,
   );
@@ -299,7 +295,7 @@ test("the dashboard's socket is answered by tRPC over the tunnel when the featur
 
 test("the dashboard's progress streams are handed over too — an update is nothing without one", { timeout: 15_000 }, async () => {
   const fd = await frontDoor();
-  const r = await connect(`${fd.url}/api/update`, { ...TO_ADMIN, ...dashCookie(remoteSession()) }, undefined, 1);
+  const r = await connect(`${fd.url}/api/update`, { ...TO_APPS, ...dashCookie(remoteSession()) }, undefined, 1);
   assert.equal(r.opened, true, `the update stream did not open: ${r.error}`);
   assert.deepEqual(r.frames, ['update-progress']);
   await fd.close();
@@ -344,7 +340,7 @@ test('THE DASHBOARD SOCKET IS CLOSED WHEN REMOTE ADMINISTRATION IS SWITCHED OFF'
   // after it had been turned off, and a root terminal outliving everything.
   const fd = await frontDoor();
   const remote = remoteSession();
-  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_ADMIN, ...dashCookie(remote) } });
+  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_APPS, ...dashCookie(remote) } });
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve());
     ws.on('error', reject);
@@ -366,7 +362,7 @@ test('THE DASHBOARD SOCKET IS CLOSED WHEN REMOTE ADMINISTRATION IS SWITCHED OFF'
 test("THE DASHBOARD SOCKET IS CLOSED WHEN ITS SESSION ENDS", { timeout: 15_000 }, async () => {
   const fd = await frontDoor();
   const remote = remoteSession();
-  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_ADMIN, ...dashCookie(remote) } });
+  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_APPS, ...dashCookie(remote) } });
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve());
     ws.on('error', reject);
@@ -403,7 +399,7 @@ function rawUpgrade(
 ): Promise<'destroyed' | 'answered-and-left-open' | 'left-hanging'> {
   return new Promise((resolve) => {
     let got = '';
-    const { host = ADMIN, ...rest } = headers;
+    const { host = APPS, ...rest } = headers;
     const extra = Object.entries(rest)
       .map(([k, v]) => `${k}: ${v}\r\n`)
       .join('');
@@ -427,7 +423,7 @@ function rawUpgrade(
 }
 
 test('every other upgrade is DESTROYED, never left hanging', { timeout: 30_000 }, async () => {
-  // Off, LAN, plain http://, the wrong hostname, and paths that are not the dashboard
+  // Off, LAN, plain http://, nobody signed in, and paths that are not the dashboard
   // socket at all. An abandoned upgrade holds a file descriptor until the peer gives
   // up; on a root daemon facing the internet, that is a lever nobody should be handed.
   const fd = await frontDoor();
@@ -437,24 +433,21 @@ test('every other upgrade is DESTROYED, never left hanging', { timeout: 30_000 }
   const ended = remoteSession();
   sessions.destroySession(ended.token);
   const cases: Array<[string, Record<string, string>, boolean, string]> = [
-    ['/trpc', { ...TO_ADMIN, ...dashCookie(remote) }, false, 'the dashboard socket, feature off'],
+    ['/trpc', { ...TO_APPS, ...dashCookie(remote) }, false, 'the dashboard socket, feature off'],
     // Nobody signed in: a stranger may not hold the dashboard's sockets open at all.
-    ['/trpc', TO_ADMIN, true, 'the dashboard socket, nobody signed in'],
-    ['/api/terminal/root', TO_ADMIN, true, 'a terminal, nobody signed in'],
-    ['/api/update', TO_ADMIN, true, 'a progress stream, nobody signed in'],
-    ['/trpc', { ...TO_ADMIN, ...lanCookie(lan) }, true, 'the dashboard socket, a LAN session'],
-    ['/trpc', { ...TO_ADMIN, ...dashCookie(lan) }, true, "the dashboard socket, a LAN session in the remote cookie's name"],
-    ['/trpc', { ...TO_ADMIN, ...dashCookie(ended) }, true, 'the dashboard socket, a signed-out remote session'],
-    ['/trpc', { host: ADMIN }, true, 'from the LAN'],
-    ['/trpc', { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"http"}', host: ADMIN }, true, 'plain http://'],
-    ['/trpc', TO_APPS, true, "on the APPS' hostname — the dashboard is never there"],
-    ['/api/update', TO_APPS, true, "a progress stream on the apps' hostname"],
-    ['/trpcx', TO_ADMIN, true, 'a near miss'],
-    ['/settings', TO_ADMIN, true, 'a dashboard page, not a socket'],
-    ['/nothing-here', TO_ADMIN, true, 'nothing'],
-    ['/live/socket', TO_ADMIN, true, "an app on the ADMIN hostname — apps are never there"],
+    ['/trpc', TO_APPS, true, 'the dashboard socket, nobody signed in'],
+    ['/api/terminal/root', TO_APPS, true, 'a terminal, nobody signed in'],
+    ['/api/update', TO_APPS, true, 'a progress stream, nobody signed in'],
+    ['/trpc', { ...TO_APPS, ...lanCookie(lan) }, true, 'the dashboard socket, a LAN session'],
+    ['/trpc', { ...TO_APPS, ...dashCookie(lan) }, true, "the dashboard socket, a LAN session in the remote cookie's name"],
+    ['/trpc', { ...TO_APPS, ...dashCookie(ended) }, true, 'the dashboard socket, a signed-out remote session'],
+    ['/trpc', { host: APPS, ...dashCookie(remote) }, true, 'from the LAN'],
+    ['/trpc', { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"http"}', host: APPS, ...dashCookie(remote) }, true, 'plain http://'],
+    ['/trpcx', TO_APPS, true, 'a near miss'],
+    ['/settings', TO_APPS, true, 'a dashboard page, not a socket'],
+    ['/nothing-here', TO_APPS, true, 'nothing'],
     ['/live/fabric/billing', TO_APPS, true, "an app's own /fabric"],
-    ['/api/update', TO_ADMIN, false, 'a progress stream, feature off'],
+    ['/api/update', TO_APPS, false, 'a progress stream, feature off'],
     // A private app: nobody signed in; a LAN session; the remote DASHBOARD session's
     // cookie (not an app token); a token for ANOTHER app; its own token with the
     // feature off; its own token from the LAN; and its own /fabric, which nothing opens.
@@ -466,31 +459,31 @@ test('every other upgrade is DESTROYED, never left hanging', { timeout: 30_000 }
     ['/private/socket', { host: APPS, ...appCookie(remote, 'private') }, true, 'private, its token, from the LAN'],
     ['/private/fabric/billing', { ...TO_APPS, ...appCookie(remote, 'private') }, true, "private, its own /fabric"],
     // A dot-segment spelling must not tell a private app from nothing: both destroyed.
-    ['/private/../trpc', TO_ADMIN, true, 'a private app dot-spelled into the dashboard socket'],
-    ['/nothing-here/../trpc', TO_ADMIN, true, 'nothing, dot-spelled into the dashboard socket'],
-    ['/private/../trpc', TO_APPS, true, "the same, on the apps' hostname"],
+    ['/private/../trpc', TO_APPS, true, 'a private app dot-spelled into the dashboard socket'],
+    ['/nothing-here/../trpc', TO_APPS, true, 'nothing, dot-spelled into the dashboard socket'],
     // …and with a signed-in remote session, so it is the SPELLING rule refusing them —
     // without one, the session rule refuses them first and would hide its loss.
-    ['/private/../trpc', { ...TO_ADMIN, ...dashCookie(remote) }, true, 'a private app dot-spelled into the dashboard socket, signed in'],
-    ['/nothing-here/../trpc', { ...TO_ADMIN, ...dashCookie(remote) }, true, 'nothing, dot-spelled into the dashboard socket, signed in'],
+    ['/private/../trpc', { ...TO_APPS, ...dashCookie(remote) }, true, 'a private app dot-spelled into the dashboard socket, signed in'],
+    ['/nothing-here/../trpc', { ...TO_APPS, ...dashCookie(remote) }, true, 'nothing, dot-spelled into the dashboard socket, signed in'],
   ];
   for (const [p, headers, on, what] of cases) {
     setRemoteAdmin(on);
     assert.equal(await rawUpgrade(port, p, headers), 'destroyed', `${p}: ${what}`);
   }
   // The controls: the claimed and permitted cases are NOT destroyed, so the probe can
-  // tell them apart.
+  // tell them apart — the dashboard's socket and the apps', side by side on one hostname.
   setRemoteAdmin(true);
   assert.equal(
-    await rawUpgrade(port, '/trpc', { ...TO_ADMIN, ...dashCookie(remote) }),
+    await rawUpgrade(port, '/trpc', { ...TO_APPS, ...dashCookie(remote) }),
     'answered-and-left-open',
     'the dashboard socket itself must open, for a signed-in remote session',
   );
   assert.equal(
     await rawUpgrade(port, '/private/socket', { ...TO_APPS, ...appCookie(remote, 'private') }),
     'answered-and-left-open',
-    'the private app must open with its token',
+    'the private app must open with its token, on the same hostname',
   );
+  assert.equal(await rawUpgrade(port, '/live/socket', TO_APPS), 'answered-and-left-open', 'a shared app, beside the dashboard');
   await fd.close();
 });
 
@@ -502,7 +495,7 @@ test('A DASHBOARD SOCKET REFUSES A MESSAGE OVER THE LIMIT', { timeout: 15_000 },
   // daemon on a Raspberry Pi running as root. Nothing the dashboard sends comes near
   // the limit; a message past it closes the socket before it is held in memory.
   const fd = await frontDoor();
-  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_ADMIN, ...dashCookie(remoteSession()) } });
+  const ws = new WebSocket(`${fd.url}/trpc`, { headers: { ...TO_APPS, ...dashCookie(remoteSession()) } });
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve());
     ws.on('error', reject);
@@ -524,7 +517,7 @@ test('the table of open connections from outside is bounded', () => {
   // nears the bound; it is there because the table is filled from the internet.
   setRemoteAdmin(true);
   const remote = remoteSession();
-  const req = { headers: { host: ADMIN, ...dashCookie(remote) } } as unknown as import('node:http').IncomingMessage;
+  const req = { headers: { host: APPS, ...dashCookie(remote) } } as unknown as import('node:http').IncomingMessage;
   const before = remoteSockets.handedOverSocketCount();
   const made: PassThrough[] = [];
   try {
@@ -547,7 +540,7 @@ test("AN APP CANNOT TAKE THE LAST PLACES — the dashboard's own connections alw
   // then failed to start, on every device, for as long as that tab stayed open.
   setRemoteAdmin(true);
   const remote = remoteSession();
-  const req = { headers: { host: ADMIN, ...dashCookie(remote) } } as unknown as import('node:http').IncomingMessage;
+  const req = { headers: { host: APPS, ...dashCookie(remote) } } as unknown as import('node:http').IncomingMessage;
   // Sockets destroyed by earlier tests leave the table as their 'close' events land.
   for (let i = 0; i < 50 && remoteSockets.handedOverSocketCount() > 0; i++) await new Promise((r) => setTimeout(r, 20));
   assert.equal(remoteSockets.handedOverSocketCount(), 0, 'setup: an empty table');
@@ -618,7 +611,7 @@ test('A QUIET DASHBOARD SOCKET IS PINGED — Cloudflare closes one that carries 
   // A remote terminal at a prompt, or an update between download lines, sends nothing;
   // without a ping the window printed "[Session closed]" in any pause of about 100 s.
   const fd = await frontDoor();
-  const ws = new WebSocket(`${fd.url}/api/update`, { headers: { ...TO_ADMIN, ...dashCookie(remoteSession()) } });
+  const ws = new WebSocket(`${fd.url}/api/update`, { headers: { ...TO_APPS, ...dashCookie(remoteSession()) } });
   ws.on('error', () => {});
   const pinged = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 2000);

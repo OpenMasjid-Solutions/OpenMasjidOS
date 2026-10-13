@@ -86,17 +86,17 @@ import { log } from '../logger';
 
 export const COOKIE_NAME = 'omos_session';
 /**
- * The cookie a REMOTE dashboard session lives in — on the admin hostname only
- * (system/remote-admin.ts), never on the masjid's network.
+ * The cookie a REMOTE dashboard session lives in — on the tunnel address, never on
+ * the masjid's network (system/remote-admin.ts).
  *
- * A different name from the LAN cookie, and a `__Host-` one, for one reason: the
- * admin hostname is a sibling of the hostname the apps are served on, and a page
- * or backend on a sibling may set a cookie for the parent domain that the browser
- * then sends here too. A planted `omos_session` would shadow the real session on
- * every request it covers, signing the admin out in a loop. A browser refuses to
- * let anyone set a `__Host-` cookie with a Domain, so nothing outside the admin
- * hostname can plant or overwrite this one — and the server reads only this name
- * for a remote dashboard request.
+ * A different name from the LAN cookie, and a `__Host-` one: a page or backend on a
+ * sibling hostname may set a cookie for the parent domain that the browser then sends
+ * here too, and a planted `omos_session` would shadow the real session on every
+ * request it covers, signing the admin out in a loop. A browser refuses a `__Host-`
+ * cookie that names a Domain, so no other hostname can plant this one; it is HttpOnly,
+ * so no app page on this address can read it or replace it from script; and app
+ * responses lose any Set-Cookie for it (system/ingress.ts). The server reads only this
+ * name for a remote dashboard request.
  */
 export const REMOTE_COOKIE_NAME = '__Host-omos_session';
 /** Header the dashboard sends the key in (HTTP); raw WS/download routes use ?k=. */
@@ -131,8 +131,8 @@ interface Session {
   tf?: string;
   /**
    * Made by the REMOTE DASHBOARD itself: its sign-in was handed over by the front door
-   * (system/remote-admin.ts), so its token has only ever lived in `__Host-omos_session`
-   * on the dashboard's own address, where no app can read it. Only such a session works
+   * (system/remote-admin.ts), so its token has only ever lived in `__Host-omos_session`,
+   * HttpOnly, which the ingress removes before forwarding anything to an app. Only such a session works
    * on the remote dashboard or yields an app's access token (`isRemoteSession`).
    *
    * A sign-in through a reverse proxy the masjid runs on its own network passes the
@@ -645,6 +645,17 @@ export function verifyCsrf(token: string | undefined | null, provided: string | 
   const b = Buffer.from(provided);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * The dashboard key of a live session — for the one place that hands it back after
+ * sign-in: the remote dashboard's own page load (api/static-ui.ts
+ * `registerRemoteDashboardPages`), so a reload from outside need not sign in again.
+ */
+export function sessionKey(token: string | undefined | null): string | null {
+  if (!token) return null;
+  const s = sessions.get(token);
+  return s && isLive(s, Date.now()) ? s.csrf : null;
 }
 
 export function destroySession(token: string | undefined | null): void {

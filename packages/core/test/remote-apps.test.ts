@@ -3,15 +3,17 @@
 /**
  * Everything manageable from outside: apps, and the rules that make it safe.
  *
- * Remote administration first served the dashboard at the root of the hostname the
- * apps are published on. An adversarial review showed that made every app page the
- * dashboard's own ORIGIN — a browser draws that line by scheme, host and port, never
- * by path — so any app the admin opened, or any cross-site-scripting bug in any public
- * page, could read the dashboard key and drive the admin API with the admin's cookie:
- * terminals, backups, host root. Four rules close it, and this file pins each:
+ * Remote administration serves the dashboard on the same tunnel hostname as the apps,
+ * and a browser draws "this site's own data" by scheme, host and port, never by path —
+ * so every app page there is the dashboard's ORIGIN. What must never reach one is the
+ * dashboard KEY, or any app the admin opened, or any cross-site-scripting bug in any
+ * public page, could drive the admin API with the admin's cookie: terminals, backups,
+ * host root. Four rules close it, and this file pins each:
  *
- *  1. **The dashboard has a hostname of its own** and no app is ever served there
- *     (system/remote-admin.ts, system/ingress.ts).
+ *  1. **No app page can hold a window on the dashboard, or a worker over it**: what an
+ *     app sends back through the tunnel loses `Cross-Origin-Opener-Policy` and
+ *     `Service-Worker-Allowed` (system/ingress.ts; system/remote-admin.ts says where
+ *     the key lives instead).
  *  2. **An app gets its own access token, never a platform session.** The remote
  *     dashboard's Open button spends a one-use ticket on the apps' hostname, which
  *     hands the browser a token for THAT app (system/app-access.ts). The ingress
@@ -68,15 +70,14 @@ const { isViaTunnel } = req('../src/system/via-tunnel') as typeof import('../src
 const { createContext } = req('../src/trpc/context') as typeof import('../src/trpc/context');
 const appUrl = req(path.join(__dirname, '..', '..', 'ui', 'src', 'lib', 'app-url.ts')) as typeof import('../../ui/src/lib/app-url');
 
-const ADMIN = 'admin.example.org';
+/** The tunnel hostname: the apps', and the dashboard's from outside too. */
 const APPS = 'omos.example.org';
 const VIA = { 'cf-ray': '7a1b2c3d4e5f-LHR', 'cf-visitor': '{"scheme":"https"}' };
 const TO_APPS = { ...VIA, host: APPS };
-const TO_ADMIN = { ...VIA, host: ADMIN };
 
 function setRemoteAdmin(on: boolean): void {
   if (!store.isConfigured()) store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
-  settings.updateCloudflare({ enabled: true, remoteAdmin: on, domain: APPS, adminHost: ADMIN });
+  settings.updateCloudflare({ enabled: true, remoteAdmin: on, domain: APPS });
   if (!tf.twoFactorActive()) {
     const { secret } = tf.beginEnrolment('admin');
     tf.confirmEnrolment(totpLib.totp(secret, Date.now()));
@@ -104,11 +105,13 @@ const app = http.createServer((r, res) => {
     return;
   }
   if (r.url?.endsWith('/sets')) {
-    // An app that tries to plant a platform cookie and widen a service worker's reach.
+    // An app that tries to plant a platform cookie, widen a service worker's reach, and
+    // keep a window it opens on the dashboard.
     res.writeHead(200, {
       'content-type': 'text/plain',
       'set-cookie': ['omos_session=planted; Path=/private', 'app_pref=1; Path=/shared'],
       'service-worker-allowed': '/',
+      'cross-origin-opener-policy': 'same-origin',
       'cache-control': 'public, max-age=3600',
     });
     res.end('sets');
@@ -227,7 +230,7 @@ test('the refusal is recorded as a private app, for the admin — by the REAL re
   assert.ok(handler.indexOf('answerBareWorkerFetch') < handler.indexOf('refuseOverTunnel'), 'before the refusal');
   assert.equal(refusals.notFoundReason('/api/x', null), 'lan-only-route');
   assert.equal(refusals.notFoundReason('/x', null), 'no-app-at-path');
-  assert.equal(refusals.notFoundReason('/x', 'app-on-admin-host'), 'app-on-admin-host');
+  assert.equal(refusals.notFoundReason('/x', 'app-not-shared'), 'app-not-shared');
   await front.close();
 });
 
@@ -256,28 +259,28 @@ test("on the masjid's network nothing changes: the front door does not serve a p
   await front.close();
 });
 
-test('NO APP IS EVER SERVED ON THE ADMIN HOSTNAME — shared or private, token or not', async () => {
-  // That origin holds the dashboard's cookie and key. An app page there could act as
-  // the admin; it is the other half of the gate serving the dashboard only there.
+test('AN APP IS SERVED BESIDE THE DASHBOARD, on any tunnel hostname — the same rules wherever it is asked for', async () => {
+  // The dashboard is served from outside on the apps' hostname now (system/remote-admin.ts),
+  // and the ingress no longer declines an app for the hostname it was asked on: a shared
+  // app to anyone, a private one only with its own token, on every routed hostname.
   setRemoteAdmin(true);
   refusals.__clearRefusalsForTests();
   const front = await frontDoor();
   const remote = remoteSession();
-  for (const [url, extra] of [
-    ['/shared/x', {}],
-    ['/shared/x', appCookie(remote, 'shared')],
-    ['/private/x', appCookie(remote, 'private')],
-  ] as const) {
-    const res = await front.inject({ method: 'GET', url, headers: { ...TO_ADMIN, ...extra } });
-    assert.equal(res.statusCode, 404, `${url} was served on the admin hostname`);
-    assert.doesNotMatch(res.body, /app saw/);
+  for (const host of [APPS, 'admin.example.org']) {
+    for (const [url, extra] of [
+      ['/shared/x', {}],
+      ['/shared/x', appCookie(remote, 'shared')],
+      ['/private/x', appCookie(remote, 'private')],
+    ] as const) {
+      const res = await front.inject({ method: 'GET', url, headers: { ...VIA, host, ...extra } });
+      assert.equal(res.statusCode, 200, `${host}${url}`);
+      assert.match(res.body, new RegExp(`^app saw ${url} `), `${host}${url}`);
+    }
+    const stranger = await front.inject({ method: 'GET', url: '/private/x', headers: { ...VIA, host } });
+    assert.equal(stranger.statusCode, 404, `${host}: a private app was served without its token`);
   }
-  assert.ok(refusals.recentRefusals().some((r) => r.reason === 'app-on-admin-host'));
-  // In any spelling of that hostname.
-  for (const host of [ADMIN.toUpperCase(), `${ADMIN}.`, `${ADMIN}:443`]) {
-    const res = await front.inject({ method: 'GET', url: '/shared/x', headers: { ...VIA, host } });
-    assert.equal(res.statusCode, 404, `Host: ${host}`);
-  }
+  assert.ok(refusals.recentRefusals().every((r) => r.reason === 'app-not-shared'), JSON.stringify(refusals.recentRefusals()));
   await front.close();
 });
 
@@ -326,7 +329,7 @@ test("NOTHING PRIVATE IS LEFT IN CLOUDFLARE'S CACHE", async () => {
   await front.close();
 });
 
-test('AN APP CANNOT PLANT A PLATFORM COOKIE, OR A WORKER OVER THE WHOLE HOSTNAME', async () => {
+test('AN APP CANNOT PLANT A PLATFORM COOKIE, A WORKER OVER THE WHOLE HOSTNAME, OR AN OPENER POLICY', async () => {
   setRemoteAdmin(true);
   const front = await frontDoor();
   const res = await front.inject({ method: 'GET', url: '/shared/sets', headers: TO_APPS });
@@ -334,6 +337,10 @@ test('AN APP CANNOT PLANT A PLATFORM COOKIE, OR A WORKER OVER THE WHOLE HOSTNAME
   const cookies = ([] as string[]).concat(res.headers['set-cookie'] ?? []);
   assert.deepEqual(cookies, ['app_pref=1; Path=/shared'], "the app's own cookie stays; a platform one does not");
   assert.equal(res.headers['service-worker-allowed'], undefined);
+  // The dashboard's pages send `same-origin`, and a browser keeps a window between two
+  // pages only when both send the same policy — so an app page sending it too could open
+  // the dashboard on this shared address and read the key out of the window.
+  assert.equal(res.headers['cross-origin-opener-policy'], undefined, 'an app page kept its opener policy');
   await front.close();
 });
 
@@ -584,20 +591,17 @@ test('OPEN SETS THE APP\'S TOKEN ON THE APPS\' HOSTNAME, FOR ITS PATH ONLY, AND 
   await front.close();
 });
 
-test('OPEN IS REFUSED on the admin hostname, on the LAN, and with the door shut', async () => {
+test('OPEN IS REFUSED on the LAN and with the door shut', async () => {
   setRemoteAdmin(true);
   const front = await frontDoor();
   const remote = remoteSession();
-  const tryWith = async (headers: Record<string, string>) =>
-    front.inject({ method: 'GET', url: `/_omos/open?t=${access.mintAppTicket(remote.token, 'private')}`, headers });
-  for (const [what, headers] of [
-    ['the admin hostname', TO_ADMIN],
-    ['the LAN', { host: APPS }],
-  ] as const) {
-    const res = await tryWith(headers);
-    assert.equal(res.statusCode, 404, what);
-    assert.equal(res.headers['set-cookie'], undefined, `${what}: an app cookie was set`);
-  }
+  const lan = await front.inject({
+    method: 'GET',
+    url: `/_omos/open?t=${access.mintAppTicket(remote.token, 'private')}`,
+    headers: { host: APPS },
+  });
+  assert.equal(lan.statusCode, 404, 'the LAN');
+  assert.equal(lan.headers['set-cookie'], undefined, 'the LAN: an app cookie was set');
   const ticket = access.mintAppTicket(remote.token, 'private')!;
   setRemoteAdmin(false);
   const off = await front.inject({ method: 'GET', url: `/_omos/open?t=${ticket}`, headers: TO_APPS });
@@ -678,21 +682,22 @@ function handedOver(host: string, cookie: string) {
   return { raw, headers: { ...VIA, host, cookie }, url: '/trpc/auth.me', ip: '172.17.0.1', query: {} };
 }
 
-test('the dashboard API (tRPC) applies the rule — and reads ONLY the remote cookie, only on the admin hostname', () => {
+test('the dashboard API (tRPC) applies the rule — and reads ONLY the remote cookie from outside', () => {
   setRemoteAdmin(true);
   const ctxFor = (r: object) => createContext({ req: r, res: undefined } as never);
   const lan = lanSession();
   const remote = remoteSession();
   // Not handed over (the LAN): the LAN cookie, as always.
   assert.equal(ctxFor({ headers: { cookie: `${sessions.COOKIE_NAME}=${lan.token}` }, url: '/trpc/auth.me', ip: 'x', query: {} }).username, 'admin');
-  // Handed over: the remote cookie on the admin hostname, nothing else.
+  // Handed over: the remote cookie, nothing else.
   const remoteCookie = `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`;
-  assert.equal(ctxFor(handedOver(ADMIN, remoteCookie)).username, 'admin');
-  assert.equal(ctxFor(handedOver(ADMIN, `${sessions.COOKIE_NAME}=${remote.token}`)).username, null, 'the LAN cookie name, from outside');
-  assert.equal(ctxFor(handedOver(ADMIN, `${sessions.REMOTE_COOKIE_NAME}=${lan.token}`)).username, null, 'a LAN session, from outside');
-  assert.equal(ctxFor(handedOver(APPS, remoteCookie)).username, null, "on the apps' hostname");
+  assert.equal(ctxFor(handedOver(APPS, remoteCookie)).username, 'admin');
+  assert.equal(ctxFor(handedOver(APPS, `${sessions.COOKIE_NAME}=${remote.token}`)).username, null, 'the LAN cookie name, from outside');
+  assert.equal(ctxFor(handedOver(APPS, `${sessions.REMOTE_COOKIE_NAME}=${lan.token}`)).username, null, 'a LAN session, from outside');
+  // The hostname is no part of the rule: Cloudflare delivers only the ones routed here.
+  assert.equal(ctxFor(handedOver('admin.example.org', remoteCookie)).username, 'admin');
   setRemoteAdmin(false);
-  assert.equal(ctxFor(handedOver(ADMIN, remoteCookie)).username, null, 'with the door shut');
+  assert.equal(ctxFor(handedOver(APPS, remoteCookie)).username, null, 'with the door shut');
   setRemoteAdmin(true);
 });
 
@@ -707,10 +712,10 @@ test("the dashboard's raw routes apply it too — files, terminals, backups, res
   assert.equal(requestUser(lanReq({ cookie: `${sessions.COOKIE_NAME}=${lan.token}` })), 'admin');
   assert.equal(requestUser(lanReq({ ...VIA, cookie: `${sessions.COOKIE_NAME}=${lan.token}` })), null);
   const over = (host: string, cookie: string) => ({ ...handedOver(host, cookie), cookies: {} }) as never;
-  assert.equal(requestUser(over(ADMIN, `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`)), 'admin');
-  assert.equal(requestUser(over(APPS, `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`)), null);
+  assert.equal(requestUser(over(APPS, `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`)), 'admin');
+  assert.equal(requestUser(over(APPS, `${sessions.COOKIE_NAME}=${remote.token}`)), null, 'the LAN cookie name, from outside');
   setRemoteAdmin(false);
-  assert.equal(requestUser(over(ADMIN, `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`)), null, 'the door is shut');
+  assert.equal(requestUser(over(APPS, `${sessions.REMOTE_COOKIE_NAME}=${remote.token}`)), null, 'the door is shut');
   setRemoteAdmin(true);
 
   const src = path.join(__dirname, '..', 'src');
@@ -736,7 +741,7 @@ test('EVERY PROTECTED CALL FROM OUTSIDE RE-CHECKS THE DOOR AND THE SESSION — n
     csrf: remote.csrf,
     isWebSocket: true,
     ip: '172.17.0.1',
-    host: ADMIN,
+    host: APPS,
     viaTunnel: true,
     handedOver: true,
     remoteIp: '203.0.113.7',
@@ -747,7 +752,10 @@ test('EVERY PROTECTED CALL FROM OUTSIDE RE-CHECKS THE DOOR AND THE SESSION — n
   await assert.rejects(call(fromOutside()), refused, 'a connection opened before the door shut kept working');
   setRemoteAdmin(true);
   assert.equal(await call(fromOutside()), 'pong');
-  await assert.rejects(call(fromOutside({ host: APPS })), refused, "on the apps' hostname");
+  // A session that ended since the connection opened.
+  const ended = remoteSession();
+  sessions.destroySession(ended.token);
+  await assert.rejects(call(fromOutside({ sessionToken: ended.token, csrf: ended.csrf })), refused, 'a signed-out session kept working');
   // On the masjid's network the door does not apply at all.
   const lan = lanSession();
   setRemoteAdmin(false);
@@ -765,7 +773,7 @@ test('a terminal re-checks before every keystroke, and protected calls re-check 
   assert.match(terminals, /bridge\(socket, await rootTerminal\(\), \(\) => Boolean\(requestUser\(req\)\)/);
   assert.match(terminals, /bridge\(socket, await appTerminal\(id\), \(\) => Boolean\(requestUser\(req\)\)/);
   const trpc = fs.readFileSync(path.join(__dirname, '..', 'src', 'trpc', 'trpc.ts'), 'utf8');
-  assert.match(trpc, /ctx\.handedOver && !\(remoteDoorOpen\(ctx\.host\) && isRemoteSession\(ctx\.sessionToken\)\)/);
+  assert.match(trpc, /ctx\.handedOver && !\(remoteAdminEnabled\(\) && isRemoteSession\(ctx\.sessionToken\)\)/);
 });
 
 test('a remote session is remembered across a restart, with its factor — and a hand-edited one is not', () => {
@@ -812,17 +820,17 @@ test('completing a remote sign-in mints a REMOTE session bound to the factor it 
 
 test('AT THE MASJID an app opens at its own port; FROM OUTSIDE there is no URL to build', () => {
   const lan = { remote: false, appOrigin: null, hostname: '192.168.1.50' };
-  const out = { remote: true, appOrigin: `https://${APPS}`, hostname: ADMIN };
+  const out = { remote: true, appOrigin: `https://${APPS}`, hostname: APPS };
   const display = { openPort: 8080, https: false, path: 'display', exposed: true };
   assert.equal(appUrl.appOpenUrl(display, lan), 'http://192.168.1.50:8080');
   assert.equal(appUrl.appOpenUrl({ ...display, https: true, openPort: 9443 }, lan), 'https://192.168.1.50:9443');
   // From outside an app is opened through a one-use address the platform hands out,
-  // on the apps' hostname — never one built here, and never on the dashboard's.
+  // on the apps' hostname — never one built here.
   assert.equal(appUrl.appOpenUrl(display, out), null);
 });
 
 test("FROM OUTSIDE, only a SHARED app's public files are addressed — on the APPS' hostname", () => {
-  const out = { remote: true, appOrigin: `https://${APPS}`, hostname: ADMIN };
+  const out = { remote: true, appOrigin: `https://${APPS}`, hostname: APPS };
   assert.equal(appUrl.appBaseUrl({ openPort: 80, path: 'display', exposed: true }, out), `https://${APPS}/display`);
   assert.equal(appUrl.appBaseUrl({ openPort: 80, path: 'display', exposed: false }, out), null, 'a private app');
   assert.equal(appUrl.appBaseUrl({ openPort: 80, path: 'display' }, out), null, 'unknown means private');
@@ -874,8 +882,9 @@ test('A REVERSE PROXY ON THE MASJID\'S OWN NETWORK IS NOT "OUTSIDE" — apps ope
   assert.equal(me.appOrigin, null);
   await assert.rejects(appsRouter.createCaller(proxied).openRemote({ id: 'private' }), (e: { code?: string }) => e.code === 'FORBIDDEN');
 
-  // The remote dashboard itself — handed over, on the admin hostname — is outside.
-  const over = createContext({ req: handedOver(ADMIN, `${sessions.REMOTE_COOKIE_NAME}=${session.token}`), res: undefined } as never);
+  // The remote dashboard itself — handed over by the front door, with its key — is outside.
+  const overReq = handedOver(APPS, `${sessions.REMOTE_COOKIE_NAME}=${session.token}`);
+  const over = createContext({ req: { ...overReq, headers: { ...overReq.headers, 'x-omos-csrf': session.csrf } }, res: undefined } as never);
   const meOver = await authRouter.createCaller(over).me();
   assert.equal(meOver.remote, true);
   assert.equal(meOver.appOrigin, `https://${APPS}`);
@@ -930,7 +939,7 @@ test('A SIGN-IN THROUGH A REVERSE PROXY AT THE MASJID IS NEVER USABLE FROM OUTSI
   assert.equal(res.statusCode, 404, 'a private app was served to a token derived from a proxy sign-in');
   await front.close();
   // Nor does the remote dashboard take it, in the one cookie it reads.
-  const over = createContext({ req: handedOver(ADMIN, `${sessions.REMOTE_COOKIE_NAME}=${proxy.token}`), res: undefined } as never);
+  const over = createContext({ req: handedOver(APPS, `${sessions.REMOTE_COOKIE_NAME}=${proxy.token}`), res: undefined } as never);
   assert.equal(over.username, null, 'the remote dashboard honoured a session it did not make');
   // The same formula on a session the remote dashboard DID make is the real thing.
   const real = remoteSession();

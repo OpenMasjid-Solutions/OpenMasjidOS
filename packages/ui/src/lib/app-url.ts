@@ -36,13 +36,10 @@ export interface OpenableApp {
 }
 
 export interface Viewpoint {
-  /** This dashboard is the remote one, on the dashboard address (auth.me → remote,
-   *  which follows the front door's hand-over, not a header). */
+  /** This dashboard is the remote one (auth.me → remote, which follows the front
+   *  door's hand-over, not a header). */
   remote: boolean;
-  /**
-   * From outside: `https://<the apps' hostname>` (auth.me → appOrigin) — NOT the
-   * dashboard's own origin, which never serves an app. Null when unknown.
-   */
+  /** From outside: `https://<the apps' hostname>` (auth.me → appOrigin). Null when unknown. */
   appOrigin: string | null;
   /** `window.location.hostname` — the LAN address the dashboard was opened at. */
   hostname: string;

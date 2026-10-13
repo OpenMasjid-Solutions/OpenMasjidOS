@@ -32,14 +32,13 @@ import {
   sessionTokenFromCookieHeader,
 } from '../auth/sessions';
 import { secondFactorEpoch } from '../auth/twofactor';
-import { adminHost, isAdminHost, remoteAdminEnabled } from './remote-admin';
+import { remoteAdminEnabled } from './remote-admin';
 import { log } from '../logger';
 
 type Tracked =
   /** One of the dashboard's own sockets, handed over by the front door. */
   | {
       kind: 'dashboard';
-      host: string | string[] | undefined;
       /**
        * The remote session the socket was opened with, or null if it had none — which
        * the front door no longer lets happen: it hands a socket over only to a signed-in
@@ -111,7 +110,7 @@ function add(socket: Duplex, t: Tracked): boolean {
  */
 export function trackHandedOverSocket(req: IncomingMessage, socket: Duplex): boolean {
   const token = sessionTokenFromCookieHeader(req.headers.cookie, REMOTE_COOKIE_NAME);
-  return add(socket, { kind: 'dashboard', host: req.headers.host, token: token && isRemoteSession(token) ? token : null });
+  return add(socket, { kind: 'dashboard', token: token && isRemoteSession(token) ? token : null });
 }
 
 /** Record an app's socket opened through the tunnel with that app's access token. */
@@ -121,7 +120,7 @@ export function trackAppSocket(socket: Duplex, appId: string, token: string): bo
 
 /**
  * Close every recorded socket that no longer qualifies: the door is shut (remote
- * administration off, no second factor, the hostname changed…), or the session it was
+ * administration off, no second factor…), or the session it was
  * opened with — or the session behind its app token — has ended or no longer has the
  * second factor it proved.
  *
@@ -131,14 +130,13 @@ export function trackAppSocket(socket: Duplex, appId: string, token: string): bo
  */
 export function sweepHandedOverSockets(): number {
   const open = remoteAdminEnabled();
-  const admin = adminHost();
   const epoch = secondFactorEpoch();
   let closed = 0;
   for (const [socket, t] of tracked) {
     const keep =
       open &&
       (t.kind === 'dashboard'
-        ? isAdminHost(t.host, admin) && (t.token === null || isRemoteSessionAt(t.token, epoch))
+        ? t.token === null || isRemoteSessionAt(t.token, epoch)
         : appAccessUser(t.token, t.appId) !== null);
     if (keep) continue;
     tracked.delete(socket);

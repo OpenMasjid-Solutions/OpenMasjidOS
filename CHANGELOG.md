@@ -19,17 +19,21 @@ Manage OpenMasjidOS from anywhere, over the same secure Cloudflare tunnel your s
 already use. **Off by default.** Turn it on in **Settings → Remote access**, once two-step
 sign-in is set up.
 
-- **From outside, your dashboard has a web address of its own**, separate from the one your apps
-  use — for example `admin.example.org` beside `omos.example.org`. In Cloudflare, add a second
-  public hostname to your tunnel, exactly like the first one; then type it into
-  **Settings → Remote access → Dashboard address** and press Save. The page shows the Cloudflare
-  steps, and the **Manage OpenMasjidOS from outside** switch tells you if anything is still
-  missing.
-  - **Why a second address:** your browser keeps each website's private data apart by its address
-    alone — the `/donate` or `/display` part after it doesn't count. With the dashboard and your
-    apps at one address, a page from one of your apps could have used the dashboard as you. At the
-    masjid that has never been possible, because each app has its own port number; from outside, a
-    separate address does the same job.
+- **From outside, your dashboard is at your apps' address** — for example `omos.example.org`,
+  with nothing after it, while each app stays at its own path such as `omos.example.org/donate/`.
+  Nothing more to set up in Cloudflare: the one hostname remote access already uses is enough.
+  The **Manage OpenMasjidOS from outside** switch tells you if anything is still missing.
+  - **Why your apps can't use the dashboard as you:** your browser treats everything at one web
+    address as one site, so an app page there sits right beside the dashboard. Every change the
+    dashboard makes needs a key, and from outside the dashboard keeps that key only in the open
+    tab, hands it only to its own page when your browser loads it, and cuts off any window an app
+    page opens on it. At the masjid nothing changes: each app has its own port number there.
+  - **On an iPhone, iPad or Mac with Safari older than 16.4**, the dashboard asks you to sign in
+    again each time you reload it from outside. Newer browsers stay signed in.
+  - **Development build 16 asked for a second address just for the dashboard.** That is no longer
+    needed: after updating, the dashboard is at your apps' address, and keeps working at the second
+    one too while Cloudflare still sends it there. Sign in once at your apps' address, then remove
+    the second hostname in Cloudflare whenever it suits you.
 - **With two-step sign-in set up, almost everything works from outside**, not just the dashboard's
   pages (the few exceptions are listed further down):
   - **Opening an app.** Press Open as usual: the app opens in a new tab at your apps' address, and
@@ -71,7 +75,7 @@ sign-in is set up.
 - **Restoring a backup from outside only goes ahead if it keeps your way back in** — the same
   password, the same authenticator app and the same remote-access settings you use now. If it
   doesn't, nothing is changed: restore it at the masjid instead. That includes every backup made
-  before you set up the Dashboard address.
+  before you switched on managing from outside.
 - **The restore window now says how a restore ended**, at the masjid as well as from outside. One
   that was refused, turned out to be empty or couldn't connect at all says straight away that
   nothing was changed; before, it waited four minutes and then said "Restore complete." One that
@@ -139,7 +143,8 @@ sign-in is set up.
   outside. Before, it could arrive as a file that looked complete but was missing data, and you
   would only have found out when you tried to restore it.
 - **Two apps can no longer share an address.** Settings → Remote access refuses an address another
-  app already uses, or one OpenMasjidOS keeps for itself (`/api`, `/trpc`, `/assets`). Installing
+  app already uses, or one OpenMasjidOS keeps for itself (`/api`, `/trpc`, `/assets`, and the
+  dashboard's own pages such as `/settings` and `/files`). Installing
   an app whose name another app's address already uses gives the new one the next free address
   (`donations-2`, say), which you can change there once that app is shared online. Before, the
   later app quietly took the address over, which could take a shared app's public page offline.
@@ -155,8 +160,8 @@ sign-in is set up.
   connection that carries nothing for about 100 seconds, so a terminal left at a prompt or in an
   editor was cut off, and an update's progress could drop in a quiet stretch. The dashboard now
   keeps its connections alive.
-- **Still needs you at the masjid:** changing the Dashboard address or replacing the tunnel token
-  (a mistake in either, made from outside, would cut you off); uploading a file or restoring a
+- **Still needs you at the masjid:** replacing the tunnel token (a mistake, made from outside,
+  would cut you off); uploading a file or restoring a
   backup larger than 100 MB (Cloudflare's free plan refuses anything bigger, and the dashboard now
   says so before it starts); restoring a backup that would change how you get in; switching back
   to Stable, for now (above); apps from outside the OpenMasjidOS store that can't run under a
@@ -167,18 +172,16 @@ sign-in is set up.
   still open at their own port. The installer's Update and Repair now end by showing that address as
   `https://…`; they showed `http://…`, which only worked by being redirected.
 - **Already managing a box from outside on Development build 13, 14 or 15?** Those builds put the
-  dashboard at your apps' address, so the weakness above was real there: while you were signed in
-  from outside, a page from any app you had shared online could have used your dashboard as you.
-  After this update the dashboard is no longer at that address — an old bookmark shows "There is no
-  page at this address" — and the new **Dashboard address** can only be filled in from the
-  dashboard at the masjid. Until it is, there is no way in from outside; **Recently turned away**
-  and the switch both say what is missing. Those builds can't install updates from outside anyway,
-  so: add the second hostname in Cloudflare whenever suits you, and when you update at the masjid,
-  fill in the Dashboard address before you leave. The **Manage OpenMasjidOS from outside** switch
-  stays on, so that is all it takes. Apart from this note nothing says so — no alert, no email, and
-  on the dashboard only Settings → Remote access once someone opens it — so tell whoever looks after
-  such a box. If it is updated some other way while nobody is there, someone at the masjid will need
-  to fill the address in before anyone can manage it from outside again.
+  dashboard at your apps' address too, but kept its key where a page from any app you had shared
+  online could read it, so while you were signed in from outside that page could have used your
+  dashboard as you. After this update the dashboard is still at that address and your bookmarks
+  still work; the key is now kept out of every app page's reach. Sign in again once, with your
+  password and a code. Those builds can't install updates from outside, so update at the masjid or
+  with the installer.
+- **If a browser ever opened an app you don't trust through your apps' address, clear that
+  browser's saved data for the address before managing from outside in it.** Older versions let an
+  app leave a background script there that could now see the dashboard too; newer versions stop
+  apps leaving new ones, but cannot reach one already left behind.
 
 ### Two-step sign-in
 
@@ -225,7 +228,32 @@ sign-in is set up.
 
 **Technical detail** for both sections above (for whoever cuts the release). dev.13–15 published
 the first version; dev.16 is the redesign below, reworked after more than one adversarial review,
-and supersedes it.
+and supersedes it; dev.17 (next) replaced dev.16's second hostname and keeps the rest.
+
+- **dev.17: back to one address, kept apart by the key.** At Hasan's request the dashboard is served
+  at the root of the apps' hostname again, and dev.16's separate *Dashboard address* is gone
+  (`settings.cloudflare.adminHost`; `adminHost()`, `isAdminHost()`, `validateAdminHost()`,
+  `remoteDoorOpen()`, `doorClosedReason()`; the refusal reasons `no-admin-host`,
+  `dashboard-elsewhere`, `app-on-admin-host`, leaving seven; the restore's address comparison; the
+  socket sweep's hostname check). Nothing looks at the hostname now, so a box that kept dev.16's
+  second hostname is served there too. `remoteAdminEnabled()` is four conditions again. What keeps
+  app pages — now the dashboard's own origin — out is the KEY: the remote dashboard keeps it in
+  memory only (`ui/src/lib/session.ts`, keyed on `<meta name="omos-key">`); `api/static-ui.ts`
+  `registerRemoteDashboardPages` writes it into a handed-over dashboard page only for
+  `Sec-Fetch-Dest: document` + `Sec-Fetch-Mode: navigate` and a live remote session, with COOP
+  `same-origin`, `X-Frame-Options: DENY`, `frame-ancestors 'none'` and `no-store`; the ingress strips
+  COOP from every app response; `auth.me` answers a handed-over call without the key as signed out
+  (it had told any app page the admin's name, email and phone — caught in this change's own review);
+  the File Explorer's inline view is `Referrer-Policy: no-referrer` (an SVG there could have sent
+  its `?k=` address to an app's path — caught in the same review); and the dashboard's page
+  segments (`store`, `apps`, `files`, `settings`, `design-system`) joined `RESERVED_PATH_SEGMENTS`,
+  kept in step with `DASHBOARD_SEGMENTS` by `test/app-paths.test.ts`. The update window sends the
+  key on its `auth.me` checks. New `test/remote-key.test.ts`. Accepted residuals, documented in
+  CLAUDE.md §15 (*ONE ADDRESS*) and `docs/REMOTE_ADMIN.md`: the boundary rests on Sec-Fetch and COOP
+  rather than the origin; an app page can sign the dashboard out, trip the per-address lockout,
+  write its display preferences and phish at the same address; Safari before 16.4 signs in again
+  after every reload; and a worker an older build let an app register over `/` now covers the
+  dashboard. None of it was tried in a real browser.
 
 - **Why the dashboard moved: the review.** dev.13–15 — and this build as first written, never
   published — served the remote dashboard at the root of the apps' hostname
@@ -1332,11 +1360,13 @@ things **worse** than the bug being fixed. Recorded because they are the interes
 
 ### Docs
 
-- **Remote administration on a hostname of its own is written down** in CLAUDE.md,
-  `docs/REMOTE_ADMIN.md` (with the operator's Cloudflare steps and a section on moving a box from
-  dev.13–15), `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, `docs/NETWORKING.md` (its remote-access
-  section no longer says the dashboard is never exposed through the tunnel),
-  `docs/FABRIC_APP_LINK_AND_TUNNEL.md` and `docs/APP_MANIFEST_SPEC.md`.
+- **Remote administration is written down** — as of dev.17, on one address with the key rule —
+  in CLAUDE.md, `docs/REMOTE_ADMIN.md` (with the operator's steps and a section on moving a box
+  from dev.13–dev.16), `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, `docs/NETWORKING.md` (its
+  remote-access section no longer says the dashboard is never exposed through the tunnel),
+  `docs/FABRIC_APP_LINK_AND_TUNNEL.md` and `docs/APP_MANIFEST_SPEC.md` (which now tells app authors
+  that their pages share the dashboard's origin, lose any opener policy, and may not take the
+  dashboard's page paths).
 - **`CLAUDE.md` §15: three claims corrected.** Each asserted a containment that does not hold,
   which is worse than a documented gap because it is what stops anyone re-examining it.
   - The `startApp` bullet said restore passes the compose gate. It does not (above).

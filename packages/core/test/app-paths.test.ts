@@ -59,6 +59,14 @@ test('AN APP CANNOT BE GIVEN AN ADDRESS THE PLATFORM KEEPS FOR ITSELF', () => {
     assert.throws(() => manager.setAppPath('donations', p), /used by OpenMasjidOS itself/, p);
   }
   assert.equal(manager.getAppPath('donations'), 'donations', 'a refused address must not be saved');
+  // From outside the dashboard shares this address: an app at /settings took the
+  // dashboard's Settings page on reload. Every dashboard segment is kept back.
+  for (const p of ['settings', 'files', 'store', 'apps', 'design-system']) {
+    assert.throws(() => manager.setAppPath('donations', p), /used by OpenMasjidOS itself/, p);
+  }
+  const { DASHBOARD_SEGMENTS } = req('../src/system/remote-admin') as typeof import('../src/system/remote-admin');
+  const { isReservedPathSegment } = req('../src/apps/paths') as typeof import('../src/apps/paths');
+  for (const seg of DASHBOARD_SEGMENTS) assert.ok(isReservedPathSegment(seg), `/${seg} is the dashboard's, but an app may take it`);
   // ONE list, read by the router and by Settings — not two that can drift.
   const ingress = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'ingress.ts'), 'utf8');
   assert.match(ingress, /isReservedPathSegment\(seg\)/);

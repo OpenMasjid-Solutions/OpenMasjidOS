@@ -11,25 +11,41 @@
  * `x-forwarded-proto` comparison). A second factor that is required or not
  * depending on which copy answered is not a second factor.
  *
- * ── THE DASHBOARD HAS A HOSTNAME OF ITS OWN ────────────────────────────────
+ * ── ONE ADDRESS, AND THE KEY KEPT WHERE NO APP PAGE CAN REACH IT ──────────
  *
- * The first versions served the remote dashboard at the root of the hostname the
- * apps are published on, `https://omos.example.org/`, with every app beside it at
- * `/<path>/`. An adversarial review showed what that meant, four times over: a
- * browser's line around "this site's own data" is scheme + host + port, and the
- * path is not part of it. So every app page was the SAME ORIGIN as the dashboard.
- * Its script could read the dashboard key out of storage, send requests that
- * carried the admin's cookie, pass the origin check (Origin and Host agreed,
- * because they were the same site) and drive the whole admin API — turn the root
- * terminal on and open it, download every secret in a backup. Host root, from any
- * app the admin opened, or from a cross-site-scripting bug in any public page.
- *
- * On the masjid's network that line has always been there: the dashboard is
- * `https://<ip>`, each app `http://<ip>:<port>`, and a different port is a
- * different origin. Through the tunnel the only way to draw it is a different
- * HOSTNAME, so the dashboard is served on `adminHost` and nowhere else, and app
- * content is never served on `adminHost` at all (system/ingress.ts). The two sets
- * of addresses cannot overlap, so no origin ever holds both.
+ * From outside the dashboard is served on the same tunnel address as the apps — the
+ * one Cloudflare hostname the masjid already set up. A browser draws its line around
+ * "this site's own data" by scheme + host + port, never by path, so every app page
+ * there is the SAME ORIGIN as the dashboard: its script can read this origin's
+ * storage, and send requests that carry the admin's cookie and pass the origin check.
+ * What it must never get is the dashboard KEY, the second thing every signed-in
+ * request needs (auth/sessions.ts): with both it could drive the whole admin API —
+ * turn the root terminal on and open it. dev.13–15 kept the key in this origin's
+ * storage and an adversarial review showed exactly that; dev.16 answered with a
+ * second Cloudflare hostname for the dashboard alone, and the masjid found that one
+ * address too many. So instead, for a request the front door handed over
+ * (`wasHandedOver`):
+ *  - the key is never stored where a page can read it: the remote dashboard keeps it
+ *    in the tab's memory (ui/src/lib/session.ts), never in localStorage;
+ *  - a reload gets it back from the page itself: the server writes it into the
+ *    dashboard's HTML only for a top-level load the BROWSER marks as one
+ *    (`Sec-Fetch-Dest: document` + `Sec-Fetch-Mode: navigate`, headers no script can
+ *    set) — never for a fetch, a frame or an embed (api/static-ui.ts
+ *    `registerRemoteDashboardPages`); `auth.me` never returns it;
+ *  - no app page can hold a window on such a page: dashboard pages carry
+ *    `Cross-Origin-Opener-Policy: same-origin` and app pages never carry COOP at all
+ *    (system/ingress.ts strips it), so a window an app opens on the dashboard is cut
+ *    off from it at once; and `frame-ancestors 'none'` keeps the dashboard out of
+ *    frames;
+ *  - an address that carries the key (`?k=`) never sends itself on: the File
+ *    Explorer's inline view is `Referrer-Policy: no-referrer` (api/files.ts), or an SVG
+ *    opened there would tell an app's path the key in a Referer.
+ * Every signed-in route already refuses a request without the key; from outside
+ * `auth.me` answers it as signed out too, so an app page calling it with the admin's
+ * cookie learns nothing about the admin.
+ * A browser that does not mark its loads (`Sec-Fetch-Dest` reached Safari in 16.4) is
+ * given no key with the page and signs in again after a reload, rather than being
+ * handed one blind.
  *
  * ── WHAT THIS DELIBERATELY BREAKS ──────────────────────────────────────────
  *
@@ -79,17 +95,14 @@ export type FrontDoorDecision =
   | { kind: 'serve' }
   /** LAN traffic on the plain-HTTP port: 308 to the HTTPS dashboard, as always. */
   | { kind: 'lan-https' }
-  /** A tunnel visitor on plain http://: 308 to the same path on the ADMIN hostname. */
+  /** A tunnel visitor on plain http://: 308 to the same path on the apps' (configured) hostname. */
   | { kind: 'upgrade'; to: string }
   /** Refused, with the refusal recorded for "Recently turned away" under `reason`. */
-  | { kind: 'refuse'; reason: 'lan-only-route' | 'no-admin-host' | 'plain-http-no-host' | 'dashboard-elsewhere' };
+  | { kind: 'refuse'; reason: 'lan-only-route' | 'plain-http-no-host' };
 
 /**
  * A Host header as a bare, comparable hostname: lower-case, no port, no trailing
- * dot. A browser sends the host as the address bar spells it, so this is only
- * here to keep two spellings of the SAME name from being told apart — the
- * question it answers is "is this the admin hostname", and a name that is not
- * that one in any spelling is simply not it.
+ * dot, so two spellings of the SAME name are never told apart.
  */
 export function normalizeHost(host: string | string[] | undefined | null): string {
   const raw = Array.isArray(host) ? host[0] : host;
@@ -98,11 +111,6 @@ export function normalizeHost(host: string | string[] | undefined | null): strin
   // `[v6]:port` keeps its brackets; a DNS name loses its port.
   if (!h.startsWith('[')) h = h.replace(/:\d*$/, '');
   return h.replace(/\.+$/, '');
-}
-
-/** The admin hostname from Settings, normalised, or '' when none is set. */
-export function adminHost(): string {
-  return normalizeHost(getSettings().cloudflare.adminHost ?? '');
 }
 
 /** A "Your apps' address" value as a bare hostname: no scheme, path or port, normalised. */
@@ -115,12 +123,6 @@ export function appHostname(): string {
   return hostnameOfDomain(getSettings().cloudflare.domain ?? '');
 }
 
-/** Did this request ask for the admin hostname? Never true while none is set. */
-export function isAdminHost(host: string | string[] | undefined | null, admin: string = adminHost()): boolean {
-  const want = normalizeHost(admin);
-  return want !== '' && normalizeHost(host) === want;
-}
-
 /**
  * The front door's gate, as one pure function.
  *
@@ -131,12 +133,9 @@ export function isAdminHost(host: string | string[] | undefined | null, admin: s
  * between the internet and the dashboard routes on this listener; it must be the
  * thing under test, not a description of it.
  *
- * The dashboard is served ONLY on the admin hostname. Asked for anywhere else — the
- * apps' hostname above all — it is refused, whatever else is true: that hostname
- * serves app pages, and the dashboard must never share an origin with one (see the
- * header). The refusal is recorded as `dashboard-elsewhere`, because "I went to my
- * usual address and the dashboard was not there" is the first thing an admin will
- * meet after this change, and the record should say where it went.
+ * The dashboard is served on whichever tunnel hostname was asked for — Cloudflare only
+ * delivers the ones the masjid configured. What keeps it apart from the app pages that
+ * share that address is where the key lives, not the hostname (see the header).
  *
  * The plain-http:// tunnel case is an UPGRADE, not service. Serving it put the
  * admin password and the second-factor code on the public internet in clear
@@ -147,7 +146,7 @@ export function isAdminHost(host: string | string[] | undefined | null, admin: s
  *    a proxy that strips the scheme header can never trap the dashboard in a loop
  *    (and `visitorScheme` reads cf-visitor first, so one that REWRITES
  *    x-forwarded-proto cannot either).
- *  - Always to the CONFIGURED admin hostname. The target never comes from the
+ *  - Always to the CONFIGURED apps' hostname. The target never comes from the
  *    request, so this cannot be an open redirect.
  *  - No configured hostname means nowhere safe to send them: refuse rather than
  *    serve the sign-in page in clear.
@@ -158,19 +157,17 @@ export function frontDoorDecision(
   ctx: {
     viaTunnel: boolean;
     remoteAdminEnabled: boolean;
-    adminHost: string;
-    /** Why the door is shut, when it is (doorClosedReason) — only the record differs. */
-    closedReason?: 'lan-only-route' | 'no-admin-host';
+    /** The apps' hostname (Settings → Remote access), where a plain-http:// visit is sent. */
+    appsHost: string;
   },
 ): FrontDoorDecision {
   // `touches`, not `isDashboardPath`: the gate must look at a request if ANY spelling
   // could reach a dashboard route. See touchesDashboardPath for the bypass this closes.
   if (!touchesDashboardPath(url)) return { kind: 'pass' }; // /api/*, app paths, unknown
   if (!ctx.viaTunnel) return { kind: 'lan-https' };
-  if (!ctx.remoteAdminEnabled) return { kind: 'refuse', reason: ctx.closedReason ?? 'lan-only-route' };
-  if (!isAdminHost(headers.host, ctx.adminHost)) return { kind: 'refuse', reason: 'dashboard-elsewhere' };
+  if (!ctx.remoteAdminEnabled) return { kind: 'refuse', reason: 'lan-only-route' };
   if (visitorScheme(headers) !== 'http') return { kind: 'serve' };
-  const ours = normalizeHost(ctx.adminHost);
+  const ours = normalizeHost(ctx.appsHost);
   // `url` is a request target and always starts with '/'. Anything else is not
   // something to concatenate onto a scheme and a host.
   if (!ours || !url.startsWith('/') || url.startsWith('//')) return { kind: 'refuse', reason: 'plain-http-no-host' };
@@ -182,9 +179,9 @@ export function frontDoorDecision(
  *
  * The ingress listener owns every upgrade on the front door and destroys anything
  * it is not told to keep (system/ingress.ts says why). This is what it is told to
- * keep: one of the dashboard's own sockets (DASHBOARD_SOCKETS), over the tunnel, on
- * the admin hostname, and only when `frontDoorDecision` — the very function the HTTP
- * gate calls — would SERVE the same request.
+ * keep: one of the dashboard's own sockets (DASHBOARD_SOCKETS), over the tunnel, and
+ * only when `frontDoorDecision` — the very function the HTTP gate calls — would SERVE
+ * the same request.
  *
  * Asking the gate rather than re-deriving it is the point. The first version
  * checked "tunnel + feature on + /trpc" by hand, so an upgrade the gate would have
@@ -201,7 +198,7 @@ export function frontDoorDecision(
 export function claimsDashboardSocket(
   url: string,
   headers: NodeJS.Dict<string | string[]>,
-  ctx: { remoteAdminEnabled: boolean; adminHost: string },
+  ctx: { remoteAdminEnabled: boolean; appsHost: string },
 ): boolean {
   if (!isViaTunnelHeaders(headers)) return false;
   if (!spellings(url).every((p) => DASHBOARD_SOCKETS.some((sock) => under(p, sock)))) return false;
@@ -258,7 +255,7 @@ export function startDashboardHeartbeat(
 /**
  * May the dashboard be served over the tunnel right now?
  *
- * Five conditions, all re-read per request:
+ * Four conditions, all re-read per request:
  *  - the tunnel is on at all (no point otherwise, and it keeps the two in step);
  *  - the admin switched remote administration on;
  *  - a second factor is enrolled, so a remote sign-in can actually demand one;
@@ -270,9 +267,6 @@ export function startDashboardHeartbeat(
  *    while these settings survived would otherwise offer "create the admin
  *    account" and "restore a backup" to the internet. (A DAMAGED record counts as
  *    configured, which is what keeps setup refused there; see auth/store.ts.)
- *  - THE DASHBOARD HAS ITS OWN HOSTNAME, and it is not the apps' one. Without it
- *    there is nowhere to serve the dashboard that an app page does not share (see
- *    the header) — so there is no remote administration, rather than an unsafe one.
  */
 export function remoteAdminEnabled(): boolean {
   return settingsOpenTheDoor(getSettings().cloudflare) && twoFactorActive() && isConfigured();
@@ -282,36 +276,19 @@ export function remoteAdminEnabled(): boolean {
  * The SETTINGS half of `remoteAdminEnabled`, as a pure function of a cloudflare
  * settings object — so a restore can ask it of the settings it is about to put in
  * place (system/restore.ts `remoteRestoreProblem`) with exactly the rule the live
- * box uses. A second, hand-written copy of this check in the restore missed the
- * "admin hostname equals the apps' hostname" condition, and a restore it waved
- * through shut the remote dashboard behind the admin.
+ * box uses: a hand-written copy of a check like this in the restore once missed a
+ * condition, and a restore it waved through shut the door behind the admin. Each a
+ * literal `true`, never merely truthy.
  */
-export function settingsOpenTheDoor(cf: { enabled?: unknown; remoteAdmin?: unknown; adminHost?: unknown; domain?: unknown }): boolean {
-  const admin = normalizeHost(typeof cf.adminHost === 'string' ? cf.adminHost : '');
-  const apps = hostnameOfDomain(typeof cf.domain === 'string' ? cf.domain : '');
-  return cf.enabled === true && cf.remoteAdmin === true && admin !== '' && admin !== apps;
+export function settingsOpenTheDoor(cf: { enabled?: unknown; remoteAdmin?: unknown }): boolean {
+  return cf.enabled === true && cf.remoteAdmin === true;
 }
 
 /**
- * Why the door is shut, for the refusal record: 'no-admin-host' when remote
- * administration is switched on and only the dashboard's own address is missing —
- * which is exactly what a box managed remotely before the address existed looks like
- * after updating — so "Recently turned away" says what to fix rather than "Local
- * network only".
- */
-export function doorClosedReason(): 'lan-only-route' | 'no-admin-host' {
-  const cf = getSettings().cloudflare;
-  return cf.enabled === true && cf.remoteAdmin === true && isConfigured() && remoteAdminBlockedReason() === 'no-admin-host'
-    ? 'no-admin-host'
-    : 'lan-only-route';
-}
-
-/**
- * The first build that serves the dashboard on an address of its own. A box moved to
- * anything older is cut off from the dashboard address — Stable before this has no
- * remote dashboard at all, and dev.13–15 served it beside the apps instead — so the
- * dashboard's own update and channel switch refuse, from outside, to move the box
- * there: every window from outside would be cut off until someone at the masjid moved
+ * The first build whose remote dashboard can do everything from outside — files,
+ * terminals, backups, updates, opening apps. Stable before this has no remote
+ * dashboard at all, so the dashboard's own update and channel switch refuse, from
+ * outside, to move the box to anything older: every window from outside would be cut off until someone at the masjid moved
  * it on again (docker/update.ts `runUpdate`, trpc/routers/system.ts
  * `setUpdateChannel`). A root terminal could still do it, as it can do anything.
  */
@@ -323,46 +300,13 @@ export function managesFromOutside(version: string): boolean {
 }
 
 /**
- * Is the remote dashboard's door open for a request that asked for this host?
- *
- * The question a long-lived connection has to keep asking. The gate answers it once
- * per HTTP request; a WebSocket or a terminal is one request that lasts for hours, so
- * every route that serves one asks this again before acting (trpc/trpc.ts,
- * api/ws-auth.ts) — and system/remote-sockets.ts closes the ones that stop qualifying.
- */
-export function remoteDoorOpen(host: string | string[] | undefined | null): boolean {
-  return remoteAdminEnabled() && isAdminHost(host);
-}
-
-/**
  * Whether the switch COULD be turned on — surfaced to Settings so the reason is
  * visible before the admin presses something that refuses.
  */
-export function remoteAdminBlockedReason(): 'no-two-factor' | 'no-tunnel' | 'no-admin-host' | null {
+export function remoteAdminBlockedReason(): 'no-two-factor' | 'no-tunnel' | null {
   if (!twoFactorActive()) return 'no-two-factor';
   if (!getSettings().cloudflare.enabled) return 'no-tunnel';
-  const admin = adminHost();
-  if (admin === '' || admin === appHostname()) return 'no-admin-host';
   return null;
-}
-
-/**
- * Is `input` usable as the admin hostname? Returns the normalised name, or throws a
- * sentence an admin can act on. One rule, used by the router that saves it.
- */
-export function validateAdminHost(input: string, appsHost: string = appHostname()): string {
-  const h = hostnameOfDomain(input);
-  if (h === '') return '';
-  const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
-  if (h.length > 253 || !new RegExp(`^${label}(?:\\.${label})+$`).test(h) || /^[\d.]+$/.test(h)) {
-    throw new Error('Enter a web address like admin.example.org — no https:// and nothing after it.');
-  }
-  if (h === normalizeHost(appsHost)) {
-    throw new Error(
-      'The dashboard needs an address of its own — not the one your apps use. Add a second public hostname to your tunnel in Cloudflare, for example admin.example.org.',
-    );
-  }
-  return h;
 }
 
 // ── Requests handed to the dashboard listener ────────────────────────────────
@@ -392,7 +336,7 @@ export function wasHandedOver(req: IncomingMessage | undefined | null): boolean 
  * The tunnel is meant to point at the front door (port 80), whose gate is what makes
  * remote administration a switch. Pointed at the dashboard's own port instead — one
  * wrong field in Cloudflare — every route here would answer the internet directly,
- * gate or no gate: the switch off, the admin hostname ignored. Sessions would still
+ * gate or no gate, the switch off. Sessions would still
  * need the second factor, but "off by default" would be a sentence in Settings
  * rather than a fact. `cf-ray` is Cloudflare's own header, set at its edge and never
  * sent by a browser on the masjid's network or by a reverse proxy of the masjid's
@@ -534,7 +478,7 @@ const DASHBOARD_ROOT_FILES = ['/index.html', '/favicon.svg', '/ambient.mp4'];
  * These were refused over the tunnel outright (LAN_ONLY_FEATURES, now gone), and the
  * admin asked for everything to work remotely. They are reachable from outside on
  * the same conditions as the rest of the dashboard — the tunnel, the switch, an
- * enrolled second factor, the admin hostname — AND only for a session that passed
+ * enrolled second factor — AND only for a session that passed
  * that second factor, which every one of these routes checks for itself
  * (api/ws-auth.ts `requestUser`).
  *
@@ -638,8 +582,8 @@ function spellingIsDashboard(p: string): boolean {
  * rules together. The session rule: from the tunnel, every one of those routes
  * accepts only a session that passed the second factor (auth/sessions.ts
  * `getSessionUserFor`), so reaching a root shell from outside takes the password
- * AND the second factor. And the hostname rule above: no app page is ever served
- * where that session's cookie and key live. The terminals keep their own
+ * AND the second factor. And the key rule in the header: no app page sharing the
+ * dashboard's address can ever get hold of the dashboard key. The terminals keep their own
  * off-by-default switches in Settings → Advanced, and the File Explorer keeps its
  * protected paths (files/manager.ts `protectedReason`) — both apply remotely too.
  */

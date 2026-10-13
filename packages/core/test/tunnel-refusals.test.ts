@@ -131,16 +131,15 @@ const REASONS = (() => {
 })();
 
 test('the reason list is read from the type, all of it', () => {
-  assert.ok(REASONS.length >= 9, `parsed ${JSON.stringify(REASONS)}`);
-  for (const r of ['no-app-at-path', 'lan-only-route', 'app-not-shared', 'no-admin-host', 'wrong-port']) {
+  assert.ok(REASONS.length >= 7, `parsed ${JSON.stringify(REASONS)}`);
+  for (const r of ['no-app-at-path', 'lan-only-route', 'app-not-shared', 'plain-http-no-host', 'wrong-port', 'worker-at-bare-address']) {
     assert.ok(REASONS.includes(r), r);
   }
 });
 
 test('EVERY REASON HAS ITS OWN WORDS in "Recently turned away"', () => {
   // The label falls back to "Local network only" — which is how a Cloudflare hostname
-  // pointed at the wrong port, and a box whose dashboard had no address of its own,
-  // were both shown as "Local network only" with nothing to say what to fix.
+  // pointed at the wrong port was once shown, with nothing to say what to fix.
   const settings = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
   const panel = settings.slice(settings.indexOf('function TunnelRefusals'), settings.indexOf('function CloudflarePanel'));
   for (const reason of REASONS) {

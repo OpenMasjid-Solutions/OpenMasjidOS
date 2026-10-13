@@ -3388,12 +3388,6 @@ function TunnelRefusals({ port }: { port: number }) {
                 ? t('settings.cfRefusalPlainHttp')
                 : r.reason === 'app-not-shared'
                 ? t('settings.cfRefusalAppNotShared')
-                : r.reason === 'dashboard-elsewhere'
-                ? t('settings.cfRefusalDashboardElsewhere')
-                : r.reason === 'app-on-admin-host'
-                ? t('settings.cfRefusalAppOnAdminHost')
-                : r.reason === 'no-admin-host'
-                ? t('settings.cfRefusalNoAdminHost')
                 : r.reason === 'wrong-port'
                 ? t('settings.cfRefusalWrongPort', { port })
                 : r.reason === 'worker-at-bare-address'
@@ -3442,14 +3436,10 @@ function CloudflarePanel() {
 
   const [domain, setDomain] = useState('');
   const [token, setToken] = useState('');
-  const [adminHost, setAdminHost] = useState('');
-  // The apps' address, likewise, only when edited: sending what the field held since the
+  // The apps' address is sent only when edited: sending what the field held since the
   // page loaded put back an address another device had changed — every shared app's
   // public links with it.
   const [domainEdited, setDomainEdited] = useState(false);
-  // Sent only when the admin actually changed it. Sending whatever the field held put
-  // back a value from when the page loaded — undoing a change made on another device.
-  const [adminHostEdited, setAdminHostEdited] = useState(false);
   // From outside, the actions below that close remote access close it on THIS window
   // too, and only someone at the masjid can open it again: those get asked first.
   // At the masjid they are reversible with the control beside them, so they do not
@@ -3460,7 +3450,6 @@ function CloudflarePanel() {
   useEffect(() => {
     if (cf && !seeded.current) {
       setDomain(cf.domain);
-      setAdminHost(cf.adminHost);
       seeded.current = true;
     }
   }, [cf]);
@@ -3470,9 +3459,7 @@ function CloudflarePanel() {
       setToken('');
       // Show what is stored now, as the server normalised it.
       setDomain(r.domain);
-      setAdminHost(r.adminHost);
       setDomainEdited(false);
-      setAdminHostEdited(false);
       refresh();
       toast(t('settings.cfSaved'), 'success');
     },
@@ -3576,40 +3563,6 @@ function CloudflarePanel() {
         />
       </div>
 
-      {/* The dashboard's own address from outside — beside the apps' one, so the one
-          Save below stores both. Its own field, and its own Cloudflare hostname, because
-          the dashboard must never share an address with the apps: an app page on the
-          dashboard's address could act as the admin (core system/remote-admin.ts). */}
-      <div className="setting-row">
-        <div className="setting-row__text">
-          <div className="setting-row__title">{t('settings.cfAdminHost')}</div>
-          <div className="setting-row__hint">{t('settings.cfAdminHostHint')}</div>
-        </div>
-        <input
-          className="input glass-inset"
-          style={{ maxWidth: '16rem' }}
-          placeholder="admin.example.org"
-          value={adminHost}
-          onChange={(e) => {
-            setAdminHost(e.target.value);
-            setAdminHostEdited(true);
-          }}
-          // From outside, the server refuses to move the address this page is open
-          // on; better to say so here than after Save.
-          disabled={remote}
-          title={remote ? t('settings.cfAdminHostRemote') : undefined}
-          aria-label={t('settings.cfAdminHost')}
-        />
-      </div>
-      {remote && (
-        <div className="setting-row__hint" style={{ marginBlockEnd: '0.4rem' }}>
-          {t('settings.cfAdminHostRemote')}
-        </div>
-      )}
-      <div className="setting-row__hint" style={{ marginBlockEnd: '0.6rem' }}>
-        {t('settings.cfAdminHostSteps', { port: routes.data?.ingressPort ?? 80 })}
-      </div>
-
       <div className="field">
         <label className="label">{t('settings.cfToken')}</label>
         <input
@@ -3636,7 +3589,6 @@ function CloudflarePanel() {
             save.mutate({
               domain: domainEdited ? domain.trim() : undefined,
               token: token.trim() || undefined,
-              adminHost: adminHostEdited ? adminHost.trim() : undefined,
             })
           }
         >
@@ -3666,11 +3618,9 @@ function CloudflarePanel() {
                 ? t('settings.cfRemoteAdminNeeds2fa')
                 : cf.remoteAdminBlocked === 'no-tunnel'
                   ? t('settings.cfRemoteAdminNeedsTunnel')
-                  : cf.remoteAdminBlocked === 'no-admin-host'
-                    ? t('settings.cfRemoteAdminNeedsHost')
-                    : cf.remoteAdmin && !cf.remoteAdminActive
-                      ? t('settings.cfRemoteAdminStalled')
-                      : t('settings.cfRemoteAdminHint')}
+                  : cf.remoteAdmin && !cf.remoteAdminActive
+                    ? t('settings.cfRemoteAdminStalled')
+                    : t('settings.cfRemoteAdminHint')}
             </div>
           </div>
           <Toggle
@@ -3687,9 +3637,9 @@ function CloudflarePanel() {
             <ShieldCheck size={15} /> {t('settings.cfRemoteAdminSetUp2fa')}
           </NavLink>
         )}
-        {cf.remoteAdminActive && (
+        {cf.remoteAdminActive && cf.domain && (
           <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-            {t('settings.cfRemoteAdminAt', { url: `https://${cf.adminHost}/` })}
+            {t('settings.cfRemoteAdminAt', { url: `https://${cf.domain}/` })}
           </p>
         )}
       </div>
@@ -3827,7 +3777,11 @@ function CloudflarePanel() {
         onClose={() => setRemoteAdminAsk(false)}
         title={t('settings.cfRemoteAdminAskTitle')}
       >
-        <p>{t('settings.cfRemoteAdminAskBody', { url: `https://${cf.adminHost}/` })}</p>
+        <p>
+          {t('settings.cfRemoteAdminAskBody', {
+            url: cf.domain ? `https://${cf.domain}/` : t('settings.cfRemoteAdminYourAddress'),
+          })}
+        </p>
         <ul style={{ margin: '0.85rem 0', paddingInlineStart: '1.1rem', display: 'grid', gap: '0.4rem' }}>
           <li>{t('settings.cfRemoteAdminAsk1')}</li>
           <li>{t('settings.cfRemoteAdminAsk2')}</li>

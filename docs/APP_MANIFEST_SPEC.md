@@ -203,9 +203,9 @@ installed app validate (or impersonate) the session as another.
   other platform route. Use the SSO result to log the viewer into **your app**, nothing more.
 
 > Same-host assumption (the LAN): cookie-based SSO works because the dashboard and the app share a
-> host on different ports, and a browser does not keep cookies apart by port. **Through the tunnel there
-> is deliberately no shared host** — the dashboard has a hostname of its own so that no app page shares
-> its origin — so the platform hands your app its own access token instead (below). An app on any
+> host on different ports, and a browser does not keep cookies apart by port. **Through the tunnel your
+> app never receives a platform session cookie** — the platform removes them before forwarding — so it
+> hands your app its own access token instead (below). An app on any
 > other host simply won't see a cookie and falls back to its own login. **Transport:** this is fine on
 > a plain-HTTP LAN with `SameSite=Lax` (Lax, not Strict — the dashboard is HTTPS and apps are HTTP, so
 > "Open" is a cross-scheme navigation Strict would refuse the cookie on). The access token is set
@@ -215,15 +215,16 @@ installed app validate (or impersonate) the session as another.
 **Single sign-on from outside the masjid (through the tunnel)** — platform 0.51.2-dev.16+. Nothing to
 opt into beyond `sso: true`, and nothing new to call: the LAN steps above work unchanged.
 
-- **Two hostnames.** When the admin manages OpenMasjidOS from outside (Settings → Remote access), the
-  dashboard is served only on its own **"Dashboard address"** (e.g. `admin.example.org`), and no app
-  is ever served there — apps stay on **"Your apps’ address"** (e.g. `omos.example.org`), each at
-  `/<path>/`. A browser draws the line around a site by scheme + host + port — never by path — so an
-  app page on the dashboard's hostname could act as the admin. The first design (Development builds
-  0.51.2-dev.13 to dev.15) served the remote dashboard at the root of the apps' address; an
-  adversarial review found that this made every app page there the dashboard's own origin, with the
-  dashboard's cookie riding along to every app. Now the remote dashboard's cookie
-  (`__Host-omos_session`) lives on the dashboard's hostname and never reaches an app.
+- **One hostname, shared with the dashboard.** When the admin manages OpenMasjidOS from outside
+  (Settings → Remote access), the dashboard is served at the root of **"Your apps’ address"** (e.g.
+  `https://omos.example.org/`), with every app beside it at `/<path>/` (platform 0.51.2-dev.17+;
+  dev.16 used a separate "Dashboard address"). A browser draws the line around a site by scheme +
+  host + port — never by path — so your app's pages are on the dashboard's own origin there. The
+  platform keeps them out of the dashboard with a key no page of yours can obtain, and removes the
+  dashboard's cookie (`__Host-omos_session`) from everything it forwards to you. **Never try to
+  reach the dashboard from your pages** — not by `fetch`, frame, or a window you open: none of it
+  works, and an app that tries is behaving like an attack. Your app may not take `store`, `apps`,
+  `files`, `settings` or `design-system` as its path either: those are the dashboard's pages.
 - **How the admin arrives.** Pressing **Open** asks the platform for a one-use link, good for 60
   seconds, and opens it in a new tab: `https://<apps' address>/_omos/open?t=…` — a platform route
   (`_omos` can never be your app's path). The platform spends it, sets
@@ -423,10 +424,13 @@ dashboard's session) and what happens to a `Set-Cookie` for a platform cookie na
   If your app has no catalogue `icon`, the dashboard shows your `favicon.ico` while you are running:
   on the LAN from your own port, and from outside — only when you are shared — from
   `/<path>/favicon.ico`.
+- **No opener policy through the tunnel.** The platform removes `Cross-Origin-Opener-Policy` from
+  your responses there, because the dashboard relies on its own to cut off any window an app page
+  opens on it. A page of yours that needs cross-origin isolation will not get it from outside.
 - **Service workers stay inside your path.** Through the tunnel the platform removes
   `Service-Worker-Allowed` from your responses; with it, one app could register a worker over the
-  whole apps' address and see every other app's pages, including the address that hands out access
-  tokens. So a worker controls at most the folder its script is served from: serve the script from
+  whole apps' address and see every other app's pages, the address that hands out access tokens,
+  and the dashboard itself. So a worker controls at most the folder its script is served from: serve the script from
   under `/<path>/` (the top of it is best), register it with a scope inside `/<path>/`, and never
   expect one beyond. The script cannot be the bare `/<path>`, whose folder is `/` — the whole apps'
   address. A browser's fetch of a worker script there, recognised by the `Service-Worker: script`

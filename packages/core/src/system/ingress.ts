@@ -17,11 +17,12 @@
  * button gives it (system/app-access.ts) — so the admin can open every app from
  * outside, while the public sees nothing at its path.
  *
- * NO APP IS EVER SERVED ON THE ADMIN HOSTNAME. That is where the remote dashboard's
- * cookie and key live, and a browser's boundary between the two is the hostname —
- * an app page served there could drive the dashboard as the admin
- * (system/remote-admin.ts has the whole story). This file is half of that rule; the
- * gate, which serves the dashboard ONLY there, is the other.
+ * The remote dashboard shares this address with the apps, so an app page is the
+ * dashboard's own origin. What keeps it from driving the dashboard is the KEY, which
+ * no app page can reach (system/remote-admin.ts has the whole rule). This file's part:
+ * an app's responses lose any opener policy (`responseHeadersForTunnel`), so a window
+ * an app opens on the dashboard is cut off from it, and no platform cookie reaches an
+ * app (`cookieHeaderForApp`).
  */
 import http from 'node:http';
 import net from 'node:net';
@@ -33,7 +34,6 @@ import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunne
 import { appHost } from './app-host';
 import { log } from '../logger';
 import { NO_STORE_HEADERS, noteRefusal, recordRefusal, refuseOverTunnel, type RefusalReason } from './tunnel-refusals';
-import { isAdminHost } from './remote-admin';
 import { appAccessFromCookie, cookieHeaderForApp } from './app-access';
 import { trackAppSocket } from './remote-sockets';
 import { closeTogether } from './socket-relay';
@@ -393,6 +393,10 @@ export function isFabricSubpath(url: string, seg: string): boolean {
  *    app's own path. With it, one app could register a worker over the whole hostname, see
  *    every other app's pages — and the address that hands a browser an app's access
  *    token (system/app-access.ts), which it could then use elsewhere.
+ *  - Never `Cross-Origin-Opener-Policy`. The dashboard shares this address and sends
+ *    `same-origin`; a window is kept between two pages only when both send the SAME
+ *    policy, so an app page that sent it too could open the dashboard and read the key
+ *    out of the window (system/remote-admin.ts, the key rule in its header).
  *  - Never cached by anyone but the admin's own browser, when the page is private or
  *    the request carried the admin's access token: Cloudflare keys its cache on the
  *    address alone, so a cached copy would go to everyone who asks next.
@@ -403,6 +407,7 @@ function responseHeadersForTunnel(
 ): http.OutgoingHttpHeaders {
   const out: http.OutgoingHttpHeaders = { ...headers };
   delete out['service-worker-allowed'];
+  delete out['cross-origin-opener-policy'];
   const cookies = headers['set-cookie'];
   if (cookies) {
     const kept = cookies.filter((c) => {
@@ -488,13 +493,6 @@ export function attachIngress(
     const seg = firstSegment(req.url);
     const route = seg ? routes.get(seg) : undefined;
     if (!route) return done(); // not an app path → normal front-door handling
-    // Never on the admin hostname, whatever the app and whoever is asking: that
-    // origin holds the dashboard's cookie and key. Falls through to the same 404 as
-    // an empty address (or, on the masjid's network, the usual redirect).
-    if (isAdminHost(req.headers.host)) {
-      declined.set(req.raw, 'app-on-admin-host');
-      return done();
-    }
     const tunnel = isViaTunnelHeaders(req.headers);
     // The admin's access token for THIS app, if the request carries a valid one.
     const keep = tunnel ? appAccessFromCookie(req.headers.cookie, route.id) : null;
@@ -534,16 +532,13 @@ export function attachIngress(
     const seg = firstSegment(req.url ?? '');
     const found = seg ? routes.get(seg) : undefined;
     const tunnel = isViaTunnelHeaders(req.headers);
-    // Is this an app socket THIS request may open? The same rules as HTTP: never on
-    // the admin hostname; an app that is not shared online only with its access
-    // token, and on the masjid's network not through this listener at all.
+    // Is this an app socket THIS request may open? The same rules as HTTP: an app that
+    // is not shared online only with its access token, and on the masjid's network
+    // not through this listener at all.
     const keep = found && tunnel ? appAccessFromCookie(req.headers.cookie, found.id) : null;
     let route = found;
     let why: RefusalReason | null = null;
-    if (route && isAdminHost(req.headers.host)) {
-      why = 'app-on-admin-host';
-      route = undefined;
-    } else if (route && !route.exposed && !(tunnel && keep)) {
+    if (route && !route.exposed && !(tunnel && keep)) {
       why = 'app-not-shared';
       route = undefined;
     }

@@ -3,11 +3,12 @@
 /**
  * Opening an app from the REMOTE dashboard.
  *
- * The remote dashboard lives on a hostname of its own (system/remote-admin.ts says
- * why), and the apps on another. So the admin's dashboard cookie never reaches an
- * app — which is the point — and an app has nothing from the admin's browser to go
- * on: an app that is not shared online cannot tell the admin from a stranger, and
- * one that signs the admin in through the platform has no cookie to forward.
+ * The admin's dashboard cookie never reaches an app — the ingress removes every
+ * platform cookie before forwarding (`cookieHeaderForApp`), because the dashboard and
+ * the apps share one address from outside. So an app has nothing from the admin's
+ * browser to go on: an app that is not shared online cannot tell the admin from a
+ * stranger, and one that signs the admin in through the platform has no cookie to
+ * forward.
  *
  * What the dashboard does instead, when the admin presses Open:
  *
@@ -38,7 +39,7 @@ import {
   sessionExpiresAt,
 } from '../auth/sessions';
 import { getAppPath } from '../apps/manager';
-import { isAdminHost, remoteAdminEnabled } from './remote-admin';
+import { remoteAdminEnabled } from './remote-admin';
 import { isViaTunnel } from './via-tunnel';
 import { NO_STORE_HEADERS, refuseOverTunnel } from './tunnel-refusals';
 
@@ -158,9 +159,7 @@ export function registerAppOpen(front: FastifyInstance): void {
     for (const [k, v] of Object.entries(NO_STORE_HEADERS)) reply.header(k, v);
     reply.header('referrer-policy', 'no-referrer');
     if (!isViaTunnel(req)) return reply.code(404).send({ error: 'Not found.' });
-    // Never on the admin hostname: an app's cookie must never be set where the
-    // dashboard's lives, and nothing about an app is served there (remote-admin.ts).
-    if (isAdminHost(req.headers.host) || !remoteAdminEnabled()) return refuseOverTunnel(req, reply, 'no-app-at-path');
+    if (!remoteAdminEnabled()) return refuseOverTunnel(req, reply, 'no-app-at-path');
     const raw = (req.query as { t?: unknown } | undefined)?.t;
     const ticket = typeof raw === 'string' && raw.length <= 128 ? redeemAppTicket(raw) : null;
     const token = ticket ? appAccessToken(ticket.sessionToken, ticket.appId) : null;

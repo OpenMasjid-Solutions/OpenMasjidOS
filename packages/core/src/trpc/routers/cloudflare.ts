@@ -30,13 +30,7 @@ import {
   startApp,
 } from '../../apps/manager';
 import { PORT } from '../../config';
-import {
-  adminHost,
-  hostnameOfDomain,
-  remoteAdminEnabled,
-  remoteAdminBlockedReason,
-  validateAdminHost,
-} from '../../system/remote-admin';
+import { hostnameOfDomain, remoteAdminEnabled, remoteAdminBlockedReason } from '../../system/remote-admin';
 import { sweepHandedOverSockets } from '../../system/remote-sockets';
 import { twoFactorActive } from '../../auth/twofactor';
 import { clearAllIpFailures } from '../../auth/ip-lockout';
@@ -73,11 +67,6 @@ async function status() {
     remoteAdminActive: remoteAdminEnabled(),
     /** Why it cannot be switched on, so Settings can say so before it is pressed. */
     remoteAdminBlocked: remoteAdminBlockedReason(),
-    /**
-     * The dashboard's own address from outside — never the apps' one
-     * (system/remote-admin.ts says why it must be separate). '' until set.
-     */
-    adminHost: adminHost(),
     twoFactor: twoFactorActive(),
   };
 }
@@ -95,11 +84,10 @@ export const cloudflareRouter = router({
 
   status: protectedProcedure.query(() => status()),
 
-  /** Remote-access routing info for the guided setup. For the apps the admin adds ONE
-   *  Cloudflare Public Hostname (omos.<domain> → HTTP localhost:<ingressPort>) and the
-   *  OS reverse-proxies each app by path; managing OpenMasjidOS from outside needs a
-   *  second, the dashboard address, pointed at the same place (docs/REMOTE_ADMIN.md).
-   *  `apps` lists where each app will live. */
+  /** Remote-access routing info for the guided setup. The admin adds ONE Cloudflare
+   *  Public Hostname (omos.<domain> → HTTP localhost:<ingressPort>); the OS
+   *  reverse-proxies each app by path, and serves the dashboard there too when managing
+   *  from outside is on (docs/REMOTE_ADMIN.md). `apps` lists where each app will live. */
   routes: protectedProcedure.query(async () => {
     const apps = await listInstalled();
     return {
@@ -151,43 +139,19 @@ export const cloudflareRouter = router({
       z.object({
         domain: z.string().trim().max(253).optional(),
         token: z.string().trim().max(8192).optional(),
-        /** The dashboard's own hostname (remote administration). '' clears it. */
-        adminHost: z.string().trim().max(253).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // CHECK EVERYTHING, THEN WRITE. This wrote the apps' address first and refused the
-      // dashboard address afterwards — so a save that said "refused" had already put the
-      // apps on the dashboard's hostname, which switches remote administration off. Done
-      // from outside, the admin's next request was refused and only someone at the
-      // masjid could undo it. Three reviewers found it separately.
+      // CHECK EVERYTHING, THEN WRITE: a refused save changes nothing.
       const current = getSettings().cloudflare;
       const nextDomain = input.domain !== undefined ? hostnameOfDomain(input.domain) : current.domain;
-      let nextAdmin = adminHost();
-      try {
-        // Judged against the apps' address as it will END UP, whichever field changed.
-        nextAdmin = validateAdminHost(input.adminHost !== undefined ? input.adminHost : nextAdmin, hostnameOfDomain(nextDomain));
-      } catch (err) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
-      }
-      // From OUTSIDE, the dashboard's own address cannot be moved or cleared. The
-      // request doing it arrived through that address: the change would close the door
-      // behind it, with nothing left to say where the dashboard went — a typo is a
-      // drive to the masjid. At the masjid it can be changed freely. "From outside" is
-      // the front door's hand-over, not a header: a reverse proxy the masjid runs on its
-      // own network sends `X-Forwarded-Proto: https` too, and its admin IS at the masjid.
-      if (ctx.handedOver && nextAdmin !== adminHost()) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'Change the dashboard address at the masjid — changing it from here would cut you off.',
-        });
-      }
-      // The tunnel token, checked the same way and for the same reason. Saving one
-      // recreates the cloudflared container — the very connection this request came
-      // through from outside — and a token for another tunnel, or a stale one, connects
-      // nowhere useful, with no way back but the masjid. So from outside only the token
-      // already in use is accepted (re-pasting it changes nothing); everywhere, a paste
-      // that is not a whole token is refused before anything is written.
+      // The tunnel token is the masjid's. Saving one recreates the cloudflared container
+      // — from outside, the very connection this request came through — and a token for
+      // another tunnel, or a stale one, connects nowhere useful, with no way back but the
+      // masjid. So from outside (the front door's hand-over, not a header: a reverse
+      // proxy at the masjid sends `X-Forwarded-Proto: https` too) only the token already
+      // in use is accepted (re-pasting it changes nothing); everywhere, a paste that is
+      // not a whole token is refused before anything is written.
       let newToken: string | null = null;
       if (input.token && !isCurrentTunnelToken(input.token.trim())) {
         let token: string;
@@ -208,18 +172,7 @@ export const cloudflareRouter = router({
         }
       }
       if (newToken) setToken(newToken);
-      const patch: { domain?: string; adminHost?: string } = {};
-      if (input.domain !== undefined) patch.domain = nextDomain;
-      if (nextAdmin !== adminHost()) {
-        patch.adminHost = nextAdmin;
-        log.warn(
-          nextAdmin
-            ? `Remote administration address set to ${nextAdmin}.`
-            : 'Remote administration address cleared — the dashboard is not served from outside.',
-        );
-      }
-      if (Object.keys(patch).length > 0) updateCloudflare(patch);
-      // A changed address closes anything open on the old one.
+      if (input.domain !== undefined) updateCloudflare({ domain: nextDomain });
       sweepHandedOverSockets();
       await ensureCloudflared(); // restart with the new token if remote access is on
       await reconcileAndReup(); // a new domain changes every exposed app's public URL
@@ -266,13 +219,6 @@ export const cloudflareRouter = router({
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message: 'Turn remote access on first, so there is an internet link to reach the dashboard through.',
-          });
-        }
-        if (remoteAdminBlockedReason() === 'no-admin-host') {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message:
-              'Give the dashboard an address of its own first — not the one your apps use. See "Dashboard address" above.',
           });
         }
       }

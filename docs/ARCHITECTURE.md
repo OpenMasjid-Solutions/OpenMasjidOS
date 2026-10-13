@@ -22,11 +22,11 @@ packages/ui     React 18 + Vite + Tailwind v4 + Motion dashboard
   `@fastify/websocket` — on the HTTPS dashboard listener, and only there. The
   plain-HTTP front door (port 80, where the tunnel lands) serves no dashboard of
   its own: when remote administration is on, it HANDS a permitted request for the
-  dashboard's own hostname to the dashboard listener, in-process and unread, as
-  that listener's own `request` (or, for a dashboard socket, `upgrade`) event — so
-  the remote dashboard is the LAN dashboard, every route included. The last
-  section of this file, *Remote administration*, records why the dashboard needs
-  a hostname of its own and how the hand-over works. `@fastify/websocket` must NOT
+  dashboard to the dashboard listener, in-process and unread, as that listener's
+  own `request` (or, for a dashboard socket, `upgrade`) event — so the remote
+  dashboard is the LAN dashboard, every route included. The last section of this
+  file, *Remote administration*, records how the dashboard shares the apps'
+  hostname safely and how the hand-over works. `@fastify/websocket` must NOT
   be registered on the front door: it claims every upgrade and broke every app's
   live socket over the tunnel (CLAUDE.md §13.2e and §15).
 - **End-to-end types:** the UI imports only the `AppRouter` **type** from the
@@ -303,8 +303,8 @@ already has the credentials for.
 *Why not a webhook?* Stripe would need a publicly reachable route on the platform.
 The tunnel deliberately carries only app paths, a few low-sensitivity public
 presentation endpoints, the one-use address that opens an app for the remote admin
-(`/_omos/open`), and — only when the admin switches remote administration on, and
-only on a hostname of its own — the dashboard, where everything past the sign-in
+(`/_omos/open`), and — only when the admin switches remote administration on —
+the dashboard, where everything past the sign-in
 needs a session that passed the second factor. A route that accepts Stripe's POSTs
 from anyone would weaken that, and it would still leave every masjid without remote
 access getting no alerts at all. Polling is outbound-only, adds no attack surface,
@@ -690,12 +690,14 @@ on **specificity rather than file order**, keeping the wallpaper's hue and inver
 lightness so the picker means the same thing in both themes.
 `test/theme-tokens.test.ts` fails if a wallpaper is added without one.
 
-## Remote administration: the dashboard has a hostname of its own (v0.51.2-dev.16)
+## Remote administration: one address, kept apart by the key (v0.51.2-dev.16, dev.17)
 
 Remote administration serves the dashboard over the Cloudflare tunnel, behind a switch
 that is off by default. CLAUDE.md §13.2e and §15 hold the rules and `docs/REMOTE_ADMIN.md`
 the design history; this records the shape it settled on, because the first shape had a
-flaw that no check inside the dashboard could have closed.
+flaw that no check inside the dashboard, as it then was, could have closed. dev.16 closed it
+with a second hostname; dev.17, at the masjid's request, went back to one and closed it with
+the key rule instead.
 
 ### A browser's boundary is the origin, never the path
 
@@ -715,46 +717,64 @@ there too: switch custom apps on, then install a privileged compose with the ris
 acknowledged.
 
 The dashboard key's defence (*replay is blocked by the origin-bound dashboard key*, under
-Stack) only ever rested on no app sharing the dashboard's origin. On the masjid's network
-that holds without anyone arranging it: the dashboard is `https://<ip>`, each app
-`http://<ip>:<port>`, and a different port is a different origin. Through the tunnel there
-are no ports to tell them apart, so the only line left to draw is a different **hostname**.
+Stack) rested on no app being able to READ the key. On the masjid's network that holds
+without anyone arranging it: the dashboard is `https://<ip>`, each app
+`http://<ip>:<port>`, and a different port is a different origin, whose storage an app
+cannot read. Through the tunnel there are no ports to tell them apart.
 
-### The decision: a second hostname on the same tunnel
+### dev.16: a second hostname (superseded)
 
-Remote administration needs a second Cloudflare public hostname on the masjid's tunnel —
-the *Dashboard address*, `settings.cloudflare.adminHost` (e.g. `admin.example.org`) —
-pointing at HTTP `localhost:80` exactly like the apps' one (`settings.cloudflare.domain`,
-labelled *Your apps’ address*). Both land on the front door, which keeps them apart in
-both directions:
+dev.16 drew the line with a second Cloudflare public hostname for the dashboard alone, the
+*Dashboard address* (`settings.cloudflare.adminHost`, e.g. `admin.example.org`): the
+dashboard was served only there, no app ever was, the two had to differ in every spelling,
+and without one there was no remote administration. It was sound, and the masjid rejected it
+as one more thing to set up in Cloudflare, remember and manage. All of it is deleted in
+dev.17 — the setting, `adminHost()`, `isAdminHost()`, `validateAdminHost()`,
+`remoteDoorOpen()`, `doorClosedReason()`, and the refusal reasons `no-admin-host`,
+`dashboard-elsewhere` and `app-on-admin-host`. A box that kept the second hostname in
+Cloudflare is still served there: nothing looks at the hostname now.
 
-- **The dashboard is served over the tunnel ONLY on the admin hostname.** Asked for on any
-  other — the apps' hostname above all — it gets the ordinary 404, recorded (while the door
-  is open; see below for when it is shut) as `dashboard-elsewhere` (`frontDoorDecision`).
-- **No app is ever served on the admin hostname**, shared or private, with a token or
-  without (`system/ingress.ts`; recorded as `app-on-admin-host`). That origin holds the
-  dashboard's cookie and key.
-- **The two must differ in every spelling.** `validateAdminHost` keeps only the hostname of
-  what was typed (a scheme, a port or anything after the name is dropped), refuses anything
-  that is not a DNS name — an IP address included — and refuses the apps' hostname; both are
-  compared through `normalizeHost` (lower-case, no port, no trailing dot).
-- **No hostname of its own, no remote administration** — rather than an unsafe one.
-  `remoteAdminEnabled()` has five conditions, all re-read on every request: the tunnel is
-  on, the switch is on, a second factor is enrolled, an admin exists, and an admin hostname
-  is set that differs from the apps' one. `remoteAdminBlockedReason()` reports
-  `no-admin-host` so Settings can say why before the switch is pressed, and
-  `remoteDoorOpen(host)` — `remoteAdminEnabled() && isAdminHost(host)` — is the question
-  every long-lived connection keeps asking (below).
+### The decision (dev.17): one hostname, and a key no page there can reach
 
-The two hostnames are still the same *site* — siblings under one registrable domain — so
-`SameSite` separates them no more than it separates the LAN's ports. What separates them
-is the origin: the dashboard key lives in the dashboard origin's storage and must go with
-every authenticated call, the sockets and cookie-only routes compare Origin with Host, and
-the remote cookie is a `__Host-` one (under Stack).
+The dashboard is served at the root of the apps' hostname (`settings.cloudflare.domain`,
+*Your apps’ address*) again, so every app page IS its origin and can send requests carrying
+the admin's cookie that pass the origin check. dev.13–dev.15's hole was not the shared
+origin by itself but that the KEY sat in that origin's `localStorage`. So, for a request the
+front door handed over (`wasHandedOver`):
+
+- **the remote dashboard never stores the key** (`ui/src/lib/session.ts`: in memory whenever
+  the page carries `<meta name="omos-key">`, and an old stored key is removed);
+- **a reload gets it back from the page itself, only for a load the browser marks as its
+  own** (`api/static-ui.ts` `registerRemoteDashboardPages`: the key is written into
+  `index.html` only with `Sec-Fetch-Dest: document` + `Sec-Fetch-Mode: navigate` and a live
+  remote session through an open door — never to a fetch, a frame or an embed);
+- **nothing can hold that page**: COOP `same-origin`, `X-Frame-Options: DENY`,
+  `frame-ancestors 'none'`, `no-store`; and the ingress strips COOP from every app response
+  (`responseHeadersForTunnel`), so an app page can never share a browsing context group with
+  it and loses any window it opened on it;
+- **nothing else hands it out**: `auth.me` never returns it and, from outside, answers a call
+  without it as signed out (an app page could otherwise read the admin's profile); the File
+  Explorer's inline view is `Referrer-Policy: no-referrer` (its address carries `?k=`); and
+  the dashboard's page segments joined the reserved app paths, so no app can stand at
+  `/settings`.
+
+`remoteAdminEnabled()` is four conditions again, all re-read on every request — the tunnel
+on, the switch on, a second factor, an admin — and it is the question every long-lived
+connection keeps asking (below). Safari before 16.4 sends no `Sec-Fetch-Dest`, so it gets no
+key with the page and signs in again after every reload from outside.
+
+What it costs, against dev.16 (*Accepted residuals* has the list): the boundary rests on
+browser behaviour (Sec-Fetch metadata, COOP) rather than the origin; an app page can call
+the dashboard's PUBLIC procedures as the admin's browser (`auth.logout`; failed logins that
+trip the per-address lockout), write the dashboard's display preferences, and phish at the
+same address; and a worker an older build let an app register over `/` now covers the
+dashboard.
 
 **Rejected alternatives.**
 
-- *One hostname, the dashboard under a path.* The flaw above: a path is not a boundary.
+- *One hostname, the dashboard under a path, the key in storage* (dev.13–dev.15). A path is
+  not a boundary.
+- *A second hostname* (dev.16). Sound, and rejected by the masjid as one address too many.
 - *One hostname, every proxied app page sandboxed* (a Content-Security-Policy `sandbox`
   directive). The opaque origin that would cut a page off from the dashboard cuts it off
   from its own storage and cookies too — which breaks the apps.
@@ -765,23 +785,19 @@ the remote cookie is a `__Host-` one (under Stack).
 - *One session cookie for the parent domain* (a `Domain` naming the masjid's domain), so a
   sign-in reaches both hostnames. It would go to every hostname under that domain — their
   website and anything else they run there — and to every app again. (This is the
-  alternative to the per-app tokens below, not to the second hostname.)
+  alternative to the per-app tokens below.)
 
-**Saving the two addresses: check everything, then write** (`cloudflare.save`). It works out
-the final apps' address and dashboard address, validates the dashboard address against the
-apps' address *as it will end up* (`validateAdminHost(input, appsHost)`, whichever field
-changed), checks the tunnel token (next paragraph), and only then writes the token and one
-`updateCloudflare` patch. The first version wrote the apps' address first and refused the
-dashboard address afterwards, so a save that reported "refused" had already put the apps on
-the dashboard's hostname — which switches remote administration off, and done from outside
-left only someone at the masjid able to undo it. Three reviewers found it separately. **From
-outside, the dashboard address cannot be moved or cleared** (FORBIDDEN): the request came in
-through it, and a typo would shut the door behind it with nothing left to say where the
-dashboard went. The panel disables the field from outside, sends each address only when it
-was edited (sending whatever a field held put back a value from when the page loaded, undoing
-a change made on another device — for the apps' address, every shared app's public links with
-it), refills both from what the server stored after a successful save, and after a refused one
-re-reads the status while leaving what was typed in the fields. Three of the actions that shut
+**Saving the address: check everything, then write** (`cloudflare.save`). It works out the
+final apps' address, checks the tunnel token (next paragraph), and only then writes the token
+and one `updateCloudflare` patch, so a refused save changes nothing. (dev.16's version also
+validated the dashboard address; its first cut wrote the apps' address before refusing the
+dashboard one, which three reviewers found separately.) The apps' address may be changed from
+outside: Cloudflare, not this setting, decides which hostname reaches the box, so a typo breaks
+*Open* and the apps' public links until it is put right, never the dashboard. The panel sends
+the address only when it was edited (sending whatever the field held put back a value from
+when the page loaded, undoing a change made on another device — every shared app's public
+links with it), refills it from what the server stored after a successful save, and after a
+refused one re-reads the status while leaving what was typed in the field. Three of the actions that shut
 the door from outside — remote access off, managing from outside off, removing the tunnel — ask
 first there (`ConfirmDialog`), because only someone at the masjid can undo them; at the masjid
 they stay one click, since the control that undoes each is beside it. Two of them — remote
@@ -840,16 +856,11 @@ The front door registers no dashboard routes. Its gate is one pure function,
 `frontDoorDecision`, called by index.ts and by the tests alike: `pass` (not a dashboard
 path under any spelling — `touchesDashboardPath`), `lan-https` (LAN traffic: 308 to the
 HTTPS dashboard, as always), `refuse`, `upgrade` (a plain `http://` tunnel visit: 308 to the
-same path on the CONFIGURED admin hostname, never one taken from the request), or `serve`.
-The door is checked before the hostname, so a refusal is recorded, on every hostname, as
-`lan-only-route` while the door is shut — or as `no-admin-host` when two-step sign-in, the
-tunnel and the switch are all on, an admin exists, and only the dashboard's own address is
-missing or is the apps' one (`doorClosedReason`), which is exactly what a box managed
-remotely on dev.13–dev.15 looks like after updating, so *Recently turned away* names the fix
-instead of saying "Local network only" — and as `dashboard-elsewhere` on any hostname but the
-admin one while it is open. `plain-http-no-host` dates from the one-hostname design, when an
-upgrade could have nowhere to go; the door cannot be open without an admin hostname now, so
-only a request target that cannot safely follow the hostname (one beginning `//`) reaches it.
+same path on the CONFIGURED apps' hostname, never one taken from the request), or `serve` —
+on whatever hostname the tunnel delivered. A refusal while the door is shut is recorded as
+`lan-only-route`; `plain-http-no-host` is a plain-`http://` visit with no apps' hostname to
+upgrade to, or a request target that cannot safely follow one (beginning `//`). (dev.16 also
+had `no-admin-host` and `dashboard-elsewhere`, both gone with its second hostname.)
 Every dashboard path is answered by the gate itself rather than left to fall through, because
 a registered route skips the not-found handler — which is how the very first cut served the
 dashboard over plain HTTP on the LAN (CLAUDE.md §15). Every refused tunnel request is answered
@@ -891,8 +902,9 @@ download that starts answering before the backup exists.
 differently for a remote admin keys off the mark as well: `auth.me`'s `remote` and
 `appOrigin` (`ctx.handedOver`), which decide how Open works and whether the upload screens
 warn about Cloudflare's 100 MB limit; `apps.openRemote`, which refuses a request that was not
-handed over; `cloudflare.save`'s refusals to move the dashboard address or replace the tunnel
-token; and the restore's from-outside check (`wasHandedOver(req.raw)` in `api/restore.ts`).
+handed over; `cloudflare.save`'s refusal to replace the tunnel token; the key rule's page
+(`registerRemoteDashboardPages`) and `auth.me`'s answer without the key; and the restore's
+from-outside check (`wasHandedOver(req.raw)` in `api/restore.ts`).
 They used to read `viaTunnel`, which is also true behind a reverse proxy the masjid runs on
 its own network — nginx, Caddy and Tailscale Serve all send `X-Forwarded-Proto: https` — and
 answering "remote" there sent every Open button down the from-outside path, where it was
@@ -911,7 +923,7 @@ passed the second factor, and the mark demands, on top, one the remote dashboard
 any request carrying `cf-ray` that the front door did not hand over, and closes such an
 upgrade rather than answering it. The tunnel is meant to point at port 80. Pointed at the
 dashboard's own port instead — one wrong field in Cloudflare — every dashboard route would
-answer the internet directly, switch off and admin hostname ignored; sessions would still
+answer the internet directly, switch off and the key rule's page unserved; sessions would still
 need the second factor, but "off by default" would be a sentence in Settings rather than a
 fact. `cf-ray` is set at Cloudflare's edge and never sent by a browser on the masjid's
 network, so this refuses exactly the misrouted traffic. It is the second hook on that
@@ -933,7 +945,7 @@ dashboard route asks through `getSessionUserFor(token, { viaTunnel, handedOver }
 a LAN session as signed out from the tunnel, and leaves it working on the LAN; for a
 handed-over request it also refuses a remote session the remote dashboard did not make, and the
 tRPC context and the raw routes (`api/ws-auth.ts` `requestUser`) also require
-`remoteDoorOpen(host)`.
+`remoteAdminEnabled()`.
 
 **A sign-in through a reverse proxy at the masjid is never usable from outside**
 (`Session.handedOver`). Such a proxy sends `X-Forwarded-Proto: https`, so `viaTunnel` is true
@@ -1024,8 +1036,8 @@ leaves the factor as it is, and when one is active says to use the full reset.
 
 ### Opening an app from outside: a ticket, then a token for one app
 
-With the dashboard on a hostname of its own, its cookie never reaches an app — which is the
-point — and an app has nothing from the admin's browser to go on: one that is not shared
+The dashboard's cookie never reaches an app — the ingress removes it (*What an app sees*,
+below) — and so an app has nothing from the admin's browser to go on: one that is not shared
 online cannot tell the admin from a stranger, and one that signs the admin in through the
 platform has no cookie to forward. So (`system/app-access.ts`):
 
@@ -1041,8 +1053,8 @@ platform has no cookie to forward. So (`system/app-access.ts`):
    or not it was still valid — sets
    `omos_session=<access token>; Path=/<app path>; Max-Age=<…>; Secure; HttpOnly; SameSite=Lax`
    (`Max-Age` no longer than the session it came from) and 303s to `/<app path>/`. Off the
-   tunnel it is a plain 404; on the admin hostname, or with remote administration off, it
-   is the ordinary tunnel refusal; a spent, expired or unknown ticket — or one whose session
+   tunnel it is a plain 404; with remote administration off, it is the ordinary tunnel
+   refusal; a spent, expired or unknown ticket — or one whose session
    has ended since — gets a plain 410 page saying to press Open again. (That 410 is only ever
    given while the door is open, so it tells a stranger whether remote administration is on;
    see the residuals.) `_omos` can never be an app path: only the shape of an app path is
@@ -1103,7 +1115,10 @@ already forwards the first `omos_session` it finds.
   the request filter above is what stops a planted value ever counting as a sign-in, since
   only a valid token for that very app is passed on), and so is `service-worker-allowed`
   (with it, one app could register a worker over the whole hostname and see every other
-  app's pages, and the address that hands out access tokens). A private app's page, or
+  app's pages, the address that hands out access tokens, and since dev.17 the dashboard), and
+  so is `cross-origin-opener-policy` (dev.17: the dashboard's own policy is what cuts an app
+  page off from a window it opened on the dashboard, and only a page with the SAME policy
+  would keep its hold). A private app's page, or
   anything served to a request that carried a token, gets `NO_STORE_HEADERS` —
   `cache-control` set to `private, no-store`, and `cdn-cache-control` and
   `cloudflare-cdn-cache-control` set to `no-store` — because Cloudflare's edge caches by
@@ -1115,7 +1130,7 @@ already forwards the first `omos_session` it finds.
 - **An app's bare address never serves the app's service-worker script** (`isBareAppAddress`,
   `isWorkerScriptFetch`, `answerBareWorkerFetch`). A worker's reach is the directory of its
   script's address, and the directory of `/<path>` — no trailing slash — is `/`: the whole
-  apps' hostname, every other app's pages and `/_omos/open` included. Dropping
+  apps' hostname, every other app's pages, `/_omos/open` and the dashboard included. Dropping
   `service-worker-allowed` only confines a script that lives UNDER `/<path>/`; a review found
   an app could serve its worker at the bare address instead. So a browser's worker-script fetch
   there — which it marks with `Service-Worker: script` or `Sec-Fetch-Dest: serviceworker` —
@@ -1158,7 +1173,10 @@ admin can open them from outside — an address that two apps answer to, or that
 answers to, stops being harmless.
 
 - **One list of first segments the platform keeps for itself**: `apps/paths.ts`
-  `RESERVED_PATH_SEGMENTS` (`api`, `trpc`, `assets`), read by both sides. The ingress never
+  `RESERVED_PATH_SEGMENTS` — `api`, and since dev.17 every one of the dashboard's
+  `DASHBOARD_SEGMENTS` (`trpc`, `assets`, `store`, `apps`, `files`, `settings`,
+  `design-system`), because the dashboard shares the apps' hostname and the ingress takes app
+  paths first — read by both sides. The ingress never
   routes them, and `setAppPath` refuses them ("/api is used by OpenMasjidOS itself…"). When
   only the ingress knew, an admin could set an app's address to `/api`: accepted without a
   word, after which the app had no public page and opening it from outside landed on a 404.
@@ -1211,12 +1229,12 @@ could switch remote administration straight back on. Four layers now:
   `lazy: { enabled: true, closeMs: 10_000 }`): it opens only while something is subscribed,
   which takes a session, so the sign-in page holds none.
 - **Every protected call re-checks.** For a handed-over context, `isAuthed`
-  (`trpc/trpc.ts`) requires `remoteDoorOpen(ctx.host)` and a live remote session on every
+  (`trpc/trpc.ts`) requires `remoteAdminEnabled()` and a live remote session on every
   call, because a WebSocket's context is built once for the whole connection.
 - **A terminal re-checks before every keystroke** (`api/terminals.ts`: `requestUser`, and
   the terminal's own switch in Settings → Advanced).
 - **A registry closes the idle ones** (`system/remote-sockets.ts`). Each handed-over socket
-  is recorded with the Host and remote session it came with (`trackHandedOverSocket`), and
+  is recorded with the remote session it came with (`trackHandedOverSocket`), and
   so is every app socket the ingress opens through the tunnel with that app's access token
   (`trackAppSocket`) — the admin, inside an app. Without that half, the dashboard's sockets
   closed on every action above and the app's stayed open: a review found a private app still
@@ -1319,14 +1337,14 @@ So from outside — handed over by the front door, not merely looking remote
 staged `config/` must:
 
 - open the door by **the same rule the live box uses**. `settingsOpenTheDoor(cf)` is the
-  settings half of `remoteAdminEnabled()` — tunnel on, switch on, an admin hostname set that
-  is not the apps' one, each `=== true` where it is a flag — as a pure function of a
-  `cloudflare` settings object, so the restore asks it of the staged `settings.json`;
-  `remoteAdminEnabled()` is that plus `twoFactorActive()` and `isConfigured()`. The restore's
-  first check was a hand-written copy, and it missed "the admin hostname equals the apps'
-  hostname": a restore it waved through shut the remote dashboard behind the admin. One rule,
-  two callers — the lesson of `frontDoorDecision` and its drifted test copy, again;
-- name the **same admin hostname** as now, carry the **same tunnel token**
+  settings half of `remoteAdminEnabled()` — tunnel on, switch on, each `=== true` — as a pure
+  function of a `cloudflare` settings object, so the restore asks it of the staged
+  `settings.json`; `remoteAdminEnabled()` is that plus `twoFactorActive()` and
+  `isConfigured()`. The restore's first check was a hand-written copy, and it missed a
+  condition dev.16 had ("the admin hostname equals the apps' hostname"): a restore it waved
+  through shut the remote dashboard behind the admin. One rule, two callers — the lesson of
+  `frontDoorDecision` and its drifted test copy, again;
+- carry the **same tunnel token**
   (`tunnelTokenMatches`), and have a **username** and the **same password hash** as
   `getPasswordHash({ fresh: true })` — `isConfigured` needs both;
 - have the **same authenticator** (`sameSecondFactorAs`: the secret itself, compared in
@@ -1511,7 +1529,9 @@ route hijacks its reply to do that, so it sets its own `cache-control: private, 
 ### Updates from outside: never to a version that cannot be managed from there
 
 `FIRST_REMOTE_ADMIN_VERSION` (`system/remote-admin.ts`) is `0.51.2-dev.16`, the first build
-that serves the dashboard on an address of its own, and `managesFromOutside(version)` is a
+with everything managing from outside needs (the hand-over, remote sessions, *Open*; dev.16
+itself wanted a second hostname, but no update from dev.17 can land on it — updates only go
+forward, and Stable is older), and `managesFromOutside(version)` is a
 semver `>=` against it (`util/version.ts`, so a release outranks its own prereleases and
 `0.51.2` passes). From outside, neither the dashboard's update nor its channel switch may move
 the box below it (a root terminal, behind its own switch, can do anything, this included).
@@ -1633,34 +1653,30 @@ refuses larger request bodies with an error page of its own — and recognise th
 if one comes back, so the admin reads "restore/upload it at the masjid" rather than
 "Something went wrong". The restore dialog's warning from outside names the limit too.
 
-### Moving off the first design (Development builds only)
+### Moving off the earlier designs (Development builds only)
 
-The first design never reached Stable. A box managed remotely on dev.13–dev.15 had its
-dashboard at the apps' hostname. After updating, that address answers the ordinary 404,
-recorded as `no-admin-host`: the tunnel, the switch and two-step sign-in are all still on and
-only the dashboard's own address is missing, which is the case `doorClosedReason` exists to
-name, so *Recently turned away* says to set the dashboard address rather than "Local network
-only" (`test/remote-settings.test.ts`). Settings says the same under the switch
-(`remoteAdminBlockedReason()` → `no-admin-host`). Nothing else tells the admin: there is no
-OS alert or dashboard notice for the move, and no installer option sets the address. The
-sessions made remotely on those builds carry no `remote` mark, so they no longer count from
-outside. The dashboard comes back only once a second Cloudflare hostname exists and someone
-enters it under *Dashboard address*, and **that cannot be done from outside**:
-`cloudflare.save` is a protected procedure, a protected call from the tunnel needs the very
-door the missing address keeps shut, and so does a restore. It has to be done on the masjid's
-network. (Those builds could not start a core update from the remote dashboard either —
-`/api/update` was registered on the LAN listener alone — so the update itself happens at the
-masjid, or through the installer on the box itself.) The Cloudflare hostname can be created
-beforehand; the address can only be entered once the new build is running, and once it is
-saved the door opens at once, with no need to switch anything off and on.
+Neither earlier design reached Stable, and neither needs a visit to the masjid to move off.
+dev.13–dev.15 had the dashboard at the root of the apps' hostname, where dev.17 puts it again;
+their sessions carry no `remote` mark, so the admin signs in once more. (Those builds could not
+start a core update from the remote dashboard — `/api/update` was on the LAN listener alone —
+so the update itself happens at the masjid or through the installer.) dev.16 had it on a
+second hostname; that hostname goes on being served while Cloudflare routes it, its sessions
+go on working there (the `__Host-` cookie is per hostname, so the admin signs in once at the
+apps' address), and the stored `adminHost` is simply no longer read.
 
 ### Accepted residuals
 
 - **The apps share one origin with each other** on the apps' hostname, so app-vs-app
   isolation is weaker there than on the LAN, where every app has its own port. A malicious
   app's page could act within another app the admin has opened there — the browser
-  attaches that app's token to a same-origin request for its path — though never as the
-  dashboard. A hostname per app would close it, at the cost above.
+  attaches that app's token to a same-origin request for its path. A hostname per app would
+  close it, at the cost above.
+- **They share it with the dashboard too** (dev.17), held apart by the key rule alone, which
+  rests on browser behaviour (Sec-Fetch metadata, COOP) rather than the origin. An app page
+  can still call the dashboard's PUBLIC procedures as the admin's browser — `auth.logout`, and
+  failed `auth.login` calls that count toward the per-address lockout — write the dashboard's
+  display preferences in `localStorage`, and show a fake sign-in at the same address. Safari
+  before 16.4 sends no `Sec-Fetch-Dest`, so it signs in again after every reload from outside.
 - **A WebSocket's `101` response is relayed as the app sent it**, so a `set-cookie` on it
   is not filtered.
 - **A long-lived HTTP response opened with an access token is not revoked.** The sweep closes
@@ -1677,6 +1693,8 @@ saved the door opens at once, with no need to switch anything off and on.
   specification a browser keeps a registration whose update fails. It stays in the browsers
   that met it, within the apps' hostname — the shared-origin residual above, but persistent —
   until their site data for that hostname is cleared; `docs/SECURITY.md` tells the operator.
+  Since dev.17 it is the worst residual here: such a worker sees the dashboard's page loads
+  too, the key in them included.
 - **A masjid's own LAN reverse proxy that sends `x-forwarded-proto: https` is treated as
   tunnel traffic by the security rules** (`isViaTunnel` cannot tell the two apart), so
   signing in through it needs the second factor and a LAN session does not count there. What
@@ -1709,14 +1727,10 @@ saved the door opens at once, with no need to switch anything off and on.
   the restore; the codes themselves come back usable.
 - **`/_omos/open` tells a stranger whether remote administration is on**: a used, expired or
   made-up ticket gets the 410 page while the door is open and the ordinary 404 while it is
-  shut. Nothing else — not the admin hostname. It refuses on the admin hostname but does not
-  check that it was asked for on the apps' one, so the same answer comes back on any other
-  hostname the tunnel carries; the dashboard only ever builds the link on the apps' hostname,
-  so nothing depends on it.
-- **The admin hostname can be told from the apps' one by someone who knows both.** The
-  ingress serves shared apps on every hostname the tunnel carries except the admin one, door
-  open or shut, so a shared app's path answers on one and 404s on the other. A hostname is
-  not a secret; the second factor is what guards the dashboard.
+  shut — and so does the apps' address with nothing after it, which shows the sign-in page
+  while the door is open. It does not check that it was asked for on the apps' hostname, so
+  the same answer comes back on any hostname the tunnel carries; the dashboard only ever
+  builds the link on the apps' hostname, so nothing depends on it.
 - **A whole token for the wrong tunnel is still accepted at the masjid.** `normalizeTunnelToken`
   checks a token's shape, not that it belongs to this masjid's tunnel, and the platform cannot
   tell a tunnel connected to the wrong place from a working one: `cloudflaredRunning` reports

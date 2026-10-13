@@ -3,15 +3,11 @@
 /**
  * Settings → Remote access, through the real router.
  *
- * Each of these was a way for ONE Save to shut the remote dashboard behind the admin
- * using it, after which only someone at the masjid could open it again:
- *  - a save that was refused had already written the apps' address — onto the
- *    dashboard's own, which switches remote administration off;
- *  - from outside, the dashboard's address could be moved or cleared, closing the door
- *    the request came through with nothing left to say where the dashboard went.
- * And a box managed from outside before addresses were separated loses remote
- * administration on updating; what "Recently turned away" says about it is the only
- * clue anyone at the masjid gets, so it must say what to fix.
+ * ONE Save must never shut the remote dashboard behind the admin using it, after which
+ * only someone at the masjid could open it again: a refused save changes nothing, and
+ * from outside the tunnel token — the connection the request came through — cannot be
+ * replaced. The dashboard is served beside the apps on their address now, so no address
+ * a Save writes is part of the door.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,7 +36,6 @@ const ra = req('../src/system/remote-admin') as typeof import('../src/system/rem
 const cloudflared = req('../src/system/cloudflared') as typeof import('../src/system/cloudflared');
 const { cloudflareRouter } = req('../src/trpc/routers/cloudflare') as typeof import('../src/trpc/routers/cloudflare');
 
-const ADMIN = 'admin.example.org';
 const APPS = 'omos.example.org';
 const SETTINGS = path.join(DATA, 'config', 'settings.json');
 const TOKEN_FILE = path.join(DATA, 'config', 'cloudflare', '.env');
@@ -54,7 +49,7 @@ cloudflared.setToken('TOKEN-NOW');
 
 /** The box as it is when managed from outside. */
 function managedFromOutside(): void {
-  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS, adminHost: ADMIN });
+  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS });
   assert.equal(ra.remoteAdminEnabled(), true, 'precondition: the door is open');
 }
 
@@ -72,7 +67,7 @@ function caller(where: 'masjid' | 'outside') {
     csrf: s.csrf,
     isWebSocket: false,
     ip: '172.17.0.1',
-    host: outside ? ADMIN : 'openmasjidos.local',
+    host: outside ? APPS : 'openmasjidos.local',
     viaTunnel: outside,
     handedOver: outside,
     remoteIp: outside ? '203.0.113.7' : null,
@@ -84,17 +79,20 @@ function caller(where: 'masjid' | 'outside') {
 const onDisk = () => fs.readFileSync(SETTINGS, 'utf8');
 const code = (want: string) => (e: unknown) => (e as { code?: string }).code === want;
 
-test('A REFUSED SAVE CHANGES NOTHING — not the addresses, not the token, not the door', async () => {
+test('A REFUSED SAVE CHANGES NOTHING — not the address, not the token, not the door', async () => {
+  // Everything is checked before anything is written: a refused token must not leave the
+  // apps' address, sent in the same Save, half-applied.
   for (const where of ['masjid', 'outside'] as const) {
     managedFromOutside();
     const before = onDisk();
-    for (const input of [
-      { domain: ADMIN, adminHost: ADMIN, token: 'TOKEN-PASTED' }, // both fields the same
-      { domain: ADMIN }, // the apps' address alone, moved onto the dashboard's
-      { domain: `https://${ADMIN.toUpperCase()}./` }, // in any spelling
-      { domain: APPS, adminHost: APPS }, // the dashboard's address moved onto the apps'
-    ]) {
-      await assert.rejects(caller(where).save(input), code('BAD_REQUEST'), `${where}: ${JSON.stringify(input)}`);
+    const cases: Array<[Record<string, string>, string]> = [
+      [{ domain: 'other.example.net', token: 'eyJhIjoi' }, 'BAD_REQUEST'], // half of a token
+      [{ domain: 'other.example.net', token: 'TOKEN-PASTED' }, 'BAD_REQUEST'], // not one at all
+    ];
+    // From outside, a whole token for another tunnel is refused as well.
+    if (where === 'outside') cases.push([{ domain: 'other.example.net', token: tunnelToken('b3RoZXI=') }, 'FORBIDDEN']);
+    for (const [input, want] of cases) {
+      await assert.rejects(caller(where).save(input), code(want), `${where}: ${JSON.stringify(input)}`);
       assert.equal(onDisk(), before, `${where}: a refused save still wrote settings.json (${JSON.stringify(input)})`);
       assert.equal(ra.remoteAdminEnabled(), true, `${where}: a refused save closed the door`);
       assert.match(fs.readFileSync(TOKEN_FILE, 'utf8'), /TOKEN-NOW/, `${where}: a refused save replaced the token`);
@@ -102,85 +100,66 @@ test('A REFUSED SAVE CHANGES NOTHING — not the addresses, not the token, not t
   }
 });
 
-test('FROM OUTSIDE, THE DASHBOARD ADDRESS CANNOT BE MOVED OR CLEARED — it is the door the request came through', async () => {
+test("FROM OUTSIDE, SAVING THE APPS' ADDRESS LEAVES THE DOOR OPEN — no address is part of it", { skip: !POSIX && 'needs a POSIX shell for the stand-in docker' }, async () => {
+  // While the dashboard had an address of its own, moving it from outside closed the door
+  // the request came through, and was refused. It is served beside the apps now, on
+  // whichever routed hostname is asked for, so a Save of the address cannot cut anyone off.
   managedFromOutside();
-  const before = onDisk();
-  for (const adminHost of ['other.example.org', '', 'admn.example.org']) {
-    await assert.rejects(caller('outside').save({ domain: APPS, adminHost }), code('FORBIDDEN'), JSON.stringify(adminHost));
-    assert.equal(onDisk(), before, `moving it to ${JSON.stringify(adminHost)} was written anyway`);
-    assert.equal(ra.adminHost(), ADMIN);
-  }
-});
-
-test('…but sending it UNCHANGED from outside, or not at all, is not a move', { skip: !POSIX && 'needs a POSIX shell for the stand-in docker' }, async () => {
-  managedFromOutside();
-  await caller('outside').save({ domain: APPS, adminHost: ADMIN });
   await caller('outside').save({ domain: APPS });
-  await caller('outside').save({ domain: APPS, adminHost: `${ADMIN.toUpperCase()}.` }); // the same host, spelt differently
-  assert.equal(ra.adminHost(), ADMIN);
+  await caller('outside').save({ domain: 'apps.example.net' });
+  assert.equal(settings.getSettings().cloudflare.domain, 'apps.example.net');
   assert.equal(ra.remoteAdminEnabled(), true);
+  managedFromOutside();
 });
 
-test('AT THE MASJID it can be changed — and is stored as a bare hostname, whatever was typed', { skip: !POSIX && 'needs a POSIX shell for the stand-in docker' }, async () => {
+test('AT THE MASJID the address is stored as a bare hostname, whatever was typed', { skip: !POSIX && 'needs a POSIX shell for the stand-in docker' }, async () => {
   managedFromOutside();
-  await caller('masjid').save({ adminHost: 'https://New-Admin.Example.org./settings' });
-  assert.equal(settings.getSettings().cloudflare.adminHost, 'new-admin.example.org');
   await caller('masjid').save({ domain: 'HTTPS://Omos.Example.org/x' });
   assert.equal(settings.getSettings().cloudflare.domain, 'omos.example.org');
-  // Moving BOTH at once is judged on where they end up, not field by field.
-  await caller('masjid').save({ domain: 'apps.example.net', adminHost: 'omos.example.org' });
+  await caller('masjid').save({ domain: 'Apps.Example.net.' });
   assert.equal(settings.getSettings().cloudflare.domain, 'apps.example.net');
-  assert.equal(settings.getSettings().cloudflare.adminHost, 'omos.example.org');
   assert.equal(ra.remoteAdminEnabled(), true);
   managedFromOutside();
 });
 
-// ── a box managed from outside before addresses were separated ──────────────
+// ── a box managed from outside on an earlier Development build ──────────────
 
-test('A BOX UPDATED FROM dev.13–15 SAYS WHAT TO FIX — not "Local network only"', () => {
-  // Those builds served the dashboard on the apps' address and had no dashboard
-  // address at all. Updating closes remote administration (correctly — an app page
-  // must never share the dashboard's origin), and this is how it is reported.
-  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS, adminHost: '' });
-  assert.equal(ra.remoteAdminEnabled(), false);
-  assert.equal(ra.remoteAdminBlockedReason(), 'no-admin-host');
-  assert.equal(ra.doorClosedReason(), 'no-admin-host');
-  const visit = { 'cf-ray': '7a1b-LHR', 'cf-visitor': '{"scheme":"https"}', host: APPS };
-  for (const url of ['/', '/settings/remote', '/trpc/auth.me']) {
-    assert.deepEqual(
-      ra.frontDoorDecision(url, visit, {
-        viaTunnel: true,
-        remoteAdminEnabled: ra.remoteAdminEnabled(),
-        adminHost: ra.adminHost(),
-        closedReason: ra.doorClosedReason(),
-      }),
-      { kind: 'refuse', reason: 'no-admin-host' },
-      url,
-    );
+test('A BOX MANAGED FROM OUTSIDE ON dev.13–16 IS MANAGED FROM OUTSIDE AGAIN — on the apps\' address, with nothing to set', () => {
+  // dev.13–15 had no dashboard address; dev.16 required one of its own and closed the
+  // door without it. Either settings.json, as it stands on disk, opens the door now, and
+  // the dashboard is served on the apps' hostname the masjid already routed.
+  for (const adminHost of ['', 'admin.example.org']) {
+    settings.updateSettings({ cloudflare: { enabled: true, remoteAdmin: true, domain: APPS, adminHost } as never });
+    assert.equal(ra.remoteAdminEnabled(), true, `adminHost ${JSON.stringify(adminHost)}`);
+    assert.equal(ra.remoteAdminBlockedReason(), null);
+    const visit = { 'cf-ray': '7a1b-LHR', 'cf-visitor': '{"scheme":"https"}', host: APPS };
+    for (const url of ['/', '/settings/remote', '/trpc/auth.me']) {
+      assert.deepEqual(
+        ra.frontDoorDecision(url, visit, { viaTunnel: true, remoteAdminEnabled: ra.remoteAdminEnabled(), appsHost: ra.appHostname() }),
+        { kind: 'serve' },
+        url,
+      );
+    }
   }
-  // A door shut for any other reason is still "Local network only".
-  settings.updateCloudflare({ remoteAdmin: false, adminHost: ADMIN });
-  assert.equal(ra.doorClosedReason(), 'lan-only-route');
-  settings.updateCloudflare({ remoteAdmin: true, enabled: false });
-  assert.equal(ra.doorClosedReason(), 'lan-only-route', 'the tunnel being off is not a missing address');
-  // And the front door asks it — not a copy of it.
-  const index = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
-  assert.match(index, /closedReason: doorClosedReason\(\)/);
+  // A door shut is "Local network only" — the only reason left for it.
+  settings.updateCloudflare({ remoteAdmin: false });
+  assert.deepEqual(
+    ra.frontDoorDecision('/', { 'cf-ray': 'a' }, { viaTunnel: true, remoteAdminEnabled: ra.remoteAdminEnabled(), appsHost: ra.appHostname() }),
+    { kind: 'refuse', reason: 'lan-only-route' },
+  );
   managedFromOutside();
 });
 
 test('the settings half of "is the door open" is ONE rule, for the live box and a restore alike', () => {
-  const open = { enabled: true, remoteAdmin: true, domain: APPS, adminHost: ADMIN };
+  const open = { enabled: true, remoteAdmin: true };
   assert.equal(ra.settingsOpenTheDoor(open), true);
-  for (const [why, cf] of [
+  const cases: Array<[string, { enabled?: unknown; remoteAdmin?: unknown }]> = [
     ['tunnel off', { ...open, enabled: false }],
     ['switch off', { ...open, remoteAdmin: false }],
-    ['no dashboard address', { ...open, adminHost: '' }],
-    ['dashboard on the apps’ address', { ...open, adminHost: APPS }],
-    ['…in another spelling', { ...open, domain: `https://${ADMIN.toUpperCase()}/` }],
     ['truthy is not true', { ...open, enabled: 'yes' }],
     ['…nor is 1', { ...open, remoteAdmin: 1 }],
-  ] as const) {
+  ];
+  for (const [why, cf] of cases) {
     assert.equal(ra.settingsOpenTheDoor(cf), false, why);
   }
   // The restore reads it rather than keeping its own copy.
@@ -314,18 +293,17 @@ test('"from outside" means handed over by the front door — the routers ask the
   // A reverse proxy the masjid runs on its own network sends `X-Forwarded-Proto: https`
   // too, so `viaTunnel` is true behind it; its admin is at the masjid all the same.
   const save = fs.readFileSync(path.join(__dirname, '..', 'src', 'trpc', 'routers', 'cloudflare.ts'), 'utf8');
-  assert.match(save, /if \(ctx\.handedOver && nextAdmin !== adminHost\(\)\)/);
   assert.match(save, /if \(ctx\.handedOver\) \{\s*throw new TRPCError\(\{\s*code: 'FORBIDDEN'/);
   assert.doesNotMatch(save, /ctx\.viaTunnel/, 'a Remote access decision keyed on the header again');
 });
 
-test('the panel sends an address only when it was edited, and keeps the masjid’s fields locked from outside', () => {
+test('the panel sends the address only when it was edited, and keeps the token locked from outside', () => {
   // Sending what a field held since the page loaded put back an address another device
-  // had changed. And from outside, the dashboard address and the tunnel token are the
-  // masjid's to change: the server refuses, and the fields say so first.
+  // had changed. And from outside the tunnel token is the masjid's to change: the server
+  // refuses, and the field says so first.
   const ui = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
   const panel = ui.slice(ui.indexOf('function CloudflarePanel'), ui.indexOf('function StripeAccountForm'));
   assert.match(panel, /domain: domainEdited \? domain\.trim\(\) : undefined/);
-  assert.match(panel, /adminHost: adminHostEdited \? adminHost\.trim\(\) : undefined/);
-  assert.ok([...panel.matchAll(/disabled=\{remote\}/g)].length >= 2, 'the dashboard address and the token must both be locked from outside');
+  assert.match(panel, /disabled=\{remote\}\s*title=\{remote \? t\('settings\.cfTokenRemote'\)/, 'the token must be locked from outside');
+  assert.doesNotMatch(panel, /adminHost/, 'the dashboard address field is back');
 });

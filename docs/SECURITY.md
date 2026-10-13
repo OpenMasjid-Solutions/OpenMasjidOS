@@ -34,11 +34,11 @@ assumptions and the knobs for hardening a more exposed deployment.
   API, which app backends reach over HTTP).
 - The front door is also where the **Cloudflare tunnel** lands. Cloudflare
   terminates TLS at its edge and passes each request to port 80, where the front
-  door serves your apps by path and — only with remote administration on, and
-  only at the dashboard's own address — hands the dashboard's requests, unread, to
-  the dashboard's own routes, so they meet every check they meet on the LAN. A
-  visit to the dashboard address over plain `http://` is redirected to `https://`
-  on the address configured in Settings, never to one taken from the request.
+  door serves your apps by path and — only with remote administration on — hands
+  the dashboard's requests, unread, to the dashboard's own routes, so they meet
+  every check they meet on the LAN. A visit to the dashboard over plain `http://`
+  is redirected to `https://` on the apps' address configured in Settings, never
+  to one taken from the request.
 - The cert is **self-signed by default** (a LAN box can't get a public CA cert);
   regenerate it or upload your own (cert + key) in **Settings → Advanced**.
 - **Stripe apps** (manifest `https: true`) are served over HTTPS on a dedicated
@@ -53,13 +53,15 @@ assumptions and the knobs for hardening a more exposed deployment.
   cookie-authenticated admin call must also present a per-session CSRF key that
   lives only in the dashboard origin's storage — which an app on another port
   cannot read. So even a sniffed/forwarded cookie cannot drive the admin API.
-  - **From outside, that holds only because the dashboard has a hostname of its
-    own.** A browser draws the line around a site's own storage by scheme + host +
-    port, never by path. On the LAN the port draws it; through the tunnel nothing
-    can but the hostname, so the remote dashboard is served only at its own address
-    and no app is ever served there. The first version shared one hostname with the
-    apps, and so shared an origin with every app page — see *Remote administration*
-    for what that allowed.
+  - **From outside, the key never touches storage.** A browser draws the line
+    around a site's own storage by scheme + host + port, never by path, and through
+    the tunnel the dashboard shares its address with your apps, so every app page
+    there IS the dashboard's origin. So the remote dashboard keeps the key in the
+    open tab's memory only, and the server hands it back only inside the
+    dashboard's own page, when the browser itself loads that page — never to a
+    background request, a frame or an embed — and that page cuts off any window an
+    app opened on it. See *Remote administration* for the whole rule and what it
+    costs.
 - The cookie is **not `Secure` by default**, because it is forwarded to plain-HTTP
   apps for SSO and a `Secure` cookie is never sent over HTTP. The dashboard itself
   is HTTPS, so the cookie is encrypted in transit to it regardless.
@@ -71,13 +73,14 @@ assumptions and the knobs for hardening a more exposed deployment.
     remote dashboard already has one, whatever this is set to — next.)*
 - **The remote dashboard has a cookie of its own, `__Host-omos_session`.** It is
   always `Secure`, with `Path=/` and no `Domain` — which a browser demands of any
-  `__Host-` cookie — and `HttpOnly`, `SameSite=Lax`. It is set only at the
-  dashboard's address, and it is the only cookie the remote dashboard reads. Your
-  apps' address is usually a sibling of the dashboard's (both under your domain),
-  and a page there could otherwise set a parent-domain cookie that shadowed the real
-  one and signed you out in a loop; a browser lets nobody set a `__Host-` cookie
-  with a `Domain`, so nothing outside the dashboard's address can plant or
-  overwrite it. It is never sent to your apps.
+  `__Host-` cookie — and `HttpOnly`, `SameSite=Lax`, and it is the only cookie the
+  remote dashboard reads. A page on a sibling hostname could otherwise set a
+  parent-domain cookie that shadowed the real one and signed you out in a loop; a
+  browser lets nobody set a `__Host-` cookie with a `Domain`, so nothing on another
+  hostname can plant it, and no script can overwrite it while it is set, because
+  it is `HttpOnly`. The browser sends it with requests for app paths too, since
+  they share the address; the platform removes it before forwarding anything to
+  an app, so it is never sent to your apps.
 
 ## Login throttle
 
@@ -180,7 +183,7 @@ tunnel is on. The design record, with the history of how it got here, is
 
 ### When the door is open
 
-The dashboard is served from outside only while **all five** of these hold. Each is checked
+The dashboard is served from outside only while **all four** of these hold. Each is checked
 again on every request, never just when the switch was flipped, so undoing any one of them
 shuts the door at once:
 
@@ -191,13 +194,12 @@ shuts the door at once:
    sign-in that arrives through the tunnel is refused outright while no second factor exists;
 4. an admin account exists. A fresh box belongs to whoever sets it up first, and that must
    only ever mean someone in the building — so first-run setup, and restoring a backup onto a
-   new box, refuse tunnel traffic outright as well;
-5. the dashboard has **an address of its own** — next.
+   new box, refuse tunnel traffic outright as well.
 
 Settings says what is missing, and asks you to confirm before it switches on.
 
-**"From outside", on this page, means handed over by the front door**: a request that came
-through the tunnel to the dashboard address while the door was open, which the front door
+**"From outside", on this page, means handed over by the front door**: a request for the
+dashboard that came through the tunnel while the door was open, which the front door
 marks as it passes it on — a mark nothing in a request can imitate. That mark decides
 everything the dashboard *does* differently from outside: how *Open* works, what it will not
 let you change from there, which versions of OpenMasjidOS it will move the box to, the check a
@@ -206,74 +208,80 @@ in are stricter and apply to anything that merely *looks* as if it came through 
 second factor, the per-address lockout, and that a password-only session does not count.
 *Honest limits* says what that means for a reverse proxy of your own.
 
-### Two addresses, and why the dashboard needs its own
+### One address, and the key that keeps apps out
 
-You add **two** public hostnames to the same tunnel in Cloudflare, both of Type HTTP pointing
-at `localhost:80`: *Your apps' address* (for example `omos.example.org`) and the *Dashboard
-address* (for example `admin.example.org`). The dashboard address has to be a hostname — not
-an IP address — and must differ from the apps' address however it is spelt: capitals, a port
-or a trailing dot do not make two names different.
+You add **one** public hostname to the tunnel in Cloudflare, Type HTTP pointing at
+`localhost:80`: *Your apps' address* (for example `omos.example.org`). With remote
+administration on, the dashboard is served at its root (`https://omos.example.org/`), beside
+every app at `/<path>/`. (`0.51.2-dev.16` asked for a second hostname for the dashboard alone;
+a box that kept one is served there too.)
 
-The reason is where a browser draws the line around a site's own data: scheme + host + port,
-never the path. On the masjid's network that line was always there — the dashboard is
-`https://<ip>`, each app `http://<ip>:<port>`, and a different port is a different origin.
-Through the tunnel there are no ports to tell them apart, so a different hostname is the only
-way to draw it.
+That makes every app page the **same origin** as the dashboard: a browser draws the line
+around a site's own data by scheme + host + port, never by the path. On the masjid's network
+the port draws it — the dashboard is `https://<ip>`, each app `http://<ip>:<port>` — but
+through the tunnel there are no ports to tell them apart. So an app's script there — from any
+app the admin opened, or a cross-site-scripting bug in any public app page — can send requests
+that carry the admin's own cookie and pass the origin check. What it must never get is the
+**dashboard key**, without which none of those requests can change anything. **The first
+version got this wrong:** `0.51.2-dev.13` to `dev.15` kept the key in the dashboard's
+`localStorage`, which every app page there could read, and so drive the dashboard's whole API —
+switch on the root terminal and open it (host root, since the core holds the Docker socket), or
+download a backup (every secret the platform holds). So now, from outside:
 
-**The first version got this wrong.** The first Development builds of this feature
-(`0.51.2-dev.13` to `dev.15`) served the dashboard at the root of the apps' address, with every
-app beside it at `/<path>/`, and the first draft of the next build added files, terminals and
-backups to it. An adversarial review showed what that meant: every app page was the *same
-origin* as the dashboard. An app's script — from any app the admin opened, or a cross-site-scripting
-bug in any public app page — could read the dashboard key from storage and send requests
-carrying the admin's own cookie, and so drive the dashboard's whole API. In that draft, for
-example, it could switch on the root terminal and open it (host root, since the core holds the
-Docker socket), or download a backup (every secret the platform holds). So now:
+- **the key is never stored** — the remote dashboard keeps it in the open tab's memory, and
+  removes any left in storage from before;
+- **it is handed back only inside the dashboard's own page, loaded by the browser itself.**
+  After a reload the server writes the key into the page, but only when the browser says it is
+  loading that page as a page in its own window (`Sec-Fetch-Dest: document` and
+  `Sec-Fetch-Mode: navigate`, headers no script can set), for a live session from outside.
+  A background request, a frame or an embed — anything an app page could cause — gets the page
+  without it;
+- **no app page can hold the dashboard's window.** Its pages send
+  `Cross-Origin-Opener-Policy: same-origin`, refuse every frame, and are never cached; app
+  pages never send that policy (the platform removes it from their responses), so a window an
+  app page opens on the dashboard is cut off from it the moment the dashboard loads;
+- **nothing else gives the key, or the admin's details, away.** No answer contains the key;
+  asked without it, the dashboard's "who is signed in" answers "nobody", so an app page cannot
+  read the admin's name, email or phone; and the File Explorer's inline view, whose address
+  carries the key, never sends that address on to anything it loads.
 
-- the dashboard is served over the tunnel **only at the dashboard address**. Asked for anywhere
-  else — your apps' address above all — it gets the same 404 as an address with nothing at it,
-  and *Recently turned away* (Settings → Remote access) records why;
-- **no app is ever served at the dashboard address**, shared or not, whoever asks.
+A browser too old to send those headers — Safari before 16.4 — gets no key with the page, so
+from outside it asks for the password and code again after every reload. *Honest limits* says
+what an app page can still do on the shared address.
 
-So no app page ever shares the dashboard's origin: none can read the dashboard key, and
-without the key the remote cookie drives nothing.
+What the address serves through the tunnel:
 
-What each address serves through the tunnel:
+| | |
+|---|---|
+| Apps you share online | to anyone, at `/<path>/` |
+| Apps you have not shared online | only while the door is open, and only to a browser holding that app's access token (*Opening apps from outside*, below) |
+| The dashboard: its pages, `/trpc`, its own `/api` routes (updates, files, terminals, backup, restore, the logo upload) and its live connections | only while the door is open; past the sign-in page, only to a session that passed the second factor and holds the key |
+| `/_omos/open`, where an *Open* link is spent | only while the door is open |
+| `/api/public/appearance`, `/api/public/logo`, `/favicon.ico` and the two `apple-touch-icon` files | yes — public by design |
+| `/api/fabric/*`, `/api/auth/session`, `/api/health`, `/api/ready`, and every app's own `/fabric/*` | never |
 
-| | Your apps' address | Dashboard address |
-|---|---|---|
-| Apps you share online | to anyone, at `/<path>/` | never |
-| Apps you have not shared online | only while the door is open, and only to a browser holding that app's access token (*Opening apps from outside*, below) | never |
-| The dashboard: its pages, `/trpc`, its own `/api` routes (updates, files, terminals, backup, restore, the logo upload) and its live connections | never | only while the door is open; past the sign-in page, only to a session that passed the second factor |
-| `/_omos/open`, where an *Open* link is spent | only while the door is open | never |
-| `/api/public/appearance`, `/api/public/logo`, `/favicon.ico` and the two `apple-touch-icon` files | yes — public by design | yes — public by design |
-| `/api/fabric/*`, `/api/auth/session`, `/api/health`, `/api/ready`, and every app's own `/fabric/*` | never | never |
+Everything else is refused. (One answer is not a refusal: a background worker's script asked
+for at a bare address gets a worker that removes itself, the same everywhere — see *What apps
+receive through the tunnel*.) The dashboard's own pages — `/store`, `/apps`, `/files`,
+`/settings`, `/design-system` — can never be an app's path.
 
-Everything else is refused at both addresses. (One answer is not a refusal: a background
-worker's script asked for at a bare address gets a worker that removes itself, the same
-everywhere — see *What apps receive through the tunnel*.)
-
-Point both hostnames at port **80**, the front door, never at the dashboard's own port (443).
+Point the hostname at port **80**, the front door, never at the dashboard's own port (443).
 The front door's gate is what makes remote administration a switch. If a hostname is pointed
 at 443 by mistake, the dashboard refuses every request that arrives through Cloudflare without
 having been handed over by that gate — with the ordinary 404, listed under *Recently turned
 away* as reaching the dashboard's own port — rather than answering the internet with the
 switch off.
 
-**Changing the addresses and the tunnel token.** Settings checks a change to either address
-against the other one as it will end up, and checks the tunnel token, *before* saving
-anything, so a save it refuses changes nothing: not the addresses, not the token, not whether
-the door is open. It sends an address only if you edited it, so it never puts back one that
-was changed from another device in the meantime. From outside, two things cannot be changed
-at all, because the request doing it travels through the very thing it would change:
-
-- **the dashboard address** — a typo would shut the door behind you;
-- **the tunnel token** — saving one restarts the tunnel your connection runs on, and a token
-  for another tunnel, or half of one, connects nowhere useful: your window and every shared
-  app would go offline until someone at the masjid fixed it. Pasting the token already in use
-  changes nothing, and is accepted.
-
-Change them at the masjid. Everywhere, a paste that is not a whole tunnel token is refused
+**Changing the address and the tunnel token.** Settings checks the tunnel token *before*
+saving anything, so a save it refuses changes nothing. It sends the address only if you edited
+it, so it never puts back one that was changed from another device in the meantime. From
+outside, **the tunnel token** cannot be changed at all, because the request doing it travels
+through the very thing it would change: saving one restarts the tunnel your connection runs
+on, and a token for another tunnel, or half of one, connects nowhere useful — your window and
+every shared app would go offline until someone at the masjid fixed it. Pasting the token
+already in use changes nothing, and is accepted. Change it at the masjid. (The address can be
+changed from outside: Cloudflare decides which hostname reaches the box, so a typo there breaks
+*Open* and your apps' public links until it is corrected, but not the dashboard.) Everywhere, a paste that is not a whole tunnel token is refused
 before anything is saved: the tunnel would otherwise retry it for ever while the log said it
 was running. Cloudflare's whole install command (`cloudflared … --token <token>`) is cut down
 to the token in it, and a token that lost only the `=` signs at its end — a double-click leaves
@@ -298,7 +306,7 @@ someone at the masjid can undo it. At the masjid they stay one click.
   — password only — is refused from outside, and keeps working at the masjid. The reason is
   single sign-on: every app on the masjid's network receives the admin's LAN cookie, so an app
   that kept one could otherwise have used it from the internet with no second factor.
-- **And only a sign-in made at the dashboard address itself.** Signing in through a reverse
+- **And only a sign-in made through the tunnel itself.** Signing in through a reverse
   proxy of your own on the masjid's network, in front of the dashboard's own port, asks for the
   second factor too (*Honest limits*), and that session goes on working through the proxy —
   but it never works on the remote dashboard, and never opens an app from outside. It lives in
@@ -307,7 +315,7 @@ someone at the masjid can undo it. At the masjid they stay one click.
   session by a formula anyone can read in the source, so any one of those apps could otherwise
   have made a token for every app — private ones included — and used it from the internet.
 - The remote session lives in `__Host-omos_session` (see *Session cookie & the dashboard
-  key*), and its dashboard key in the dashboard address's own storage.
+  key*), and its dashboard key only in the open tab's memory.
 
 ### When a remote session ends
 
@@ -399,8 +407,8 @@ dashboard:
 `_omos` can never be an app's path: app paths are lower-case letters, digits and hyphens, and
 nothing else is ever routed to an app — not even a stack someone starts by hand. (The platform
 picks up any `omos-…` stack Docker reports, and Docker allows `_` in a name, so without that
-rule one started as `omos-_omos` would have been served at `/_omos`.) The route refuses at the
-dashboard address, on the masjid's network and while remote administration is off; a link
+rule one started as `omos-_omos` would have been served at `/_omos`.) The route refuses on the
+masjid's network and while remote administration is off; a link
 that has been used or has expired, or whose session has ended since, shows a short "This link
 has expired" page.
 
@@ -496,17 +504,14 @@ outside, a stranger **cannot** learn:
 - **which apps are installed.** An app you have not shared online is declined first, before
   anything else can answer differently for it, so its address — any path under it, its
   `/fabric` space, a WebSocket to it, a malformed or oversized body sent to it — gets exactly
-  what an address with nothing at it gets. An app's address asked for at the dashboard address
-  does the same, and a worker's script asked for at a bare address gets the same self-removing
-  worker wherever it is asked for;
-- **where the dashboard is, from your apps' address.** Its pages, `/trpc` and its files get the
-  same 404 there;
-- **anything about the dashboard at its own address while the door is shut**: every path there
-  gets that same 404, apart from the public presentation files in the table above and the
+  what an address with nothing at it gets. A worker's script asked for at a bare address gets
+  the same self-removing worker wherever it is asked for;
+- **anything about the dashboard while the door is shut**: its pages, `/trpc` and its files get
+  that same 404, apart from the public presentation files in the table above and the
   self-removing worker, which is the same answer everywhere, door open or shut. While the
-  door is open, whoever finds the address sees the sign-in page and nothing past it; the
-  dashboard tells a visitor who is not signed in no more than that the box has been set up.
-  Treat the address as public: a hostname is not a secret;
+  door is open, whoever opens your apps' address with nothing after it sees the sign-in page
+  and nothing past it; the dashboard tells a visitor who is not signed in no more than that the
+  box has been set up. Treat the address as public: a hostname is not a secret;
 - **the version, from the platform.** `/api/health` and `/api/ready` are refused over the
   tunnel, and the dashboard gives the version only to a signed-in session. (While the door is
   open, the sign-in page's own script files are those of the running build, so someone set on
@@ -517,14 +522,10 @@ What a stranger **can** learn:
 - the pages of the apps you share, and the public presentation the platform publishes for them:
   `/api/public/appearance` (theme, wallpaper — including the web address of a custom wallpaper
   image, if you set one — accent colour, language, whether a logo is set) and the logo itself;
-- **whether remote administration is on.** At your apps' address — or at any other address the
-  tunnel carries apart from the dashboard's, since that route does not check which one it was
-  asked for at — `/_omos/open` answers a used, expired or made-up link with its "This link has
-  expired" page while the door is open, and with the ordinary 404 while it is shut. It says
-  nothing about where the dashboard is;
-- **which of your two addresses is the dashboard's, if they already know both.** Your shared
-  apps are served at every address the tunnel carries except the dashboard's, door open or shut,
-  so someone who knows a shared app's path can tell the two apart;
+- **whether remote administration is on**, two ways: your apps' address with nothing after it
+  shows the sign-in page while the door is open and the ordinary 404 while it is shut; and
+  `/_omos/open` answers a used, expired or made-up link with its "This link has expired" page
+  while the door is open, and with the ordinary 404 while it is shut;
 - **which addresses are the platform's own.** A request for one of them — `/trpc` at your apps'
   address, say — is refused before its body is read, while an address with nothing at it reads
   the body first, so a deliberately malformed request body can tell the two apart. Those
@@ -560,9 +561,8 @@ What a stranger **can** learn:
 - **A restore started from outside goes ahead only if the backup keeps your way back in.** That
   is decided once the backup has been unpacked and checked for safety, and **before** any app is
   paused or any file replaced. In the backup, remote access and *Manage OpenMasjidOS from
-  outside* must both be switched on, with a dashboard address of its own — judged by the very
-  rule this box applies to itself, not a copy of it — and that address must be the one in use
-  now. The backup must also have the same tunnel token, an admin account with the same password,
+  outside* must both be switched on — judged by the very rule this box applies to itself, not a
+  copy of it. The backup must also have the same tunnel token, an admin account with the same password,
   and the same authenticator app. "The same password" means the same stored hash, so a password
   changed since the backup was taken counts as different, even if it was set to the same words.
   "The same authenticator app" means the same secret, and both this box and the backup must have
@@ -653,7 +653,7 @@ What a stranger **can** learn:
 ### Updates from outside
 
 - **From outside, the dashboard will not move OpenMasjidOS to a version that cannot be managed
-  from outside.** The first version that serves the dashboard at an address of its own is
+  from outside.** The first version with everything managing from outside needs is
   `0.51.2-dev.16`, and every Stable release before `0.51.2` has no remote dashboard at all:
   moving the box onto one from outside would cut off every window out there until someone at
   the masjid moved it on again. So from the remote dashboard, updating OpenMasjidOS and
@@ -725,12 +725,24 @@ start of the version that added it, to wherever they were going then.
 
 ### Honest limits
 
-- **Your apps share one origin with each other.** Through the tunnel every app is at
-  `https://<apps' address>/<path>/`, so the separation between apps is weaker than on the
-  masjid's network, where each has a port of its own. A malicious app's page could act within
-  another app you have opened from outside — with your access to that app — and read whatever
-  other apps keep in the browser there. It can never act as the dashboard, whose address no app
-  shares. Install only apps you trust, as always.
+- **Your apps share one origin with each other, and with the dashboard.** Through the tunnel
+  every app is at `https://<apps' address>/<path>/` and the dashboard at its root, so the
+  separation is weaker than on the masjid's network, where each has a port of its own. A
+  malicious app's page could act within another app you have opened from outside — with your
+  access to that app — and read whatever other apps keep in the browser there. Against the
+  dashboard it has no key (*One address, and the key that keeps apps out*), so it cannot change
+  anything there, but in the same browser it can:
+  - sign the dashboard out, or make wrong sign-in attempts that lock your connection out of
+    signing in from outside for fifteen minutes — a nuisance, not a way in;
+  - change how the dashboard looks in that browser (theme, wallpaper, pinned apps), which is
+    kept in the browser;
+  - show a fake sign-in page at the same address. The real one is only ever at the address
+    itself with nothing after it — never under an app's path.
+  That boundary rests on two things browsers do (say which loads are their own, and cut a page
+  off from a window with a different opener policy) rather than on the origin, the browser's
+  oldest rule. Install only apps you trust, as always.
+- **Safari before 16.4** does not say which loads are its own, so from outside it is never
+  given the key with the page, and asks for the password and code again after every reload.
 - **An app's WebSocket handshake reply is passed back unfiltered**, so an app could set a cookie
   there that the filtering above would have dropped — enough to sign you out of another app at
   your apps' address. It cannot make a planted value count as a sign-in, because only a valid
@@ -739,9 +751,11 @@ start of the version that added it, to wherever they were going then.
   versions also let an app install a worker over the whole apps' address from under its own
   path, by sending a `Service-Worker-Allowed` header. The platform removes that header now, so
   a browser's checks for an update to such a worker fail — and a browser keeps a worker whose
-  update fails. It stays in the browsers that met it, able to act within your apps there but
-  never as the dashboard, whose address no app shares. If an app you no longer trust was ever
-  opened through your apps' address, clear that browser's stored data for the address.
+  update fails. It stays in the browsers that met it, able to act within your apps there — and,
+  now that the dashboard shares the address, to see the dashboard's pages load, the key in them
+  included, and so act as you there. **If an app you do not trust was ever opened through your
+  apps' address in a browser, clear that browser's stored data for the address before managing
+  from outside in it.**
 - **On the masjid's network, a session is bound to the password alone.** Changing the second
   factor decides what counts *from outside*; it does not end a session at the masjid, where
   signing in has never needed the second factor. A session shut out from outside that way would
@@ -751,10 +765,9 @@ start of the version that added it, to wherever they were going then.
   is treated as the tunnel by the sign-in rules: signing in through it asks for the second
   factor, and a sign-in made on the network directly does not count through it. Pointed at the
   front door (port 80), it meets the same gate as the tunnel, so the dashboard is not served
-  through it at all unless remote administration is open and it asks for the dashboard
-  address. Pointed at the dashboard's own port, nothing hands its requests over, so the
-  dashboard behaves there as it does at the masjid: apps open at their own ports, the
-  addresses and the tunnel token can be changed, and neither a restore nor an update is held
+  through it at all unless remote administration is open. Pointed at the dashboard's own port,
+  nothing hands its requests over, so the dashboard behaves there as it does at the masjid: apps
+  open at their own ports, the tunnel token can be changed, and neither a restore nor an update is held
   to the from-outside checks — and a sign-in made through it counts there and nowhere else:
   never on the remote dashboard, and never to open an app from outside (*Signing in from
   outside*). (It once answered "from outside" there, which sent every *Open* button down the
@@ -781,19 +794,13 @@ start of the version that added it, to wherever they were going then.
 
 ### If you used remote administration on an earlier Development build
 
-On `0.51.2-dev.13` to `dev.15` the dashboard was at the root of your apps' address. After
-updating, it answers there with the ordinary 404, and the dashboard is not served from outside
-at all until a *Dashboard address* is entered in Settings → Remote access. *Recently turned
-away* lists those visits as the dashboard having no address of its own yet, and the line under
-*Manage OpenMasjidOS from outside* says the same; nothing else tells you — there is no alert or
-dashboard notice for it. The address can only be entered from the dashboard on the masjid's own
-network: those builds have no such setting, so it cannot be done in advance; this one does not
-serve the dashboard from outside until the address is set; and the installer has no option for
-it. (Those builds cannot start an update from the remote dashboard either, so the update itself
-is run at the masjid or with the installer on the box; done at the masjid, the address can be
-entered in the same visit.) The second public hostname can be added in Cloudflare
-beforehand. Then sign in again at the new address: a sign-in made on those builds does not count
-as one made from outside on this one.
+On `0.51.2-dev.13` to `dev.15` the dashboard was at the root of your apps' address, where it is
+again; after updating, sign in there once more — a sign-in made on those builds does not count as
+one made from outside on this one. (Those builds cannot start an update from the remote
+dashboard, so the update itself is run at the masjid or with the installer on the box.) On
+`dev.16` it was at a second address of its own; it is now at your apps' address, and goes on
+answering at the second one for as long as Cloudflare sends it there. Sign in once at your apps'
+address, then remove the second hostname in Cloudflare when it suits you.
 
 ## App compose consent gate
 

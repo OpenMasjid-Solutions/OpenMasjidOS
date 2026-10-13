@@ -38,9 +38,9 @@ const { UPDATE_CLOSE } = req('../src/api/update') as typeof import('../src/api/u
 const { systemRouter } = req('../src/trpc/routers/system') as typeof import('../src/trpc/routers/system');
 const { VERSION } = req('../src/version') as typeof import('../src/version');
 
-// The box: managed from outside, at admin.example.org, with two-step sign-in set up.
+// The box: managed from outside, at omos.example.org, with two-step sign-in set up.
 store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
-settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: 'omos.example.org', adminHost: 'admin.example.org' });
+settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: 'omos.example.org' });
 {
   const { secret } = tf.beginEnrolment('admin');
   tf.confirmEnrolment(totpLib.totp(secret, Date.now()));
@@ -94,7 +94,7 @@ function fakeDocker(fail = 'pull*'): { log: () => string; restore: () => void } 
 
 const POSIX_ONLY = { skip: process.platform === 'win32' ? 'needs a POSIX shell for the stand-in docker — run the suite in WSL' : false } as const;
 
-test('managesFromOutside: the first build with a dashboard address of its own, and everything after it', () => {
+test('managesFromOutside: the first build that can be managed from outside, and everything after it', () => {
   for (const v of ['0.51.1', '0.50.9', '0.51.2-dev.13', '0.51.2-dev.15']) {
     assert.equal(ra.managesFromOutside(v), false, v);
   }
@@ -199,7 +199,7 @@ function fromOutside() {
     csrf,
     isWebSocket: false,
     ip: '172.17.0.1',
-    host: 'admin.example.org',
+    host: 'omos.example.org',
     viaTunnel: true,
     handedOver: true,
     remoteIp: '203.0.113.9',

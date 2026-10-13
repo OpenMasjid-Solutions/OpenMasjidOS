@@ -8,7 +8,7 @@
  * origin sees `x-forwarded-proto: https`); either signal marks tunnel-origin
  * traffic. The secret-gated Fabric routes stay LAN-only whatever else is published
  * (CLAUDE.md §15); the dashboard is served from outside only through remote
- * administration's gate, on an address of its own (system/remote-admin.ts).
+ * administration's gate (system/remote-admin.ts).
  * Registered routes skip the front door's notFoundHandler, so the secret routes are
  * kept LAN-only by an explicit onRequest guard, applied here so index.ts, the
  * app-to-app broker, and the ingress /fabric refusal all use ONE implementation.

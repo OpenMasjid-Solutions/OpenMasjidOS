@@ -28,6 +28,7 @@ import {
   credentialFingerprint,
   freshCredential,
   remoteGrantOf,
+  verifyCsrf,
 } from '../../auth/sessions';
 import { toDigits } from '../../notify/whatsapp';
 import { sendEmail } from '../../notify/email';
@@ -126,49 +127,59 @@ const setupInput = z.object({
 
 export const authRouter = router({
   /** Drives first-run vs login, and reports who is signed in. */
-  me: publicProcedure.query(({ ctx }) => ({
-    setupRequired: !isConfigured(),
-    authenticated: Boolean(ctx.username),
-    username: ctx.username,
-    // Only surface the admin's profile to an authenticated session (never leak the
-    // admin email to an unauthenticated visitor).
-    name: ctx.username ? getAdminName() : null,
-    email: ctx.username ? getAdminEmail() : null,
-    // Same rule as the email: a phone number is personal data, so it is surfaced only
-    // to a signed-in session, never to a visitor sitting on the login screen.
-    phone: ctx.username ? getAdminPhone() : null,
-    /**
-     * Is this session being used from OUTSIDE the masjid?
-     *
-     * The UI needs it to OPEN APPS: on the masjid's network an app is reached at
-     * its own port, which does not exist through the tunnel, so remotely an app is
-     * opened through `apps.openRemote` instead — on the apps' own hostname, never
-     * the dashboard's (system/app-access.ts).
-     *
-     * Presentation only. Nothing is authorised on the strength of it — what a
-     * remote request may do is decided server-side, by the session it carries
-     * (auth/sessions.ts `getSessionUserFor`).
-     *
-     * The front door's HAND-OVER decides it, never a header. `viaTunnel` is also true
-     * behind a reverse proxy the masjid runs on its own network (it sends
-     * `X-Forwarded-Proto: https`), and answering "remote" there sent every Open button
-     * down the from-outside path, where it was refused — at the masjid, every app.
-     */
-    remote: ctx.handedOver,
-    /**
-     * Where the apps are, from outside: `https://<the apps' hostname>`. Only to a
-     * signed-in remote session — the dashboard uses it for app icons; everyone else
-     * has no business learning it from the admin's address.
-     */
-    appOrigin: ctx.username && ctx.handedOver && appHostname() ? `https://${appHostname()}` : null,
-    /**
-     * The running version, to a signed-in session only. The update dialog watches it
-     * change to know the new build is up: `/api/health` reports it too, but health is
-     * refused from outside (it would tell the internet which build this is), and the
-     * dialog has to work the same in both places.
-     */
-    version: ctx.username ? VERSION : null,
-  })),
+  me: publicProcedure.query(({ ctx: asked }) => {
+    // FROM OUTSIDE, ONLY TO A CALLER HOLDING THE KEY. There the dashboard shares its
+    // address with every app page, and a script on one can call this with the admin's
+    // cookie — it would have read the admin's name, email and phone. On the masjid's
+    // network an app is on another port, and the browser keeps the answer from it.
+    const ctx = asked.handedOver && !verifyCsrf(asked.sessionToken, asked.csrf) ? { ...asked, username: null } : asked;
+    return {
+      setupRequired: !isConfigured(),
+      authenticated: Boolean(ctx.username),
+      username: ctx.username,
+      // Only surface the admin's profile to an authenticated session (never leak the
+      // admin email to an unauthenticated visitor).
+      name: ctx.username ? getAdminName() : null,
+      email: ctx.username ? getAdminEmail() : null,
+      // Same rule as the email: a phone number is personal data, so it is surfaced only
+      // to a signed-in session, never to a visitor sitting on the login screen.
+      phone: ctx.username ? getAdminPhone() : null,
+      /**
+       * Is this session being used from OUTSIDE the masjid?
+       *
+       * The UI needs it to OPEN APPS: on the masjid's network an app is reached at
+       * its own port, which does not exist through the tunnel, so remotely an app is
+       * opened through `apps.openRemote` instead, on the apps' hostname
+       * (system/app-access.ts).
+       *
+       * Presentation only. Nothing is authorised on the strength of it — what a
+       * remote request may do is decided server-side, by the session it carries
+       * (auth/sessions.ts `getSessionUserFor`).
+       *
+       * The front door's HAND-OVER decides it, never a header. `viaTunnel` is also true
+       * behind a reverse proxy the masjid runs on its own network (it sends
+       * `X-Forwarded-Proto: https`), and answering "remote" there sent every Open button
+       * down the from-outside path, where it was refused — at the masjid, every app.
+       */
+      remote: ctx.handedOver,
+      /**
+       * Where the apps are, from outside: `https://<the apps' hostname>`. Only to a
+       * signed-in remote session — the dashboard uses it for app icons.
+       *
+       * Never the dashboard KEY. From outside the dashboard shares its address with app
+       * pages, and any of them can call this with the admin's cookie; the key is handed
+       * back only inside the dashboard's own page (api/static-ui.ts).
+       */
+      appOrigin: ctx.username && ctx.handedOver && appHostname() ? `https://${appHostname()}` : null,
+      /**
+       * The running version, to a signed-in session only. The update dialog watches it
+       * change to know the new build is up: `/api/health` reports it too, but health is
+       * refused from outside (it would tell the internet which build this is), and the
+       * dialog has to work the same in both places.
+       */
+      version: ctx.username ? VERSION : null,
+    };
+  }),
 
   /**
    * First-run only: create the admin account (name + email + password) and start a

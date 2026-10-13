@@ -8,7 +8,7 @@
  * backup taken before remote administration was set up — most of them, the feature
  * being new — switched the door off behind the admin, and getting back in needed
  * someone in the building. So from outside a restore goes ahead only if the way back
- * in survives it: the same switch, admin hostname, tunnel, password and second factor
+ * in survives it: the same switch, tunnel, password and second factor
  * (system/restore.ts `remoteRestoreProblem`). These drive that function against real
  * files, and pin that it runs before anything is stopped or replaced.
  */
@@ -45,9 +45,9 @@ beforeEach(() => lock.__releaseHeldLocksForTests());
 const CONFIG = path.join(DATA, 'config');
 const HASH = '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb';
 
-// The box as it is now: managed from outside, at admin.example.org.
+// The box as it is now: managed from outside, at omos.example.org.
 store.setCredentials('admin', HASH);
-settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: 'omos.example.org', adminHost: 'admin.example.org' });
+settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: 'omos.example.org' });
 cloudflared.setToken('TOKEN-NOW');
 {
   const { secret } = tf.beginEnrolment('admin');
@@ -88,8 +88,6 @@ test('A BACKUP FROM BEFORE REMOTE ADMINISTRATION WAS SET UP IS REFUSED FROM OUTS
     ['the switch off', { remoteAdmin: false }],
     ['no switch at all', { remoteAdmin: undefined }],
     ['the tunnel off', { enabled: false }],
-    ['no admin hostname', { adminHost: '' }],
-    ['a DIFFERENT admin hostname — this address stops answering', { adminHost: 'old-admin.example.org' }],
   ] as const) {
     assert.match(remoteRestoreProblem(staged((cfg) => editSettings(cfg, patch))) ?? '', OFF, what);
   }
@@ -99,8 +97,20 @@ test('A BACKUP FROM BEFORE REMOTE ADMINISTRATION WAS SET UP IS REFUSED FROM OUTS
     OFF,
     'damaged settings',
   );
-  // The same admin hostname in another spelling is the same address.
-  assert.equal(remoteRestoreProblem(staged((cfg) => editSettings(cfg, { adminHost: 'ADMIN.example.org.' }))), null);
+});
+
+test("A BACKUP WITH ANOTHER APPS' ADDRESS, OR A DASHBOARD ADDRESS OF ITS OWN, STILL RESTORES FROM OUTSIDE", () => {
+  // The dashboard is served beside the apps on whichever routed hostname is asked for, so
+  // no address in the backup decides whether the way back in survives — including a dev.16
+  // backup that still names a dashboard address of its own, or none.
+  for (const patch of [
+    { domain: 'apps.example.net' },
+    { domain: '' },
+    { adminHost: 'admin.example.org' },
+    { adminHost: '' },
+  ]) {
+    assert.equal(remoteRestoreProblem(staged((cfg) => editSettings(cfg, patch))), null, JSON.stringify(patch));
+  }
 });
 
 test('A BACKUP WITH ANOTHER TUNNEL IS REFUSED FROM OUTSIDE — the way in would be a different one', () => {
@@ -147,15 +157,11 @@ test('the check runs before anything is stopped or replaced, and only from outsi
   assert.match(api, /runRestore\(send, \{ remote: wasHandedOver\(req\.raw\), callerToken: requestSessionToken\(req\) \}\)/);
 });
 
-test("A BACKUP WHOSE APPS SHARE THE DASHBOARD'S ADDRESS IS REFUSED FROM OUTSIDE — by the live box's own rule", () => {
-  // Exactly what a refused Save used to leave on disk, so a nightly backup could hold
-  // it; restored, it shuts remote administration with the admin outside. The restore
-  // now asks the same predicate the live box does (remote-admin.ts settingsOpenTheDoor)
-  // instead of a hand-written copy that had missed this case.
-  for (const domain of ['admin.example.org', 'https://ADMIN.example.org./']) {
-    assert.match(remoteRestoreProblem(staged((cfg) => editSettings(cfg, { domain }))) ?? '', OFF, domain);
-  }
+test("A BACKUP THE LIVE BOX'S OWN RULE WOULD SHUT IS REFUSED FROM OUTSIDE — truthy is not on", () => {
+  // The restore asks the same predicate the live box does (remote-admin.ts
+  // settingsOpenTheDoor) instead of a hand-written copy, which once missed a case.
   assert.match(remoteRestoreProblem(staged((cfg) => editSettings(cfg, { enabled: 'yes' }))) ?? '', OFF, 'truthy is not on');
+  assert.match(remoteRestoreProblem(staged((cfg) => editSettings(cfg, { remoteAdmin: 1 }))) ?? '', OFF, '…nor is 1');
 });
 
 test('A BACKUP WITH NO USERNAME IS REFUSED FROM OUTSIDE — nobody could sign in to what it restores', () => {

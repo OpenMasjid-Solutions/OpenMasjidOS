@@ -45,11 +45,10 @@ const { registerFabricTunnelGuard, isViaTunnel } = req(
 
 const TUNNEL = { 'cf-ray': '7a1b2c3d4e5f-LHR' };
 const INDEX = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
-/** The dashboard's own hostname, and the apps' one. Never the same (remote-admin.ts says why). */
-const ADMIN = 'admin.example.org';
+/** The apps' hostname — where the dashboard is served from outside too, beside the apps. */
 const APPS = 'omos.example.org';
-/** A tunnel request for the ADMIN hostname — where the dashboard lives. */
-const REMOTE = { ...TUNNEL, host: ADMIN };
+/** A tunnel request for that hostname. */
+const REMOTE = { ...TUNNEL, host: APPS };
 
 /** Enrol a second factor, so the "2FA is required" precondition can be met. */
 function enrolTwoFactor(): void {
@@ -61,7 +60,7 @@ function setState(o: { tunnel: boolean; remoteAdmin: boolean; twoFactor: boolean
   // An admin exists in every state below: remote administration requires one (the
   // first test checks that, before any admin is made).
   if (!store.isConfigured()) store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
-  settings.updateCloudflare({ enabled: o.tunnel, remoteAdmin: o.remoteAdmin, domain: APPS, adminHost: ADMIN });
+  settings.updateCloudflare({ enabled: o.tunnel, remoteAdmin: o.remoteAdmin, domain: APPS });
   tf.disableTwoFactor();
   if (o.twoFactor) enrolTwoFactor();
 }
@@ -75,7 +74,7 @@ test('NO ADMIN, NO REMOTE ADMINISTRATION — first-run is for someone in the bui
   // not imply an admin exists — a box whose admin record went missing while those
   // settings survived would otherwise offer "create the admin account" to the internet.
   assert.equal(store.isConfigured(), false, 'precondition: no admin yet');
-  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS, adminHost: ADMIN });
+  settings.updateCloudflare({ enabled: true, remoteAdmin: true, domain: APPS });
   enrolTwoFactor();
   assert.equal(ra.remoteAdminEnabled(), false, 'the dashboard was offered to the internet with no admin');
   store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
@@ -99,45 +98,17 @@ test('remote administration is OFF until every condition holds', () => {
   assert.equal(ra.remoteAdminEnabled(), true);
 });
 
-test('NO ADDRESS OF ITS OWN, NO REMOTE ADMINISTRATION — never the apps\' hostname', () => {
-  // On one hostname every app page is the dashboard's ORIGIN: its script can read the
-  // dashboard key and drive the admin API with the admin's cookie. So without a
-  // separate admin hostname there is no remote administration rather than an unsafe one.
+test('THE DASHBOARD NEEDS NO ADDRESS OF ITS OWN — no hostname is part of the door', () => {
+  // dev.16 required a second Cloudflare hostname for the dashboard; it is served beside
+  // the apps now. A settings.json that still carries that address, or no apps' address
+  // at all, neither opens nor shuts the door.
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
-  assert.equal(ra.remoteAdminEnabled(), true);
-  settings.updateCloudflare({ adminHost: '' });
-  assert.equal(ra.remoteAdminEnabled(), false, 'no admin hostname set');
-  assert.equal(ra.remoteAdminBlockedReason(), 'no-admin-host');
-  settings.updateCloudflare({ adminHost: APPS });
-  assert.equal(ra.remoteAdminEnabled(), false, 'the SAME hostname as the apps — the exact thing this exists to prevent');
-  settings.updateCloudflare({ adminHost: 'OMOS.example.org.' });
-  assert.equal(ra.remoteAdminEnabled(), false, 'the same hostname in another spelling');
-  assert.equal(ra.remoteAdminBlockedReason(), 'no-admin-host');
-  settings.updateCloudflare({ adminHost: ADMIN });
-  assert.equal(ra.remoteAdminEnabled(), true);
-});
-
-test('isAdminHost: one name, however it is spelled — and never true with none set', () => {
-  for (const h of [ADMIN, 'ADMIN.example.org', `${ADMIN}.`, `${ADMIN}:443`, [ADMIN]]) {
-    assert.equal(ra.isAdminHost(h as string, ADMIN), true, JSON.stringify(h));
-  }
-  for (const h of [APPS, `x.${ADMIN}`, `${ADMIN}.evil.example`, '', undefined, null]) {
-    assert.equal(ra.isAdminHost(h as string, ADMIN), false, JSON.stringify(h));
-  }
-  assert.equal(ra.isAdminHost('', ''), false, 'an empty Host is not the admin hostname when none is set');
-  assert.equal(ra.isAdminHost(ADMIN, ''), false);
-});
-
-test('validateAdminHost: a hostname of its own, or a sentence saying why not', () => {
-  setState({ tunnel: true, remoteAdmin: false, twoFactor: true });
-  assert.equal(ra.validateAdminHost('admin.example.org'), 'admin.example.org');
-  assert.equal(ra.validateAdminHost('https://Admin.Example.org/'), 'admin.example.org');
-  assert.equal(ra.validateAdminHost(''), '', 'blank clears it');
-  for (const bad of ['localhost', '192.168.1.50', 'admin example.org', 'admin_.example.org', '-admin.example.org']) {
-    assert.throws(() => ra.validateAdminHost(bad), /web address like/, bad);
-  }
-  assert.throws(() => ra.validateAdminHost(APPS), /address of its own/, 'never the apps\' hostname');
-  assert.throws(() => ra.validateAdminHost(`${APPS.toUpperCase()}.`), /address of its own/);
+  settings.updateSettings({ cloudflare: { enabled: true, remoteAdmin: true, domain: APPS, adminHost: 'admin.example.org' } as never });
+  assert.equal(ra.remoteAdminEnabled(), true, 'a stale dashboard address shut the door');
+  assert.equal(ra.remoteAdminBlockedReason(), null);
+  settings.updateCloudflare({ domain: '' });
+  assert.equal(ra.remoteAdminEnabled(), true, "no apps' address shut the door");
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
 });
 
 test('REMOVING THE SECOND FACTOR CLOSES THE DOOR, with the switch still on', () => {
@@ -157,14 +128,14 @@ test('REMOVING THE SECOND FACTOR CLOSES THE DOOR, with the switch still on', () 
 test('an older settings.json has the feature off, not undefined-on', () => {
   // Absence must read as off, the same rule the alerts matrix's WhatsApp column
   // follows: an upgrade can never silently publish a masjid's dashboard.
-  // The dashboard HAS an address of its own here, so the missing switch is the ONLY
-  // thing keeping the door shut. Without one, the missing address shut it whatever an
-  // absent switch read as — and the test passed for the wrong reason.
-  const cf = { enabled: true, domain: APPS, adminHost: ADMIN } as never;
+  const cf = { enabled: true, domain: APPS } as never;
   settings.updateSettings({ cloudflare: cf });
   enrolTwoFactor();
   assert.equal(ra.remoteAdminEnabled(), false);
-  assert.equal(ra.settingsOpenTheDoor({ enabled: true, domain: APPS, adminHost: ADMIN }), false);
+  assert.equal(ra.settingsOpenTheDoor({ enabled: true }), false);
+  // The control: with the switch present the same settings open it, so the false above
+  // is the missing switch's doing.
+  assert.equal(ra.settingsOpenTheDoor({ enabled: true, remoteAdmin: true }), true);
 });
 
 // ── which paths the dashboard owns ─────────────────────────────────────────
@@ -298,7 +269,7 @@ async function dashboardListener() {
  * had already drifted — it had no upgrade branch at all, so no test ever sent a
  * plain-http tunnel visit through a gate.
  */
-const TEST_HOST = ADMIN;
+const TEST_HOST = APPS;
 async function frontDoor() {
   const dash = await dashboardListener();
   const app = Fastify();
@@ -312,7 +283,7 @@ async function frontDoor() {
     const d = ra.frontDoorDecision(r.url, r.headers, {
       viaTunnel: isViaTunnel(r),
       remoteAdminEnabled: ra.remoteAdminEnabled(),
-      adminHost: ra.adminHost(),
+      appsHost: ra.appHostname(),
     });
     switch (d.kind) {
       case 'pass':
@@ -373,27 +344,31 @@ test('with the feature ON, the dashboard is served over the tunnel — by the da
   await app.close();
 });
 
-test('THE DASHBOARD IS NEVER SERVED ON THE APPS\' HOSTNAME — with the feature on, at any path', async () => {
-  // That hostname serves app pages. A dashboard there shares an origin with every one
-  // of them, and any of them could then act as the admin.
+test("THE DASHBOARD IS SERVED ON THE APPS' HOSTNAME — and on any other the tunnel delivers", async () => {
+  // dev.16 served it only on a second hostname of its own; the masjid found that one
+  // address too many. What keeps an app page sharing this origin from acting as the
+  // admin is where the dashboard key lives (system/remote-admin.ts), not the hostname.
+  // Cloudflare delivers only the hostnames the masjid routed to the tunnel, so the Host
+  // is not asked at all.
   setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
   refusals.__clearRefusalsForTests();
   const app = await frontDoor();
   try {
-    for (const url of ['/', '/trpc/auth.me', '/settings', '/assets/index.js', '/api/backup', '/%74rpc/auth.me']) {
-      const res = await app.inject({ method: 'GET', url, headers: { ...TUNNEL, host: APPS } });
-      assert.equal(res.statusCode, 404, url);
-      assert.doesNotMatch(res.body, /dashboard|bundle|backup|OpenMasjidOS</, url);
+    for (const host of [APPS, 'OMOS.example.org.', 'admin.example.org']) {
+      for (const [url, body] of [
+        ['/', /index\.html/],
+        ['/trpc/auth.me', /dashboard/],
+        ['/settings', /OpenMasjidOS</],
+        ['/assets/index.js', /bundle/],
+        ['/api/backup', /backup/],
+        ['/%74rpc/auth.me', /dashboard/],
+      ] as const) {
+        const res = await app.inject({ method: 'GET', url, headers: { ...TUNNEL, host } });
+        assert.equal(res.statusCode, 200, `${host}${url}`);
+        assert.match(res.body, body, `${host}${url} did not reach the dashboard listener`);
+      }
     }
-    assert.ok(
-      refusals.recentRefusals().some((r) => r.path === '/' && r.reason === 'dashboard-elsewhere'),
-      'the refusal must say where the dashboard went',
-    );
-    // Nor with no Host at all, nor a lookalike.
-    for (const host of ['', `${ADMIN}.evil.example`, `x${ADMIN}`]) {
-      const res = await app.inject({ method: 'GET', url: '/trpc/auth.me', headers: { ...TUNNEL, host } });
-      assert.equal(res.statusCode, 404, `Host: ${host}`);
-    }
+    assert.deepEqual(refusals.recentRefusals(), [], 'a dashboard visit was refused');
   } finally {
     await app.close();
   }
@@ -528,7 +503,7 @@ test('the front door only claims the dashboard WebSocket, and only when the gate
   assert.match(call, /claimUpgrade/, 'the dashboard socket claim is gone');
   assert.match(call, /claimsDashboardSocket\(/, 'it must ask the shared rule, not re-derive it');
   assert.match(call, /remoteAdminEnabled:\s*remoteAdminEnabled\(\)/, 'it must respect the setting');
-  assert.match(call, /adminHost:\s*adminHost\(\)/, 'only on the ADMIN hostname');
+  assert.match(call, /appsHost:\s*appHostname\(\)/, "the same gate, with the apps' hostname it upgrades to");
   assert.match(call, /if \(!ok\) return false;/, 'a declined upgrade must be handed back (and so destroyed)');
   assert.match(
     call,
@@ -549,7 +524,7 @@ test('claimsDashboardSocket: the dashboard socket, over the tunnel, when the gat
   const lan = sessions.createSession('admin', sessions.currentCredential());
   const signedIn = { cookie: `${sessions.REMOTE_COOKIE_NAME}=${remote.token}` };
   const https = { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: HOST, ...signedIn };
-  const on = { remoteAdminEnabled: true, adminHost: HOST };
+  const on = { remoteAdminEnabled: true, appsHost: HOST };
   assert.equal(ra.claimsDashboardSocket('/trpc', https, on), true);
   // …and nobody else: a stranger, a LAN session (in either cookie), a session that ended.
   const { cookie: _c, ...stranger } = https;
@@ -565,9 +540,9 @@ test('claimsDashboardSocket: the dashboard socket, over the tunnel, when the gat
   assert.equal(ra.claimsDashboardSocket('/trpc', https, { ...on, remoteAdminEnabled: false }), false, 'feature off');
   assert.equal(ra.claimsDashboardSocket('/trpc', http(), on), false, 'plain http:// is redirected by the gate, so not claimed');
   assert.equal(
-    ra.claimsDashboardSocket('/trpc', { ...https, host: APPS }, on),
-    false,
-    'NOT on the apps\' hostname — the dashboard is never served there',
+    ra.claimsDashboardSocket('/trpc', { ...https, host: 'admin.example.org' }, on),
+    true,
+    'the gate serves the dashboard on any hostname the tunnel delivers, so the claim does too',
   );
   assert.equal(
     ra.claimsDashboardSocket('/trpc', { ...https, 'cf-visitor': '' }, on),
@@ -677,10 +652,10 @@ test('visitorScheme prefers cf-visitor, reads the first hop, and only says what 
   assert.equal(visitorScheme({}), null);
 });
 
-const HOST = ADMIN;
+const HOST = APPS;
 const http = (extra: Record<string, string> = {}) => ({ 'cf-ray': 'a-LHR', 'x-forwarded-proto': 'http', host: HOST, ...extra });
 
-const ON = { viaTunnel: true, remoteAdminEnabled: true, adminHost: HOST };
+const ON = { viaTunnel: true, remoteAdminEnabled: true, appsHost: HOST };
 const decide = (url: string, headers: Record<string, string>, ctx = ON) => ra.frontDoorDecision(url, headers, ctx);
 
 test('A PLAIN-HTTP TUNNEL VISIT TO THE DASHBOARD IS UPGRADED TO HTTPS', () => {
@@ -691,28 +666,25 @@ test('A PLAIN-HTTP TUNNEL VISIT TO THE DASHBOARD IS UPGRADED TO HTTPS', () => {
   assert.deepEqual(decide('/', http({ 'cf-visitor': '{"scheme":"http"}' })), { kind: 'upgrade', to: `https://${HOST}/` });
 });
 
-test('THE UPGRADE ALWAYS GOES TO THE CONFIGURED ADMIN HOSTNAME — never where the request says', () => {
-  // The target never comes from the request, so this can never be an open redirect.
-  // A different spelling of the admin hostname is upgraded to the configured one.
-  for (const host of [HOST, HOST.toUpperCase(), `${HOST}.`, `${HOST}:80`]) {
+test("THE UPGRADE ALWAYS GOES TO THE CONFIGURED APPS' HOSTNAME — never where the request says", () => {
+  // The target never comes from the request, so this can never be an open redirect:
+  // whatever Host was asked for, in whatever spelling, the configured one is the target.
+  for (const host of [HOST, HOST.toUpperCase(), `${HOST}.`, `${HOST}:80`, 'evil.example.com', `${HOST}.evil.example.com`, '']) {
     assert.deepEqual(decide('/', http({ host })), { kind: 'upgrade', to: `https://${HOST}/` }, `Host: ${host}`);
   }
-  // Any OTHER hostname gets no dashboard at all, upgraded or not: the apps' one serves
-  // app pages, and the dashboard must never share an origin with one.
-  for (const host of ['evil.example.com', `${HOST}.evil.example.com`, APPS, '']) {
-    assert.deepEqual(decide('/', http({ host })), { kind: 'refuse', reason: 'dashboard-elsewhere' }, `Host: ${host}`);
-  }
+  // The configured value is normalised before it becomes a URL.
+  assert.deepEqual(decide('/', http(), { ...ON, appsHost: 'OMOS.Example.org.' }), { kind: 'upgrade', to: `https://${HOST}/` });
   // A request target that is not a path is not something to build a URL from.
   assert.deepEqual(decide('//evil.example.com/x', http()), { kind: 'pass' }, 'not a dashboard path at all');
   assert.deepEqual(decide('//settings', http()), { kind: 'refuse', reason: 'plain-http-no-host' });
 });
 
-test('WITH NO ADMIN HOSTNAME CONFIGURED, NOTHING IS SERVED OR UPGRADED', () => {
+test("WITH NO APPS' HOSTNAME CONFIGURED, A PLAIN-HTTP VISIT IS REFUSED, NEVER SERVED IN CLEAR", () => {
   for (const blank of ['', '   ']) {
-    assert.deepEqual(decide('/', http(), { ...ON, adminHost: blank }), { kind: 'refuse', reason: 'dashboard-elsewhere' });
-    assert.deepEqual(decide('/settings', { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: '' }, { ...ON, adminHost: blank }), {
-      kind: 'refuse',
-      reason: 'dashboard-elsewhere',
+    assert.deepEqual(decide('/', http(), { ...ON, appsHost: blank }), { kind: 'refuse', reason: 'plain-http-no-host' });
+    // An https visit needs no address to be sent to: it is served where it arrived.
+    assert.deepEqual(decide('/settings', { 'cf-ray': 'a', 'cf-visitor': '{"scheme":"https"}', host: '' }, { ...ON, appsHost: blank }), {
+      kind: 'serve',
     });
   }
 });
@@ -764,7 +736,7 @@ test('the real gate in index.ts IS frontDoorDecision, and handles all five outco
   assert.ok(from > 0, 'the front door no longer calls frontDoorDecision');
   const gate = INDEX.slice(from, INDEX.indexOf('front.setNotFoundHandler', from));
   assert.ok(gate.length > 0, 'the gate must come before the not-found handler');
-  assert.match(gate, /adminHost:\s*adminHost\(\)/, 'the gate must know the CONFIGURED admin hostname');
+  assert.match(gate, /appsHost:\s*appHostname\(\)/, "the gate must know the CONFIGURED apps' hostname, to upgrade plain http:// to");
   assert.match(gate, /markHandedOver\(req\.raw\);[\s\S]*?reply\.hijack\(\);/, 'a served request must be marked before it is handed over');
   assert.match(
     gate,
@@ -1106,7 +1078,7 @@ test('tRPC TAKES JSON ONLY — its unlimited multipart path is closed to everyon
 
 test('THE DASHBOARD LISTENER ANSWERS CLOUDFLARE ONLY THROUGH THE GATE', async () => {
   // A tunnel pointed at the dashboard's own port by mistake would otherwise serve
-  // the dashboard to the internet with the switch off and the admin hostname ignored.
+  // the dashboard to the internet with the switch off.
   const dash = Fastify();
   dash.addHook('onRequest', async (r) => {
     if (r.headers['x-test-handed-over']) ra.markHandedOver(r.raw);

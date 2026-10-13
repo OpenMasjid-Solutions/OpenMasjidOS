@@ -9,7 +9,7 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { ZodError } from 'zod';
 import type { Context } from './context';
 import { isRemoteSession, verifyCsrf } from '../auth/sessions';
-import { remoteDoorOpen } from '../system/remote-admin';
+import { remoteAdminEnabled } from '../system/remote-admin';
 import { finishing, finishingMessage, isUpdating } from '../system/update-lock';
 
 const t = initTRPC.context<Context>().create({
@@ -34,9 +34,10 @@ const isAuthed = t.middleware(({ ctx, next }) => {
   if (!ctx.username) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
   }
-  // CSRF / session-replay defence: require the dashboard key, which lives only in
-  // the dashboard origin's storage and so can't be read by an app on another port
-  // that captured the shared session cookie.
+  // CSRF / session-replay defence: require the dashboard key, which no app can read —
+  // on the LAN it is in the dashboard origin's storage (an app is on another port);
+  // from outside, where the apps share the dashboard's origin, it is only in the page's
+  // memory (system/remote-admin.ts, the key rule).
   //
   // This applies to the WebSocket transport TOO, and used to not. The old
   // exemption rested on two beliefs that are both false: that WS carries only
@@ -56,7 +57,7 @@ const isAuthed = t.middleware(({ ctx, next }) => {
   // administration was turned off still able to call anything, including the switch
   // that turns it back on. HTTP requests are gated one by one at the front door; this
   // is what holds for the ones that are not (system/remote-sockets.ts closes them).
-  if (ctx.handedOver && !(remoteDoorOpen(ctx.host) && isRemoteSession(ctx.sessionToken))) {
+  if (ctx.handedOver && !(remoteAdminEnabled() && isRemoteSession(ctx.sessionToken))) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
   }
   return next({ ctx: { ...ctx, username: ctx.username } });

@@ -9,11 +9,11 @@ work introduced. It reconciles the original work order with the real code (the
 the code. The app-facing contract lives in [`APP_MANIFEST_SPEC.md`](APP_MANIFEST_SPEC.md);
 this doc is the platform-internal design + the decisions taken.
 
-The tunnel half changed in v0.51.2-dev.16, when remote administration (the dashboard served
-over the same tunnel, off by default) was given a hostname of its own: every app with a
-published port is routed again, an app that is not shared online opens only for the admin and
-only with an access token for that one app, and no app is ever served on the dashboard's
-hostname. That is recorded in *Apps through the tunnel* below. The remote-administration design
+The tunnel half changed in v0.51.2-dev.16 and dev.17, with remote administration (the dashboard
+served over the same tunnel, off by default): every app with a published port is routed again, an
+app that is not shared online opens only for the admin and only with an access token for that one
+app, and — since dev.17 — the dashboard shares the apps' hostname, kept apart from app pages by its
+key rather than by a hostname of its own. That is recorded in *Apps through the tunnel* below. The remote-administration design
 itself is in [`REMOTE_ADMIN.md`](REMOTE_ADMIN.md) and the header of
 `packages/core/src/system/remote-admin.ts`.
 
@@ -140,7 +140,7 @@ what. All of it is in `system/ingress.ts`, `system/app-access.ts` and, for socke
 `system/remote-sockets.ts` and `system/socket-relay.ts`, pinned by `test/remote-apps.test.ts`
 (HTTP) and `test/front-door-websocket.test.ts` (WebSocket).
 
-### Two hostnames, and why
+### One hostname, and the key
 
 On v0.51.2-dev.13–dev.15 the remote dashboard was served at the root of the apps' hostname
 (`https://omos.example.org/`), beside every shared app at `/<path>/`, and no app opened from it at
@@ -151,57 +151,37 @@ site's own data" by scheme + host + port, **never by path**, so every app page w
 ORIGIN. An app's script — from any app the admin opened, or a cross-site-scripting bug in any public
 app page — could read the dashboard key from `localStorage` and send same-origin requests carrying
 the admin's cookie: turn the root terminal on and open it (host root — the core holds the Docker
-socket), or download a backup (every secret). On the masjid's network that line has always been
-there: the dashboard is `https://<ip>`, each app `http://<ip>:<port>`, and a different port is a
-different origin. Through the tunnel the only way to draw it is a different HOSTNAME.
+socket), or download a backup (every secret). dev.16 answered with a second hostname for the
+dashboard alone; the masjid found that one address too many to set up and keep.
 
-So the tunnel carries two Cloudflare public hostnames, both Type HTTP to the core's front door
-(`localhost:80` on an installed box — the core's `PORT`, which Settings → Remote access shows):
-
-- **The apps' hostname** (`cloudflare.domain`; "Your apps’ address" in Settings → Remote access)
-  is where the apps are served, as before. Strictly, the ingress serves app paths on any hostname
-  except the admin one, as it always served them on any. The dashboard is never served there: while
-  remote administration is on, asking for it on any hostname but its own gets the ordinary 404,
-  recorded as `dashboard-elsewhere`. With it off — and it is off until a Dashboard address is set —
-  the dashboard is refused everywhere over the tunnel, recorded as `lan-only-route`, or as
-  `no-admin-host` when the tunnel and the switch are on, an admin account exists, two-step
-  sign-in is set up, and only the Dashboard address is missing or is the apps' own
-  (`doorClosedReason`).
-- **The admin hostname** (`cloudflare.adminHost`; "Dashboard address") serves the remote dashboard
-  and **no app content at all** — shared or private, with an access token or without, on the HTTP
-  and the WebSocket path. The ingress declines any app path there and the request gets the ordinary
-  404, recorded as `app-on-admin-host` (or, for a worker's script fetch at the bare address, the
-  platform's self-removing worker, as elsewhere) — unless the path is also one of the dashboard's
-  own (an app whose address is `settings`, say). The ingress hook runs before the front-door gate,
-  so such a request goes on to the gate like any dashboard path: the dashboard answers it while the
-  door is open, and it is refused as a dashboard path while it is shut. The test is `isAdminHost`, on
-  `normalizeHost` (lower-case, no port, no trailing dot), so `ADMIN.EXAMPLE.ORG`,
-  `admin.example.org.` and `admin.example.org:443` are all the admin hostname. `validateAdminHost`
-  refuses a name that is not a DNS name, or that equals the apps' hostname in any spelling, and
-  `remoteAdminEnabled()` is false while the two match.
+Since dev.17 the tunnel carries ONE Cloudflare public hostname again, Type HTTP to the core's front
+door (`localhost:80` on an installed box — the core's `PORT`): the apps' hostname
+(`cloudflare.domain`; "Your apps’ address" in Settings → Remote access). The apps are served there
+as before, and — only while remote administration is on — the dashboard at its root. Strictly,
+neither the ingress nor the front-door gate looks at the hostname: whatever the tunnel delivers is
+served, so a box that kept dev.16's second hostname serves both there too. What keeps app pages out
+of the dashboard is no longer the origin but the dashboard KEY, which no page on that origin can
+obtain: the remote dashboard holds it in memory only, the server writes it into the dashboard's own
+page only for a load the browser marks as its own, that page cuts off any window an app opened on
+it and refuses frames, and the ingress strips `Cross-Origin-Opener-Policy` from every app response
+so an app page can never share a browsing context group with it
+([`REMOTE_ADMIN.md`](REMOTE_ADMIN.md), *Why one is safe: the key*). The dashboard's own page
+segments (`store`, `apps`, `files`, `settings`, `design-system`) are reserved app paths since then,
+because the ingress takes app paths first.
 
 For the public, a shared app is still served on the apps' hostname, to anyone, with the app's own
-cache headers. What dev.16 changed for them is small and is all below: at an app's bare address
+cache headers. What changed for them is small and is all below: at an app's bare address
 (`/<path>`, no trailing slash) nothing the app answers may be cached and a service worker's script
 fetch gets a worker that removes itself instead of the app's, and some headers are removed in each
 direction (*What an app receives through the tunnel*).
-
-A box managed remotely on dev.13–dev.15 had its dashboard on the apps' hostname. After updating,
-that address answers with the ordinary 404 (recorded as `no-admin-host`), and remote administration
-stays off until a second public hostname exists in Cloudflare and has been entered as the Dashboard
-address. The Cloudflare half can be done from anywhere, before or after the update. Entering the
-address can only be done after it, on the masjid's network: no earlier build has the field, and
-until it is set there is no remote dashboard to enter it in. Settings shows the Cloudflare steps
-beside the field and, under the switch, that the dashboard needs an address of its own, and
-"Recently turned away" labels visits to the old address accordingly; no alert or notice outside
-Settings says so ([`REMOTE_ADMIN.md`](REMOTE_ADMIN.md), *Updating from dev.13–dev.15*).
 
 ### Every app with a port has a route; `exposed` says who it is served to
 
 `rebuild()` (every 10 s) puts **every** app with a published port into the routing table — not only
 the shared ones — keyed by its path (`getAppPath`) and carrying the app's id and `exposed`. The
-first segments the platform keeps for itself — `api`, `trpc` and `assets`,
-`RESERVED_PATH_SEGMENTS` in `apps/paths.ts` — are never routed. That is ONE list: `setAppPath`
+first segments the platform keeps for itself — `api` and the dashboard's own (`trpc`, `assets`,
+`store`, `apps`, `files`, `settings`, `design-system`), `RESERVED_PATH_SEGMENTS` in
+`apps/paths.ts` — are never routed. That is ONE list: `setAppPath`
 refuses them ("/api is used by OpenMasjidOS itself. Choose a different address for this app.") and
 an install never takes one (below), so only an older install, a restored backup or an app found
 running in Docker with no record of its own can still hold one. Nor is a path routed that does not
@@ -213,11 +193,9 @@ routed at `/_omos`, the platform's own address for opening an app from outside.
 
 Who is answered, and how, over HTTP:
 
-- **Through the tunnel, on any hostname but the admin one:** a shared app is served to anyone. An app
-  that is not shared online is served only to a request carrying a valid access token for **that**
-  app; anyone else gets the 404 an empty address gets, recorded as `app-not-shared`.
-- **Through the tunnel, on the admin hostname:** no app, shared or not, with a token or without — the
-  404, recorded as `app-on-admin-host` — unless the path is also the dashboard's (above).
+- **Through the tunnel:** a shared app is served to anyone. An app that is not shared online is
+  served only to a request carrying a valid access token for **that** app; anyone else gets the 404
+  an empty address gets, recorded as `app-not-shared`.
 - **An app's own `/<path>/fabric/*`, through the tunnel:** refused to everyone, recorded as
   `app-fabric-lan-only`; an access token does not open it. For an app that is not shared, a request
   without its token is declined first, like any other request for it (`app-not-shared`).
@@ -237,7 +215,7 @@ Who is answered, and how, over HTTP:
 
 A WebSocket handshake goes through the same checks, and one that is not served is closed rather than
 answered (`system/ingress.ts` says why). A declined app socket is recorded with the same reason
-(`app-not-shared`, `app-on-admin-host`) when it came through the tunnel; a socket for an address
+(`app-not-shared`) when it came through the tunnel; a socket for an address
 with nothing at it is not recorded, and neither is one for the `/fabric` of an app the request
 could otherwise open, which is closed at once. A handshake at the bare address is proxied like one
 anywhere else under the app: it cannot fetch a worker's script.
@@ -293,8 +271,8 @@ decides those. The consequence for app authors — an app's address is not neces
 
 ### Opening an app from outside: a one-use ticket, then the app's access token
 
-The remote dashboard's session cookie, `__Host-omos_session`, lives on the admin hostname, so it
-never reaches an app — which is the point. An app is then left with nothing from the admin's
+The remote dashboard's session cookie, `__Host-omos_session`, never reaches an app: the ingress
+removes it from everything it forwards (below) — which is the point. An app is then left with nothing from the admin's
 browser to go on: a private one cannot tell the admin from a stranger, and one that signs the admin
 in through the platform has no cookie to forward. So Open, from outside (`openFromOutside` in
 `packages/ui/src/lib/apps.ts`):
@@ -318,8 +296,8 @@ in through the platform has no cookie to forward. So Open, from outside (`openFr
    `omos_session=<access token>; Path=/<app path>; Max-Age=<what is left of the session>; Secure; HttpOnly; SameSite=Lax`
    and answers `303` to `/<app path>/`. That cookie path covers the bare `/<app path>` as well as
    everything under it. Every answer it gives carries the three no-store headers below and
-   `Referrer-Policy: no-referrer`. Off the tunnel it is a plain 404; on the admin hostname, or with
-   remote administration off, the ordinary tunnel refusal (`no-app-at-path`); a spent, expired or
+   `Referrer-Policy: no-referrer`. Off the tunnel it is a plain 404; with remote administration
+   off, the ordinary tunnel refusal (`no-app-at-path`); a spent, expired or
    unknown ticket, or one whose session has since ended, gets a `410` page ("This link has
    expired") telling the admin to press Open again. So a made-up ticket tells a stranger whether
    remote administration is on — the 410 while it is, the 404 while it is not — and nothing else, a
@@ -410,9 +388,14 @@ sent it. The request path is forwarded verbatim, the app's own segment included.
 - A `Set-Cookie` for `omos_session` or `__Host-omos_session` is removed; the app's own cookies stay.
   The apps share a hostname, and one app setting `omos_session` for another's path is how it would
   sign the admin out of that app, or into an account of its own choosing.
+- `Cross-Origin-Opener-Policy` is removed (dev.17). The dashboard's pages send
+  `same-origin`; two same-origin pages share a browsing context group only when they send the same
+  policy, so with none an app page that opens a window on the dashboard loses its hold on it — and
+  with the dashboard's own value it could have read the key out of that window.
 - `Service-Worker-Allowed` is removed. Without it a service worker is confined to the directory its
   script is served from; with it, one app could register a worker over the whole hostname and see
-  every other app's pages — and `/_omos/open`, which hands a browser an app's access token.
+  every other app's pages — and `/_omos/open`, which hands a browser an app's access token, and
+  since dev.17 the dashboard itself.
   Removing the header is only half of it, and a review found the other half: the directory of the
   bare address `/<path>` is `/`, so an app could serve its worker script THERE and claim the whole
   hostname with no header at all. So at the bare address (`isBareAppAddress`) a service worker's
@@ -521,7 +504,9 @@ session cookie goes on working there until the app ends it.
   now gets its script without the header (or a 404, if the app is gone or no longer shared), and
   either way the browser refuses the update — which leaves the registration and its worker where
   they were, in the browser of anyone who opened that app through the internet address. Clearing
-  that browser's data for the apps' hostname removes it.
+  that browser's data for the apps' hostname removes it. Since dev.17 this is the most serious
+  residual on the hostname: the dashboard lives there too, so such a worker in the admin's browser
+  sees the dashboard's page loads, the key in them included.
 - **A masjid's own reverse proxy on the LAN** that sends `x-forwarded-proto: https` looks like the
   tunnel (`isViaTunnelHeaders` reads `cf-ray` or that header): the ingress strips platform cookies
   from its requests and refuses private apps to it, as it does to the internet, and a worker fetch

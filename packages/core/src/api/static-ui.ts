@@ -10,9 +10,13 @@
  * question to answer by eye.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { decodedPath } from '../system/via-tunnel';
+import { DASHBOARD_SEGMENTS, wasHandedOver } from '../system/remote-admin';
+import { sessionKey } from '../auth/sessions';
+import { requestSessionToken, requestUser } from './ws-auth';
 
 /** Prefixes that must always 404 as JSON rather than fall back to the SPA. */
 const API_PREFIXES = ['/trpc', '/api'];
@@ -87,6 +91,51 @@ export function spaFallback(haveUI: boolean) {
   };
 }
 
+/** The dashboard's own pages — the ones a browser loads as a document. */
+function isDashboardPage(url: string): boolean {
+  const p = decodedPath(url);
+  if (p === '/' || p === '/index.html') return true;
+  const first = p.split('/').find(Boolean) ?? '';
+  return first !== 'trpc' && first !== 'assets' && (DASHBOARD_SEGMENTS as readonly string[]).includes(first);
+}
+
+/**
+ * The remote dashboard's pages: index.html with the dashboard key in it, and nothing an
+ * app page sharing this address can use to get it.
+ *
+ * From outside the dashboard shares its address — and so its origin — with every app
+ * page (system/remote-admin.ts, the key rule in its header). So the remote dashboard
+ * keeps the key in the tab's memory, never in this origin's storage, and gets it back on
+ * a reload from here:
+ *  - only for a load the BROWSER marks as a top-level page load — `Sec-Fetch-Dest:
+ *    document` and `Sec-Fetch-Mode: navigate`, which no script can set. An app page's
+ *    fetch, frame or embed of the same address gets the page with no key in it;
+ *  - only for a live remote session through an open door (`requestUser`);
+ *  - with `Cross-Origin-Opener-Policy: same-origin`, so a window an app page opened on
+ *    it is cut off from it at once (app pages never carry COOP: system/ingress.ts), and
+ *    `frame-ancestors 'none'`, so it is never framed;
+ *  - never cached, by the browser or Cloudflare.
+ * Every remote page carries the meta tag, key or not: its presence is what tells the
+ * dashboard to keep the key in memory (ui/src/lib/session.ts).
+ */
+function registerRemoteDashboardPages(server: FastifyInstance, uiDir: string): void {
+  const indexHtml = fs.readFileSync(path.join(uiDir, 'index.html'), 'utf8');
+  server.addHook('onRequest', async (req, reply) => {
+    if (!wasHandedOver(req.raw) || (req.method !== 'GET' && req.method !== 'HEAD') || !isDashboardPage(req.url)) return;
+    const loadedAsPage = req.headers['sec-fetch-dest'] === 'document' && req.headers['sec-fetch-mode'] === 'navigate';
+    const key = (loadedAsPage && requestUser(req) && sessionKey(requestSessionToken(req))) || '';
+    const meta = `<meta name="omos-key" content="${key}">`; // base64url: nothing to escape
+    const html = /<head[^>]*>/i.test(indexHtml) ? indexHtml.replace(/<head[^>]*>/i, (m) => m + meta) : meta + indexHtml;
+    return reply
+      .header('cache-control', 'no-store')
+      .header('cross-origin-opener-policy', 'same-origin')
+      .header('x-frame-options', 'DENY')
+      .header('content-security-policy', "frame-ancestors 'none'")
+      .type('text/html; charset=utf-8')
+      .send(html);
+  });
+}
+
 /**
  * Register static UI serving + the SPA fallback. Returns whether a UI build was
  * found — in local dev Vite serves the UI, so `dist` may not exist and the daemon
@@ -94,6 +143,7 @@ export function spaFallback(haveUI: boolean) {
  */
 export async function registerStaticUI(server: FastifyInstance, uiDir: string): Promise<boolean> {
   const haveUI = await registerStaticFiles(server, uiDir);
+  if (haveUI) registerRemoteDashboardPages(server, uiDir);
   const fallback = spaFallback(haveUI);
   server.setNotFoundHandler((req, reply) => {
     if (!fallback(req, reply)) reply.code(404).send({ error: 'Not found' });
