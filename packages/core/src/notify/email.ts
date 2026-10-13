@@ -8,9 +8,9 @@
  */
 import nodemailer from 'nodemailer';
 import { getEmailConfig, isEmailConfigured, type EmailConfig } from '../store/email';
-import { hasLogo, getLogoSize } from '../store/branding';
-import { getSettings } from '../settings/store';
+import { getLogoSize } from '../store/branding';
 import { desiredBaseUrl } from '../system/platform-address';
+import { publicLogoUrl } from './notify';
 import { log } from '../logger';
 
 export interface EmailInput {
@@ -37,11 +37,48 @@ export function isValidEmail(addr: string): boolean {
 }
 
 /**
+ * The one SMTP transport, for Save's check and for sending alike — so Save never logs
+ * in a way a send would refuse, and never passes a server every send then fails on.
+ */
+function smtpTransport(cfg: EmailConfig) {
+  return nodemailer.createTransport({
+    host: cfg.smtp.host,
+    port: cfg.smtp.port,
+    secure: cfg.smtp.secure, // true for 465; false uses STARTTLS on 587
+    // With `secure: false`, nodemailer upgrades via STARTTLS only if the server ADVERTISES
+    // it — and falls back to plaintext if it does not. An on-path attacker who strips the
+    // advertisement therefore harvests the masjid's mail password in the clear. `requireTLS`
+    // makes the connection FAIL instead of silently downgrading.
+    //
+    // Conditioned on there being credentials to protect: a masjid relaying through an
+    // internal MTA on port 25 with no auth has nothing to steal, and hard-requiring TLS
+    // there would break a working setup for no gain. When a password IS being presented,
+    // it is never sent in plaintext.
+    requireTLS: Boolean(cfg.smtp.user),
+    auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
+    connectionTimeout: TIMEOUT_MS,
+    greetingTimeout: TIMEOUT_MS,
+    socketTimeout: TIMEOUT_MS,
+  });
+}
+
+/** The `name` Resend puts on an error body (e.g. "restricted_api_key"), or ''. */
+async function resendErrorName(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { name?: unknown } | null;
+    return typeof body?.name === 'string' ? body.name : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Verify a provider config WITHOUT sending an email — so "Save" can reject a broken
- * config instead of silently storing it. SMTP: nodemailer verify() (connect + auth).
- * Resend: an authenticated GET; a 401 means the API key is wrong (a restricted-scope
- * key that authenticates but lacks that scope still passes — it's a valid key). Takes
- * the config explicitly so the router can check the would-be-saved (unsaved) values.
+ * config instead of silently storing it. SMTP: nodemailer verify() (connect + auth),
+ * with the same transport sending uses. Resend: an authenticated GET /domains — 200 for
+ * a full-access key, 401 `restricted_api_key` for a sending-only key (valid, and the
+ * least-privilege key an admin should use); any other 4xx means the key is no good.
+ * Takes the config explicitly so the router can check the would-be-saved values.
  */
 export async function verifyEmailConfig(cfg: EmailConfig): Promise<{ ok: boolean; error?: string }> {
   try {
@@ -51,23 +88,16 @@ export async function verifyEmailConfig(cfg: EmailConfig): Promise<{ ok: boolean
         headers: { authorization: `Bearer ${cfg.resend.apiKey}` },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
-      if (res.status === 401) return { ok: false, error: 'Resend rejected the API key.' };
-      if (res.status >= 500) return { ok: false, error: `Resend is unavailable (HTTP ${res.status}) — try again.` };
-      // 200 (valid) or 403 (valid but scope-restricted) → the key authenticated.
-      return { ok: true };
+      if (res.ok) return { ok: true };
+      if (res.status === 429 || res.status >= 500) {
+        return { ok: false, error: `Resend is busy or unavailable (HTTP ${res.status}) — try again.` };
+      }
+      if (res.status === 401 && (await resendErrorName(res)) === 'restricted_api_key') return { ok: true };
+      return { ok: false, error: 'Resend rejected the API key.' };
     }
     if (cfg.provider === 'smtp') {
       if (!cfg.smtp.host) return { ok: false, error: 'No SMTP host.' };
-      const transport = nodemailer.createTransport({
-        host: cfg.smtp.host,
-        port: cfg.smtp.port,
-        secure: cfg.smtp.secure,
-        auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
-        connectionTimeout: TIMEOUT_MS,
-        greetingTimeout: TIMEOUT_MS,
-        socketTimeout: TIMEOUT_MS,
-      });
-      await transport.verify(); // connects + authenticates, sends nothing
+      await smtpTransport(cfg).verify(); // connects + authenticates, sends nothing
       return { ok: true };
     }
     return { ok: true }; // 'none' — nothing to verify
@@ -135,27 +165,7 @@ async function sendViaSmtp(
   text: string,
   html: string | undefined,
 ): Promise<void> {
-  const cfg = getEmailConfig();
-  const transport = nodemailer.createTransport({
-    host: cfg.smtp.host,
-    port: cfg.smtp.port,
-    secure: cfg.smtp.secure, // true for 465; false uses STARTTLS on 587
-    // With `secure: false`, nodemailer upgrades via STARTTLS only if the server ADVERTISES
-    // it — and falls back to plaintext if it does not. An on-path attacker who strips the
-    // advertisement therefore harvests the masjid's mail password in the clear. `requireTLS`
-    // makes the send FAIL instead of silently downgrading.
-    //
-    // Conditioned on there being credentials to protect: a masjid relaying through an
-    // internal MTA on port 25 with no auth has nothing to steal, and hard-requiring TLS
-    // there would break a working setup for no gain. When a password IS being presented,
-    // it is never sent in plaintext.
-    requireTLS: Boolean(cfg.smtp.user),
-    auth: cfg.smtp.user ? { user: cfg.smtp.user, pass: cfg.smtp.pass } : undefined,
-    connectionTimeout: TIMEOUT_MS,
-    greetingTimeout: TIMEOUT_MS,
-    socketTimeout: TIMEOUT_MS,
-  });
-  await transport.sendMail({
+  await smtpTransport(getEmailConfig()).sendMail({
     from: fromHeader(),
     to,
     subject,
@@ -174,9 +184,11 @@ export async function sendEmail(input: EmailInput, appId = 'os'): Promise<EmailR
   const to = String(input.to ?? '').trim();
   if (!EMAIL_RE.test(to)) return { sent: false, reason: 'bad_recipient' };
   const subject = String(input.subject ?? '').slice(0, SUBJECT_MAX).trim();
-  const text = String(input.text ?? '').slice(0, BODY_MAX);
-  const html = input.html ? String(input.html).slice(0, BODY_MAX) : undefined;
+  const text = String(input.text ?? '');
+  const html = input.html ? String(input.html) : undefined;
   if (!subject || (!text && !html)) return { sent: false, reason: 'empty' };
+  // Refused, not cut: a body cut short (an HTML one mid-tag) was still reported sent.
+  if (text.length > BODY_MAX || (html?.length ?? 0) > BODY_MAX) return { sent: false, reason: 'too_large' };
   if (!rateOk(`app:${appId}`, PER_APP_MAX) || !rateOk('__global__', GLOBAL_MAX)) {
     return { sent: false, reason: 'rate_limited' };
   }
@@ -198,8 +210,16 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => map[c]);
 }
 
+/** The masjid's name, as the admin already set it for outgoing mail. */
+function masjidName(): string {
+  return (getEmailConfig().fromName || 'OpenMasjidOS').trim();
+}
+
+/** The box the logo is fitted inside, in the 560px-wide email card. */
+const LOGO_BOX = { w: 200, h: 48 };
+
 /**
- * The masjid logo as an internet-reachable URL, or undefined.
+ * The logo `<img>`: a REMOTE image, never an attachment, sized so it is never distorted.
  *
  * WHY NOT A CID ATTACHMENT ANY MORE: it used to be, and that is exactly what the
  * "the logo comes as an attachment" report was. The MIME was never wrong —
@@ -212,33 +232,12 @@ function escapeHtml(s: string): string {
  * Thunderbird while making other clients label the part "noname". So the only
  * provider-independent fix is to send no attachment at all.
  *
- * Same predicate as the webhook avatar in notify.ts, for the same reason: the
- * recipient's mail provider fetches the image from ITS network, so a LAN address
- * is useless. Only a configured Cloudflare tunnel gives a URL that resolves.
- * Without one the wordmark carries the branding instead.
- */
-function remoteLogoUrl(): string | undefined {
-  if (!hasLogo()) return undefined;
-  const cf = getSettings().cloudflare;
-  if (!cf?.enabled || !cf.domain) return undefined;
-  const domain = String(cf.domain)
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/+$/, '');
-  return domain ? `https://${domain}/api/public/logo` : undefined;
-}
-
-/** The masjid's name, as the admin already set it for outgoing mail. */
-function masjidName(): string {
-  return (getEmailConfig().fromName || 'OpenMasjidOS').trim();
-}
-
-/** The box the logo is fitted inside, in the 560px-wide email card. */
-const LOGO_BOX = { w: 200, h: 48 };
-
-/**
- * The logo `<img>`, sized so it is never distorted.
+ * The URL is the webhook avatar's (notify.ts `publicLogoUrl`), for the same reason:
+ * the recipient's mail provider fetches the image from ITS network, so a LAN address
+ * is useless. Only a configured Cloudflare tunnel gives a URL that resolves. Without
+ * one the wordmark carries the branding instead.
  *
- * The bug this replaces: a hard `width="140"` attribute plus `max-height:52px`
+ * The sizing bug this replaces: a hard `width="140"` attribute plus `max-height:52px`
  * with no `height:auto`. Those constrain the two axes INDEPENDENTLY, so anything
  * that was not already 140:52 got squashed — a square logo rendered 140×52, i.e.
  * stretched sideways, which is exactly what was reported.
@@ -306,7 +305,7 @@ function factRows(facts: { label: string; value: string }[]): string {
  */
 export function brandedEmail(opts: BrandedEmailOpts): { html: string; text: string } {
   const name = masjidName();
-  const logoUrl = remoteLogoUrl();
+  const logoUrl = publicLogoUrl();
   const base = desiredBaseUrl();
   const actionUrl = opts.action ? `${base}${opts.action.path === '/' ? '' : opts.action.path}` : '';
   const isLanUrl = /^https?:\/\/\d{1,3}(\.\d{1,3}){3}/.test(base);

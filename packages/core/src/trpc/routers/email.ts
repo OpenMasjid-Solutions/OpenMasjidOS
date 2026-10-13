@@ -13,6 +13,15 @@ import { getEmailConfigPublic, saveEmailConfig, previewConfig, isEmailConfigured
 import { sendBrandedEmail, verifyEmailConfig, isValidEmail } from '../../notify/email';
 import { getAdminEmail } from '../../auth/store';
 
+/** Why a test email did not go, in words — never the internal reason code. */
+const TEST_EMAIL_FAILED: Record<string, string> = {
+  not_configured: "Email isn't set up yet. Choose a provider, fill it in and save it first.",
+  bad_recipient: "That doesn't look like an email address. Please check it and try again.",
+  rate_limited: 'A lot of email has gone out in the last minute. Please wait a minute and try again.',
+};
+const TEST_EMAIL_FAILED_OTHERWISE =
+  "The test email couldn't be sent: your email provider refused it or couldn't be reached. Check your settings and try again.";
+
 export const emailRouter = router({
   get: protectedProcedure.query(() => getEmailConfigPublic()),
 
@@ -96,7 +105,7 @@ export const emailRouter = router({
         'os',
       );
       if (!r.sent) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: `Could not send the test email (${r.reason}). Check your settings.` });
+        throw new TRPCError({ code: 'BAD_REQUEST', message: TEST_EMAIL_FAILED[r.reason] ?? TEST_EMAIL_FAILED_OTHERWISE });
       }
       return { sent: true, to };
     }),

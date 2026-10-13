@@ -7,6 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -18,8 +19,45 @@ const req = createRequire(__filename);
 const Fastify = req('fastify') as typeof import('fastify').default;
 const fabric = req('../src/api/fabric') as typeof import('../src/api/fabric');
 const manager = req('../src/apps/manager') as typeof import('../src/apps/manager');
+const email = req('../src/notify/email') as typeof import('../src/notify/email');
+const emailStore = req('../src/store/email') as typeof import('../src/store/email');
+const sessions = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
 
 const BUS = '172.17.0.1'; // what EVERY app presents, behind Docker's published port
+
+/** Answer every `fetch` in `fn` with `handler`, then put the real one back. */
+async function withFetch<T>(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => handler(String(input), init)) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+const jsonResponse = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+/** The context the dashboard's own requests carry: a genuine session and its key. */
+function dashboardContext(): never {
+  const { token, csrf } = sessions.createSession('admin', sessions.currentCredential());
+  return {
+    username: 'admin',
+    sessionToken: token,
+    csrf,
+    isWebSocket: false,
+    ip: '192.168.1.20',
+    host: 'openmasjidos.local',
+    viaTunnel: false,
+    remoteIp: null,
+    setSessionCookie: () => {},
+    clearSessionCookie: () => {},
+  } as never;
+}
 
 function installApp(id: string, secret: string, caps: Record<string, boolean>): void {
   const dir = path.join(DATA, 'apps', id);
@@ -88,4 +126,123 @@ test('a caller with no valid secret is still bounded by the shared tier', async 
   } finally {
     await app.close();
   }
+});
+
+// ── Settings → Email: Save checks what sending will actually do ──────────────────
+
+type EmailConfig = import('../src/store/email').EmailConfig;
+const resendConfig = (apiKey: string): EmailConfig => ({
+  ...emailStore.getEmailConfig(),
+  provider: 'resend',
+  fromEmail: 'alerts@masjid.test',
+  resend: { apiKey },
+});
+
+test('SAVE ACCEPTS A SENDING-ONLY RESEND KEY AND REFUSES A BAD ONE', async () => {
+  // It was the other way round: an invalid key answers 400 (or 403) and was stored, so
+  // every alert email then failed with only a log line; the least-privilege key Resend
+  // recommends answers 401 restricted_api_key and was refused.
+  const cases: [number, unknown, boolean][] = [
+    [200, { data: [] }, true],
+    [401, { statusCode: 401, name: 'restricted_api_key', message: 'This API key is restricted to only send emails' }, true],
+    [400, { statusCode: 400, name: 'validation_error', message: 'API key is invalid' }, false],
+    [403, { statusCode: 403, name: 'invalid_api_key', message: 'API key is invalid' }, false],
+    [403, { statusCode: 403, name: 'restricted_api_key', message: 'API key is not active' }, false],
+    [401, { statusCode: 401, name: 'missing_api_key', message: 'Missing API key' }, false],
+  ];
+  for (const [status, body, ok] of cases) {
+    const v = await withFetch(() => jsonResponse(status, body), () => email.verifyEmailConfig(resendConfig('re_test')));
+    assert.equal(v.ok, ok, `HTTP ${status} ${JSON.stringify(body)}`);
+  }
+  // Load or an outage is "try again", not "your key is wrong".
+  for (const status of [429, 503]) {
+    const v = await withFetch(() => jsonResponse(status, {}), () => email.verifyEmailConfig(resendConfig('re_test')));
+    assert.equal(v.ok, false);
+    assert.match(v.error ?? '', /try again/, `HTTP ${status}`);
+  }
+});
+
+/** A mail server that does not offer STARTTLS, recording every line it is sent. */
+async function plainSmtpServer(): Promise<{ port: number; lines: string[]; close: () => Promise<void> }> {
+  const lines: string[] = [];
+  const server = net.createServer((sock) => {
+    sock.on('error', () => undefined);
+    sock.write('220 fake.test ESMTP\r\n');
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d.toString('latin1');
+      for (let i = buf.indexOf('\r\n'); i >= 0; i = buf.indexOf('\r\n')) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        lines.push(line);
+        const verb = line.split(' ')[0]!.toUpperCase();
+        if (verb === 'EHLO') sock.write('250-fake.test\r\n250 AUTH PLAIN\r\n');
+        else if (verb === 'STARTTLS') sock.write('502 5.5.1 Not supported\r\n');
+        else if (verb === 'AUTH') sock.write('235 2.7.0 Accepted\r\n');
+        else if (verb === 'QUIT') sock.end('221 Bye\r\n');
+        else sock.write('250 OK\r\n');
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    port: (server.address() as net.AddressInfo).port,
+    lines,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+test('SAVE NEVER SENDS THE MAIL PASSWORD WHERE SENDING WOULD REFUSE TO', async () => {
+  // Save's check logged in without requireTLS, so a server (or an attacker stripping the
+  // STARTTLS offer) got the password in the clear on every Save — and a server with no
+  // STARTTLS passed Save, then every send failed.
+  const s = await plainSmtpServer();
+  try {
+    const cfg: EmailConfig = {
+      ...emailStore.getEmailConfig(),
+      provider: 'smtp',
+      fromEmail: 'alerts@masjid.test',
+      smtp: { host: '127.0.0.1', port: s.port, secure: false, user: 'masjid', pass: 'the-mail-password' },
+    };
+    const v = await email.verifyEmailConfig(cfg);
+    assert.equal(v.ok, false, 'a server that cannot encrypt must not pass Save');
+    assert.equal(s.lines.some((l) => /^AUTH/i.test(l)), false, 'the password was sent in the clear');
+    // A relay with no login has no password to protect, and still passes.
+    const relay = await email.verifyEmailConfig({ ...cfg, smtp: { ...cfg.smtp, user: '', pass: '' } });
+    assert.equal(relay.ok, true, relay.error);
+  } finally {
+    await s.close();
+  }
+});
+
+test('APP MAIL OVER THE SIZE LIMIT IS REFUSED, NOT CUT OFF AND CALLED SENT', async () => {
+  emailStore.saveEmailConfig({ provider: 'resend', fromEmail: 'alerts@masjid.test', resend: { apiKey: 're_test' } });
+  let sends = 0;
+  try {
+    await withFetch(
+      () => {
+        sends++;
+        return jsonResponse(200, { id: 'sent' });
+      },
+      async () => {
+        const html = `<p>${'x'.repeat(100_001)}</p>`;
+        const r = await email.sendEmail({ to: 'donor@masjid.test', subject: 'Receipt', text: '', html }, 'donations');
+        assert.deepEqual(r, { sent: false, reason: 'too_large' });
+        assert.equal(sends, 0, 'nothing may go out');
+        const ok = await email.sendEmail({ to: 'donor@masjid.test', subject: 'Receipt', text: 'x'.repeat(100_000) }, 'donations');
+        assert.deepEqual(ok, { sent: true }, 'a body at the limit still sends');
+      },
+    );
+  } finally {
+    emailStore.saveEmailConfig({ provider: 'none' });
+  }
+});
+
+test('a failed test email says why in words, never as an internal code', async () => {
+  const { emailRouter } = req('../src/trpc/routers/email') as typeof import('../src/trpc/routers/email');
+  emailStore.saveEmailConfig({ provider: 'none' });
+  await assert.rejects(
+    () => emailRouter.createCaller(dashboardContext()).test({ to: 'admin@masjid.test' }),
+    (e: Error) => /isn't set up yet/.test(e.message) && !/not_configured|\(/.test(e.message),
+  );
 });
