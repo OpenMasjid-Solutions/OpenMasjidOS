@@ -364,3 +364,17 @@ test('A BATCH OF SIGN-INS FROM ONE ADDRESS STOPS BEING CHECKED ONCE THE ADDRESS 
     ipl.clearAllIpFailures();
   }
 });
+
+test('A CODE THE CLOCK NOTE CONFIRMED FOR LATER IS NOT ACCEPTED WHEN ITS TIME COMES', async () => {
+  // "It looks about 5 minutes slow" tells whoever typed the code that it works in five
+  // minutes. The note stays; that code never works.
+  const { challenge, secret } = await startTunnelLogin(T);
+  const ahead = Date.now() + 5 * 60_000;
+  const code = totpLib.totp(secret, ahead);
+  await assert.rejects(
+    call(TUNNEL).caller.completeLogin({ challenge, code }),
+    (e: Error) => /clock/i.test(e.message) && /slow/i.test(e.message),
+  );
+  assert.deepEqual(tf.verifySecondFactor(code, ahead), { ok: false, reason: 'replayed' });
+  ipl.clearAllIpFailures();
+});

@@ -43,6 +43,7 @@ import {
   generateSecret,
   otpauthUri,
   timingSafeEqualString,
+  totpCounter,
   verifyTotp,
 } from './totp';
 
@@ -446,6 +447,7 @@ export function confirmEnrolment(code: string, nowMs: number = Date.now()): stri
   cfg.backupCodes = plain.map((p) => ({ hash: sha256(p) }));
   bumpEpoch(cfg);
   save(cfg);
+  revealedSteps.clear(); // they were the old secret's
   return plain;
 }
 
@@ -459,6 +461,13 @@ function newBackupCode(): string {
 }
 
 // ── verification ───────────────────────────────────────────────────────────
+
+/**
+ * Steps still to come whose code a clock-skew note has confirmed (`skewSteps`). The note
+ * tells whoever typed it "right, but for later", so that code is refused when its step
+ * comes round. In memory only; a step is dropped once it is past.
+ */
+const revealedSteps = new Set<number>();
 
 export type VerifyResult =
   | {
@@ -499,12 +508,14 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
   const epoch = epochHold ? epochHold.epoch : (cfg.epoch ?? '');
   const submitted = code.replace(/\s/g, '').toUpperCase();
   if (!isActive(cfg)) return { ok: false, reason: 'not-enrolled' };
+  const step = totpCounter(Math.floor(nowMs / 1000));
+  for (const s of revealedSteps) if (s < step - 1) revealedSteps.delete(s);
 
   // 1. TOTP.
   if (hasAuthenticator(cfg)) {
     const counter = verifyTotp(cfg.totpSecret, code, nowMs);
     if (counter !== null) {
-      if (cfg.lastCounter !== undefined && counter <= cfg.lastCounter) {
+      if ((cfg.lastCounter !== undefined && counter <= cfg.lastCounter) || revealedSteps.has(counter)) {
         return { ok: false, reason: 'replayed' };
       }
       cfg.lastCounter = counter;
@@ -560,7 +571,10 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
   // Nothing matched. Before giving up, work out whether the TOTP code was right
   // and this server's CLOCK is wrong — the one failure the admin cannot guess at.
   const skew = hasAuthenticator(cfg) ? clockSkewSteps(cfg.totpSecret, code, nowMs) : null;
-  return skew === null ? { ok: false, reason: 'bad-code' } : { ok: false, reason: 'bad-code', skewSteps: skew };
+  if (skew === null) return { ok: false, reason: 'bad-code' };
+  // A step still to come: the note confirms this code, so it must never be accepted then.
+  if (skew > 0) revealedSteps.add(step + skew);
+  return { ok: false, reason: 'bad-code', skewSteps: skew };
 }
 
 // ── emailed codes ──────────────────────────────────────────────────────────
@@ -630,4 +644,5 @@ export function disableTwoFactor(): void {
   const cfg: TwoFactorConfig = {};
   bumpEpoch(cfg);
   save(cfg);
+  revealedSteps.clear();
 }

@@ -376,6 +376,22 @@ test('the config file is written 0600', () => {
 const { writeJson } = req('../src/util/json-store') as typeof import('../src/util/json-store');
 const FILE = path.join(process.env.OPENMASJID_DATA_DIR!, 'config', 'twofactor.json');
 
+test('A CODE THE CLOCK NOTE CONFIRMED FOR LATER IS REFUSED WHEN ITS STEP COMES', () => {
+  // "Right, but your clock is slow" tells whoever typed it when the code will work.
+  // The note stays (a drifted Pi is why it exists); that code never works.
+  tf.disableTwoFactor();
+  const { secret } = enrol(T);
+  const now = T + 2 * STEP;
+  const later = now + 8 * STEP;
+  const code = totpLib.totp(secret, later);
+  const early = tf.verifySecondFactor(code, now);
+  assert.equal(!early.ok && early.skewSteps, 8, 'the note must still name the clock');
+  assert.deepEqual(okUsed(tf.verifySecondFactor(code, later)), { ok: false, reason: 'replayed' });
+  // Only that step: the next code works as usual.
+  const next = later + STEP;
+  assert.deepEqual(okUsed(tf.verifySecondFactor(totpLib.totp(secret, next), next)), { ok: true, used: 'totp' });
+});
+
 test('THE READ-ONLY CHECKS DO NOT RE-READ AN UNCHANGED FILE — and see a change made elsewhere at once', () => {
   // They run several times on every request from outside.
   tf.disableTwoFactor();
