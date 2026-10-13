@@ -157,32 +157,95 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CAPABILITY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const GRANT_RE = /^[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,39}$/;
 
-function writeEnvFile(id: string, env: Record<string, string>): void {
+/** A value can never span lines: CR/LF become a space. */
+const oneLine = (v: string | undefined): string => String(v ?? '').replace(/[\r\n]+/g, ' ');
+
+/** What `docker compose` reads differently in an UNQUOTED .env value: `$` interpolates,
+ *  ` #` starts a comment, quotes and backslashes are syntax, and edge whitespace is trimmed. */
+const NEEDS_QUOTES = /[$#"'\\]|^[\s\u0085]|[\s\u0085]$/;
+
+/**
+ * A literal value as .env text that compose reads back unchanged. A plain value is left
+ * exactly as it is; anything else is double-quoted with `\` and `"` escaped and `$`
+ * doubled (compose-go's dotenv rules: double quotes interpolate, and `$$` is one `$`).
+ */
+export function encodeEnvValue(value: string): string {
+  const v = oneLine(value);
+  if (!NEEDS_QUOTES.test(v)) return v;
+  return `"${v.replace(/[\\"$]/g, (c) => (c === '$' ? '$$' : `\\${c}`))}"`;
+}
+
+/** The inverse of encodeEnvValue. A value the platform did not quote is returned as written. */
+export function decodeEnvValue(raw: string): string {
+  const quoted = /^"(.*)"$/.exec(raw);
+  if (!quoted) return raw;
+  return quoted[1].replace(/\\([\\"])|\$\$/g, (_seq, escaped?: string) => escaped ?? '$');
+}
+
+/** The key a .env line sets, or null for a blank line or a comment. */
+function envKeyOf(line: string): string | null {
+  const t = line.trim();
+  if (!t || t.startsWith('#')) return null;
+  const i = t.indexOf('=');
+  return i > 0 ? t.slice(0, i) : null;
+}
+
+function readEnvLines(id: string): string[] {
+  try {
+    return fs.readFileSync(envPath(id), 'utf8').split('\n');
+  } catch {
+    return []; // no env file yet
+  }
+}
+
+/**
+ * Write an app's .env afresh, at install. `values` are literal (a setting as typed, a
+ * platform address) and are encoded; `pasted` is a custom app's .env as the admin pasted
+ * it — .env text already — and is written as given, as it always has been.
+ */
+function writeEnvFile(id: string, values: Record<string, string>, pasted: Record<string, string> = {}): void {
   const lines: string[] = [];
-  for (const [k, v] of Object.entries(env)) {
+  for (const [k, v] of Object.entries({ ...pasted, ...values })) {
     if (!ENV_KEY_RE.test(k)) {
       log.warn(`Ignoring invalid env key for ${id}: ${JSON.stringify(k)}`);
       continue;
     }
-    // Strip CR/LF from values so a single value can never span multiple lines.
-    lines.push(`${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`);
+    lines.push(`${k}=${Object.hasOwn(values, k) ? encodeEnvValue(v) : oneLine(v)}`);
   }
   fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
 }
 
-/** Parse an app's .env back into a map. Used on update to keep the user's
- *  settings + the install-time base URL while reconciling the Fabric secret. */
+/**
+ * Set some keys of an app's .env (`undefined` removes one) and leave every other line
+ * exactly as it is, so a platform rewrite never changes what the app reads elsewhere.
+ */
+function updateEnvFile(id: string, changes: Record<string, string | undefined>): void {
+  const changed = new Map(Object.entries(changes));
+  const placed = new Set<string>();
+  const lines: string[] = [];
+  const place = (key: string): void => {
+    placed.add(key);
+    const value = changed.get(key);
+    if (value !== undefined) lines.push(`${key}=${encodeEnvValue(value)}`);
+  };
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null && changed.has(key)) {
+      if (!placed.has(key)) place(key); // where it was, and only once
+    } else if (line) {
+      lines.push(line);
+    }
+  }
+  for (const key of changed.keys()) if (!placed.has(key)) place(key);
+  fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
+}
+
+/** An app's .env as a map of values. */
 function readEnvFile(id: string): Record<string, string> {
   const out: Record<string, string> = {};
-  try {
-    for (const line of fs.readFileSync(envPath(id), 'utf8').split('\n')) {
-      const t = line.trim();
-      if (!t || t.startsWith('#')) continue;
-      const i = t.indexOf('=');
-      if (i > 0) out[t.slice(0, i)] = t.slice(i + 1);
-    }
-  } catch {
-    /* no env file yet */
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null) out[key] = decodeEnvValue(line.trim().slice(key.length + 1));
   }
   return out;
 }
@@ -211,10 +274,9 @@ function resolveBaseUrl(reqHost?: string | null): string {
  * Rewrite `OPENMASJID_BASE_URL` in every installed app's .env to the current
  * platform address, and report which apps need restarting to pick it up.
  *
- * Mirrors `reconcilePublicUrls`: read-modify-write through readEnvFile/writeEnvFile
- * so `ENV_KEY_RE` filtering still applies and the app's own settings +
- * `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty value — that
- * would de-authorise every Fabric app at once.
+ * Mirrors `reconcilePublicUrls`: only that one line of the .env changes, so the app's
+ * own settings and `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty
+ * value — that would de-authorise every Fabric app at once.
  */
 export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] } {
   const changed: string[] = [];
@@ -238,8 +300,7 @@ export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] 
       meta?.ssoSecret !== undefined;
     if (!wantsIt) continue;
     if (env.OPENMASJID_BASE_URL === want) continue;
-    env.OPENMASJID_BASE_URL = want;
-    writeEnvFile(id, env);
+    updateEnvFile(id, { OPENMASJID_BASE_URL: want });
     changed.push(id);
     // A restart is only useful if the container actually reads the var through
     // compose interpolation; otherwise the new .env is picked up next time anyway.
@@ -939,7 +1000,7 @@ async function installStack(opts: {
   const address = addressForNewApp(id);
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
-  writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
+  writeEnvFile(id, platformEnv(id, baseUrl), env);
   noteDisplacedAddress(id, address);
   // Record the exposure decision EXPLICITLY, exactly like the catalog path
   // (`exposed = expose === true`). Omitting the key used to leave it `undefined`,
@@ -1100,7 +1161,7 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
       if (env.OPENMASJID_BASE_URL) {
         const base = resolveBaseUrl(null);
         if (base && base !== env.OPENMASJID_BASE_URL) {
-          writeEnvFile(id, { ...env, OPENMASJID_BASE_URL: base });
+          updateEnvFile(id, { OPENMASJID_BASE_URL: base });
           onLine(`  (updated platform address → ${base})`);
         }
       }
@@ -1135,8 +1196,7 @@ export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
     if (!meta?.ssoSecret) continue; // only apps that opted into the Fabric hold a secret
     const secret = crypto.randomBytes(32).toString('base64url');
     saveMeta({ ...meta, ssoSecret: secret });
-    const env = readEnvFile(id);
-    writeEnvFile(id, { ...env, OPENMASJID_APP_SECRET: secret });
+    updateEnvFile(id, { OPENMASJID_APP_SECRET: secret });
     rotated += 1;
     onLine?.(`• ${meta.name ?? id}`);
   }
@@ -1258,9 +1318,7 @@ export function setExposed(id: string, exposed: boolean): void {
   const meta = loadMeta(id);
   if (!meta) throw new Error('That app is not installed.');
   saveMeta({ ...meta, exposed });
-  const env = readEnvFile(id);
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, exposed);
-  writeEnvFile(id, env);
+  updateEnvFile(id, { OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, exposed) });
 }
 
 /** Recompute OPENMASJID_PUBLIC_URL for every installed app from the current
@@ -1272,10 +1330,8 @@ export function reconcilePublicUrls(): string[] {
   for (const { id, meta } of listMetas()) {
     if (!meta) continue;
     const want = intendedPublicUrl(id, isExposedMeta(meta));
-    const env = readEnvFile(id);
-    if ((env.OPENMASJID_PUBLIC_URL ?? '') !== want) {
-      env.OPENMASJID_PUBLIC_URL = want;
-      writeEnvFile(id, env);
+    if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== want) {
+      updateEnvFile(id, { OPENMASJID_PUBLIC_URL: want });
       changed.push(id);
     }
   }
@@ -1706,13 +1762,12 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   } else {
     ssoSecret = undefined;
   }
-  const env = readEnvFile(id);
-  env.OPENMASJID_APP_ID = id;
-  if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
-  else delete env.OPENMASJID_APP_SECRET;
-  // Keep the app's public URL in sync with its exposure (preserved from meta).
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, meta.exposed !== false);
-  writeEnvFile(id, env);
+  updateEnvFile(id, {
+    OPENMASJID_APP_ID: id,
+    OPENMASJID_APP_SECRET: ssoSecret, // removed when the app no longer needs one
+    // Keep the app's public URL in sync with its exposure (preserved from meta).
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, meta.exposed !== false),
+  });
 
   // Reconcile per-app HTTPS the same way — an app can gain (or lose) the Stripe
   // HTTPS requirement on update. Keep an already-assigned port; allocate one if

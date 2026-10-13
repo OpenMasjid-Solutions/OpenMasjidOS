@@ -134,3 +134,143 @@ test('REMOVING AN APP IS NOT AN OUTAGE — no "has stopped" alert while it goes'
   const body = src.slice(src.indexOf('export async function removeApp('));
   assert.ok(body.indexOf('suppressOfflineAlert(id)') < body.indexOf('composeDown('));
 });
+
+// ── A setting reaches the app as it was typed ─────────────────────────────────
+
+/** The raw text after `KEY=` on the line that sets it. */
+function rawValue(env: string, key: string): string {
+  const line = env.split('\n').find((l) => l.startsWith(`${key}=`));
+  assert.ok(line !== undefined, `no ${key} line`);
+  return line.slice(key.length + 1);
+}
+
+/**
+ * What `docker compose --env-file` gives an app for one .env value, following compose-go's
+ * dotenv parser (dotenv/parser.go) and its `$$` escape (template/template.go). A `$` it
+ * would interpolate fails the test: the value would reach the app changed.
+ */
+function composeReads(raw: string): string {
+  let value: string;
+  if (raw.startsWith('"')) {
+    let out = '';
+    let escaped = false;
+    let end = -1;
+    for (let i = 1; i < raw.length; i++) {
+      const c = raw[i];
+      if (c === '"' && !escaped) {
+        end = i;
+        break;
+      }
+      if (c === '"') {
+        escaped = false;
+        out += c; // an escaped quote loses its backslash
+      } else if (!escaped && c === '\\') {
+        escaped = true;
+      } else {
+        if (escaped) out += '\\';
+        escaped = false;
+        out += c;
+      }
+    }
+    assert.ok(end > 0, `unterminated quoted value: ${raw}`);
+    assert.equal(raw.slice(end + 1), '', `something follows the closing quote: ${raw}`);
+    const ESC: Record<string, string> = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '"': '"', '\\': '\\', $: '$$' };
+    value = out.replace(/\\([abfnrtv$"\\])/g, (_m, c: string) => ESC[c]);
+  } else {
+    value = raw.trimStart().split(' #')[0].trimEnd();
+  }
+  return value.replace(/\$(\$|[_a-z][_a-z0-9]*|\{)/gi, (m, next: string) => {
+    assert.equal(next, '$', `compose would interpolate "${m}" in ${raw}`);
+    return '$';
+  });
+}
+
+const TYPED: Record<string, string> = {
+  PLAIN: 'plain-value_1.2:3/x=y',
+  EMPTY: '',
+  PASSWORD: 'pa$$w0rd',
+  HOME_REF: 'a$HOME and ${HOME}',
+  RATE: 'rate # 2',
+  HASH: '#1',
+  QUOTES: `say "hi", it's fine`,
+  LEADING_QUOTE: `'single`,
+  BACKSLASH: 'C:\\path\\to\\',
+  ESCAPES: '\\n \\t \\$ \\" \\\\',
+  SPACES: '  padded  ',
+  ARABIC: 'مسجد النور',
+};
+
+test('A SETTING REACHES THE APP EXACTLY AS IT WAS TYPED', needsShell, async () => {
+  await manager.installCatalogApp(
+    { id: 'typed', name: 'Typed', version: '1.0.0', compose: 'services: {}\n' } as never,
+    TYPED,
+    null,
+    false,
+  );
+  const env = envOf('typed');
+  for (const [key, typed] of Object.entries(TYPED)) {
+    const raw = rawValue(env, key);
+    assert.equal(composeReads(raw), typed, `compose reads ${key} differently from what was typed`);
+    assert.equal(manager.decodeEnvValue(raw), typed, `the platform reads ${key} back differently`);
+  }
+  // A value compose would read as written stays byte for byte what it was.
+  assert.match(env, /^PLAIN=plain-value_1\.2:3\/x=y$/m);
+  assert.match(env, /^EMPTY=$/m);
+  assert.match(env, /^ARABIC=مسجد النور$/m);
+  assert.match(env, /^OPENMASJID_APP_ID=typed$/m);
+  assert.match(env, /^PASSWORD="pa\$\$\$\$w0rd"$/m, 'every $ doubled, inside double quotes');
+});
+
+test('the .env codec round-trips anything a form can send', () => {
+  const samples = [...Object.values(TYPED), '$', '$$', '"', '\\', '\\"', '"\\', ' ', '\t', 'a\u0085', '${A:-b}', 'x\\$y'];
+  for (const v of samples) {
+    const raw = manager.encodeEnvValue(v);
+    assert.equal(manager.decodeEnvValue(raw), v, JSON.stringify(v));
+    assert.equal(composeReads(raw), v, `compose: ${JSON.stringify(v)}`);
+  }
+  // One value is one line, as before.
+  assert.equal(manager.encodeEnvValue('a\r\nb'), 'a b');
+});
+
+test('A PLATFORM REWRITE OF THE .ENV CHANGES ONLY ITS OWN LINE', () => {
+  // Written before values were quoted, or pasted for a custom app: compose has always
+  // read these lines one way, and a rewrite must not start reading them another.
+  const legacy = [
+    'OPENMASJID_APP_ID=legacy',
+    'PASSWORD=pa$$w0rd',
+    'TZ=UTC # the masjid is on UTC',
+    'GREETING="two words"',
+    "SINGLE='as is'",
+    '# a comment',
+    'OPENMASJID_PUBLIC_URL=',
+  ].join('\n');
+  seed('legacy', { kind: 'custom', ssoSecret: 's'.repeat(43) }, `${legacy}\n`);
+  settings.updateCloudflare({ enabled: true, domain: 'omos.example.org' });
+  manager.setExposed('legacy', true);
+  manager.rotateAllFabricSecrets();
+
+  const after = envOf('legacy').split('\n');
+  for (const line of legacy.split('\n')) {
+    if (line.startsWith('OPENMASJID_PUBLIC_URL=')) continue;
+    assert.ok(after.includes(line), `a line the platform did not mean to touch changed: ${line}`);
+  }
+  assert.ok(after.includes('OPENMASJID_PUBLIC_URL=https://omos.example.org/legacy'));
+  assert.equal(after.filter((l) => l.startsWith('OPENMASJID_PUBLIC_URL=')).length, 1);
+  assert.equal(after.filter((l) => l.startsWith('OPENMASJID_APP_SECRET=')).length, 1, 'the new secret, once');
+  settings.updateCloudflare({ enabled: false, domain: '' });
+});
+
+test("a custom app's pasted .env is written as the admin pasted it", needsShell, async () => {
+  // It is .env text already: quoting it again would hand the app the quotes.
+  await manager.installCustomApp({
+    id: 'pasted',
+    name: 'Pasted',
+    composeText: 'services: {}\n',
+    env: { GREETING: '"two words"', TZ: 'UTC # zone', OPENMASJID_APP_ID: 'spoofed' },
+  });
+  const env = envOf('pasted');
+  assert.match(env, /^GREETING="two words"$/m);
+  assert.match(env, /^TZ=UTC # zone$/m);
+  assert.match(env, /^OPENMASJID_APP_ID=pasted$/m, 'the platform still sets its own keys');
+  assert.doesNotMatch(env, /spoofed/);
+});
