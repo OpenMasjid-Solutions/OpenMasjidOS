@@ -44,7 +44,7 @@ assert.ok(haveOpenssl, 'these tests need openssl on PATH (present in the runtime
 function freshTls(): { tls: Tls; dir: string; certPath: string; keyPath: string; metaPath: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-tls-'));
   process.env.OPENMASJID_DATA_DIR = dir;
-  for (const m of ['../src/config', '../src/system/system', '../src/system/tls']) {
+  for (const m of ['../src/config', '../src/system/system', '../src/system/platform-address', '../src/system/tls']) {
     delete req.cache[req.resolve(m)];
   }
   const tlsDir = path.join(dir, 'config', 'tls');
@@ -58,13 +58,13 @@ function freshTls(): { tls: Tls; dir: string; certPath: string; keyPath: string;
 }
 
 /** A valid, unrelated cert+key pair — stands in for "a different box". */
-function otherPair(): { cert: string; key: string } {
+function otherPair(newkey = 'rsa:2048'): { cert: string; key: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-other-'));
   const cert = path.join(dir, 'c.pem');
   const key = path.join(dir, 'k.pem');
   const r = spawnSync(
     'openssl',
-    ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '30', '-subj', '/CN=other'],
+    ['req', '-x509', '-newkey', newkey, '-nodes', '-keyout', key, '-out', cert, '-days', '30', '-subj', '/CN=other'],
     { encoding: 'utf8' },
   );
   assert.equal(r.status, 0, `openssl fixture failed: ${r.stderr}`);
@@ -72,6 +72,8 @@ function otherPair(): { cert: string; key: string } {
 }
 
 const other = otherPair();
+// Parses, and matches its certificate, but OpenSSL refuses to serve a key this small.
+const weak = otherPair('rsa:512');
 
 /**
  * Every way the pair on disk can be present-but-unusable. Each returns the bytes to
@@ -90,6 +92,9 @@ const CORRUPTIONS: Array<{ name: string; cert?: (good: string) => string; key?: 
   // The partial-restore case: both files are individually valid PEM, but they are
   // not a pair. Nothing short of checkPrivateKey catches this one.
   { name: 'key from a different box (partial restore)', key: () => other.key },
+  // A sound pair Node will not build a secure context from. Uploaded before that was
+  // checked, it was stored, and every boot then fell back to plain HTTP for good.
+  { name: 'a key too weak to serve', cert: () => weak.cert, key: () => weak.key },
 ];
 
 /** Stage a healthy install, then corrupt it per `c`. Returns the fresh module. */
@@ -280,4 +285,98 @@ test('index.ts keeps a plain-HTTP fallback around the HTTPS listener', () => {
   assert.match(src, /buildServer\(null\)/, 'the boot path must be able to rebuild the server without TLS');
   const guarded = /try\s*\{[^}]*buildServer\(tls\)[\s\S]{0,600}?catch/.test(src);
   assert.ok(guarded, 'constructing the HTTPS server must sit inside a try/catch that falls back');
+});
+
+/** The live pair, to check it was left exactly as it was. */
+function livePair(h: ReturnType<typeof freshTls>): { cert: Buffer; key: Buffer } {
+  return { cert: fs.readFileSync(h.certPath), key: fs.readFileSync(h.keyPath) };
+}
+
+test('an uploaded certificate is refused in plain words, and nothing is written', () => {
+  const h = freshTls();
+  h.tls.generateSelfSigned();
+  const before = livePair(h);
+  // A key of another type: Node 20 throws rather than returning false, and that raw
+  // crypto text reached the admin as the reason.
+  const ec = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const ecKey = ec.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  assert.throws(() => h.tls.setCustomCert(other.cert, ecKey), { message: 'The certificate and private key do not match.' });
+  // One Node will not serve: stored, it left every later boot on plain HTTP.
+  assert.throws(() => h.tls.setCustomCert(weak.cert, weak.key), /too weak/);
+  assert.throws(() => h.tls.setCustomCert('not a certificate', other.key), /isn't valid PEM/);
+  assert.deepEqual(livePair(h), before, 'a refused upload changes nothing');
+});
+
+test('a new certificate that fails part-way never replaces the working one', (t) => {
+  // Both openssl and the upload wrote straight over cert.pem and key.pem, so a failure
+  // part-way (a full disk) left a broken pair behind, and a box only on plain HTTP.
+  if (process.platform === 'win32') {
+    t.skip('needs a PATH shim, which Windows cannot exec without an extension');
+    return;
+  }
+  const h = freshTls();
+  h.tls.generateSelfSigned();
+  const before = livePair(h);
+
+  // openssl runs out of room half-way through both files.
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-shim-'));
+  fs.writeFileSync(
+    path.join(shimDir, 'openssl'),
+    '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -out|-keyout) printf %s partial > "$2";; esac; shift; done\nexit 1\n',
+    { mode: 0o755 },
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = shimDir;
+  try {
+    assert.throws(() => h.tls.generateSelfSigned(), /could not generate/);
+  } finally {
+    process.env.PATH = realPath;
+  }
+  assert.deepEqual(livePair(h), before, 'Regenerate on a full disk must not break the live pair');
+
+  // The upload's key is refused by a full disk after its certificate was written.
+  const realWrite = fs.writeFileSync;
+  fs.writeFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    if (String(file).includes('key.pem')) {
+      throw Object.assign(new Error(`ENOSPC: no space left on device, open '${String(file)}'`), { code: 'ENOSPC' });
+    }
+    return (realWrite as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.writeFileSync;
+  try {
+    assert.throws(
+      () => h.tls.setCustomCert(other.cert, other.key),
+      (err: Error) => /couldn't be saved/.test(err.message) && !err.message.includes(h.dir),
+      'a plain message, without the data path',
+    );
+  } finally {
+    fs.writeFileSync = realWrite;
+  }
+  assert.deepEqual(livePair(h), before, 'a failed upload must not break the live pair');
+  assert.equal(h.tls.certInfo()?.type, 'self-signed');
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(h.certPath)).filter((f) => f.endsWith('.new')),
+    [],
+    'nothing half-written is left behind',
+  );
+});
+
+test('the self-signed certificate names the LAN address the dashboard is opened on', () => {
+  // In the container the interfaces are the bridge's, so the address every device opens
+  // (the installer's OPENMASJID_HOST_IP) was never in the certificate.
+  const prev = process.env.OPENMASJID_HOST_IP;
+  try {
+    process.env.OPENMASJID_HOST_IP = '192.168.1.50';
+    const h = freshTls();
+    h.tls.generateSelfSigned();
+    const san = new crypto.X509Certificate(fs.readFileSync(h.certPath)).subjectAltName ?? '';
+    assert.match(san, /IP Address:192\.168\.1\.50(,|$)/);
+
+    // Anything that is not an address never reaches openssl, where one bad entry fails
+    // the whole certificate and leaves the box on plain HTTP.
+    process.env.OPENMASJID_HOST_IP = 'localhost';
+    assert.doesNotThrow(() => freshTls().tls.generateSelfSigned());
+  } finally {
+    if (prev === undefined) delete process.env.OPENMASJID_HOST_IP;
+    else process.env.OPENMASJID_HOST_IP = prev;
+  }
 });

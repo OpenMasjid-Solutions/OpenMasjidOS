@@ -24,19 +24,25 @@
  * display on a wall is a much worse one.
  */
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
+import tls from 'node:tls';
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Server as HttpsServer } from 'node:https';
 import { CONFIG_DIR } from '../config';
 import { networkInfo } from './system';
+import { desiredAddress } from './platform-address';
 import { log } from '../logger';
 
 const TLS_DIR = path.join(CONFIG_DIR, 'tls');
 const CERT_PATH = path.join(TLS_DIR, 'cert.pem');
 const KEY_PATH = path.join(TLS_DIR, 'key.pem');
 const META_PATH = path.join(TLS_DIR, 'cert.json');
+// A new pair is written here, checked, and only then renamed over the live one.
+const NEW_CERT_PATH = `${CERT_PATH}.new`;
+const NEW_KEY_PATH = `${KEY_PATH}.new`;
 
 export type CertType = 'self-signed' | 'custom';
 
@@ -75,54 +81,80 @@ function writeMeta(meta: CertMeta): void {
 
 /** The names/addresses the self-signed cert should be valid for. */
 function subjectAltNames(): string {
-  const net = networkInfo();
-  const dns = new Set<string>(['openmasjidos.local', net.localDomain, 'localhost']);
-  const ips = new Set<string>(['127.0.0.1', '::1', ...net.addresses]);
+  const info = networkInfo();
+  const dns = new Set<string>(['openmasjidos.local', info.localDomain, 'localhost']);
+  // In the container the interfaces are the bridge's; the LAN address everyone opens
+  // comes from the installer (or the last address the dashboard was reached on).
+  const lan = desiredAddress();
+  const ips = new Set<string>(['127.0.0.1', '::1', ...info.addresses, ...(lan ? [lan] : [])]);
   return [
     ...[...dns].filter(Boolean).map((d) => `DNS:${d}`),
-    ...[...ips].filter(Boolean).map((ip) => `IP:${ip}`),
+    // IP literals only: one bad `IP:` entry makes openssl fail, and the box drops to plain HTTP.
+    ...[...ips].filter((ip) => net.isIP(ip) !== 0).map((ip) => `IP:${ip}`),
   ].join(',');
 }
 
+type PairProblem = 'cert' | 'key' | 'mismatch' | 'refused';
+
 /**
- * Why a cert+key pair can't be used, in plain language — or null if it's fine.
+ * What is wrong with a cert+key pair, or null if it's fine.
  *
- * This is deliberately the same three checks Node itself makes when it builds a
- * secure context (parse the cert, parse the key, confirm they belong together), so
- * "passes this" means "the Fastify constructor won't throw". Verified against every
- * realistic corruption mode: an empty file, whitespace, zero bytes from a dying SD
- * card, a write truncated mid-PEM, outright garbage, and — the partial-restore
- * case — a valid cert paired with a valid key from a *different* box.
+ * The same checks Node makes when it builds a secure context — parse the cert, parse the
+ * key, confirm they belong together — and then that context itself, which also refuses a
+ * key or signature below OpenSSL's security level (a 512-bit RSA key, say). So "passes
+ * this" means "the Fastify constructor won't throw". Verified against every realistic
+ * corruption mode: an empty file, whitespace, zero bytes from a dying SD card, a write
+ * truncated mid-PEM, outright garbage, and — the partial-restore case — a valid cert
+ * paired with a valid key from a *different* box.
  */
-export function certPairProblem(cert: Buffer | string, key: Buffer | string): string | null {
+function pairProblem(cert: Buffer | string, key: Buffer | string): PairProblem | null {
   let x509: crypto.X509Certificate;
   try {
     x509 = new crypto.X509Certificate(cert);
   } catch {
-    return "the certificate file isn't readable as a certificate";
+    return 'cert';
   }
   let priv: crypto.KeyObject;
   try {
     priv = crypto.createPrivateKey(key);
   } catch {
-    return "the private key file isn't readable as a private key";
+    return 'key';
   }
   try {
-    if (!x509.checkPrivateKey(priv)) return 'the certificate and private key are not a matching pair';
+    if (!x509.checkPrivateKey(priv)) return 'mismatch';
   } catch {
     // Throws rather than returning false when the two are different key types.
-    return 'the certificate and private key are not a matching pair';
+    return 'mismatch';
+  }
+  try {
+    tls.createSecureContext({ cert, key });
+  } catch {
+    return 'refused';
   }
   return null;
 }
 
-/** Why the pair ON DISK can't be used, or null. Unreadable counts as a problem. */
-function storedCertProblem(): string | null {
+/** Each problem in plain language: logged, and shown to the admin after a recovery. */
+const PROBLEM_REASON: Record<PairProblem, string> = {
+  cert: "the certificate file isn't readable as a certificate",
+  key: "the private key file isn't readable as a private key",
+  mismatch: 'the certificate and private key are not a matching pair',
+  refused: "the certificate's key or signature is too weak for a secure connection",
+};
+
+/** Why a cert+key pair can't be used, in plain language — or null if it's fine. */
+export function certPairProblem(cert: Buffer | string, key: Buffer | string): string | null {
+  const problem = pairProblem(cert, key);
+  return problem ? PROBLEM_REASON[problem] : null;
+}
+
+/** Why the pair at these paths can't be used, or null. Unreadable counts as a problem. */
+function storedCertProblem(certPath = CERT_PATH, keyPath = KEY_PATH): string | null {
   let cert: Buffer;
   let key: Buffer;
   try {
-    cert = fs.readFileSync(CERT_PATH);
-    key = fs.readFileSync(KEY_PATH);
+    cert = fs.readFileSync(certPath);
+    key = fs.readFileSync(keyPath);
   } catch (err) {
     return `the certificate files could not be read (${(err as Error).message})`;
   }
@@ -130,10 +162,41 @@ function storedCertProblem(): string | null {
 }
 
 /**
+ * Put the new pair (NEW_CERT_PATH / NEW_KEY_PATH) in place of the live one if it is
+ * usable; otherwise discard it and say why. Writing straight over the live files meant
+ * a failure part-way (a full disk) left a broken pair, and a box only on plain HTTP.
+ */
+function installNewPair(): string | null {
+  const problem = storedCertProblem(NEW_CERT_PATH, NEW_KEY_PATH);
+  if (problem) {
+    discardNewPair();
+    return problem;
+  }
+  try {
+    fs.chmodSync(NEW_KEY_PATH, 0o600);
+  } catch {
+    /* best effort (e.g. non-POSIX dev) */
+  }
+  fs.renameSync(NEW_KEY_PATH, KEY_PATH);
+  fs.renameSync(NEW_CERT_PATH, CERT_PATH);
+  return null;
+}
+
+function discardNewPair(): void {
+  for (const p of [NEW_CERT_PATH, NEW_KEY_PATH]) {
+    try {
+      fs.rmSync(p, { force: true });
+    } catch {
+      /* best effort — the next attempt overwrites it */
+    }
+  }
+}
+
+/**
  * Move damaged cert files aside instead of deleting them. They may be an admin's
  * own certificate, and what broke is worth being able to look at afterwards. Purely
- * best-effort: openssl overwrites both paths anyway, so a failure here never blocks
- * recovery.
+ * best-effort: the new pair is renamed over both paths anyway, so a failure here never
+ * blocks recovery.
  */
 function quarantineBroken(): void {
   for (const p of [CERT_PATH, KEY_PATH]) {
@@ -153,7 +216,7 @@ export function generateSelfSigned(recovered?: CertRecovery): void {
     'openssl',
     [
       'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-      '-keyout', KEY_PATH, '-out', CERT_PATH,
+      '-keyout', NEW_KEY_PATH, '-out', NEW_CERT_PATH,
       '-days', '3650', // long-lived: a LAN appliance shouldn't make admins re-accept yearly
       '-subj', '/CN=openmasjidos.local',
       '-addext', `subjectAltName=${subjectAltNames()}`,
@@ -161,18 +224,14 @@ export function generateSelfSigned(recovered?: CertRecovery): void {
     { encoding: 'utf8' },
   );
   if (res.status !== 0) {
+    discardNewPair();
     throw new Error(`openssl could not generate a certificate: ${res.stderr || res.error?.message || 'unknown error'}`);
-  }
-  try {
-    fs.chmodSync(KEY_PATH, 0o600);
-  } catch {
-    /* best effort (e.g. non-POSIX dev) */
   }
   // Don't trust exit code 0 on its own. A full disk can leave openssl "successful"
   // having written a truncated or empty file, and recording that as a good cert is
   // how we'd hand the boot path something it dies on. (Same lesson as the backup
   // writer: the tool's exit status and the bytes actually on disk are two facts.)
-  const problem = storedCertProblem();
+  const problem = installNewPair();
   if (problem) {
     throw new Error(`openssl reported success but the certificate it wrote is unusable: ${problem}`);
   }
@@ -199,7 +258,7 @@ export function ensureCert(): void {
   const replaced = readMeta().type;
   log.error(
     `The stored TLS certificate is unusable: ${problem}. Replacing it with a fresh self-signed certificate so the dashboard stays reachable` +
-      (replaced === 'custom' ? ' — your uploaded certificate will need to be re-added in Settings → Security.' : '.'),
+      (replaced === 'custom' ? ' — your uploaded certificate will need to be re-added in Settings → Advanced.' : '.'),
   );
   quarantineBroken();
   generateSelfSigned({ at: new Date().toISOString(), replaced, reason: problem });
@@ -218,30 +277,31 @@ export function loadCert(): { cert: Buffer; key: Buffer } {
   return { cert, key };
 }
 
+/** What the admin is told when an uploaded pair is refused (shown as is). */
+const UPLOAD_REFUSAL: Record<PairProblem, string> = {
+  cert: "That certificate isn't valid PEM. Paste the full certificate, including the BEGIN/END lines.",
+  key: "That private key isn't valid PEM. Paste the full key, including the BEGIN/END lines.",
+  mismatch: 'The certificate and private key do not match.',
+  refused:
+    "That certificate can't be used to secure the dashboard — its key or signature is too weak. Please use one with at least a 2048-bit key.",
+};
+
 /** Validate + install an admin-supplied cert + key (bring-your-own). */
 export function setCustomCert(certPem: string, keyPem: string): void {
-  let x509: crypto.X509Certificate;
+  // The same checks the boot path makes, so a pair that would stop HTTPS is never stored.
+  const problem = pairProblem(certPem, keyPem);
+  if (problem) throw new Error(UPLOAD_REFUSAL[problem]);
   try {
-    x509 = new crypto.X509Certificate(certPem);
-  } catch {
-    throw new Error("That certificate isn't valid PEM. Paste the full certificate, including the BEGIN/END lines.");
-  }
-  let key: crypto.KeyObject;
-  try {
-    key = crypto.createPrivateKey(keyPem);
-  } catch {
-    throw new Error("That private key isn't valid PEM. Paste the full key, including the BEGIN/END lines.");
-  }
-  if (!x509.checkPrivateKey(key)) {
-    throw new Error('The certificate and private key do not match.');
-  }
-  fs.mkdirSync(TLS_DIR, { recursive: true });
-  fs.writeFileSync(CERT_PATH, certPem.endsWith('\n') ? certPem : certPem + '\n', 'utf8');
-  fs.writeFileSync(KEY_PATH, keyPem.endsWith('\n') ? keyPem : keyPem + '\n', 'utf8');
-  try {
-    fs.chmodSync(KEY_PATH, 0o600);
-  } catch {
-    /* best effort */
+    fs.mkdirSync(TLS_DIR, { recursive: true });
+    fs.writeFileSync(NEW_CERT_PATH, certPem.endsWith('\n') ? certPem : certPem + '\n', 'utf8');
+    fs.writeFileSync(NEW_KEY_PATH, keyPem.endsWith('\n') ? keyPem : keyPem + '\n', { encoding: 'utf8', mode: 0o600 });
+    const written = installNewPair();
+    if (written) throw new Error(written);
+  } catch (err) {
+    discardNewPair();
+    // The detail (a full disk, with the data path in it) is for the log, not the screen.
+    log.warn(`The uploaded TLS certificate could not be saved: ${(err as Error).message}`);
+    throw new Error("The certificate couldn't be saved. Please try again in a moment.");
   }
   writeMeta({ type: 'custom', generatedAt: new Date().toISOString() });
 }
