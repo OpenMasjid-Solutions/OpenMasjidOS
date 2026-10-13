@@ -1164,3 +1164,13 @@ test('index.ts wires the dashboard listener\'s guards, and the remote-only behav
   // And the boot adopts emailed codes switched on before they were bound.
   assert.match(INDEX, /adoptLegacyEmailBinding\(\)/);
 });
+
+test('ONE REQUEST CARRIES A BOUNDED NUMBER OF CALLS, and the dashboard stays under the bound', () => {
+  // Unbounded, one batched request could carry hundreds of sign-in attempts past every
+  // per-request check. The client must split below the server's cap, or a busy page is refused.
+  const server = /maxBatchSize: (\d+),/.exec(INDEX);
+  const clientSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'lib', 'trpcClient.ts'), 'utf8');
+  const client = /maxItems: (\d+),/.exec(clientSrc);
+  assert.ok(server && client, 'both the server cap and the client split must be set');
+  assert.ok(Number(client[1]) <= Number(server[1]), `the client batches ${client[1]} but the server allows ${server[1]}`);
+});

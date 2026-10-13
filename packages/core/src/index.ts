@@ -170,6 +170,9 @@ async function main() {
     useWSS: true,
     trpcOptions: {
       router: appRouter,
+      // One request, at most this many calls. Unlimited, a single batched request could
+      // carry hundreds of sign-in attempts. The dashboard's client splits at 20.
+      maxBatchSize: 40,
       createContext,
       onError({ path, error }) {
         log.error(`tRPC error${path ? ` on "${path}"` : ''}: ${error.message}`);
