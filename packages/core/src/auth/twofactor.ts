@@ -460,6 +460,12 @@ function newBackupCode(): string {
   return `${out.slice(0, 5)}-${out.slice(5)}`;
 }
 
+/** A backup code as it was issued ("ABCDE-FGHJK"), typed in any case, with or without the dash. */
+function asIssuedBackupCode(code: string): string {
+  const s = code.replace(/[\s-]/g, '').toUpperCase();
+  return s.length === 10 ? `${s.slice(0, 5)}-${s.slice(5)}` : s;
+}
+
 // ── verification ───────────────────────────────────────────────────────────
 
 /**
@@ -506,7 +512,6 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
   // The epoch sessions are judged against RIGHT NOW — the held one during a restore —
   // or a sign-in made then was bound to the restored file's and refused at once.
   const epoch = epochHold ? epochHold.epoch : (cfg.epoch ?? '');
-  const submitted = code.replace(/\s/g, '').toUpperCase();
   if (!isActive(cfg)) return { ok: false, reason: 'not-enrolled' };
   const step = totpCounter(Math.floor(nowMs / 1000));
   for (const s of revealedSteps) if (s < step - 1) revealedSteps.delete(s);
@@ -529,7 +534,7 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
   //    depend on which code matched.
   const backups = cfg.backupCodes ?? [];
   let matched = -1;
-  const hash = sha256(submitted);
+  const hash = sha256(asIssuedBackupCode(code));
   for (let i = 0; i < backups.length; i++) {
     const b = backups[i]!;
     if (b.usedAt) continue;
@@ -556,7 +561,7 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
       save(cfg);
       return { ok: false, reason: 'too-many-attempts' };
     }
-    if (timingSafeEqualString(p.hash, sha256(submitted))) {
+    if (timingSafeEqualString(p.hash, sha256(code.replace(/\s/g, '')))) {
       cfg.pendingEmail = undefined; // single use
       save(cfg);
       return { ok: true, used: 'email', epoch };
@@ -603,6 +608,17 @@ export function issueEmailCode(nowMs: number = Date.now()): { code: string } | {
   };
   save(cfg);
   return { code };
+}
+
+/**
+ * Take back an emailed code that could not be sent, so asking again is not refused as
+ * "a code was just sent". Only that code: one issued since is left alone.
+ */
+export function withdrawEmailCode(code: string): void {
+  const cfg = load();
+  if (!cfg.pendingEmail || !timingSafeEqualString(cfg.pendingEmail.hash, sha256(code))) return;
+  cfg.pendingEmail = undefined;
+  save(cfg);
 }
 
 /** Turn emailed codes on or off as a factor. Requires a configured mail provider — the caller checks. */

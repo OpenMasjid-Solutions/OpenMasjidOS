@@ -38,6 +38,7 @@ import {
   issueEmailCode,
   twoFactorActive,
   verifySecondFactor,
+  withdrawEmailCode,
   type SecondFactorKind,
 } from '../../auth/twofactor';
 import {
@@ -168,6 +169,11 @@ async function verifyCredentials(
   }
 }
 
+/** Send the admin back to the password step, saying why: a state change, not an error. */
+function startAgain(message: string) {
+  return { authenticated: false as const, restart: true as const, username: null, csrf: null, triesLeft: 0, message };
+}
+
 const emailField = z.string().trim().max(254).email('Please enter a valid email address.');
 
 const setupInput = z.object({
@@ -282,6 +288,15 @@ export const authRouter = router({
   login: publicProcedure
     .input(z.object({ username: z.string().trim().min(1), password: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      if (isAuthStoreDamaged()) {
+        // Unreadable at start-up, so no password can match it: say so, rather than
+        // "incorrect" to an admin retyping the right one.
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message:
+            "This server's admin account file can't be read, so nobody can sign in. Ask whoever set this up to run the OpenMasjidOS password reset on the machine itself.",
+        });
+      }
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
@@ -396,18 +411,21 @@ export const authRouter = router({
          * genuinely expired one and one being moved between origins have nothing
          * useful to tell them apart for whoever is asking.
          */
-        const tooMany = claim.reason === 'too-many-attempts';
         log.warn(`Two-step sign-in could not be completed: ${claim.reason}.`);
-        return {
-          authenticated: false as const,
-          restart: true as const,
-          username: null,
-          csrf: null,
-          triesLeft: 0,
-          message: tooMany
+        return startAgain(
+          claim.reason === 'too-many-attempts'
             ? 'Too many wrong codes. Start again and sign in from the beginning.'
             : 'That sign-in attempt is no longer valid. Please start again.',
-        };
+        );
+      }
+
+      // The password changed while this sign-in waited for its second factor (up to ten
+      // minutes): the password it proved is no longer the password. Asked before the code
+      // is checked, so a backup code is not spent on a sign-in that cannot finish.
+      if (claim.cred !== freshCredential()) {
+        consumeChallenge(input.challenge);
+        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
+        return startAgain('Your password was changed while you were signing in. Please start again.');
       }
 
       const result = verifySecondFactor(input.code);
@@ -443,14 +461,7 @@ export const authRouter = router({
           // The attempt that used up the last try. Send them back now rather
           // than letting the NEXT press discover it — that press is the one
           // that used to report "expired" and strand them.
-          return {
-            authenticated: false as const,
-            restart: true as const,
-            username: null,
-            csrf: null,
-            triesLeft: 0,
-            message: `That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`,
-          };
+          return startAgain(`That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`);
         }
         throw new TRPCError({
           code: 'UNAUTHORIZED',
@@ -458,20 +469,6 @@ export const authRouter = router({
         });
       }
 
-      // The password changed while this sign-in waited for its second factor (up to
-      // ten minutes). The password it proved is no longer the password: start again.
-      if (claim.cred !== freshCredential()) {
-        consumeChallenge(input.challenge);
-        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
-        return {
-          authenticated: false as const,
-          restart: true as const,
-          username: null,
-          csrf: null,
-          triesLeft: 0,
-          message: 'Your password was changed while you were signing in. Please start again.',
-        };
-      }
       consumeChallenge(input.challenge);
       clearIpFailures(ctx.remoteIp);
       // REMOTE: this is the second factor passing over the tunnel, and the only way a
@@ -538,6 +535,8 @@ export const authRouter = router({
         'omos:platform',
       );
       if (!sent.sent) {
+        // Nothing went out, so asking again must not be refused as "a code was just sent".
+        withdrawEmailCode(issued.code);
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: "We couldn't send that code. Please try the authenticator app instead." });
       }
       return { sent: true as const };
@@ -571,15 +570,20 @@ export const authRouter = router({
          * toggles. A country code is required — `toDigits` refuses fewer than 8
          * digits rather than guessing one, because guessing sends a masjid's message
          * to a stranger.
+         *
+         * Three digits or fewer is a cleared field too: the phone field clears to the
+         * country's dial code alone. Anything longer that is not a whole number is
+         * refused, never stored as "no number".
          */
         phone: z
           .string()
           .trim()
           .max(24)
-          .transform((v) => (v === '' ? '' : (toDigits(v) ?? '')))
-          .refine((v) => v === '' || v.length >= 8, {
+          .transform((v) => (v.replace(/\D/g, '').length <= 3 ? '' : v))
+          .refine((v) => v === '' || toDigits(v) !== null, {
             message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
           })
+          .transform((v) => toDigits(v) ?? '')
           .optional(),
       }),
     )

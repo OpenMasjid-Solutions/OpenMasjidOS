@@ -378,3 +378,19 @@ test('A CODE THE CLOCK NOTE CONFIRMED FOR LATER IS NOT ACCEPTED WHEN ITS TIME CO
   assert.deepEqual(tf.verifySecondFactor(code, ahead), { ok: false, reason: 'replayed' });
   ipl.clearAllIpFailures();
 });
+
+test('AN EMAILED CODE THAT COULD NOT BE SENT IS NOT "JUST SENT" — asking again tries again', async () => {
+  const email = req('../src/store/email') as typeof import('../src/store/email');
+  const { challenge } = await startTunnelLogin(T);
+  // A mail server that refuses the connection at once.
+  email.saveEmailConfig({ provider: 'smtp', fromEmail: 'alerts@masjid.test', smtp: { host: '127.0.0.1', port: 1 } });
+  tf.setEmailFactor(true);
+  try {
+    const { caller } = call(TUNNEL);
+    await assert.rejects(caller.sendLoginEmailCode({ challenge }), refused('INTERNAL_SERVER_ERROR'));
+    await assert.rejects(caller.sendLoginEmailCode({ challenge }), refused('INTERNAL_SERVER_ERROR'));
+  } finally {
+    tf.setEmailFactor(false);
+    email.saveEmailConfig({ provider: 'none' });
+  }
+});

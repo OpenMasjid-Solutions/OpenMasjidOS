@@ -392,6 +392,25 @@ test('A CODE THE CLOCK NOTE CONFIRMED FOR LATER IS REFUSED WHEN ITS STEP COMES',
   assert.deepEqual(okUsed(tf.verifySecondFactor(totpLib.totp(secret, next), next)), { ok: true, used: 'totp' });
 });
 
+test('a backup code typed without its dash, or with a space for it, still works', () => {
+  tf.disableTwoFactor();
+  const { backups } = enrol(T);
+  assert.deepEqual(okUsed(tf.verifySecondFactor(backups[0]!.replace('-', ''), T)), { ok: true, used: 'backup' });
+  assert.deepEqual(okUsed(tf.verifySecondFactor(backups[1]!.replace('-', ' ').toLowerCase(), T)), { ok: true, used: 'backup' });
+  assert.deepEqual(okUsed(tf.verifySecondFactor(backups[0]!, T)), { ok: false, reason: 'bad-code' }, 'still one use');
+});
+
+test('an emailed code that could not be sent is withdrawn — and only that code', () => {
+  tf.disableTwoFactor();
+  tf.setEmailFactor(true);
+  const unsent = tf.issueEmailCode(T) as { code: string };
+  tf.withdrawEmailCode(unsent.code);
+  const sent = tf.issueEmailCode(T + 1_000);
+  assert.ok('code' in sent, 'asking again was refused as "a code was just sent"');
+  tf.withdrawEmailCode(unsent.code); // late, for the old code: the new one stays
+  assert.deepEqual(okUsed(tf.verifySecondFactor(sent.code, T + 2_000)), { ok: true, used: 'email' });
+});
+
 test('THE READ-ONLY CHECKS DO NOT RE-READ AN UNCHANGED FILE — and see a change made elsewhere at once', () => {
   // They run several times on every request from outside.
   tf.disableTwoFactor();
