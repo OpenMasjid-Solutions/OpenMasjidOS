@@ -318,3 +318,79 @@ test('nothing is persisted — a restart invalidates a half-finished sign-in', (
     assert.equal(body.includes('challenge'), false, `${f} must not hold a half-authenticated token`);
   }
 });
+
+// ── the per-address lockout, against someone who knows the password ──────────
+
+const ipl = req('../src/auth/ip-lockout') as typeof import('../src/auth/ip-lockout');
+const refused = (code: string) => (e: { code?: string }) => e.code === code;
+
+test('A RIGHT PASSWORD DOES NOT WIPE THE WRONG CODES COUNTED AGAINST AN ADDRESS', async () => {
+  // It did, so whoever had the password could alternate — sign in, five wrong codes,
+  // sign in again — and guess codes for ever without the address ever locking.
+  freshAdmin();
+  const { secret } = tf.beginEnrolment('admin');
+  tf.confirmEnrolment(totpLib.totp(secret, T), T);
+  ipl.clearAllIpFailures();
+  const { caller } = call(TUNNEL);
+  try {
+    for (let round = 0; round < Math.ceil(ipl.IP_MAX_FAILURES / lc.CHALLENGE_MAX_ATTEMPTS); round++) {
+      const { challenge } = await caller.login({ username: 'admin', password: PASSWORD });
+      const wrong = Array.from({ length: lc.CHALLENGE_MAX_ATTEMPTS }, () =>
+        caller.completeLogin({ challenge: challenge!, code: '000000' }),
+      );
+      await Promise.allSettled(wrong);
+    }
+    await assert.rejects(caller.login({ username: 'admin', password: PASSWORD }), refused('TOO_MANY_REQUESTS'));
+  } finally {
+    ipl.clearAllIpFailures();
+  }
+});
+
+test('A BATCH OF SIGN-INS FROM ONE ADDRESS STOPS BEING CHECKED ONCE THE ADDRESS IS LOCKED', async () => {
+  // Every attempt in a batch passed the check on arrival, before any had failed: one
+  // request could carry hundreds of guesses, and queue that many argon2 runs in front of
+  // every other sign-in on the box. Each is asked again when its turn comes.
+  ipl.clearAllIpFailures();
+  const { caller } = call(TUNNEL);
+  try {
+    const batch = await Promise.allSettled(
+      Array.from({ length: 3 * ipl.IP_MAX_FAILURES }, () => caller.login({ username: 'admin', password: 'wrong' })),
+    );
+    const codes = batch.map((r) => (r.status === 'rejected' ? (r.reason as { code?: string }).code : 'signed-in'));
+    // UNAUTHORIZED is a password that was actually checked.
+    assert.equal(codes.filter((c) => c === 'UNAUTHORIZED').length, ipl.IP_MAX_FAILURES, codes.join(' '));
+    assert.equal(codes.filter((c) => c === 'TOO_MANY_REQUESTS').length, 2 * ipl.IP_MAX_FAILURES, codes.join(' '));
+  } finally {
+    ipl.clearAllIpFailures();
+  }
+});
+
+test('A CODE THE CLOCK NOTE CONFIRMED FOR LATER IS NOT ACCEPTED WHEN ITS TIME COMES', async () => {
+  // "It looks about 5 minutes slow" tells whoever typed the code that it works in five
+  // minutes. The note stays; that code never works.
+  const { challenge, secret } = await startTunnelLogin(T);
+  const ahead = Date.now() + 5 * 60_000;
+  const code = totpLib.totp(secret, ahead);
+  await assert.rejects(
+    call(TUNNEL).caller.completeLogin({ challenge, code }),
+    (e: Error) => /clock/i.test(e.message) && /slow/i.test(e.message),
+  );
+  assert.deepEqual(tf.verifySecondFactor(code, ahead), { ok: false, reason: 'replayed' });
+  ipl.clearAllIpFailures();
+});
+
+test('AN EMAILED CODE THAT COULD NOT BE SENT IS NOT "JUST SENT" — asking again tries again', async () => {
+  const email = req('../src/store/email') as typeof import('../src/store/email');
+  const { challenge } = await startTunnelLogin(T);
+  // A mail server that refuses the connection at once.
+  email.saveEmailConfig({ provider: 'smtp', fromEmail: 'alerts@masjid.test', smtp: { host: '127.0.0.1', port: 1 } });
+  tf.setEmailFactor(true);
+  try {
+    const { caller } = call(TUNNEL);
+    await assert.rejects(caller.sendLoginEmailCode({ challenge }), refused('INTERNAL_SERVER_ERROR'));
+    await assert.rejects(caller.sendLoginEmailCode({ challenge }), refused('INTERNAL_SERVER_ERROR'));
+  } finally {
+    tf.setEmailFactor(false);
+    email.saveEmailConfig({ provider: 'none' });
+  }
+});

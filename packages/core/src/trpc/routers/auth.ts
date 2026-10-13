@@ -38,6 +38,7 @@ import {
   issueEmailCode,
   twoFactorActive,
   verifySecondFactor,
+  withdrawEmailCode,
   type SecondFactorKind,
 } from '../../auth/twofactor';
 import {
@@ -84,19 +85,62 @@ let verifyGate: Promise<void> = Promise.resolve();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Where a sign-in attempt came from, as far as the lockout is concerned. */
+type LoginOrigin = { viaTunnel: boolean; remoteIp: string | null };
+
 /**
- * Check a username + password, and report WHICH password hash it was checked
- * against. The caller must confirm that hash is still current before minting a
- * session (see `freshCredential` in auth/sessions.ts): argon2 is awaited, and a
- * password change landing during that await would otherwise mint a session bound
- * to the NEW password for someone who only knew the old one.
+ * Refuse an address that has failed too often. Tunnel traffic only: Cloudflare sets
+ * CF-Connecting-IP at its edge and a tunnel client cannot forge it, whereas on the LAN
+ * every client is SNATed to the bridge gateway (auth/ip-lockout.ts, util/net.ts).
  */
-async function verifyCredentials(username: string, password: string): Promise<{ ok: boolean; cred: string }> {
+function refuseIfIpLocked(origin: LoginOrigin): void {
+  if (!origin.viaTunnel || !ipLockedOut(origin.remoteIp)) return;
+  const mins = Math.ceil(ipLockoutRemaining(origin.remoteIp) / 60_000);
+  throw new TRPCError({
+    code: 'TOO_MANY_REQUESTS',
+    message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
+  });
+}
+
+/** `refuseIfIpLocked`, and the opt-in hard cooldown (exposed instances). */
+function refuseIfLockedOut(origin: LoginOrigin): void {
+  refuseIfIpLocked(origin);
+  if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Please wait a minute and try again.' });
+  }
+}
+
+function noteLoginFailure(origin: LoginOrigin): void {
+  noteIpFailure(origin.remoteIp);
+  consecutiveFailures += 1;
+  if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) cooldownUntil = Date.now() + LOCKOUT_MS;
+}
+
+/**
+ * Check a username + password, one attempt at a time, and report WHICH password hash it
+ * was checked against: the one a resulting session must be bound to (auth/sessions.ts
+ * `createSession`).
+ *
+ * `ok` only while that hash is still the current one. argon2 is awaited, and a password
+ * change landing meanwhile would otherwise mint a session bound to the NEW password for
+ * someone who only knew the old one. Read FRESH: the throttled copy can still be the old
+ * hash for a second after the installer's Reset sign-in replaced it from another process.
+ *
+ * The lockout is asked again when it is this attempt's turn, and a failure is counted
+ * before the next attempt is let in: a batch of attempts all pass the check on arrival,
+ * before any of them has failed. A refused attempt runs no argon2 and counts nothing.
+ */
+async function verifyCredentials(
+  username: string,
+  password: string,
+  origin: LoginOrigin,
+): Promise<{ ok: boolean; cred: string }> {
   let release!: () => void;
   const prev = verifyGate;
   verifyGate = new Promise<void>((r) => (release = r));
   await prev;
   try {
+    refuseIfLockedOut(origin);
     // The login identifier matches EITHER the stored username (older installs used a
     // plain username; new installs set it = the email) OR the admin email (so once an
     // older install sets an email in Settings → Account, they can use that too).
@@ -111,10 +155,23 @@ async function verifyCredentials(username: string, password: string): Promise<{ 
     // being checked against, and the one the resulting session must be bound to.
     const hash = getPasswordHash({ fresh: true });
     const okPass = await verifyPassword(hash ?? '', password);
-    return { ok: okUser && okPass, cred: credentialFingerprint(hash) };
+    const cred = credentialFingerprint(hash);
+    const ok = okUser && okPass && cred === freshCredential();
+    if (ok) {
+      consecutiveFailures = 0;
+      cooldownUntil = 0;
+    } else {
+      noteLoginFailure(origin);
+    }
+    return { ok, cred };
   } finally {
     release();
   }
+}
+
+/** Send the admin back to the password step, saying why: a state change, not an error. */
+function startAgain(message: string) {
+  return { authenticated: false as const, restart: true as const, username: null, csrf: null, triesLeft: 0, message };
 }
 
 const emailField = z.string().trim().max(254).email('Please enter a valid email address.');
@@ -231,53 +288,31 @@ export const authRouter = router({
   login: publicProcedure
     .input(z.object({ username: z.string().trim().min(1), password: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      if (isAuthStoreDamaged()) {
+        // Unreadable at start-up, so no password can match it: say so, rather than
+        // "incorrect" to an admin retyping the right one.
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message:
+            "This server's admin account file can't be read, so nobody can sign in. Ask whoever set this up to run the OpenMasjidOS password reset on the machine itself.",
+        });
+      }
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      // PER-IP lockout, for tunnel traffic only. This is the one place the
-      // platform can tell clients apart: Cloudflare sets CF-Connecting-IP at its
-      // edge and a tunnel client cannot forge it, whereas on the LAN every
-      // client is SNATed to the bridge gateway and they all look identical
-      // (auth/ip-lockout.ts, util/net.ts). Checked FIRST, so a guesser is
-      // refused without occupying the verify mutex or spending an argon2 hash.
-      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
-        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
-        });
-      }
-      // Opt-in hard cooldown (exposed instances): reject fast without occupying
-      // the verify mutex or spending an argon2 hash.
-      if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many attempts. Please wait a minute and try again.',
-        });
-      }
-      const verified = await verifyCredentials(input.username, input.password);
-      // A password that was right when checked but has been CHANGED since (during
-      // argon2) is not a valid sign-in now. Treated exactly as a wrong password.
-      // Read FRESH: the throttled copy can still be the old hash for a second after
-      // the installer's Reset sign-in replaced it from another process.
-      const ok = verified.ok && verified.cred === freshCredential();
-      if (!ok) {
-        noteIpFailure(ctx.remoteIp);
-        consecutiveFailures += 1;
-        if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) {
-          cooldownUntil = Date.now() + LOCKOUT_MS;
-        }
+      // Checked on arrival, so a locked-out guesser does not queue for the verify or
+      // spend an argon2 hash — and again when its turn comes (verifyCredentials).
+      refuseIfLockedOut(ctx);
+      const verified = await verifyCredentials(input.username, input.password, ctx);
+      if (!verified.ok) {
         // Slow the failing response (outside the mutex, so a correct attempt is
         // never queued behind these delays).
         await wait(Math.min(consecutiveFailures * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
-      consecutiveFailures = 0;
-      cooldownUntil = 0;
-      // A correct password clears the address's history. The second factor still
-      // has to pass, and its failures are counted separately below — but someone
-      // who knows the password is not who this counter is aimed at.
-      clearIpFailures(ctx.remoteIp);
+      // The address's failures are NOT cleared here: over the tunnel a code is still to
+      // come, and clearing them let anyone with the password guess codes without limit.
+      // completeLogin clears them once the code is right.
 
       /**
        * THE SECOND FACTOR IS REQUIRED ON TUNNEL TRAFFIC ONLY, at Hasan's
@@ -302,8 +337,8 @@ export const authRouter = router({
       if (ctx.viaTunnel) {
         // Fail CLOSED. If a tunnel request reaches the login at all and no second
         // factor is enrolled, refuse — rather than handing out a session because
-        // the feature that was supposed to gate this is half-configured. The
-        // setting that opens the door will require enrolment first (Slice 3);
+        // the feature that was supposed to gate this is half-configured. Remote
+        // administration already requires a second factor (system/remote-admin.ts);
         // this is the backstop for every path that does not go through it.
         if (!twoFactorActive()) {
           throw new TRPCError({
@@ -314,11 +349,7 @@ export const authRouter = router({
         // The challenge carries the credential the password was verified against,
         // so completing it after a password change cannot mint a session bound to
         // the NEW password (completeLogin checks it).
-        const challenge = createChallenge(input.username, {
-          cred: verified.cred,
-          viaTunnel: true,
-          remoteIp: ctx.remoteIp,
-        });
+        const challenge = createChallenge(input.username, { cred: verified.cred, viaTunnel: true });
         // No session, no cookie. The caller holds an opaque id, not credentials.
         return {
           authenticated: false as const,
@@ -357,15 +388,8 @@ export const authRouter = router({
       // The second factor is six digits, so it is the CHEAPER target of the two
       // and must not be the one left uncounted. Same per-IP bound as the
       // password step, checked before the challenge is even looked up.
-      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
-        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
-        });
-      }
-      const origin = { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp };
-      const claim = claimChallenge(input.challenge, origin);
+      refuseIfIpLocked(ctx);
+      const claim = claimChallenge(input.challenge, ctx);
       if (!claim.ok) {
         /**
          * THE CHALLENGE IS GONE, SO SAY SO AS A STATE CHANGE RATHER THAN AN ERROR.
@@ -387,18 +411,21 @@ export const authRouter = router({
          * genuinely expired one and one being moved between origins have nothing
          * useful to tell them apart for whoever is asking.
          */
-        const tooMany = claim.reason === 'too-many-attempts';
         log.warn(`Two-step sign-in could not be completed: ${claim.reason}.`);
-        return {
-          authenticated: false as const,
-          restart: true as const,
-          username: null,
-          csrf: null,
-          triesLeft: 0,
-          message: tooMany
+        return startAgain(
+          claim.reason === 'too-many-attempts'
             ? 'Too many wrong codes. Start again and sign in from the beginning.'
             : 'That sign-in attempt is no longer valid. Please start again.',
-        };
+        );
+      }
+
+      // The password changed while this sign-in waited for its second factor (up to ten
+      // minutes): the password it proved is no longer the password. Asked before the code
+      // is checked, so a backup code is not spent on a sign-in that cannot finish.
+      if (claim.cred !== freshCredential()) {
+        consumeChallenge(input.challenge);
+        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
+        return startAgain('Your password was changed while you were signing in. Please start again.');
       }
 
       const result = verifySecondFactor(input.code);
@@ -424,10 +451,7 @@ export const authRouter = router({
         if (result.skewSteps != null && Math.abs(result.skewSteps) >= 2) {
           const mins = Math.round((Math.abs(result.skewSteps) * 30) / 60);
           const dir = result.skewSteps < 0 ? 'fast' : 'slow';
-          skewNote =
-            mins >= 1
-              ? ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`
-              : ` That code would have been right if this server's clock were correct — it is about half a minute ${dir}.`;
+          skewNote = ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`;
           log.warn(
             `Two-step sign-in: a code was refused, but it matches ${result.skewSteps} step(s) away. This server's clock is probably wrong.`,
           );
@@ -437,14 +461,7 @@ export const authRouter = router({
           // The attempt that used up the last try. Send them back now rather
           // than letting the NEXT press discover it — that press is the one
           // that used to report "expired" and strand them.
-          return {
-            authenticated: false as const,
-            restart: true as const,
-            username: null,
-            csrf: null,
-            triesLeft: 0,
-            message: `That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`,
-          };
+          return startAgain(`That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`);
         }
         throw new TRPCError({
           code: 'UNAUTHORIZED',
@@ -452,20 +469,6 @@ export const authRouter = router({
         });
       }
 
-      // The password changed while this sign-in waited for its second factor (up to
-      // ten minutes). The password it proved is no longer the password: start again.
-      if (claim.cred !== freshCredential()) {
-        consumeChallenge(input.challenge);
-        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
-        return {
-          authenticated: false as const,
-          restart: true as const,
-          username: null,
-          csrf: null,
-          triesLeft: 0,
-          message: 'Your password was changed while you were signing in. Please start again.',
-        };
-      }
       consumeChallenge(input.challenge);
       clearIpFailures(ctx.remoteIp);
       // REMOTE: this is the second factor passing over the tunnel, and the only way a
@@ -502,7 +505,7 @@ export const authRouter = router({
   sendLoginEmailCode: publicProcedure
     .input(z.object({ challenge: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
-      const claim = claimChallenge(input.challenge, { viaTunnel: ctx.viaTunnel, remoteIp: ctx.remoteIp });
+      const claim = claimChallenge(input.challenge, ctx);
       if (!claim.ok) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
@@ -532,6 +535,8 @@ export const authRouter = router({
         'omos:platform',
       );
       if (!sent.sent) {
+        // Nothing went out, so asking again must not be refused as "a code was just sent".
+        withdrawEmailCode(issued.code);
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: "We couldn't send that code. Please try the authenticator app instead." });
       }
       return { sent: true as const };
@@ -565,15 +570,20 @@ export const authRouter = router({
          * toggles. A country code is required — `toDigits` refuses fewer than 8
          * digits rather than guessing one, because guessing sends a masjid's message
          * to a stranger.
+         *
+         * Three digits or fewer is a cleared field too: the phone field clears to the
+         * country's dial code alone. Anything longer that is not a whole number is
+         * refused, never stored as "no number".
          */
         phone: z
           .string()
           .trim()
           .max(24)
-          .transform((v) => (v === '' ? '' : (toDigits(v) ?? '')))
-          .refine((v) => v === '' || v.length >= 8, {
+          .transform((v) => (v.replace(/\D/g, '').length <= 3 ? '' : v))
+          .refine((v) => v === '' || toDigits(v) !== null, {
             message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
           })
+          .transform((v) => toDigits(v) ?? '')
           .optional(),
       }),
     )

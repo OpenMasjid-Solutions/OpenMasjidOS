@@ -300,7 +300,7 @@ test('disabling wipes the replay guard and the backup codes too', async () => {
 test('turning it off destroys any half-finished remote sign-in', async () => {
   const caller = signedIn();
   const { secret } = await enrol(caller);
-  lc.createChallenge('admin', { viaTunnel: true, remoteIp: '203.0.113.9' });
+  lc.createChallenge('admin', { viaTunnel: true });
   assert.ok(lc.pendingCount() > 0);
 
   await caller.twoFactor.disable({ password: PASSWORD, code: nextCode(secret) });
