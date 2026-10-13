@@ -288,3 +288,27 @@ test('a subject made from an alert is shortened even when its text has no early 
   // A word boundary is still preferred when there is one.
   assert.equal(alerts.firstSentence(`${'word '.repeat(30)}end`), `${'word '.repeat(15).trim()}…`);
 });
+
+// ── Settings → Payments ─────────────────────────────────────────────────────────
+
+test("A STRIPE KEY JUST SAVED SHOWS ITS OWN STATUS, NOT THE OLD KEY'S", async () => {
+  // The green/red dot was cached for a minute per account, and saving or removing one did
+  // not clear it: a corrected key stayed red, a broken one green, for up to 60 s more.
+  const { stripeRouter } = req('../src/trpc/routers/stripe') as typeof import('../src/trpc/routers/stripe');
+  const caller = stripeRouter.createCaller(dashboardContext());
+  const validKey = 'sk_test_the_right_one';
+  await withFetch(
+    (_url, init) => jsonResponse((init?.headers as Record<string, string>)?.authorization === `Bearer ${validKey}` ? 200 : 401, {}),
+    async () => {
+      const { id } = await caller.save({ label: 'Donations', publishableKey: 'pk_test_x', secretKey: 'sk_test_mistyped' });
+      assert.deepEqual(await caller.status(), [{ id, online: false }]);
+      await caller.save({ id, label: 'Donations', publishableKey: '', secretKey: validKey });
+      assert.deepEqual(await caller.status(), [{ id, online: true }], 'the corrected key still shows the old answer');
+      await caller.remove({ id });
+      const again = await caller.save({ label: 'Donations', publishableKey: 'pk_test_x', secretKey: 'sk_test_another' });
+      assert.equal(again.id, id, 'precondition: re-added under the same name, so the same id');
+      assert.deepEqual(await caller.status(), [{ id, online: false }], 'a removed account\'s answer stood in for the new one');
+      await caller.remove({ id });
+    },
+  );
+});
