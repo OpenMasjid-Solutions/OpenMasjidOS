@@ -14,6 +14,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Writable } from 'node:stream';
 import { createRequire } from 'node:module';
+import Fastify from 'fastify';
+import fastifyMultipart from '@fastify/multipart';
 
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-backup-fixes-'));
 process.env.OPENMASJID_DATA_DIR = DATA;
@@ -26,11 +28,15 @@ const restore = req('../src/system/restore') as typeof import('../src/system/res
 const offsite = req('../src/system/backup-upload') as typeof import('../src/system/backup-upload');
 const settings = req('../src/settings/store') as typeof import('../src/settings/store');
 const lock = req('../src/system/update-lock') as typeof import('../src/system/update-lock');
+const store = req('../src/auth/store') as typeof import('../src/auth/store');
+const sessions = req('../src/auth/sessions') as typeof import('../src/auth/sessions');
 const { runUpdate, recreateCore } = req('../src/docker/update') as typeof import('../src/docker/update');
 const { networkInfo } = req('../src/system/system') as typeof import('../src/system/system');
+const { registerFiles } = req('../src/api/files') as typeof import('../src/api/files');
 
 const CONFIG = path.join(DATA, 'config');
 fs.mkdirSync(CONFIG, { recursive: true });
+store.setCredentials('admin', '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb');
 // An installed app, so a restore has something to stop.
 fs.mkdirSync(path.join(DATA, 'apps', 'donations'), { recursive: true });
 fs.writeFileSync(
@@ -365,5 +371,78 @@ test("SETTINGS → NETWORK SHOWS THE MACHINE'S ADDRESS — not the container's 1
     assert.deepEqual(networkInfo(), { localDomain: '', addresses: ['192.168.1.24'] });
   } finally {
     delete process.env.OPENMASJID_HOST_IP;
+  }
+});
+
+// ── the File Explorer's upload and download ─────────────────────────────────
+
+async function filesServer() {
+  const app = Fastify();
+  await app.register(fastifyMultipart, { limits: { fileSize: 64 } });
+  registerFiles(app);
+  await app.ready();
+  return app;
+}
+function signedIn(): Record<string, string> {
+  const s = sessions.createSession('admin', sessions.currentCredential());
+  return { cookie: `${sessions.COOKIE_NAME}=${s.token}`, [sessions.CSRF_HEADER]: s.csrf };
+}
+function multipart(filename: string, body: string) {
+  const boundary = 'omos-test-boundary';
+  return {
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    payload: Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n${body}\r\n--${boundary}--\r\n`,
+    ),
+  };
+}
+
+test('AN UPLOAD THAT DOES NOT FINISH LEAVES THE FILE IT WOULD HAVE REPLACED AS IT WAS — and says why plainly', async () => {
+  const app = await filesServer();
+  const notes = path.join(DATA, 'notes.txt');
+  fs.writeFileSync(notes, 'khutbah notes');
+  fs.mkdirSync(path.join(DATA, 'Bulletins'), { recursive: true });
+  const upload = (filename: string, body: string) => {
+    const form = multipart(filename, body);
+    return app.inject({ method: 'POST', url: '/api/files/upload?path=/', headers: { ...signedIn(), ...form.headers }, payload: form.payload });
+  };
+  try {
+    // Over the size limit: refused — and the file it would have replaced was already emptied.
+    let res = await upload('notes.txt', 'x'.repeat(200));
+    assert.equal(res.statusCode, 413, res.body);
+    assert.equal(fs.readFileSync(notes, 'utf8'), 'khutbah notes', 'a refused upload destroyed the file it would have replaced');
+    // A failure that is not the explorer's own is said in plain words: no raw error, no path.
+    res = await upload('Bulletins', 'x');
+    assert.equal(res.statusCode, 500, res.body);
+    assert.equal((JSON.parse(res.body) as { error: string }).error, 'There is already a folder with that name here.');
+    assert.deepEqual(fs.readdirSync(DATA).filter((n) => n.startsWith('.upload-')), [], 'a half-written upload was left behind');
+    // And one that finishes replaces it.
+    res = await upload('notes.txt', 'new notes');
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(fs.readFileSync(notes, 'utf8'), 'new notes');
+  } finally {
+    await app.close();
+  }
+});
+
+test('A DOWNLOADED FILE KEEPS ITS NAME — not "Jumu%27ah%20notes.pdf"', async () => {
+  const app = await filesServer();
+  fs.writeFileSync(path.join(DATA, "Jumu'ah notes (draft).pdf"), '%PDF');
+  fs.writeFileSync(path.join(DATA, 'خطبة.txt'), 'khutbah');
+  const download = (name: string) =>
+    app.inject({ method: 'GET', url: `/api/files/download?path=${encodeURIComponent(`/${name}`)}`, headers: signedIn() });
+  try {
+    let res = await download("Jumu'ah notes (draft).pdf");
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(
+      res.headers['content-disposition'],
+      `attachment; filename="Jumu'ah notes (draft).pdf"; filename*=UTF-8''Jumu%27ah%20notes%20%28draft%29.pdf`,
+    );
+    res = await download('خطبة.txt');
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.headers['content-disposition'], `attachment; filename="____.txt"; filename*=UTF-8''${encodeURIComponent('خطبة')}.txt`);
+  } finally {
+    await app.close();
   }
 });

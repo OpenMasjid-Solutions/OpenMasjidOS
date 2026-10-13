@@ -18,6 +18,7 @@ import { isAllowedWsOrigin, isAllowedOrigin } from '../util/origin';
 import { BACKUP_RUNNING, RESTORE_PATH, quickCheckArchive, runRestore, restoreInProgress, type RestoreOutcome } from '../system/restore';
 import { backupInProgress } from '../system/backup';
 import { clashFor, finishing, finishingMessage } from '../system/update-lock';
+import { NOFOLLOW_WRITE } from '../files/manager';
 import { log } from '../logger';
 
 /**
@@ -35,14 +36,6 @@ export const RESTORE_CLOSE: Readonly<Record<RestoreOutcome, [number, string]>> =
 function authed(req: FastifyRequest): boolean {
   return Boolean(requestUser(req));
 }
-
-// Never write the uploaded archive THROUGH a symlink planted at RESTORE_PATH.
-// (cast: createWriteStream types `flags` as string but forwards it to fs.open,
-// which accepts a numeric flag set, so we can OR in O_NOFOLLOW.)
-const NOFOLLOW_WRITE = (fs.constants.O_WRONLY |
-  fs.constants.O_CREAT |
-  fs.constants.O_TRUNC |
-  (fs.constants.O_NOFOLLOW ?? 0)) as unknown as string;
 
 export function registerRestore(server: FastifyInstance): void {
   // Upload + sanity-check the backup. Kept separate from the run step so the
@@ -77,6 +70,7 @@ export function registerRestore(server: FastifyInstance): void {
     try {
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: 'No backup file was uploaded.' });
+      // Never THROUGH a symlink planted at RESTORE_PATH.
       await pipeline(file.file, fs.createWriteStream(RESTORE_PATH, { flags: NOFOLLOW_WRITE }));
       if (file.file.truncated) {
         fs.rmSync(RESTORE_PATH, { force: true });

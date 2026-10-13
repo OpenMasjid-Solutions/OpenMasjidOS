@@ -63,7 +63,7 @@ test("THE CORE'S OWN COMPOSE IS PROTECTED — it sits at the sandbox root, not u
   assert.throws(() => m.renameEntry('/notes.txt', 'docker-compose.yml'), /PROTECTED|private/i);
 });
 
-test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => {
+test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", async () => {
   // Refusing compose.yml, .env and meta.json one at a time while allowing their
   // parent to be removed wholesale is not a sandbox.
   const { m } = freshManager();
@@ -71,8 +71,8 @@ test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => 
   assert.throws(() => m.renameEntry('/apps/donations', 'elsewhere'), /removed or renamed/i);
 
   // Still a file explorer: listing the folder and using the app's own data works.
-  assert.doesNotThrow(() => m.listDir('/apps/donations'));
-  assert.doesNotThrow(() => m.listDir('/apps/donations/data'));
+  await assert.doesNotReject(m.listDir('/apps/donations'));
+  await assert.doesNotReject(m.listDir('/apps/donations/data'));
   assert.equal(m.readTextFile('/apps/donations/data/receipt.txt').content, 'a masjid file');
   assert.doesNotThrow(() => m.removeEntry('/apps/donations/data/receipt.txt'));
 });
