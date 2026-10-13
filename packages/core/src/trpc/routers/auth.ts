@@ -84,19 +84,62 @@ let verifyGate: Promise<void> = Promise.resolve();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Where a sign-in attempt came from, as far as the lockout is concerned. */
+type LoginOrigin = { viaTunnel: boolean; remoteIp: string | null };
+
 /**
- * Check a username + password, and report WHICH password hash it was checked
- * against. The caller must confirm that hash is still current before minting a
- * session (see `freshCredential` in auth/sessions.ts): argon2 is awaited, and a
- * password change landing during that await would otherwise mint a session bound
- * to the NEW password for someone who only knew the old one.
+ * Refuse an address that has failed too often. Tunnel traffic only: Cloudflare sets
+ * CF-Connecting-IP at its edge and a tunnel client cannot forge it, whereas on the LAN
+ * every client is SNATed to the bridge gateway (auth/ip-lockout.ts, util/net.ts).
  */
-async function verifyCredentials(username: string, password: string): Promise<{ ok: boolean; cred: string }> {
+function refuseIfIpLocked(origin: LoginOrigin): void {
+  if (!origin.viaTunnel || !ipLockedOut(origin.remoteIp)) return;
+  const mins = Math.ceil(ipLockoutRemaining(origin.remoteIp) / 60_000);
+  throw new TRPCError({
+    code: 'TOO_MANY_REQUESTS',
+    message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
+  });
+}
+
+/** `refuseIfIpLocked`, and the opt-in hard cooldown (exposed instances). */
+function refuseIfLockedOut(origin: LoginOrigin): void {
+  refuseIfIpLocked(origin);
+  if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Please wait a minute and try again.' });
+  }
+}
+
+function noteLoginFailure(origin: LoginOrigin): void {
+  noteIpFailure(origin.remoteIp);
+  consecutiveFailures += 1;
+  if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) cooldownUntil = Date.now() + LOCKOUT_MS;
+}
+
+/**
+ * Check a username + password, one attempt at a time, and report WHICH password hash it
+ * was checked against: the one a resulting session must be bound to (auth/sessions.ts
+ * `createSession`).
+ *
+ * `ok` only while that hash is still the current one. argon2 is awaited, and a password
+ * change landing meanwhile would otherwise mint a session bound to the NEW password for
+ * someone who only knew the old one. Read FRESH: the throttled copy can still be the old
+ * hash for a second after the installer's Reset sign-in replaced it from another process.
+ *
+ * The lockout is asked again when it is this attempt's turn, and a failure is counted
+ * before the next attempt is let in: a batch of attempts all pass the check on arrival,
+ * before any of them has failed. A refused attempt runs no argon2 and counts nothing.
+ */
+async function verifyCredentials(
+  username: string,
+  password: string,
+  origin: LoginOrigin,
+): Promise<{ ok: boolean; cred: string }> {
   let release!: () => void;
   const prev = verifyGate;
   verifyGate = new Promise<void>((r) => (release = r));
   await prev;
   try {
+    refuseIfLockedOut(origin);
     // The login identifier matches EITHER the stored username (older installs used a
     // plain username; new installs set it = the email) OR the admin email (so once an
     // older install sets an email in Settings → Account, they can use that too).
@@ -111,7 +154,15 @@ async function verifyCredentials(username: string, password: string): Promise<{ 
     // being checked against, and the one the resulting session must be bound to.
     const hash = getPasswordHash({ fresh: true });
     const okPass = await verifyPassword(hash ?? '', password);
-    return { ok: okUser && okPass, cred: credentialFingerprint(hash) };
+    const cred = credentialFingerprint(hash);
+    const ok = okUser && okPass && cred === freshCredential();
+    if (ok) {
+      consecutiveFailures = 0;
+      cooldownUntil = 0;
+    } else {
+      noteLoginFailure(origin);
+    }
+    return { ok, cred };
   } finally {
     release();
   }
@@ -234,50 +285,19 @@ export const authRouter = router({
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      // PER-IP lockout, for tunnel traffic only. This is the one place the
-      // platform can tell clients apart: Cloudflare sets CF-Connecting-IP at its
-      // edge and a tunnel client cannot forge it, whereas on the LAN every
-      // client is SNATed to the bridge gateway and they all look identical
-      // (auth/ip-lockout.ts, util/net.ts). Checked FIRST, so a guesser is
-      // refused without occupying the verify mutex or spending an argon2 hash.
-      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
-        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
-        });
-      }
-      // Opt-in hard cooldown (exposed instances): reject fast without occupying
-      // the verify mutex or spending an argon2 hash.
-      if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many attempts. Please wait a minute and try again.',
-        });
-      }
-      const verified = await verifyCredentials(input.username, input.password);
-      // A password that was right when checked but has been CHANGED since (during
-      // argon2) is not a valid sign-in now. Treated exactly as a wrong password.
-      // Read FRESH: the throttled copy can still be the old hash for a second after
-      // the installer's Reset sign-in replaced it from another process.
-      const ok = verified.ok && verified.cred === freshCredential();
-      if (!ok) {
-        noteIpFailure(ctx.remoteIp);
-        consecutiveFailures += 1;
-        if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) {
-          cooldownUntil = Date.now() + LOCKOUT_MS;
-        }
+      // Checked on arrival, so a locked-out guesser does not queue for the verify or
+      // spend an argon2 hash — and again when its turn comes (verifyCredentials).
+      refuseIfLockedOut(ctx);
+      const verified = await verifyCredentials(input.username, input.password, ctx);
+      if (!verified.ok) {
         // Slow the failing response (outside the mutex, so a correct attempt is
         // never queued behind these delays).
         await wait(Math.min(consecutiveFailures * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
-      consecutiveFailures = 0;
-      cooldownUntil = 0;
-      // A correct password clears the address's history. The second factor still
-      // has to pass, and its failures are counted separately below — but someone
-      // who knows the password is not who this counter is aimed at.
-      clearIpFailures(ctx.remoteIp);
+      // The address's failures are NOT cleared here: over the tunnel a code is still to
+      // come, and clearing them let anyone with the password guess codes without limit.
+      // completeLogin clears them once the code is right.
 
       /**
        * THE SECOND FACTOR IS REQUIRED ON TUNNEL TRAFFIC ONLY, at Hasan's
@@ -353,13 +373,7 @@ export const authRouter = router({
       // The second factor is six digits, so it is the CHEAPER target of the two
       // and must not be the one left uncounted. Same per-IP bound as the
       // password step, checked before the challenge is even looked up.
-      if (ctx.viaTunnel && ipLockedOut(ctx.remoteIp)) {
-        const mins = Math.ceil(ipLockoutRemaining(ctx.remoteIp) / 60_000);
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
-        });
-      }
+      refuseIfIpLocked(ctx);
       const claim = claimChallenge(input.challenge, ctx);
       if (!claim.ok) {
         /**
