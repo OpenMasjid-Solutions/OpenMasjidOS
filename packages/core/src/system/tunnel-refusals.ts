@@ -11,7 +11,8 @@
  *
  *   - "nothing is published at that path" (the usual answer: the address is wrong, or
  *     the app is not exposed, or the routing table was momentarily empty),
- *   - "that is a LAN-only route and always will be" (the dashboard, tRPC, the Fabric),
+ *   - "that is a LAN-only route" (the Fabric and health routes always; the dashboard
+ *     and tRPC whenever remote administration is off),
  *   - "that is the app's own LAN-only /fabric space".
  *
  * All three are correct behaviour in their own case, which is exactly why an
@@ -40,7 +41,8 @@ import { log } from '../logger';
 export type RefusalReason =
   /** No app is routed at that first path segment. Usually the real answer. */
   | 'no-app-at-path'
-  /** A platform route that is LAN-only by design (dashboard, tRPC, health, Fabric). */
+  /** A platform route refused from outside: the Fabric and health routes always, the
+   *  dashboard and tRPC whenever remote administration is off. */
   | 'lan-only-route'
   /** An exposed app's own `/fabric/*` space, which is LAN-only. */
   | 'app-fabric-lan-only'

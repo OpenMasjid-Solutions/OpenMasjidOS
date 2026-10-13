@@ -176,8 +176,3 @@ export function registerAppOpen(front: FastifyInstance): void {
     return reply.code(303).redirect(`/${seg}/`);
   });
 }
-
-/** Test seam. Never called by the daemon. */
-export function __clearAppTicketsForTests(): void {
-  tickets.clear();
-}

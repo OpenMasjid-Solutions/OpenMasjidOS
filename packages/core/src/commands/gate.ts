@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { authoriseSender, areCommandsEnabled, COMMAND_PREFIX, type CommandPerson } from '../store/commands';
 import { normaliseInbound, type InboundMessage } from './normalise';
 import { awaitingReply, shouldNoticeThrottle, takeToken, touch } from './conversation';
+import { tidyBody } from './parse';
 
 /** Backlog replays land in the moments after a socket comes up. Nobody types a
  *  command in the same three seconds, so this costs a real admin nothing. */
@@ -51,13 +52,13 @@ export type DropReason =
   | 'stale'
   | 'future'
   | 'unknown-sender'
+  | 'no-grants'
   | 'duplicate'
   | 'no-prefix'
   | 'rate-limited';
 
 export type GateOutcome =
   | { pass: true; person: CommandPerson; msg: InboundMessage; digits: string }
-  /** `notice` is set ONLY for 'rate-limited' — the one drop that may answer. */
   /**
    * `notice` is set ONLY for 'rate-limited' — the one drop that may answer.
    * `prefixed` is set ONLY for 'unknown-sender', and says the ignored message
@@ -145,7 +146,9 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
     return { pass: false, drop: 'not-text' };
   }
 
-  const body = msg.body.trim();
+  // The parser's own tidy: String.trim keeps a leading zero-width space, which would
+  // hide the prefix from the steps below while the parser still saw a command.
+  const body = tidyBody(msg.body);
   if (!body) return { pass: false, drop: 'empty' };
   if (body.length > MAX_BODY_CHARS) return { pass: false, drop: 'too-long', digits: msg.fromDigits };
 
@@ -178,6 +181,9 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
       prefixed: body.startsWith(COMMAND_PREFIX),
     };
   }
+  // 10b. On the list with nothing granted: there is nothing they may run, so the same
+  //      silence, counted under its own reason so the diagnostics can tell them apart.
+  if (person.scopes.length === 0) return { pass: false, drop: 'no-grants' };
 
   // 11. Duplicate suppression, recorded before execution and kept regardless of
   //     outcome. Without an id we key on the content so a redelivery still collides.

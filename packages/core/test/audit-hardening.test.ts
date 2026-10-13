@@ -63,7 +63,7 @@ test("THE CORE'S OWN COMPOSE IS PROTECTED — it sits at the sandbox root, not u
   assert.throws(() => m.renameEntry('/notes.txt', 'docker-compose.yml'), /PROTECTED|private/i);
 });
 
-test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => {
+test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", async () => {
   // Refusing compose.yml, .env and meta.json one at a time while allowing their
   // parent to be removed wholesale is not a sandbox.
   const { m } = freshManager();
@@ -71,8 +71,8 @@ test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => 
   assert.throws(() => m.renameEntry('/apps/donations', 'elsewhere'), /removed or renamed/i);
 
   // Still a file explorer: listing the folder and using the app's own data works.
-  assert.doesNotThrow(() => m.listDir('/apps/donations'));
-  assert.doesNotThrow(() => m.listDir('/apps/donations/data'));
+  await assert.doesNotReject(m.listDir('/apps/donations'));
+  await assert.doesNotReject(m.listDir('/apps/donations/data'));
   assert.equal(m.readTextFile('/apps/donations/data/receipt.txt').content, 'a masjid file');
   assert.doesNotThrow(() => m.removeEntry('/apps/donations/data/receipt.txt'));
 });
@@ -150,13 +150,18 @@ test('a reserved id that gets its directory deleted is also refused at install',
 
 test('the app-to-app broker bounds UNAUTHENTICATED work', () => {
   // The per-caller limiter keys on caller.id, which only exists after a secret is
-  // accepted — so it bounded a misbehaving app and nothing else. Every wrong secret
-  // still costs a constant-time compare against every registered app.
+  // accepted — so it bounded a misbehaving app and nothing else. The per-source tier
+  // covers the rest, but ONLY for a caller that presented no valid secret: it used to run
+  // before authentication and charge every app, and every app shares one source address,
+  // so apps inside their own budgets emptied it for all of them. (broker.test.ts drives
+  // both halves for real.)
   const src = read('fabric', 'appLink.ts');
-  const ipGate = src.indexOf('ipRateOk(');
   const auth = src.indexOf('deps.resolveCaller(');
-  assert.ok(ipGate > 0, 'a per-source limiter must exist');
-  assert.ok(ipGate < auth, 'and must run BEFORE authentication, or it bounds nothing');
+  const unidentified = src.indexOf('if (!caller) {', auth);
+  const ipGate = src.indexOf('ipRateOk(', auth);
+  assert.ok(auth > 0 && ipGate > 0, 'a per-source limiter must exist');
+  assert.ok(unidentified > auth && ipGate > unidentified, 'it is charged only to a caller that was not identified');
+  assert.ok(ipGate < src.indexOf("'unauthorized'", auth), 'and before that caller is told no');
 });
 
 // ── "could not ask" is never an answer ──────────────────────────────────────

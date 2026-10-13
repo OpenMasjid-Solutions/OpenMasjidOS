@@ -264,7 +264,7 @@ which matters most when the machine is wall-mounted, in a cupboard, or in an off
 | **RAM** | 4 GB | 8 GB |
 | **Storage** | 16 GB free | 32 GB |
 
-Docker is installed automatically if it isn't already present. The installer detects your OS/architecture, creates `/opt/openmasjid/` for all data, starts the core as a service that survives reboots, and prints your access URL.
+Docker is installed automatically if it isn't already present. The installer detects your OS/architecture, creates `/opt/openmasjid/` for settings and app files (each app's own data lives in Docker volumes — use a backup to move machines), starts the core as a service that survives reboots, and prints your access URL.
 
 On most Linux machines (Ubuntu 20.04+/Debian 11+/Raspberry Pi OS 64-bit/Fedora/Rocky/Alma), just SSH in and run the one-liner at the top. Detailed, copy-paste guides for specific setups:
 
@@ -356,7 +356,7 @@ Each app lives in its **own** repository and is catalogued by **[OpenMasjidAPPS]
 
 ## Development
 
-TypeScript monorepo (npm workspaces): a Node + Fastify + tRPC daemon (`packages/core`) and a React + Vite + Tailwind dashboard (`packages/ui`). Requires Node 20+ and Docker.
+TypeScript monorepo (npm workspaces): a Node + Fastify + tRPC daemon (`packages/core`) and a React + Vite + Tailwind dashboard (`packages/ui`). Requires Node 22 (the version the image runs) and Docker.
 
 ```bash
 git clone https://github.com/OpenMasjid-Solutions/OpenMasjidOS.git && cd OpenMasjidOS

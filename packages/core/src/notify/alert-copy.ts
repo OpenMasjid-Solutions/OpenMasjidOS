@@ -67,7 +67,6 @@ export function appOffline(name: string, id: string): AlertCopy {
   };
 }
 
-/** A newer OpenMasjidOS release is available. */
 /**
  * WhatsApp has signed the masjid's phone out and messages are not going anywhere.
  *
@@ -112,7 +111,7 @@ export function whatsappLinkLost(info: {
     detail:
       'Nothing has been lost: the messages waiting are kept and can be sent once you link the ' +
       'phone again. Open OpenMasjidOS, go to Settings, choose WhatsApp, and link the number - ' +
-      'then press Resend. Messages listed above as unconfirmed went out before this was ' +
+      'then press "Send them now". Messages listed above as unconfirmed went out before this was ' +
       'noticed and may not have arrived; OpenMasjidOS does not keep their contents, so check ' +
       'in the app that sent them.',
     facts,
@@ -124,6 +123,7 @@ export function whatsappLinkLost(info: {
   };
 }
 
+/** A newer OpenMasjidOS release is available. */
 export function coreUpdate(current: string, latest: string): AlertCopy {
   return {
     alertId: 'core-update',

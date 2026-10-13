@@ -104,15 +104,14 @@ function defaultDeps(): AppLinkDeps {
 export function registerAppLink(server: FastifyInstance, overrides?: Partial<AppLinkDeps>): void {
   const deps: AppLinkDeps = { ...defaultDeps(), ...overrides };
   const callerRateOk = makeRateLimiter();
-  // A SECOND limiter, keyed by source address and checked BEFORE authentication.
+  // A SECOND limiter, keyed by source address, for callers that present no valid secret.
   //
   // `callerRateOk` keys on `caller.id`, which only exists once a secret has been
   // accepted — so it bounds a misbehaving app and does nothing at all about an
-  // unauthenticated flood. Every wrong secret still costs a constant-time compare
-  // against every registered app inside `findFabricApp`, and nothing capped how many
-  // of those a caller could ask for. This is the same coarse per-IP tier the other
-  // Fabric routes apply, kept local to this module rather than imported from
-  // api/fabric.ts, which imports this one.
+  // unauthenticated flood. This is the same coarse per-IP tier the other Fabric routes
+  // apply, kept local to this module rather than imported from api/fabric.ts, which
+  // imports this one. Identified callers never pay it: every app arrives from the same
+  // bridge address, so charging them let apps inside their own budgets lock out the rest.
   const ipRateOk = makeRateLimiter();
 
   server.post('/api/fabric/app/:targetAppId/:capability/:method', async (req, reply) => {
@@ -123,16 +122,17 @@ export function registerAppLink(server: FastifyInstance, overrides?: Partial<App
       method: string;
     };
 
-    // 0. Bound the work an UNAUTHENTICATED caller can demand, before spending any.
-    if (!ipRateOk(req.ip || 'unknown', started, IP_RATE_MAX)) {
-      return fabricError(reply, 429, 'rate_limited', 'Too many requests — slow down.');
-    }
-
-    // 1. Authenticate the CALLER (constant-time inside findFabricApp). Never reveal
-    //    whether the target exists on an auth failure.
+    // 1. Authenticate the CALLER (constant-time inside findFabricApp, an in-memory scan).
+    //    Never reveal whether the target exists on an auth failure. Only an UNIDENTIFIED
+    //    caller is charged to the per-address tier, which bounds an unauthenticated flood.
     const presented = req.headers['x-openmasjid-app-secret'];
     const caller = deps.resolveCaller(typeof presented === 'string' ? presented : null);
-    if (!caller) return fabricError(reply, 401, 'unauthorized', 'Unknown or missing app secret.');
+    if (!caller) {
+      if (!ipRateOk(req.ip || 'unknown', started, IP_RATE_MAX)) {
+        return fabricError(reply, 429, 'rate_limited', 'Too many requests — slow down.');
+      }
+      return fabricError(reply, 401, 'unauthorized', 'Unknown or missing app secret.');
+    }
 
     // 2. Per-caller rate limit.
     if (!callerRateOk(caller.id, started, deps.rateMax)) {

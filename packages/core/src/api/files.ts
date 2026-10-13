@@ -5,12 +5,15 @@
  * Authenticated by the session cookie, like the backup route. Sandboxed via the
  * file manager.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { requestCsrfOk, requestUser } from './ws-auth';
 import { isAllowedOrigin } from '../util/origin';
-import { resolveFile, uploadPath, rawMime, FileError } from '../files/manager';
+import { resolveFile, uploadPath, rawMime, FileError, NOFOLLOW_WRITE } from '../files/manager';
+import { log } from '../logger';
 
 function authed(req: FastifyRequest): boolean {
   return Boolean(requestUser(req));
@@ -25,17 +28,24 @@ function statusFor(err: unknown): number {
   return 400;
 }
 
-// Open flags for a binary upload that NEVER follows a symlink at the final
-// component: O_NOFOLLOW makes open() fail with ELOOP if the destination is a
-// symlink, so a symlink planted by a malicious app/backup can't redirect the
-// write outside the sandbox (security audit). O_NOFOLLOW is 0 on platforms that
-// lack it (e.g. Windows dev) — harmless there; production is Linux.
-// `flags` is typed string, but createWriteStream forwards it to fs.open, which
-// accepts a numeric flag set — cast so we can OR in O_NOFOLLOW.
-const NOFOLLOW_WRITE = (fs.constants.O_WRONLY |
-  fs.constants.O_CREAT |
-  fs.constants.O_TRUNC |
-  (fs.constants.O_NOFOLLOW ?? 0)) as unknown as string;
+/**
+ * A Content-Disposition with the file's real name where browsers read it, `filename*`
+ * (RFC 6266/5987), and a plain-ASCII stand-in for any that cannot. A percent-encoded
+ * `filename="…"` was saved as it stood: "Jumuah%20notes.pdf".
+ */
+function contentDisposition(kind: 'attachment' | 'inline', name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/** Why an upload failed, in words that say what to do; the detail goes to the log. */
+function uploadFailure(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ENOSPC') return "There isn't enough free space on the server for that file.";
+  if (code === 'EISDIR') return 'There is already a folder with that name here.';
+  return "That file couldn't be uploaded. Please try again.";
+}
 
 export function registerFiles(server: FastifyInstance): void {
   // Download a file as an attachment.
@@ -46,7 +56,7 @@ export function registerFiles(server: FastifyInstance): void {
     const p = (req.query as { path?: string }).path ?? '';
     try {
       const { full, name } = resolveFile(p);
-      reply.header('content-disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+      reply.header('content-disposition', contentDisposition('attachment', name));
       reply.header('X-Content-Type-Options', 'nosniff');
       reply.type('application/octet-stream');
       return reply.send(fs.createReadStream(full));
@@ -76,7 +86,7 @@ export function registerFiles(server: FastifyInstance): void {
       // This address carries the dashboard key (?k=). From outside the apps share its
       // origin, so an image an SVG loads from an app's path would tell that app the key.
       reply.header('Referrer-Policy', 'no-referrer');
-      reply.header('Content-Disposition', `inline; filename="${encodeURIComponent(name)}"`);
+      reply.header('Content-Disposition', contentDisposition('inline', name));
       reply.type(mime ?? 'application/octet-stream');
       return reply.send(fs.createReadStream(full));
     } catch (err) {
@@ -90,21 +100,30 @@ export function registerFiles(server: FastifyInstance): void {
     if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
     if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
     const dir = (req.query as { path?: string }).path ?? '/';
+    let temp: string | null = null;
     try {
       const file = await req.file();
       if (!file) return reply.code(400).send({ error: 'No file was uploaded.' });
       const dest = uploadPath(dir, file.filename);
-      // O_NOFOLLOW: never write THROUGH a pre-existing symlink at the destination
-      // (which could point outside the sandbox at e.g. the credential store).
-      await pipeline(file.file, fs.createWriteStream(dest, { flags: NOFOLLOW_WRITE }));
-      if (file.file.truncated) {
-        // Exceeded the configured size limit — remove the partial file.
-        fs.rmSync(dest, { force: true });
-        return reply.code(413).send({ error: 'That file is too large.' });
-      }
+      // Into a new file beside it, renamed over the old one only once whole: a failed or
+      // cancelled upload left half a file, after O_TRUNC had already emptied the one it replaced.
+      // The rename replaces a symlink at `dest` itself, never what it points to.
+      temp = path.join(path.dirname(dest), `.upload-${crypto.randomBytes(8).toString('hex')}.tmp`);
+      await pipeline(file.file, fs.createWriteStream(temp, { flags: NOFOLLOW_WRITE }));
+      if (file.file.truncated) return reply.code(413).send({ error: 'That file is too large.' });
+      fs.renameSync(temp, dest);
+      temp = null;
       return { ok: true };
     } catch (err) {
-      return reply.code(statusFor(err)).send({ error: (err as Error).message });
+      if (err instanceof FileError) return reply.code(statusFor(err)).send({ error: err.message });
+      log.warn('A file upload failed.', err);
+      return reply.code(500).send({ error: uploadFailure(err) });
+    } finally {
+      try {
+        if (temp) fs.rmSync(temp, { force: true });
+      } catch {
+        /* best effort */
+      }
     }
   });
 }

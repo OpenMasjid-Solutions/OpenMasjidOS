@@ -12,7 +12,7 @@ OpenMasjidOS is a **TypeScript monorepo** (npm workspaces) shipped as **one Dock
 image** that runs a Node daemon serving both the API and the built UI.
 
 ```
-packages/core   Node 20 + Fastify + tRPC daemon (the "umbreld" equivalent)
+packages/core   Node 22 + Fastify + tRPC daemon (the "umbreld" equivalent)
 packages/ui     React 18 + Vite + Tailwind v4 + Motion dashboard
 ```
 

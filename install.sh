@@ -118,6 +118,14 @@ error() {
   exit 1
 }
 
+# has_tty — true when there is a terminal to ask questions on. `[ -r /dev/tty ]` is not
+# enough: the device exists even with no terminal at all (automation, cron), and only
+# OPENING it fails ("No such device or address"). `true`, not `:`, so a failed open can
+# never end the script, even when bash runs in POSIX mode.
+has_tty() {
+  { true </dev/tty; } 2>/dev/null
+}
+
 # print_mosque — a little decorative masjid, shown in the banner and success box.
 print_mosque() {
   printf "${CLR_CYAN}"
@@ -187,24 +195,37 @@ detect_os() {
     aarch64 | arm64)
       ARCH="arm64"
       ;;
-    armv7l | armhf)
-      # 32-bit ARM — common on older Raspberry Pi models
-      ARCH="armv7"
-      ;;
-    *)
-      echo ""
-      echo -e "${CLR_RED}Sorry, your CPU architecture ($raw_arch) is not supported yet.${CLR_RESET}"
-      echo ""
-      echo "  OpenMasjidOS currently supports:"
-      echo "    • amd64  (standard desktop/server PCs)"
-      echo "    • arm64  (Raspberry Pi 4/5, Apple Silicon servers)"
-      echo ""
-      echo "  If you would like support for your architecture, please open an issue at:"
-      echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
-      echo ""
-      exit 1
-      ;;
   esac
+
+  # A 64-bit kernel can run a 32-bit system on top (older Raspberry Pi OS images do), and
+  # Docker there wants 32-bit images — which we don't publish, so the download would fail
+  # only after Docker had been installed. Ask the package manager, not just the kernel.
+  if [ "$ARCH" = "arm64" ] && command -v dpkg &>/dev/null \
+    && [ "$(dpkg --print-architecture 2>/dev/null)" = "armhf" ]; then
+    ARCH=""
+    raw_arch="armhf"
+  fi
+
+  if [ -z "$ARCH" ]; then
+    echo ""
+    echo -e "${CLR_RED}Sorry, your CPU architecture ($raw_arch) is not supported yet.${CLR_RESET}"
+    echo ""
+    echo "  OpenMasjidOS currently supports:"
+    echo "    • amd64  (standard desktop/server PCs)"
+    echo "    • arm64  (Raspberry Pi 4/5, Apple Silicon servers)"
+    echo ""
+    case "$raw_arch" in
+      arm*)
+        echo "  This is a 32-bit system. On a Raspberry Pi 3, 4 or 5, install the 64-bit"
+        echo "  Raspberry Pi OS (or Ubuntu Server 64-bit) and run this again."
+        echo ""
+        ;;
+    esac
+    echo "  If you would like support for your architecture, please open an issue at:"
+    echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
+    echo ""
+    exit 1
+  fi
 
   # --- Operating System ---
   # We read /etc/os-release which is the standard on all modern Linux distros
@@ -233,16 +254,21 @@ detect_os() {
       OS_ID="fedora"
       ;;
     rhel | centos | rocky | almalinux)
-      # RHEL-family — treat like fedora (dnf-based)
-      OS_ID="fedora"
+      # RHEL-family — dnf like Fedora, but NOT Fedora's Docker repository: that one is
+      # keyed on Fedora's release numbers, so an EL "9" fetches a Fedora 9 that isn't there.
+      OS_ID="rhel"
       ;;
     *)
-      # Fall back to ID_LIKE — e.g. Linux Mint says ID_LIKE="ubuntu"
+      # Fall back to ID_LIKE — e.g. Linux Mint says ID_LIKE="ubuntu". EL rebuilds also list
+      # "fedora", so they are matched first.
       case "$os_id_like" in
         *ubuntu* | *debian*)
           OS_ID="debian"
           ;;
-        *fedora* | *rhel*)
+        *rhel* | *centos*)
+          OS_ID="rhel"
+          ;;
+        *fedora*)
           OS_ID="fedora"
           ;;
         *)
@@ -252,8 +278,9 @@ detect_os() {
           echo "  OpenMasjidOS currently supports:"
           echo "    • Ubuntu 20.04 / 22.04 / 24.04"
           echo "    • Debian 11 / 12"
-          echo "    • Raspberry Pi OS (Bookworm / Bullseye)"
-          echo "    • Fedora 38+"
+          echo "    • Raspberry Pi OS 64-bit (Bookworm / Bullseye)"
+          echo "    • Fedora (a release that is still supported)"
+          echo "    • Rocky Linux / AlmaLinux / RHEL 8+"
           echo ""
           echo "  If you would like support for your distribution, please open an issue at:"
           echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
@@ -302,17 +329,25 @@ install_docker() {
 
   info "Checking for Docker..."
 
+  # Installed but stopped is not "missing": start it rather than reinstalling over it.
+  if command -v docker &>/dev/null && ! docker info &>/dev/null && command -v systemctl &>/dev/null; then
+    systemctl start docker &>/dev/null || true
+  fi
+
   # Check if the docker CLI exists and the daemon is reachable
-  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  if command -v docker &>/dev/null && docker info &>/dev/null; then
     info "Docker is already installed — skipping installation."
   else
-    warn "Docker not found. Installing Docker now (this may take a minute)..."
+    # Update and Repair arrive here without having looked at the system yet.
+    [ -n "$OS_ID" ] || detect_os
+    warn "Docker isn't installed (or isn't working). Installing Docker now (this may take a minute)..."
     echo ""
 
     case "$OS_ID" in
-      ubuntu | debian | raspbian)
+      ubuntu | debian | raspbian | fedora)
         # Use Docker's official convenience script — it is the recommended path
-        # for non-interactive installs and handles all the APT repository setup.
+        # for non-interactive installs and handles all the repository setup, including
+        # Fedora 41+'s dnf5, whose "add a repository" command is spelled differently.
         # Users can inspect it at https://get.docker.com
         if command -v curl &>/dev/null; then
           curl -fsSL https://get.docker.com | sh
@@ -322,31 +357,41 @@ install_docker() {
           error "Neither curl nor wget is available. Please install one and re-run."
         fi
         ;;
-      fedora)
-        # On Fedora/RHEL-family we use dnf and the official Docker CE repository
+      rhel)
+        # Rocky / Alma / RHEL / CentOS: Docker's RHEL repository, which follows EL release
+        # numbers. These still ship dnf 4, so --add-repo is the right spelling here.
         dnf -y install dnf-plugins-core
-        dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+        dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
         dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
         ;;
     esac
 
+    command -v docker &>/dev/null \
+      || error "Docker could not be installed automatically. Please install it (https://docs.docker.com/engine/install/) and run this again."
     info "Docker installed successfully."
   fi
 
   # --- Ensure the docker compose plugin is present ---
   # 'docker compose' (v2 plugin) is different from the older 'docker-compose' binary.
   # We require the v2 plugin.
-  if ! docker compose version &>/dev/null 2>&1; then
+  if ! docker compose version &>/dev/null; then
     warn "The 'docker compose' plugin is not available. Installing it..."
+    [ -n "$OS_ID" ] || detect_os
 
+    # docker-compose-plugin exists only in Docker's own repository. A distro's Docker
+    # (docker.io, moby-engine) pairs with its own package instead, so try that next.
     case "$OS_ID" in
       ubuntu | debian | raspbian)
-        apt-get install -y docker-compose-plugin
+        apt-get update -y || true
+        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose-v2 || true
         ;;
-      fedora)
-        dnf -y install docker-compose-plugin
+      fedora | rhel)
+        dnf -y install docker-compose-plugin || dnf -y install docker-compose || true
         ;;
     esac
+
+    docker compose version &>/dev/null \
+      || error "The 'docker compose' plugin could not be installed automatically. Please install it (https://docs.docker.com/compose/install/linux/) and run this again."
   fi
 
   info "Docker Compose plugin is available."
@@ -378,9 +423,9 @@ setup_data_dir() {
 
   # Create all subdirectories we need.
   # -p means: create parent dirs as needed and don't fail if they already exist.
+  # (Apps' own data — their databases — lives in Docker named volumes, not in here.)
   mkdir -p "${DATA_DIR}/config"
   mkdir -p "${DATA_DIR}/apps"
-  mkdir -p "${DATA_DIR}/volumes"
 
   # Restrict permissions — only root should read these. config/ holds the admin
   # credential store; apps/ holds each app's .env (which carries its Fabric
@@ -388,9 +433,21 @@ setup_data_dir() {
   chmod 750 "${DATA_DIR}"
   chmod 750 "${DATA_DIR}/config"
   chmod 750 "${DATA_DIR}/apps"
-  chmod 750 "${DATA_DIR}/volumes"
 
   info "Data directory ready."
+}
+
+# seed_channel — tell a NEW install that it is on the Development channel. The platform
+# reads its channel from config/settings.json and treats a missing one as Stable, so a
+# fresh --channel=dev box ran a Development build while serving the Stable catalogue and
+# offering a "downgrade" to Stable. A settings file that already exists is never touched.
+seed_channel() {
+  local settings="${DATA_DIR}/config/settings.json"
+  if [ "${CHANNEL:-}" = "dev" ] && [ ! -e "${settings}" ]; then
+    # 0600, root-owned, like every file the core keeps in config/.
+    ( umask 077 && printf '{\n  "updateChannel": "dev"\n}\n' > "${settings}" )
+    info "This machine is set up on the Development channel."
+  fi
 }
 
 # =============================================================================
@@ -403,10 +460,35 @@ setup_data_dir() {
 # writes this same line (`alignComposeImage` in docker/update.ts), so it reflects a
 # channel switch made from Settings. Anchored to our repo name so an app's image, a
 # comment or a volume path can never be picked up.
+#
+# A missing or damaged compose file (is_installed accepts config/ alone) must not read as
+# "no reference" — Update and Repair would then put a Development box on Stable. The core
+# container, while it exists, still names the image it was started from.
 current_core_ref() {
-  [ -f "${DATA_DIR}/docker-compose.yml" ] || return 0
-  sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*openmasjid-core[^[:space:]]*\)[[:space:]]*$|\1|p' \
-    "${DATA_DIR}/docker-compose.yml" | head -n 1
+  local ref=""
+  if [ -f "${DATA_DIR}/docker-compose.yml" ]; then
+    ref="$(sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*openmasjid-core[^[:space:]]*\)[[:space:]]*$|\1|p' \
+      "${DATA_DIR}/docker-compose.yml" | head -n 1)"
+  fi
+  if [ -z "${ref}" ] && command -v docker &>/dev/null; then
+    ref="$(docker inspect --type container -f '{{.Config.Image}}' openmasjid-core 2>/dev/null || true)"
+    case "${ref}" in
+      *openmasjid-core*) ;;
+      *) ref="" ;;
+    esac
+  fi
+  echo "${ref}"
+}
+
+# image_repo — an image reference without its tag or digest, keeping any registry port:
+# a ':' starts a tag only after the last '/' (my-mirror:5000/openmasjid-core:dev). The same
+# rule as `retarget` in docker/update.ts.
+image_repo() {
+  local ref="${1%%@*}"
+  case "${ref##*/}" in
+    *:*) ref="${ref%:*}" ;;
+  esac
+  echo "${ref}"
 }
 
 # current_channel — dev or main, read from the tag the box is on.
@@ -439,16 +521,23 @@ current_channel() {
 # A digest pin is preserved in BOTH modes, exactly as the dashboard's updater does — an
 # operator who pinned it meant it, and quietly unpinning it would be the worst of the
 # three outcomes.
+#
+# Only the TAG ever changes: the registry this machine already pulls from (a private
+# mirror, say) is kept, again exactly as the dashboard's updater does.
 resolve_image() {
   local mode="${1:-channel}"
-  local existing
+  local existing repo
   existing="$(current_core_ref)"
+  repo="${CORE_REPO}"
+  if [ -n "${existing}" ]; then
+    repo="$(image_repo "${existing}")"
+  fi
 
   # An explicit --channel always wins: that is the operator saying so, on this run.
   if [ -n "${CHANNEL:-}" ]; then
     case "${CHANNEL}" in
-      dev)  IMAGE="${CORE_REPO}:dev" ;;
-      *)    IMAGE="${CORE_REPO}:latest" ;;
+      dev)  IMAGE="${repo}:dev" ;;
+      *)    IMAGE="${repo}:latest" ;;
     esac
     return 0
   fi
@@ -469,22 +558,26 @@ resolve_image() {
   fi
 
   if [ "$(current_channel)" = "dev" ]; then
-    IMAGE="${CORE_REPO}:dev"
+    IMAGE="${repo}:dev"
     info "This machine is on the Development channel — updating to the latest Development build."
   else
-    IMAGE="${CORE_REPO}:latest"
+    IMAGE="${repo}:latest"
   fi
 }
 
+# write_compose_file — write the core's compose file naming ${IMAGE}. Callers decide the
+# image first (resolve_image), because WHEN it is written matters: Update downloads before
+# it writes (see do_update).
 write_compose_file() {
-  resolve_image "${IMAGE_MODE:-channel}"
   info "Writing core service configuration..."
 
   # We always overwrite this file so re-running the installer picks up any
   # changes to the image tag or configuration defaults.
   cat > "${DATA_DIR}/docker-compose.yml" << EOF
 # OpenMasjidOS — core service
-# Generated by install.sh — safe to re-run; your data lives in ./apps and ./volumes
+# Generated by install.sh — safe to re-run. Settings live in ./config and app files in
+# ./apps; each app's own data (its databases) is in Docker named volumes, not in this
+# folder — so to move to another machine, use a backup (Settings → Advanced).
 # Do not edit this file by hand unless you know what you are doing; the installer
 # will overwrite it on the next run.
 
@@ -512,8 +605,8 @@ services:
       # unless an app's manifest explicitly requests it and the admin approves.
       - /var/run/docker.sock:/var/run/docker.sock
 
-      # Mount our data directory so config, app state, and volumes persist
-      # across core container restarts and upgrades.
+      # Mount our data directory so config and app state persist across core
+      # container restarts and upgrades. (Apps' own data is in Docker volumes.)
       - ${DATA_DIR}:/data
 
       # Mount the host's /proc read-only so system stats (esp. memory) reflect
@@ -627,10 +720,11 @@ wait_for_health() {
   echo ""
   echo "    docker logs openmasjid-core"
   echo ""
-  echo "  And try opening the dashboard at: http://$(get_server_ip):${PORT}"
+  echo "  And try opening the dashboard at: https://$(get_server_ip)$( [ "${TLS_PORT}" != "443" ] && echo ":${TLS_PORT}" )"
   echo ""
-  # Exit 0 — we don't want to tear everything down just because startup was slow
-  return 0
+  # Nothing is torn down just because startup was slow — but the callers must not then
+  # announce that it is ready, and automation must be able to tell.
+  return 1
 }
 
 # =============================================================================
@@ -648,7 +742,8 @@ get_server_ip() {
   # Fall back to ip route if we got nothing useful
   if [ -z "$ip" ] || [ "$ip" = "127.0.0.1" ]; then
     if command -v ip &>/dev/null; then
-      ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $NF; exit}')"
+      # The address is the field after "src" — the line goes on (".. src 192.168.1.50 uid 0").
+      ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
     fi
   fi
 
@@ -752,13 +847,15 @@ print_success() {
   printf '  ╚%s╝\n' "$border"
   printf "${CLR_RESET}\n"
   echo ""
-  printf "  Your data is stored in ${CLR_BOLD}%s${CLR_RESET} and will survive upgrades.\n" "${DATA_DIR}"
+  printf "  Your settings are kept in ${CLR_BOLD}%s${CLR_RESET} and your apps' data in Docker\n" "${DATA_DIR}"
+  printf "  volumes; both survive upgrades. To move to another machine, use a backup\n"
+  printf "  (Settings -> Advanced) — copying that folder alone leaves your apps' data behind.\n"
   printf "  To update OpenMasjidOS in the future, simply re-run this installer.\n"
   echo ""
   printf "  ${CLR_BOLD}A note about the lock icon:${CLR_RESET} the dashboard uses a self-signed\n"
   printf "  certificate, so the first time each device opens it the browser shows a\n"
   printf "  \"Not secure\" warning. That's expected — click ${CLR_BOLD}Advanced -> Proceed${CLR_RESET} once.\n"
-  printf "  (You can upload your own certificate later in Settings -> Security.)\n"
+  printf "  (You can upload your own certificate later in Settings -> Advanced.)\n"
   echo ""
 }
 
@@ -791,7 +888,7 @@ is_installed() {
 # keyboard. /dev/tty is the actual controlling terminal. With no terminal
 # (CI/automation) we fall back to a safe default.
 menu_fresh() {
-  if [ ! -r /dev/tty ]; then echo "install"; return; fi
+  if ! has_tty; then echo "install"; return; fi
   {
     echo ""
     printf "${CLR_CYAN}${CLR_BOLD}  ┌─ Welcome! Let's get you set up ───────────────${CLR_RESET}\n"
@@ -810,7 +907,7 @@ menu_fresh() {
 }
 
 menu_existing() {
-  if [ ! -r /dev/tty ]; then echo "update"; return; fi
+  if ! has_tty; then echo "update"; return; fi
   {
     echo ""
     printf "${CLR_CYAN}${CLR_BOLD}  ┌─ OpenMasjidOS is already installed ───────────${CLR_RESET}\n"
@@ -839,14 +936,18 @@ menu_existing() {
 # machine): set a new admin password, drop all sessions, and rotate every app's
 # Fabric key. Runs the interactive CLI inside the core container. KEEPS all data.
 do_reset_signin() {
+  check_root
   echo ""
   info "Resetting the sign-in layer (your apps and their data are kept)."
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^openmasjid-core$'; then
     warn "OpenMasjidOS isn't running. Starting it first…"
     do_repair
   fi
-  # -it gives the CLI a TTY for the password prompts; fall back without it.
-  if [ -t 0 ] && [ -t 1 ]; then
+  # The reset asks questions, so it reads the TERMINAL: under `curl … | sudo bash` stdin is
+  # the pipe the script arrived on, already at its end, and the reset would read nothing and
+  # quietly change nothing. -t gives the prompts a real terminal. With no terminal at all
+  # (automation), the answers come from stdin.
+  if has_tty; then
     docker exec -it openmasjid-core node packages/core/dist/reset-auth.js < /dev/tty
   else
     docker exec -i openmasjid-core node packages/core/dist/reset-auth.js
@@ -868,15 +969,17 @@ do_install() {
 
   step "Creating a safe place for your data"
   setup_data_dir
+  seed_channel
 
   step "Writing the configuration"
+  resolve_image channel
   write_compose_file
 
   step "Downloading OpenMasjidOS and starting it up"
   pull_and_start
 
   step "Waiting for everything to be ready"
-  wait_for_health
+  wait_for_health || exit 1
 
   # Thank the people and sponsors who made this possible, then show the URL.
   print_acknowledgements
@@ -892,12 +995,12 @@ do_update() {
   # Download BEFORE writing the new image into the compose file. A failed download stops
   # the script here (set -e), and a compose file already naming the new image would then
   # be what the next restart of the core reads — coming back on a build it never ran.
-  resolve_image "${IMAGE_MODE:-channel}"
+  resolve_image channel
   info "Updating to the latest version..."
   docker pull "${IMAGE}"
   write_compose_file
   docker compose --project-name "${COMPOSE_PROJECT}" --file "${DATA_DIR}/docker-compose.yml" up --detach
-  wait_for_health
+  wait_for_health || exit 1
   echo ""
   info "OpenMasjidOS is up to date. Your installed apps and data were left untouched."
   print_acknowledgements
@@ -915,12 +1018,14 @@ do_repair() {
   # Repair must not move the machine to a different version — only make what is already
   # there work again. This is the path a masjid reaches for when an update went wrong,
   # so changing the version underneath them is the last thing it should do.
-  IMAGE_MODE=keep
+  resolve_image keep
   write_compose_file
-  info "Repairing — re-pulling and recreating the core service..."
-  docker pull "${IMAGE}"
+  info "Repairing — recreating the core service..."
+  # Download only what this machine doesn't have. The reference is often a moving tag
+  # (`:latest`, `:dev`), and pulling one again would move the machine to a newer build.
+  docker image inspect "${IMAGE}" &>/dev/null || docker pull "${IMAGE}"
   docker compose --project-name "${COMPOSE_PROJECT}" --file "${DATA_DIR}/docker-compose.yml" up --detach --force-recreate
-  wait_for_health
+  wait_for_health || exit 1
   echo ""
   info "Repair complete. Your installed apps and data were left untouched."
   print_acknowledgements
@@ -939,14 +1044,22 @@ do_uninstall() {
   else
     docker rm -f openmasjid-core 2>/dev/null || true
   fi
+  # The core runs the Cloudflare tunnel as a container of its own that restarts by itself,
+  # so it would go on forwarding the public addresses to this machine — and after every
+  # reboot. Its token stays in config/, and reinstalling turns it back on.
+  if docker inspect --type container openmasjid-cloudflared &>/dev/null; then
+    docker rm -f openmasjid-cloudflared &>/dev/null || true
+    info "Remote access (the Cloudflare tunnel) is off until OpenMasjidOS is reinstalled."
+  fi
   echo ""
   info "The OpenMasjidOS core has been removed."
-  echo "  Your installed apps are still running and your data is intact at ${DATA_DIR}."
+  echo "  Your installed apps are still running and all your data is kept: settings in"
+  echo "  ${DATA_DIR}, and your apps' data in Docker volumes."
   echo "  (Re-run this installer any time to bring the dashboard back — it will find your apps.)"
   echo ""
 
   local confirm=""
-  if [ -r /dev/tty ]; then
+  if has_tty; then
     printf "  Also remove ALL installed apps and their data? This cannot be undone.\n  Type %sDELETE%s to confirm, or press Enter to keep everything: " "${CLR_BOLD}" "${CLR_RESET}" > /dev/tty
     read -r confirm < /dev/tty || confirm=""
   fi
@@ -963,6 +1076,16 @@ do_uninstall() {
         # hijack the teardown — `down` then operates purely by project label.
         [ -n "$proj" ] && ( cd /tmp && docker compose -p "$proj" down -v ) 2>/dev/null || true
       done <<< "$projects"
+    fi
+    # An app removed earlier with "keep its data" has volumes but no containers, so the
+    # loop above never sees it. Remove every volume still belonging to an omos-* project.
+    local volumes=""
+    volumes="$(docker volume ls --format '{{.Name}} {{.Label "com.docker.compose.project"}}' 2>/dev/null \
+      | awk '$2 ~ /^omos-/ {print $1}' || true)"
+    if [ -n "$volumes" ]; then
+      while read -r vol; do
+        [ -n "$vol" ] && docker volume rm "$vol" &>/dev/null || true
+      done <<< "$volumes"
     fi
     rm -rf "${DATA_DIR}"
     info "Everything has been removed."
@@ -998,6 +1121,11 @@ main() {
       # masjid between channels on its own.
       --channel=*)          want_channel="${arg#--channel=}" ;;
       --dev)                want_channel="dev" ;;
+      # Said out loud rather than skipped: a run that quietly ignores what it was told
+      # (here, `--channel main` with a space) does something the operator didn't ask for.
+      --channel)            error "Use --channel=main or --channel=dev." ;;
+      --)                   ;;  # end of options, e.g. `bash install.sh -- --channel=dev`
+      *)                    error "Unknown option: ${arg}" ;;
     esac
   done
   if [ -n "${want_channel}" ]; then

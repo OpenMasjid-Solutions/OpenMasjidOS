@@ -7,9 +7,9 @@
  *   1. **SSRF defence** (`store/casaos.ts`): a community app-store URL must not be allowed
  *      to point at 127.0.0.1, the Docker bridge, or a cloud metadata endpoint. Here a
  *      *false negative* (calling a private address public) is the dangerous direction.
- *   2. **The LAN-only guard** (`system/via-tunnel.ts`): a request from a public address must
- *      not reach the Fabric routes. Here a *false positive* (calling a public address
- *      private) is the dangerous direction.
+ *   2. **The address apps are told to use** (`system/platform-address.ts`): a browser's
+ *      Host header must never point every installed app at a PUBLIC address. Here a *false
+ *      positive* (calling a public address private) is the dangerous direction.
  *
  * Because the two jobs fail in opposite directions, this has to be right rather than
  * roughly right, and it must be conservative about anything it cannot parse: an address we

@@ -22,6 +22,7 @@ import { checkForUpdate } from '../system/system';
 import { isPrerelease } from '../util/version';
 import { HOLD_UNTIL_REPLACED_MS, withUpdateLock } from '../system/update-lock';
 import { managesFromOutside } from '../system/remote-admin';
+import { backupInProgress } from '../system/backup';
 import { VERSION } from '../version';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
@@ -67,11 +68,11 @@ export function composeImageRef(): string | null {
  *
  * This is the other half of a channel switch, and without it the platform could never
  * actually run a Development build. `recreateCore` recreates the core with
- * `docker compose -f /data/docker-compose.yml up -d --force-recreate`, and the
- * installer writes that file with a hardcoded `image: …/openmasjid-core:latest`
- * (`IMAGE=` in install.sh). So we pulled `:dev`, then started `:latest` again — the
- * pull was wasted and the box stayed on Stable while the dashboard said Development.
- * That is exactly the "I'm on the latest and have dev mode on" report.
+ * `docker compose -f /data/docker-compose.yml up -d --force-recreate`, which starts the
+ * image that file names, not the one just pulled. (When the installer still wrote it with
+ * a hardcoded `:latest` — install.sh `resolve_image` decides now — we pulled `:dev`, then
+ * started `:latest` again: the pull was wasted and the box stayed on Stable while the
+ * dashboard said Development, the "I'm on the latest and have dev mode on" report.)
  *
  * Rewrites ONLY the core service's image line, in place, leaving the rest of the
  * file byte-identical: it carries the mounts, ports and env a masjid depends on, and
@@ -232,9 +233,11 @@ export async function recreateCore(onLine: (s: string) => void, tag?: string): P
   } catch {
     /* no compose file: alignComposeImage says what that means */
   }
-  // Must happen BEFORE the compose up below, or it recreates from the old reference.
-  if (tag) alignComposeImage(tag);
-  else await pinComposeToRunningBuild();
+  // Must happen BEFORE the compose up below, or it recreates from the old reference. A file
+  // that cannot be pointed at the new version would bring the old one back: stop here instead.
+  if (tag) {
+    if (!alignComposeImage(tag)) return false;
+  } else await pinComposeToRunningBuild();
   const args = ['run', '-d', '--rm', '-v', '/var/run/docker.sock:/var/run/docker.sock'];
   if (hostDataDir) args.push('-v', `${hostDataDir}:/data`);
   args.push(
@@ -285,8 +288,18 @@ export async function runUpdate(onLine: (s: string) => void, opts: { remote?: bo
   });
 }
 
+/** A backup being made dies with the core it runs in — off-site, leaving part of an archive
+ *  on the NAS to be counted as a good one. So the update waits for it, and says so. */
+function backupInTheWay(onLine: (s: string) => void): boolean {
+  if (!backupInProgress()) return false;
+  onLine('');
+  onLine('A backup is being made right now. Please update OpenMasjidOS once it has finished. Nothing was changed.');
+  return true;
+}
+
 async function runUpdateInner(onLine: (s: string) => void, opts: { remote?: boolean }): Promise<UpdateOutcome> {
   const channel = getSettings().updateChannel;
+  if (backupInTheWay(onLine)) return 'unchanged';
 
   onLine('Checking for the latest version…');
   // Ask which version we're going to, and pull THAT — on Development, `:dev` is a
@@ -377,6 +390,8 @@ async function runUpdateInner(onLine: (s: string) => void, opts: { remote?: bool
     return 'unchanged';
   }
 
+  // Asked again: one may have started during the download.
+  if (backupInTheWay(onLine)) return 'unchanged';
   onLine('');
   onLine('Download complete. Applying the update and restarting…');
   if (!(await recreateCore(onLine, tag))) {

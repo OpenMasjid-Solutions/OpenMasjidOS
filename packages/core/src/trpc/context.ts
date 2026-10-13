@@ -16,7 +16,14 @@ import type {} from '@fastify/cookie';
 import type { IncomingMessage } from 'node:http';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { TRPCError } from '@trpc/server';
-import { COOKIE_NAME, CSRF_HEADER, REMOTE_COOKIE_NAME, getSessionUserFor, SESSION_TTL_MS } from '../auth/sessions';
+import {
+  COOKIE_NAME,
+  CSRF_HEADER,
+  REMOTE_COOKIE_NAME,
+  getSessionUserFor,
+  SESSION_TTL_MS,
+  sessionTokenFromCookieHeader,
+} from '../auth/sessions';
 import { isAllowedWsOrigin, isWebSocketUpgrade } from '../util/origin';
 import { isViaTunnel, visitorScheme } from '../system/via-tunnel';
 import { remoteAdminEnabled, wasHandedOver } from '../system/remote-admin';
@@ -93,12 +100,11 @@ const REMOTE_COOKIE_OPTS = { ...COOKIE_OPTS, secure: true, path: '/' };
 export interface Context {
   username: string | null;
   sessionToken: string | null;
-  /** The dashboard key presented on this request (CSRF_HEADER) — checked against
-   *  the session for cookie-authenticated HTTP calls (protectedProcedure). */
+  /** The dashboard key presented on this request — the CSRF_HEADER, or `?k=` on a
+   *  WebSocket, which cannot carry a custom header. protectedProcedure checks it
+   *  against the session on both transports (trpc.ts). */
   csrf: string | null;
-  /** True for the WebSocket-transport context (live subscriptions). WS upgrades
-   *  can't carry custom headers, so the dashboard key is enforced on the raw WS
-   *  routes via a query param instead; tRPC subscriptions stay origin-guarded. */
+  /** True for the WebSocket-transport context (live subscriptions). */
   isWebSocket: boolean;
   /** Client IP, used for login-failure backoff. */
   ip: string;
@@ -123,24 +129,6 @@ export interface Context {
   clearSessionCookie?: () => void;
 }
 
-function parseCookie(header: string | undefined, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    if (part.slice(0, idx).trim() === name) {
-      const raw = part.slice(idx + 1).trim();
-      // A malformed %-escape must not throw and 500 every request.
-      try {
-        return decodeURIComponent(raw);
-      } catch {
-        return raw;
-      }
-    }
-  }
-  return null;
-}
-
 /** A header can arrive as a list (duplicated by a proxy); take the first hop. */
 function firstHeader(v: string | string[] | undefined): string | undefined {
   if (v == null) return undefined;
@@ -158,11 +146,12 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   // it IS Node's. The hand-over mark is on Node's request either way.
   const raw = (req as { raw?: IncomingMessage }).raw ?? (req as unknown as IncomingMessage);
   const handedOver = wasHandedOver(raw);
+  const viaTunnel = isViaTunnel(req);
   // The remote dashboard reads its own cookie and nothing else — a cookie planted for
   // the parent domain by a sibling hostname cannot stand in for it (auth/sessions.ts).
   const cookieName = handedOver ? REMOTE_COOKIE_NAME : COOKIE_NAME;
   const token =
-    (req.cookies && req.cookies[cookieName]) ?? parseCookie(req.headers?.cookie, cookieName);
+    (req.cookies && req.cookies[cookieName]) ?? sessionTokenFromCookieHeader(req.headers?.cookie, cookieName);
   // From the tunnel, only a session that passed the second factor counts (see
   // getSessionUserFor). A LAN session presented there reads as signed out. And from
   // the remote dashboard, only while its door is open — and only a session it made
@@ -170,7 +159,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   const username =
     handedOver && !remoteAdminEnabled()
       ? null
-      : getSessionUserFor(token, { viaTunnel: isViaTunnel(req), handedOver });
+      : getSessionUserFor(token, { viaTunnel, handedOver });
   // The dashboard key. A WebSocket handshake cannot carry a custom header, so the
   // key rides in `?k=` there — the same convention api/ws-auth.ts already uses for
   // every other raw WS route, and for the plain-<a> backup download. Accepting
@@ -208,7 +197,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
   // dashboard is handed over from the tunnel's front door now (remote
   // administration), and what a remote admin's browser calls this box is the public
   // hostname, not an address an app container could ever use.
-  if (username && !isViaTunnel(req)) observeDashboardHost(req.headers?.host ?? null);
+  if (username && !viaTunnel) observeDashboardHost(req.headers?.host ?? null);
 
   return {
     username,
@@ -224,7 +213,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
      * (§15's raw-vs-decoded bullet), and a second factor that is required or not
      * depending on which copy answered is not a second factor.
      */
-    viaTunnel: isViaTunnel(req),
+    viaTunnel,
     /**
      * The real client address, and ONLY when the request came over the tunnel.
      *
@@ -238,7 +227,7 @@ export function createContext({ req, res }: CreateFastifyContextOptions): Contex
      * and trusting it would hand any LAN client a way to walk past a per-IP counter
      * by varying one header.
      */
-    remoteIp: isViaTunnel(req) ? (firstHeader(req.headers?.['cf-connecting-ip']) ?? null) : null,
+    remoteIp: viaTunnel ? (firstHeader(req.headers?.['cf-connecting-ip']) ?? null) : null,
     handedOver,
     setSessionCookie: canMutateCookies
       ? (t: string) =>

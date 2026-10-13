@@ -19,10 +19,10 @@
  *
  * Neither moves masjid/prayer data into the platform (CLAUDE.md §13).
  */
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { COOKIE_NAME, getSessionUser } from '../auth/sessions';
 import { appAccessSsoUser } from '../system/app-access';
-import { findFabricApp, appDeclaresAlert } from '../apps/manager';
+import { findFabricApp, appDeclaresAlert, type FabricApp } from '../apps/manager';
 import { registerAppLink } from '../fabric/appLink';
 import { sendNotification } from '../notify/notify';
 import { sendEmail } from '../notify/email';
@@ -53,10 +53,9 @@ import { appPublicUrl, appBasePath } from '../system/cloudflared';
 import { log } from '../logger';
 import { matchesSecretRoute, decodedPath, resolveDotSegments } from '../system/via-tunnel';
 
-// Lightweight per-IP fixed-window limiter for the secret-gated Fabric routes,
-// which are reachable without a session. It runs BEFORE any lookup so a flood of
-// bad-secret requests can't tie up the event loop (security audit, defence-in-
-// depth on top of the in-memory secret index).
+// Fixed-window limiters for the secret-gated Fabric routes, which are reachable
+// without a session. Resolving the secret is an in-memory index lookup, so every
+// request is identified first and then priced on the tier that fits it.
 const RATE_WINDOW_MS = 60_000;
 /**
  * Two tiers, because the source IP is nearly useless as an identity here.
@@ -68,9 +67,9 @@ const RATE_WINDOW_MS = 60_000;
  * cross-app denial of service, which is exactly what the Fabric's isolation is meant to
  * prevent.
  *
- * So: keep the coarse IP tier — it runs BEFORE any lookup, which is the property it was
- * added for (a flood of bad-secret requests must not tie up the event loop) — and add a
- * per-app tier once the caller is known, so one app's traffic cannot spend another's budget.
+ * So the coarse IP tier bounds only callers that present no valid secret — a flood of
+ * bad-secret requests — and an identified app is priced on its own per-app tier instead, so
+ * one app's traffic cannot spend another's budget (`fabricCaller`).
  */
 const RATE_MAX = 600; // coarse per-IP ceiling: a shared bucket, so deliberately generous
 const RATE_MAX_APP = 120; // per identified app per minute — the meaningful limit
@@ -130,6 +129,18 @@ function hit(key: string, max: number): boolean {
 
 function fabricRateOk(ip: string): boolean {
   return hit(`ip:${ip}`, RATE_MAX);
+}
+
+/**
+ * The app presenting this request's secret, and whether the request is over its limit.
+ * Only an UNIDENTIFIED caller pays the shared per-IP tier: an identified app was priced
+ * on its own counter by the hook, and charging it here too let apps that each stayed
+ * inside their own budget empty the one bucket every app shares.
+ */
+function fabricCaller(req: FastifyRequest): { app: FabricApp | null; limited: boolean } {
+  const presented = req.headers['x-openmasjid-app-secret'];
+  const app = findFabricApp(typeof presented === 'string' ? presented : null);
+  return { app, limited: !app && !fabricRateOk(req.ip) };
 }
 
 /**
@@ -243,9 +254,8 @@ export function registerFabric(server: FastifyInstance): void {
    * limit that will be missing from the thirteenth route. Resolving the caller here costs an
    * in-memory index lookup, which the route then repeats; that is cheap and worth it.
    *
-   * A request whose secret resolves to no app falls through to the coarse per-IP tier in the
-   * handler, which is the correct order: we must not spend an expensive lookup deciding
-   * whether to rate-limit an unauthenticated flood.
+   * A request whose secret resolves to no app is priced by its handler instead, on the
+   * coarse per-IP tier (`fabricCaller`) — the only tier an unidentified caller can pay.
    */
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
@@ -345,11 +355,8 @@ export function registerFabric(server: FastifyInstance): void {
   // platform owns the destination, so there is no SSRF vector from the app. Not
   // CORS-enabled.
   server.post('/api/fabric/notify', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) {
-      return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
-    }
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
     if (!app || !app.notify) {
       return reply.code(403).send({ delivered: false, error: 'This app is not allowed to send notifications.' });
     }
@@ -378,9 +385,8 @@ export function registerFabric(server: FastifyInstance): void {
   // The app picks the account by the name the admin chose for it (its own install
   // setting); omitting it falls back to the only/first account.
   server.get('/api/fabric/stripe', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ error: 'Too many requests.' });
     if (!app || !app.stripe) {
       return reply.code(403).send({ error: 'This app is not allowed to use Stripe.' });
     }
@@ -408,9 +414,8 @@ export function registerFabric(server: FastifyInstance): void {
   // render its OWN in-app account picker, then fetch the chosen account's keys via
   // GET /api/fabric/stripe?account=<id>. Capability-gated; no keys here.
   server.get('/api/fabric/stripe/accounts', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ error: 'Too many requests.' });
     if (!app || !app.stripe) {
       return reply.code(403).send({ error: 'This app is not allowed to use Stripe.' });
     }
@@ -423,9 +428,8 @@ export function registerFabric(server: FastifyInstance): void {
   // `domain` capability. No secrets, but kept off CORS for consistency — an app's
   // backend reads it. `publicUrl` is '' when remote access isn't enabled.
   server.get('/api/fabric/site', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ error: 'Too many requests.' });
     if (!app || !app.domain) {
       return reply.code(403).send({ error: 'This app is not allowed to read site info.' });
     }
@@ -520,9 +524,8 @@ export function registerFabric(server: FastifyInstance): void {
   // itself with its per-app secret and must hold the `email` capability. The app
   // never sees the mail credentials or the From address. Not CORS-enabled.
   server.post('/api/fabric/email', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ sent: false, error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ sent: false, error: 'Too many requests.' });
     if (!app || !app.email) {
       return reply.code(403).send({ sent: false, error: 'This app is not allowed to send email.' });
     }
@@ -563,9 +566,8 @@ export function registerFabric(server: FastifyInstance): void {
    * gateway address, no phone number — LAN-only under /api/fabric like the rest.
    */
   server.get('/api/fabric/whatsapp', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ available: false, reason: 'unknown' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ available: false, reason: 'unknown' });
     if (!app || !app.whatsapp) {
       return reply.code(403).send({ available: false, reason: 'not-allowed' });
     }
@@ -618,9 +620,8 @@ export function registerFabric(server: FastifyInstance): void {
    * rule the per-id route follows.
    */
   server.get('/api/fabric/whatsapp/suspect', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ error: 'Too many requests.' });
     if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
     // Retained for a week AFTER recovery, not only while the link is down. The first cut
     // answered only during an outage, and relinking clears that — so the evidence vanished
@@ -632,9 +633,8 @@ export function registerFabric(server: FastifyInstance): void {
   });
 
   server.get<{ Params: { id: string } }>('/api/fabric/whatsapp/status/:id', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ error: 'Too many requests.' });
     if (!app || !app.whatsapp) return reply.code(403).send({ error: 'This app is not allowed to use WhatsApp.' });
     const rec = whatsappOutcome(String(req.params.id ?? ''), app.id);
     if (!rec) return reply.code(404).send({ error: 'No such message.' });
@@ -653,9 +653,8 @@ export function registerFabric(server: FastifyInstance): void {
     // An `error` field on the 429, because `{groups: []}` alone is indistinguishable from
     // "you have no approved groups" to a caller that does not check the status code — and
     // the Students app pointed out that this route is the precedent other consumers copy.
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ groups: [], error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ groups: [], error: 'Too many requests.' });
     if (!app || !app.whatsapp) {
       return reply.code(403).send({ groups: [], error: 'This app is not allowed to send WhatsApp messages.' });
     }
@@ -693,9 +692,8 @@ export function registerFabric(server: FastifyInstance): void {
       },
     },
     async (req, reply) => {
-      if (!fabricRateOk(req.ip)) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
-      const presented = req.headers['x-openmasjid-app-secret'];
-      const app = findFabricApp(typeof presented === 'string' ? presented : null);
+      const { app, limited } = fabricCaller(req);
+      if (limited) return reply.code(429).send({ queued: false, error: 'Too many requests.' });
       if (!app || !app.whatsapp) {
         return reply.code(403).send({ queued: false, error: 'This app is not allowed to send WhatsApp messages.' });
       }
@@ -763,9 +761,8 @@ export function registerFabric(server: FastifyInstance): void {
   // better guarded than it is. The platform gates on the admin's granular on/off
   // for that alert, then delivers to the admin email + the webhook. Not CORS-enabled.
   server.post('/api/fabric/alert', async (req, reply) => {
-    if (!fabricRateOk(req.ip)) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
-    const presented = req.headers['x-openmasjid-app-secret'];
-    const app = findFabricApp(typeof presented === 'string' ? presented : null);
+    const { app, limited } = fabricCaller(req);
+    if (limited) return reply.code(429).send({ delivered: false, error: 'Too many requests.' });
     // Declaring the alert in the manifest IS the opt-in (it issues the secret), so
     // authorize on the declaration below rather than a separate capability.
     if (!app) {

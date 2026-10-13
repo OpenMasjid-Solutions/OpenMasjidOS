@@ -769,7 +769,8 @@ test('EVERY PROTECTED CALL FROM OUTSIDE RE-CHECKS THE DOOR AND THE SESSION — n
 
 test('a terminal re-checks before every keystroke, and protected calls re-check the door', () => {
   const terminals = fs.readFileSync(path.join(__dirname, '..', 'src', 'api', 'terminals.ts'), 'utf8');
-  assert.match(terminals, /socket\.on\('message', \(data: Buffer\) => \{\s*if \(!stillAllowed\(\)\)/, 'the check must come first');
+  assert.match(terminals, /const onMessage = \(data: Buffer\) => \{\s*if \(!stillAllowed\(\)\)/, 'the check must come first');
+  assert.match(terminals, /socket\.on\('message', onMessage\)/, 'the checked handler must be the one attached');
   assert.match(terminals, /bridge\(socket, await rootTerminal\(\), \(\) => Boolean\(requestUser\(req\)\)/);
   assert.match(terminals, /bridge\(socket, await appTerminal\(id\), \(\) => Boolean\(requestUser\(req\)\)/);
   const trpc = fs.readFileSync(path.join(__dirname, '..', 'src', 'trpc', 'trpc.ts'), 'utf8');

@@ -41,6 +41,9 @@ export function makeTrpcClient() {
         // session cookie by an installed app on another port.
         false: httpBatchLink({
           url: '/trpc',
+          // Under the server's own cap (core index.ts maxBatchSize), so a busy page splits
+          // its batch rather than being refused.
+          maxItems: 20,
           headers: () => {
             const key = getCsrf();
             return key ? { 'x-omos-csrf': key } : {};

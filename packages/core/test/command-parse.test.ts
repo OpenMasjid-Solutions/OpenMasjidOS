@@ -44,9 +44,16 @@ const DISPLAY: CommandNamespace = {
   ],
 };
 
+/** Everything that exists, granted or not: OS also has a `stop` this sender may not run. */
+const ALL: CommandNamespace[] = [
+  { ...OS, commands: [...OS.commands, cmd('stop', { scope: 'os:control', argKind: 'app', argRequired: true })] },
+  DISPLAY,
+  { word: 'donations', label: 'Donations', commands: [cmd('total', { scope: 'donations' })] },
+];
+
 const NOW = 1_000_000;
 function ctx(over: Partial<ParseContext> = {}): ParseContext {
-  return { now: NOW, namespaces: [OS, DISPLAY], allWords: ['os', 'display', 'donations'], menu: null, ...over };
+  return { now: NOW, namespaces: [OS, DISPLAY], all: ALL, menu: null, ...over };
 }
 
 // ── the prefix rule ──────────────────────────────────────────────────────────────
@@ -120,6 +127,16 @@ test('a namespace that exists but is not granted says so', () => {
   assert.deepEqual(r, { kind: 'not-allowed', word: 'donations' });
 });
 
+test('a COMMAND that exists but is not granted says so too', () => {
+  // A read-only trustee sending `!os stop 1` was told OpenMasjidOS has no "stop" and
+  // offered "stats" instead.
+  assert.deepEqual(parseCommand('!os stop 1', ctx()), { kind: 'not-allowed', word: 'os stop' });
+  // Something that exists nowhere is still unknown, with its suggestion.
+  const r = parseCommand('!os statz', ctx());
+  assert.equal(r.kind, 'unknown-command');
+  assert.equal(r.kind === 'unknown-command' && r.suggestion, 'stats');
+});
+
 // ── menu numbers ─────────────────────────────────────────────────────────────────
 
 test('a number resolves against the menu the sender was SHOWN', () => {
@@ -162,6 +179,14 @@ test('an out-of-range number never clamps or wraps', () => {
   assert.equal(parseCommand('!display 0', ctx()).kind, 'bad-number');
 });
 
+test('an out-of-range number is measured against the menu the sender was shown', () => {
+  // They were shown two commands; "pick between 1 and 3" would point at one they never saw.
+  const r = parseCommand('!display 3', ctx({
+    menu: { word: 'display', at: NOW - 1000, ids: ['whats-on', 'clear'] },
+  }));
+  assert.deepEqual(r, { kind: 'bad-number', ns: DISPLAY, max: 2 });
+});
+
 // ── arguments ────────────────────────────────────────────────────────────────────
 
 test('text after a command that takes none is REFUSED, not dropped', () => {
@@ -191,10 +216,12 @@ test('an OS verb passes its app token straight through', () => {
   assert.equal(b.kind === 'run' && b.text, '3');
 });
 
-test('a very long argument is truncated, a very long message is refused', () => {
+test('a very long argument is truncated', () => {
   const long = parseCommand(`!display post-notice ${'x'.repeat(400)}`, ctx());
   assert.equal(long.kind === 'run' && long.text!.length, 300);
-  assert.equal(parseCommand(`!display post-notice ${'x'.repeat(600)}`, ctx()).kind, 'too-long');
+  // A very long MESSAGE is refused by the gate, before the parser could see it — the
+  // parser's own refusal could never run, and is pinned where it lives instead
+  // (command-inbound.test.ts, "a message longer than any command").
 });
 
 // ── confirmations ────────────────────────────────────────────────────────────────

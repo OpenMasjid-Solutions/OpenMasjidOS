@@ -35,7 +35,6 @@
     "@trpc/server": "^11.0.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "class-variance-authority": "^0.7.1",
     "cn": "^0.3.0",
     "i18next": "^23.16.4",
     "lucide-react": "^0.460.0",

@@ -17,7 +17,7 @@ import { pruneUnusedImages } from '../../docker/compose';
 import { fetchChangelog } from '../../store/changelog';
 import { reconcileNow } from '../../system/address-monitor';
 import { getSettings, updateSettings } from '../../settings/store';
-import { channelSchema, channelLabel, osBranch, coreImageTag } from '../../system/channel';
+import { channelSchema, channelLabel } from '../../system/channel';
 import { requireCatalog, clearCatalogCache } from '../../store/catalog';
 import { clearChangelogCache } from '../../store/changelog';
 import { appsPendingChannel } from '../../apps/manager';
@@ -72,10 +72,6 @@ export const systemRouter = router({
     return {
       channel,
       label: channelLabel(channel),
-      /** The branch of THIS repo the channel tracks — 'main' maps to master. */
-      branch: osBranch(channel),
-      /** The channel's alias image tag. An update pulls the exact version instead. */
-      imageTag: coreImageTag(channel),
       version: VERSION,
       /** Catalog apps still on the other channel, awaiting the switch. */
       pending: appsPendingChannel(),

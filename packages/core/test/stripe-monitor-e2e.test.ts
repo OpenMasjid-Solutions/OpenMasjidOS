@@ -236,6 +236,45 @@ test('a burst of disputes sends one grouped notification', async () => {
   }
 });
 
+test('SWITCHING AN ACCOUNT TO ANOTHER KEY DOES NOT ALERT ITS OLD DISPUTES AS NEW', async () => {
+  // The first-check state was keyed by the vault entry, not the Stripe account behind the
+  // key: moving an entry from test keys to live keys (or removing it and adding it back
+  // under the same name) emailed every past dispute of the new account as a fresh one.
+  const sink: Received[] = [];
+  const hook = await webhookServer(sink);
+  const settled = Array.from({ length: 7 }, (_, i) => ({ ...DISPUTE, id: `dp_live_${i}`, status: 'won' }));
+  let restore = stubStripe({ data: [] });
+  try {
+    const { dir, statePath } = stage(hook.url);
+    const mon = req('../src/system/stripe-monitor') as typeof import('../src/system/stripe-monitor');
+    const vault = req('../src/store/stripe') as typeof import('../src/store/stripe');
+    await mon.checkStripeDisputesNow(); // the test account: checked, nothing to report
+    restore();
+
+    // The same entry now holds another account's key, with a history of settled disputes.
+    const file = path.join(dir, 'config', 'stripe.json');
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8')) as { accounts: { secretKey: string }[] };
+    cfg.accounts[0]!.secretKey = 'sk_test_another_account';
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    vault.reloadStripeConfig();
+    restore = stubStripe({ data: settled });
+    await mon.checkStripeDisputesNow();
+    assert.equal(sink.length, 0, "another account's settled history must not alert as new");
+
+    // ...but it is still watched: a new one alerts.
+    restore();
+    restore = stubStripe({ data: [{ ...DISPUTE, id: 'dp_live_new' }, ...settled] });
+    await mon.checkStripeDisputesNow();
+    assert.equal(sink.length, 1, 'a new dispute on the switched account still alerts');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { accounts: Record<string, { keyHash?: string }> };
+    assert.match(state.accounts.donations?.keyHash ?? '', /^[0-9a-f]{64}$/, 'the state records which key it belongs to');
+    assert.doesNotMatch(fs.readFileSync(statePath, 'utf8'), /sk_test/, 'and never the key itself');
+  } finally {
+    restore();
+    await hook.close();
+  }
+});
+
 test('no Stripe account configured is a silent no-op', async () => {
   const sink: Received[] = [];
   const hook = await webhookServer(sink);

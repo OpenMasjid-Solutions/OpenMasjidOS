@@ -30,7 +30,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { listInstalledWithHealth, getAppPath } from '../apps/manager';
 import { isAppPathShape, isReservedPathSegment } from '../apps/paths';
-import { isViaTunnelHeaders, decodedPath, resolveDotSegments } from './via-tunnel';
+import { isViaTunnelHeaders, decodedPath, pathSpellings } from './via-tunnel';
 import { appHost } from './app-host';
 import { log } from '../logger';
 import { NO_STORE_HEADERS, noteRefusal, recordRefusal, refuseOverTunnel, type RefusalReason } from './tunnel-refusals';
@@ -310,8 +310,7 @@ export function answerBareWorkerFetch(req: FastifyRequest, reply: FastifyReply, 
 
 /**
  * App paths this ingress declined to serve, and why — an app that is not shared
- * online, asked for without its access token, or ANY app asked for on the admin
- * hostname. The not-found handler reads it to record the reason
+ * online, asked for without its access token. The not-found handler reads it to record the reason
  * (system/tunnel-refusals.ts `notFoundReason`) while sending the very same 404, so
  * the difference exists only in the record.
  */
@@ -368,7 +367,6 @@ export function isFabricSubpath(url: string, seg: string): boolean {
     // unexpected shape fails CLOSED rather than open.
     return parts[parts[0] === seg ? 1 : 0] === 'fabric';
   };
-  const raw = url.split('?')[0]!.split('#')[0]!;
   // Dot segments have to be resolved before comparing, and this is the third
   // spelling-of-the-same-path bug in this codebase (raw-vs-decoded was the first two).
   // `/donate/./fabric/billing` split to ['donate','.','fabric',…], so parts[1] was '.'
@@ -376,9 +374,7 @@ export function isFabricSubpath(url: string, seg: string): boolean {
   // the request was proxied on with its URL forwarded verbatim, and any app framework
   // that normalises dot segments then served its own LAN-only /fabric handler to the
   // public tunnel. Test every spelling the far end might resolve to.
-  return [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))].some(
-    targetsFabric,
-  );
+  return pathSpellings(url).some(targetsFabric);
 }
 
 /**

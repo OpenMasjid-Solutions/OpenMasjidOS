@@ -17,6 +17,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -145,6 +146,50 @@ test("on the masjid's network nothing changes: the plain page, the key stays whe
   // And the remote dashboard's own scripts are served as files, not as the page.
   const asset = await server.inject({ method: 'GET', url: '/assets/app.js', headers: { ...OUT, ...NAV, ...remoteCookie } });
   assert.equal(asset.body, 'console.log(1)');
+});
+
+test('FROM OUTSIDE THE PLAIN PAGE IS NEVER SERVED — a miss is a 404, not the dashboard without its headers', async () => {
+  // The SPA fallback answered a handed-over `/assets/x` with plain index.html: no meta (so
+  // LAN mode, storing the key), no COOP, frameable. An app page could frame it, the admin
+  // signs in there, and the key lands in storage that app page can read.
+  // The dot-segment spellings matter most: the gate hands them over because they RESOLVE
+  // to a dashboard page, while the page hook reads their first segment and declines them.
+  const misses = [
+    '/assets/missing.js',
+    '/assets/../settings',
+    '/assets/%2e%2e/settings',
+    '/%61ssets/x',
+    '/assets/',
+    '/x/../settings',
+    '/x/%2e%2e/settings',
+    '/nope/../store',
+  ];
+  // Over real HTTP: inject() normalises `..` before routing, which is exactly what a raw
+  // request target does not get.
+  await server.listen({ port: 0, host: '127.0.0.1' });
+  const port = (server.server.address() as import('node:net').AddressInfo).port;
+  const get = (target: string, headers: Record<string, string>) =>
+    new Promise<{ status: number; coop: unknown; body: string }>((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port, path: target, headers }, (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, coop: res.headers['cross-origin-opener-policy'], body }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+  for (const url of misses) {
+    for (const h of [NAV, {}]) {
+      const res = await get(url, { ...OUT, ...h, ...remoteCookie });
+      const keyRulePage = res.coop === 'same-origin' && /name="omos-key"/.test(res.body);
+      const plainPage = /<div id="root"><\/div>/.test(res.body) && !keyRulePage;
+      assert.ok(!plainPage, `${url} served the plain dashboard page from outside`);
+      assert.ok(res.status === 404 || keyRulePage, `${url}: ${res.status} without the key rule's page`);
+    }
+  }
+  // The dashboard listener's own header hook must not undo the page's framing refusal.
+  const index = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+  assert.match(index, /if \(!reply\.getHeader\('x-frame-options'\)\) reply\.header\('X-Frame-Options', 'SAMEORIGIN'\)/);
 });
 
 test('sessionKey answers only for a live session', () => {

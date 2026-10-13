@@ -4,13 +4,12 @@
  * Platform/system info for Settings → Advanced: network details, the AGPL
  * "Source code" link (CLAUDE.md §3 network clause), and the core update check.
  */
-import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { PORT, MACHINE_HOSTNAME } from '../config';
 import { VERSION } from '../version';
 import { log } from '../logger';
 import { getSettings } from '../settings/store';
 import { versionCheckUrl, osBranch, type Channel } from './channel';
+import { desiredAddress } from './platform-address';
 import { isNewerVersion, isPrerelease } from '../util/version';
 
 // A tiny image with a shell to chroot into the host. Reuses the backup image so
@@ -45,26 +44,17 @@ export const SOURCE_URL = 'https://github.com/OpenMasjid-Solutions/OpenMasjidOS'
 // Stable compares with master, Development with dev.
 
 export interface NetworkInfo {
-  hostname: string;
-  localDomain: string; // e.g. openmasjidos.local
-  addresses: string[]; // LAN IPv4 addresses
-  port: number;
+  /** The machine's own `.local` name: none. mDNS is not built (CLAUDE.md §4), and inside the
+   *  container `os.hostname()` is the container's id, which named nothing anyone could reach. */
+  localDomain: string;
+  /** The machine's LAN address, when known. Not the core's own interfaces: it runs on a
+   *  bridge network, so those are the container's 172.x. */
+  addresses: string[];
 }
 
 export function networkInfo(): NetworkInfo {
-  const addresses: string[] = [];
-  const ifaces = os.networkInterfaces();
-  for (const list of Object.values(ifaces)) {
-    for (const ni of list ?? []) {
-      if (ni.family === 'IPv4' && !ni.internal) addresses.push(ni.address);
-    }
-  }
-  return {
-    hostname: MACHINE_HOSTNAME,
-    localDomain: `${MACHINE_HOSTNAME}.local`,
-    addresses,
-    port: PORT,
-  };
+  const address = desiredAddress();
+  return { localDomain: '', addresses: address ? [address] : [] };
 }
 
 export interface UpdateInfo {

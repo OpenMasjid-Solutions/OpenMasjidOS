@@ -3,7 +3,8 @@
 /**
  * Granular alert controls (Settings → Alerts) — a per-alert × per-channel matrix.
  * Lists every alert type (OS built-ins + each installed app's declared alerts) with
- * its Email/Webhook routing; all default to both channels ON. Admin-only.
+ * its Email / Webhook / WhatsApp routing: email and webhook default ON, WhatsApp OFF
+ * (and only the platform's own alerts may use it). Admin-only.
  */
 import { z } from 'zod';
 import { router, protectedProcedure } from '../trpc';
@@ -12,7 +13,7 @@ import { listAlertTypes, setAlertChannel } from '../../notify/alerts';
 export const alertsRouter = router({
   list: protectedProcedure.query(() => listAlertTypes()),
 
-  /** Turn one channel (email | webhook) on/off for one alert type. */
+  /** Turn one channel (email | webhook | whatsapp) on/off for one alert type. */
   setChannel: protectedProcedure
     .input(
       z.object({

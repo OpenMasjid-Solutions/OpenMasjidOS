@@ -587,7 +587,7 @@ There are seven reasons. Each is shown in its own words:
   community store or a pasted compose file may not be. Use it at the masjid.
 - ***Too many attempts from this connection. Please try again in … minutes.*** Ten wrong passwords
   or codes from one internet connection, with no more than fifteen minutes between one and the
-  next, lock that connection out for fifteen minutes; a correct password starts the count again.
+  next, lock that connection out for fifteen minutes; a correct code starts the count again.
   It does not lock you out anywhere else.
 - ***That code is not right — 3 tries left.*** Each sign-in allows five wrong codes. After the
   last one you start again from the password.
@@ -1719,8 +1719,11 @@ edge**, and a tunnel client cannot forge it — the same reasoning that makes `c
 signal for `isViaTunnel`. So remote sign-ins have a genuine **per-IP** lockout
 (`auth/ip-lockout.ts`): `IP_MAX_FAILURES` (10) wrong passwords or codes from one address, with no
 more than `IP_WINDOW_MS` (15 minutes) between one and the next, refuse that address for
-`IP_LOCKOUT_MS` (15 minutes). It is checked before the password or the code is even looked at, a
-correct password clears the address's record, and at most `IP_MAX_TRACKED` (1,000) addresses are
+`IP_LOCKOUT_MS` (15 minutes). It is checked before the password or the code is even looked at, and
+again when the attempt's turn comes in the one-at-a-time password check, so a batch of sign-ins
+that all arrive before any has failed still stops at the limit. Only a correct second-factor code
+clears the address's record — a correct password does not, or anyone holding the password could
+alternate and guess codes without limit — and at most `IP_MAX_TRACKED` (1,000) addresses are
 tracked at once. LAN sign-ins keep the delay-based defence, because there the header is absent and
 every client really does look identical.
 

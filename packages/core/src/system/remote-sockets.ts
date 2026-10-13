@@ -13,8 +13,8 @@
  * the password. A live terminal went on taking keystrokes after every one of them,
  * and a live tRPC socket could switch remote administration straight back on.
  *
- * So every socket handed over is recorded here with the hostname and session it
- * came with, and closed the moment either stops qualifying: by a sweep a few
+ * So every socket handed over is recorded here with the session it came with, and
+ * closed the moment that session, or the door, stops qualifying: by a sweep a few
  * seconds apart, and immediately by the actions above (`sweepHandedOverSockets`).
  * The routes behind them also re-check on every message or call (api/terminals.ts,
  * trpc/trpc.ts) — this is the half that catches a socket sitting idle.
@@ -39,13 +39,8 @@ type Tracked =
   /** One of the dashboard's own sockets, handed over by the front door. */
   | {
       kind: 'dashboard';
-      /**
-       * The remote session the socket was opened with, or null if it had none — which
-       * the front door no longer lets happen: it hands a socket over only to a signed-in
-       * remote session (system/remote-admin.ts `claimsDashboardSocket`). A socket with
-       * none would be judged by the door alone.
-       */
-      token: string | null;
+      /** The remote session the socket was opened with. */
+      token: string;
     }
   /**
    * An app's socket opened through the tunnel WITH an access token (system/app-access.ts)
@@ -106,11 +101,14 @@ function add(socket: Duplex, t: Tracked): boolean {
 
 /**
  * Record a socket the front door is about to hand to the dashboard listener. False when
- * the table is full — the caller must then refuse the socket rather than hand it over.
+ * the table is full, or when the socket carries no live remote session (the front door
+ * only hands those over — this refuses, rather than keeps, one that slipped through) —
+ * the caller must then refuse the socket rather than hand it over.
  */
 export function trackHandedOverSocket(req: IncomingMessage, socket: Duplex): boolean {
   const token = sessionTokenFromCookieHeader(req.headers.cookie, REMOTE_COOKIE_NAME);
-  return add(socket, { kind: 'dashboard', token: token && isRemoteSession(token) ? token : null });
+  if (!token || !isRemoteSession(token)) return false;
+  return add(socket, { kind: 'dashboard', token });
 }
 
 /** Record an app's socket opened through the tunnel with that app's access token. */
@@ -135,9 +133,7 @@ export function sweepHandedOverSockets(): number {
   for (const [socket, t] of tracked) {
     const keep =
       open &&
-      (t.kind === 'dashboard'
-        ? t.token === null || isRemoteSessionAt(t.token, epoch)
-        : appAccessUser(t.token, t.appId) !== null);
+      (t.kind === 'dashboard' ? isRemoteSessionAt(t.token, epoch) : appAccessUser(t.token, t.appId) !== null);
     if (keep) continue;
     tracked.delete(socket);
     socket.destroy();

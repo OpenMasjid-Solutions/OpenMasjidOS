@@ -16,7 +16,7 @@
  *
  * Alert types come from OS built-ins (below) + each installed app's manifest
  * `alerts:` list (via apps/manager). We persist only NON-default channel choices, so
- * a newly-installed app's alerts (and new OS alerts) default to both-channels-on
+ * a newly-installed app's alerts (and new OS alerts) default to email and webhook on
  * without migration.
  */
 import path from 'node:path';
@@ -109,7 +109,12 @@ function load(): Map<string, AlertChannels> {
   return map;
 }
 
-const channels = load();
+let channels = load();
+
+/** Re-read the routing from disk — for a restore, which replaces it under this process. */
+export function reloadAlertChannels(): void {
+  channels = load();
+}
 
 function persist(): void {
   writeJson(ALERTS_PATH, { channels: Object.fromEntries(channels) });
@@ -256,11 +261,14 @@ export interface AlertInput extends NotifyInput {
 }
 
 /** First sentence of a blob of text, for deriving a subject an app didn't give us. */
-function firstSentence(s: string, max = 78): string {
+export function firstSentence(s: string, max = 78): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   const stop = flat.search(/[.!?](\s|$)/);
   const one = stop > 0 ? flat.slice(0, stop + 1) : flat;
-  return one.length <= max ? one : `${one.slice(0, one.lastIndexOf(' ', max - 1)).trim()}…`;
+  if (one.length <= max) return one;
+  // A word boundary when there is one far enough in; otherwise a hard cut (cleanSubject's rule).
+  const cut = one.lastIndexOf(' ', max - 1);
+  return `${one.slice(0, cut > 20 ? cut : max - 1).trim()}…`;
 }
 
 /**
@@ -287,9 +295,9 @@ export type AlertResult = {
 };
 
 /**
- * Deliver an admin alert to the channels the admin routed it to (email and/or
- * webhook), each fail-soft. Returns which channels succeeded. If the admin turned
- * both channels off, nothing is sent.
+ * Deliver an admin alert to the channels the admin routed it to (any of email, webhook
+ * and — for the platform's own alerts — WhatsApp), each fail-soft. Returns which
+ * channels succeeded. If the admin turned every channel off, nothing is sent.
  */
 export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
   const ch = getAlertChannels(input.source, input.alertId);
@@ -323,7 +331,9 @@ export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
           facts: input.facts,
           action: input.action,
         },
-        'os',
+        // Each source on its own mail budget, as on the other two channels: under 'os', a
+        // burst of one app's alerts dropped the platform's own (a chargeback is never retried).
+        input.source === 'os' ? 'os' : `alert:${input.source}`,
       );
       email = r.sent;
     }

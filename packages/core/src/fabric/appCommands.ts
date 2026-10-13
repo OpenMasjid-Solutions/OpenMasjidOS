@@ -142,9 +142,7 @@ export async function runAppCommand(reqInput: AppCommandRequest): Promise<AppCom
 
     const declared = typeof obj.code === 'string' ? obj.code : '';
     if (res.status === 404 || declared === 'unknown_command') return { ok: false, code: 'unknown_command' };
-    if (res.status === 503 || declared === 'not_ready') {
-      return { ok: false, code: 'not_ready', text: tidy(obj.error) || undefined };
-    }
+    if (res.status === 503 || declared === 'not_ready') return { ok: false, code: 'not_ready' };
 
     if (obj.ok === true) {
       const said = tidy(obj.text);

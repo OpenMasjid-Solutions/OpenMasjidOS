@@ -17,9 +17,9 @@ import {
   FileError,
 } from '../../files/manager';
 
-function wrap<T>(fn: () => T): T {
+async function wrap<T>(fn: () => T | Promise<T>): Promise<T> {
   try {
-    return fn();
+    return await fn();
   } catch (err) {
     if (err instanceof FileError) {
       // PROTECTED is a refusal, not a malformed request — say so, so the UI can

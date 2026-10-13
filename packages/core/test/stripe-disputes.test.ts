@@ -18,6 +18,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  fetchDisputes,
   parseDispute,
   parseDisputeList,
   needsResponse,
@@ -92,6 +93,31 @@ test('the list parser skips unusable entries and never throws', () => {
   }
   const mixed = parseDisputeList({ data: [RAW, null, { nope: true }, { id: 'dp_2' }, 'junk'] });
   assert.deepEqual(mixed.map((d) => d.id), ['dp_1NkTest', 'dp_2']);
+});
+
+test('A 200 WITH NO LIST IS "COULD NOT ASK", NOT "NO DISPUTES"', async () => {
+  // Read as an empty list, a first check marked the account checked with nothing seen,
+  // and the next real answer alerted every dispute in its history as new.
+  const real = globalThis.fetch;
+  const answer = (body: unknown) => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  };
+  try {
+    for (const body of [{}, { object: 'list' }, { data: null }, { data: 'nope' }, null]) {
+      answer(body);
+      const r = await fetchDisputes('sk_test_x');
+      assert.equal(r.ok, false, JSON.stringify(body));
+    }
+    answer({ object: 'list', data: [RAW] });
+    const r = await fetchDisputes('sk_test_x');
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.disputes.map((x) => x.id), ['dp_1NkTest']);
+    answer({ object: 'list', data: [] });
+    assert.deepEqual(await fetchDisputes('sk_test_x'), { ok: true, disputes: [] }, 'an empty list is a real answer');
+  } finally {
+    globalThis.fetch = real;
+  }
 });
 
 test('money is formatted in the right units for zero-, two- and three-decimal currencies', () => {
