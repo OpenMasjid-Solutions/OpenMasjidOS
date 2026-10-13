@@ -18,7 +18,9 @@ import { createRequire } from 'node:module';
 // The collector reads its host paths from the environment at import time.
 const procDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-proc-'));
 process.env.HOST_PROC = procDir;
-process.env.HOST_CGROUP = path.join(procDir, 'no-cgroup');
+// Absent unless a test writes cgroup files into it (and removes them again).
+const cgroupDir = path.join(procDir, 'cgroup');
+process.env.HOST_CGROUP = cgroupDir;
 process.env.OPENMASJID_DATA_DIR = '/data';
 
 const req = createRequire(__filename);
@@ -104,9 +106,23 @@ test('storage holds back 16 GB for the host operating system', () => {
   assert.equal(d.used, 20 * 1024 ** 3, 'used is still what is really used');
 });
 
-test('a disk smaller than the reserve reports no spare room, never a negative', () => {
-  const d = stats.__pickDiskForTests([{ mount: '/', size: 8 * 1024 ** 3, used: 4 * 1024 ** 3 }]);
-  assert.equal(d.total, 0);
+test('a small disk holds back a quarter, so its card and warning still work', () => {
+  // This test used to pin a total of 0 for any disk under 16 GB. That was the bug: a
+  // "16 GB" SD card (14.8 GiB) — the platform's main hardware — read "6 GB / 0 B" at 0%,
+  // and the low-storage warning (which needs a total) could never fire on it. Below
+  // 64 GB the reserve is now a quarter of the disk; never a negative, never zero.
+  const GiB = 1024 ** 3;
+  const eight = stats.__pickDiskForTests([{ mount: '/', size: 8 * GiB, used: 4 * GiB }]);
+  assert.equal(eight.total, 6 * GiB, 'an 8 GB disk keeps 2 GB back');
+
+  const sdCard = 15_931_539_456; // what a "16 GB" card really holds: 14.8 GiB
+  const full = stats.__pickDiskForTests([{ mount: '/', size: sdCard, used: 10 * GiB }]);
+  assert.equal(full.total, sdCard * 0.75);
+  assert.ok(full.used / full.total >= 0.8, 'a nearly full SD card must be able to warn');
+
+  // 64 GB is where the quarter reaches the full 16 GB reserve.
+  assert.equal(stats.__pickDiskForTests([{ mount: '/', size: 64 * GiB, used: 1 }]).total, 48 * GiB);
+  assert.equal(stats.__pickDiskForTests([{ mount: '/', size: 0, used: 0 }], '/data', 0).total, 0);
 });
 
 test('the most specific mount containing the data dir wins', () => {
@@ -171,4 +187,145 @@ test('only real disks count towards the device total', () => {
   assert.equal(stats.physicalDiskBytes(dir), (256 + 500) * 1024 ** 3, 'only the two real disks');
   // No sysfs at all reads as "unknown", not as zero.
   assert.equal(stats.physicalDiskBytes(path.join(dir, 'nope')), null);
+});
+
+const GiB = 1024 ** 3;
+
+/** Put cgroup files under HOST_CGROUP for the length of `fn`. */
+function withCgroup(files: Record<string, string>, fn: () => void): void {
+  try {
+    for (const [rel, body] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(cgroupDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(cgroupDir, rel), body);
+    }
+    fn();
+  } finally {
+    fs.rmSync(cgroupDir, { recursive: true, force: true });
+  }
+}
+
+test('a cgroup with no memory limit is not believed over `free` (bare metal)', () => {
+  // On a cgroup v1/hybrid host (Ubuntu 20.04, Debian 10, RHEL 8) the mounted cgroup is the
+  // machine's ROOT cgroup, and usage − inactive_file still counts the active page cache:
+  // an idle box with a warm cache read nearly full while `free` said 1 GB. Its limit reads
+  // as ~2^63 — none — and only an LXC has one, so /proc/meminfo answers instead.
+  writeMeminfo({ MemTotal: 8 * 1024 * KB, MemFree: 1024 * KB, Buffers: 0, Cached: 6 * 1024 * KB, SReclaimable: 0 });
+  withCgroup(
+    {
+      'memory/memory.limit_in_bytes': '9223372036854771712\n',
+      'memory/memory.usage_in_bytes': `${7 * GiB}\n`,
+      'memory/memory.stat': `cache ${6 * GiB}\ntotal_active_file ${5 * GiB}\ntotal_inactive_file ${GiB}\n`,
+    },
+    () => assert.equal(stats.__readHostMemoryForTests()?.used, GiB, 'free says 1 GB, not 6'),
+  );
+  withCgroup({ 'memory.max': 'max\n', 'memory.current': `${7 * GiB}\n`, 'memory.stat': `inactive_file ${GiB}\n` }, () =>
+    assert.equal(stats.__readHostMemoryForTests()?.used, GiB, 'cgroup v2 with no limit is the same case'),
+  );
+});
+
+test('an LXC with a memory limit is still read the way Proxmox reads it', () => {
+  // lxcfs's meminfo can show most of an LXC's memory as free; its cgroup is authoritative.
+  writeMeminfo({ MemTotal: 2 * 1024 * KB, MemFree: 1900 * KB, Buffers: 0, Cached: 0 });
+  const expected = { used: GiB, total: 2 * GiB };
+  withCgroup(
+    {
+      'memory/memory.limit_in_bytes': `${2 * GiB}\n`,
+      'memory/memory.usage_in_bytes': `${1.5 * GiB}\n`,
+      'memory/memory.stat': `total_inactive_file ${0.5 * GiB}\n`,
+    },
+    () => assert.deepEqual(stats.__readHostMemoryForTests(), expected, 'cgroup v1'),
+  );
+  withCgroup(
+    { 'memory.max': `${2 * GiB}\n`, 'memory.current': `${1.5 * GiB}\n`, 'memory.stat': `inactive_file ${0.5 * GiB}\n` },
+    () => assert.deepEqual(stats.__readHostMemoryForTests(), expected, 'cgroup v2'),
+  );
+});
+
+test('the CPU figure is not frozen by the wall clock stepping back', async () => {
+  // The sampler timed itself with Date.now(), so NTP correcting a fast clock back by an
+  // hour held the last figure on screen for that whole hour.
+  stats.__resetCpuSamplerForTests();
+  writeStat(1000, 9000);
+  stats.__readHostCpuPercentForTests(); // the baseline, on the sampler's own clock
+  const realNow = Date.now;
+  Date.now = () => realNow() - 3_600_000;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 950));
+    writeStat(1100, 9900);
+    assert.equal(stats.__readHostCpuPercentForTests(), 10, 'a new sample is taken');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('a slow source answers in time with its last answer, and is never asked twice at once', async () => {
+  // A wedged Docker daemon or a `df` stuck on a dead NFS mount froze every card, and each
+  // tick started another stuck request.
+  let asked = 0;
+  let answer: (value: number) => void = () => {};
+  const source = stats.boundedSource(
+    () => {
+      asked += 1;
+      return new Promise<number>((resolve) => {
+        answer = resolve;
+      });
+    },
+    0,
+    20,
+  );
+  assert.equal(await source(), 0, 'no answer yet: the starting value, after the wait');
+  assert.equal(await source(), 0);
+  assert.equal(asked, 1, 'the request already out is waited on, not repeated');
+
+  const prompt = source();
+  answer(4);
+  assert.equal(await prompt, 4, 'an answer in time is used at once');
+
+  assert.equal(await source(), 4, 'stuck again: the last answer, not the starting value');
+  assert.equal(asked, 2);
+});
+
+test('callers share one collection instead of each running their own', async () => {
+  // Each open tab's stream, stats.get and `!os stats` ran a full collection — shells, a
+  // Docker call, a sysfs walk — every time. Now they share one, for no longer than the CPU
+  // sampler's minimum, so every tab still gets a newer snapshot on each 2-second tick.
+  const t = 1_000_000;
+  const [a, b] = await Promise.all([stats.collectStats(t), stats.collectStats(t + 1)]);
+  assert.equal(a, b, 'two callers at once share one collection');
+  assert.equal(await stats.collectStats(t + 500), a, 'and one that started moments ago');
+  assert.notEqual(await stats.collectStats(t + 2_000), a, 'a caller after that gets a new one');
+});
+
+test('systeminformation is asked only for what the host mounts cannot answer', async () => {
+  // si.currentLoad() and si.mem() ran on every collection, and their answers were thrown
+  // away whenever the host's own /proc had answered.
+  const si = req('systeminformation') as Record<'mem' | 'currentLoad', (...args: unknown[]) => Promise<unknown>>;
+  const real = { mem: si.mem, currentLoad: si.currentLoad };
+  const asked = { mem: 0, load: 0 };
+  si.mem = (...args) => {
+    asked.mem += 1;
+    return real.mem(...args);
+  };
+  si.currentLoad = (...args) => {
+    asked.load += 1;
+    return real.currentLoad(...args);
+  };
+  try {
+    writeMeminfo({ MemTotal: 4 * 1024 * KB, MemFree: 1024 * KB, Buffers: 0, Cached: 0 });
+    stats.__resetCpuSamplerForTests();
+    writeStat(1000, 9000);
+    stats.__readHostCpuPercentForTests(performance.now() - 1_000); // a baseline a second old
+    writeStat(1100, 9900);
+    await stats.collectStats(2_000_000);
+    assert.deepEqual(asked, { mem: 0, load: 0 }, 'the host answered both');
+
+    fs.rmSync(path.join(procDir, 'meminfo'));
+    fs.rmSync(path.join(procDir, 'stat'));
+    stats.__resetCpuSamplerForTests();
+    await stats.collectStats(2_010_000);
+    assert.deepEqual(asked, { mem: 1, load: 1 }, 'and are asked when it cannot');
+  } finally {
+    si.mem = real.mem;
+    si.currentLoad = real.currentLoad;
+  }
 });
