@@ -27,6 +27,7 @@ const req = createRequire(__filename);
 const stats = req('../src/stats/collector') as typeof import('../src/stats/collector');
 
 const KB = 1024;
+const GiB = 1024 ** 3;
 function writeMeminfo(fields: Record<string, number>): void {
   const body = Object.entries(fields)
     .map(([k, v]) => `${k}:${String(v).padStart(15)} kB`)
@@ -111,7 +112,6 @@ test('a small disk holds back a quarter, so its card and warning still work', ()
   // "16 GB" SD card (14.8 GiB) — the platform's main hardware — read "6 GB / 0 B" at 0%,
   // and the low-storage warning (which needs a total) could never fire on it. Below
   // 64 GB the reserve is now a quarter of the disk; never a negative, never zero.
-  const GiB = 1024 ** 3;
   const eight = stats.__pickDiskForTests([{ mount: '/', size: 8 * GiB, used: 4 * GiB }]);
   assert.equal(eight.total, 6 * GiB, 'an 8 GB disk keeps 2 GB back');
 
@@ -144,27 +144,86 @@ test('a mount is matched on a path boundary, not a string prefix', () => {
   assert.equal(d.used, 10 * 1024 ** 3, 'must fall back to /, not match /da');
 });
 
-test('storage reports the DEVICE, not whichever filesystem the data landed on', () => {
-  // The card was reading far smaller than the machine's actual disk: inside the container
-  // `si.fsSize()` sees the container's mounts, and picking the one that best represents
-  // "this masjid's storage" is a guess that goes wrong on partitioned disks and overlays.
-  // The device is what an admin can look up on an invoice.
-  const RESERVE = 16 * 1024 ** 3;
-  const device = 256 * 1024 ** 3;
-  const d = stats.__pickDiskForTests(
-    [{ mount: '/', size: 40 * 1024 ** 3, used: 12 * 1024 ** 3 }],
-    '/data',
-    device,
-  );
-  assert.equal(d.total, device - RESERVE, 'the total comes from the device');
-  assert.equal(d.used, 12 * 1024 ** 3, 'used is still what is really used');
+test('storage figures come from the filesystem the data is on; the drive is only carried', () => {
+  // This test used to pin the opposite — the DEVICE's size as the total — because the
+  // filesystem looked far smaller than the drive. But `used` was always the filesystem's,
+  // so the card divided one disk's usage by another's size, and a full Ubuntu LVM volume
+  // read about 40%. Both figures now come from the data's filesystem, as `df` gives them;
+  // the drive travels alongside for display only, and never enters a percentage.
+  const device = 256 * GiB;
+  const d = stats.__pickDiskForTests([{ mount: '/', size: 40 * GiB, used: 12 * GiB }], '/data', device);
+  assert.deepEqual(d, { used: 12 * GiB, total: 30 * GiB, device }, 'a quarter of 40 GB held back, from the filesystem');
+
+  // df's own denominator: used + available, so ext4's 5% root reserve is not room.
+  const ext4 = stats.__pickDiskForTests([{ mount: '/data', size: 200 * GiB, used: 150 * GiB, available: 40 * GiB }]);
+  assert.equal(ext4.total, (150 + 40 - 16) * GiB);
 });
 
-test('with no device reading, the filesystem is still used', () => {
-  // A non-Linux dev box has no /sys/block. Falling back beats reporting zero.
+test('the drive, known or not, never changes the figures', () => {
+  // A non-Linux dev box has no /sys/block; the figures are the filesystem's either way.
   const RESERVE = 16 * 1024 ** 3;
-  const d = stats.__pickDiskForTests([{ mount: '/', size: 100 * 1024 ** 3, used: 1 }], '/data', null);
+  const list = [{ mount: '/', size: 100 * 1024 ** 3, used: 1 }];
+  const d = stats.__pickDiskForTests(list, '/data', null);
   assert.equal(d.total, 100 * 1024 ** 3 - RESERVE);
+  assert.deepEqual(stats.__pickDiskForTests(list, '/data', 4096 * GiB), { ...d, device: 4096 * GiB });
+});
+
+/** Percent used, as the dashboard (80% warning) and `!os stats` (90%) work it out. */
+const pctUsed = (d: { used: number; total: number }): number => (d.used / d.total) * 100;
+
+test('LVM: a full volume on a bigger disk reads as full', () => {
+  // Ubuntu Server's default gives the root volume ~100 GB of a 256 GB disk. Divided by
+  // the disk, this volume read 31% and neither warning fired.
+  const volume = { size: 98 * GiB, used: 75 * GiB, available: 18 * GiB };
+  const d = stats.__pickDiskForTests(
+    [
+      { mount: '/', ...volume }, // the core container's own overlay, on the same volume
+      { mount: '/data', ...volume },
+    ],
+    '/data',
+    256 * GiB,
+  );
+  assert.equal(d.total, (75 + 18 - 16) * GiB);
+  assert.ok(pctUsed(d) >= 90, `${pctUsed(d)}%: the warning and "nearly full" must both fire`);
+  assert.equal(d.device, 256 * GiB, 'the disk is still there to show');
+});
+
+test('a second disk does not make the data disk look empty', () => {
+  // /sys/block adds up every real disk, so an unused 500 GB drive beside a nearly full
+  // 256 GB one made the data disk read about 26%.
+  const d = stats.__pickDiskForTests(
+    [{ mount: '/data', size: 230 * GiB, used: 180 * GiB, available: 38 * GiB }],
+    '/data',
+    700 * GiB,
+  );
+  assert.equal(d.total, (180 + 38 - 16) * GiB);
+  assert.ok(pctUsed(d) >= 80, `${pctUsed(d)}%: the low-storage warning must fire`);
+});
+
+test('a NAS-backed /data reads as the share, not as the local disk', () => {
+  // Divided by a 32 GB local disk, a 3.5 TB share with 400 GB on it read 100%, for good.
+  const d = stats.__pickDiskForTests(
+    [
+      { mount: '/', size: 29 * GiB, used: 9 * GiB, available: 18 * GiB },
+      { mount: '/data', size: 3600 * GiB, used: 400 * GiB, available: 3200 * GiB },
+    ],
+    '/data',
+    32 * GiB,
+  );
+  assert.equal(d.total, (3600 - 16) * GiB);
+  assert.ok(pctUsed(d) < 20, `${pctUsed(d)}%: a mostly empty share is not full`);
+});
+
+test("in a Proxmox LXC the container's own volume is what fills up", () => {
+  // Inside an LXC, /sys/block lists the NODE's disks: a 2 TB node made this full 32 GB
+  // container read 1%, so the warning came only once nothing more could be written.
+  const d = stats.__pickDiskForTests(
+    [{ mount: '/data', size: 32 * GiB, used: 27 * GiB, available: 3 * GiB }],
+    '/data',
+    2048 * GiB,
+  );
+  assert.equal(d.total, 22.5 * GiB, 'a quarter of its 30 GB held back for the OS');
+  assert.ok(pctUsed(d) >= 90, `${pctUsed(d)}%: the warning and "nearly full" must both fire`);
 });
 
 test('only real disks count towards the device total', () => {
@@ -188,8 +247,6 @@ test('only real disks count towards the device total', () => {
   // No sysfs at all reads as "unknown", not as zero.
   assert.equal(stats.physicalDiskBytes(path.join(dir, 'nope')), null);
 });
-
-const GiB = 1024 ** 3;
 
 /** Put cgroup files under HOST_CGROUP for the length of `fn`. */
 function withCgroup(files: Record<string, string>, fn: () => void): void {
@@ -328,4 +385,10 @@ test('systeminformation is asked only for what the host mounts cannot answer', a
     si.mem = real.mem;
     si.currentLoad = real.currentLoad;
   }
+});
+
+test('the snapshot carries the drive beside the storage figures', async () => {
+  // For the card to mention the drive ("on a 256 GB drive"); no percentage reads it.
+  const snap = await stats.collectStats(5_000_000);
+  assert.equal(snap.diskDeviceBytes, stats.physicalDiskBytes());
 });
