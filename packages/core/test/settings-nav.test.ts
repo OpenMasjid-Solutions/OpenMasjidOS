@@ -117,10 +117,38 @@ test('an unknown section falls back rather than showing nothing', () => {
 test('the dialogs stay outside the section panes', () => {
   // Several are opened from one section and must survive navigating away — the restore
   // upload especially, which would abandon a file mid-flight if it unmounted.
-  const paneEnd = settings.indexOf('</div>\n      </div>');
-  const updateModal = settings.indexOf('<UpdateModal');
-  assert.ok(paneEnd > 0 && updateModal > 0, 'expected to find the pane close and the modals');
-  assert.ok(updateModal > paneEnd, 'UpdateModal must render outside the section panes, not inside one');
+  //
+  // Where the pane ENDS is found by counting <div> depth from where it opens. (This used
+  // to look for the first `</div>\n      </div>` in the file, which was the end of an
+  // unrelated panel near the top, so it passed whatever the dialogs did.) Arrow functions
+  // are blanked first, same length, so an `=>` in an attribute is not read as a tag's end.
+  const src = settings.replace(/=>/g, '=~');
+  const open = src.indexOf('<div className="settings-pane">');
+  assert.ok(open > 0, 'expected to find the section pane');
+  let depth = 0;
+  let paneEnd = -1;
+  const tags = /<div\b[^>]*?(\/)?>|<\/div>/g;
+  tags.lastIndex = open;
+  for (let m = tags.exec(src); m; m = tags.exec(src)) {
+    if (m[0] === '</div>') depth--;
+    else if (!m[1]) depth++;
+    if (depth === 0) {
+      paneEnd = m.index;
+      break;
+    }
+  }
+  assert.ok(paneEnd > open, 'expected to find where the section pane closes');
+  const dialogs: Array<[string, string]> = [
+    ['UpdateModal', '<UpdateModal'],
+    ['RestoreModal', '<RestoreModal'],
+    ['the restore confirmation', "title={t('settings.restoreConfirmTitle')}"],
+    ['the reboot confirmation', "title={t('settings.rebootConfirmTitle')}"],
+  ];
+  for (const [name, marker] of dialogs) {
+    const at = src.indexOf(marker);
+    assert.ok(at > 0, `expected to find ${name}`);
+    assert.ok(at > paneEnd, `${name} must render outside the section panes, not inside one`);
+  }
 });
 
 test('IN-PRODUCT LINKS point at the section they name, not at bare /settings', () => {

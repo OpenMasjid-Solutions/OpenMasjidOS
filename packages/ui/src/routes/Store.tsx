@@ -10,6 +10,7 @@ import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Search, Plus, RefreshCw, Check } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -40,7 +41,7 @@ export function Store() {
   // that need input (a setting) still open the install dialog.
   const directInstall = trpc.store.install.useMutation({
     onSuccess: () => { utils.apps.list.invalidate(); toast(t('common.saved'), 'success'); },
-    onError: (e) => toast(e.message || t('store.installError'), 'error'),
+    onError: (e) => toast(errorText(e, t('store.installError')), 'error'),
     onSettled: () => setInstallingId(null),
   });
   function startInstall(app: CatalogApp) {
@@ -224,7 +225,7 @@ function InstallModal({
 
   const install = trpc.store.install.useMutation({
     onSuccess: onInstalled,
-    onError: (e) => toast(e.message || t('store.installError'), 'error'),
+    onError: (e) => toast(errorText(e, t('store.installError')), 'error'),
   });
 
   return (

@@ -9,6 +9,7 @@ import { Routes, Route } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { trpc } from './lib/trpc';
 import { getCsrf } from './lib/session';
+import { errorText } from './lib/errors';
 import { setRemoteOpener, setRemoteSession } from './lib/apps';
 import { useToast } from './components/ToastProvider';
 import { AuthScreen } from './components/AuthScreen';
@@ -75,10 +76,7 @@ export function Root() {
     // else is the transport's — "Unable to transform response from server" for a
     // closed door, a JSON parse error for Cloudflare's 502 page while the core
     // restarts — and is no use to an admin.
-    (err) => {
-      const e = err as { message?: string; data?: { code?: string } | null };
-      toast(e?.data?.code && e.message ? e.message : t('errors.openApp'), 'error');
-    },
+    (err) => toast(errorText(err, t('errors.openApp')), 'error'),
   );
 
   return (

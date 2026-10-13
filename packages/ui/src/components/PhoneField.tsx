@@ -17,7 +17,7 @@
  * every place the dashboard shows a number back to the admin, and being React-free is
  * what lets a core test cover them (`packages/ui` has no test runner of its own).
  */
-import { useMemo, type ReactNode } from 'react';
+import { useId, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, splitPhone } from '../lib/phone';
 
@@ -43,6 +43,9 @@ interface PhoneFieldProps {
 
 export function PhoneField({ value, onChange, label, hint, id, disabled, trailing }: PhoneFieldProps) {
   const { t } = useTranslation();
+  // A label must point at its box; without an id from the caller it pointed at nothing.
+  const autoId = useId();
+  const inputId = id ?? autoId;
   const split = useMemo(() => splitPhone(value), [value]);
   // An empty field starts on +1 rather than "choose a country", so the common case is
   // type-and-go. A number already stored under a dial code that is not in the list falls
@@ -70,7 +73,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
     // Wider when it carries an action, so the button is not squeezed against the number.
     <div className="field" style={{ maxWidth: trailing ? '34rem' : '22rem' }}>
       {label && (
-        <label className="label" htmlFor={id}>
+        <label className="label" htmlFor={inputId}>
           {label}
         </label>
       )}
@@ -104,7 +107,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
           <option value="">{t('settings.phoneCountryOther')}</option>
         </select>
         <input
-          id={id}
+          id={inputId}
           className="input glass-inset"
           type="tel"
           inputMode="tel"

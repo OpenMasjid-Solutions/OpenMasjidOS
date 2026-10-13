@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { filesRawUrl, filesDownloadUrl, type FileKind } from '../lib/files';
 import { useToast } from './ToastProvider';
 
@@ -46,7 +47,7 @@ function TextEditor({ path }: { path: string }) {
 
   const write = trpc.files.write.useMutation({
     onSuccess: () => toast(t('files.saved'), 'success'),
-    onError: (e) => toast(e.message || t('files.genericError'), 'error'),
+    onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
 
   useEffect(() => {
@@ -57,7 +58,7 @@ function TextEditor({ path }: { path: string }) {
   if (read.error) {
     return (
       <div>
-        <p className="form-error">{read.error.message}</p>
+        <p className="form-error">{errorText(read.error, t('files.genericError'))}</p>
         <a className="btn" href={filesDownloadUrl(path)}>{t('files.download')}</a>
       </div>
     );

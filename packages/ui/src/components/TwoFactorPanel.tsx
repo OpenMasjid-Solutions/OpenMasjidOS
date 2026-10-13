@@ -22,11 +22,12 @@
  * beside it — a camera is not always an option, and a code nobody can type in
  * is a dead end on a desktop with no webcam.
  */
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Download, KeyRound, ShieldCheck, ShieldOff, Smartphone } from 'lucide-react';
 import { trpc } from '../lib/trpc';
 import { isRemoteSession } from '../lib/apps';
+import { errorText } from '../lib/errors';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
 import { CheckboxField } from './CheckboxField';
@@ -269,7 +270,7 @@ function EnrolDialog({
       setPassword('');
       setSudoCode('');
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorText(e, t('errors.generic')));
     }
   }
 
@@ -280,7 +281,7 @@ function EnrolDialog({
       reset();
       onEnrolled(backupCodes);
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorText(e, t('errors.generic')));
     }
   }
 
@@ -407,6 +408,9 @@ function SudoDialog({
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // One per dialog: this one is rendered three times (turn off, new codes, emailed codes).
+  const passwordId = useId();
+  const codeId = useId();
 
   function reset() {
     setPassword('');
@@ -423,7 +427,7 @@ function SudoDialog({
       reset();
       onDone(res);
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorText(e, t('errors.generic')));
       setBusy(false);
     }
   }
@@ -444,8 +448,11 @@ function SudoDialog({
         </p>
       )}
       <div className="field" style={{ marginBlockStart: '0.9rem' }}>
-        <label className="label">{t('settings.currentPassword')}</label>
+        <label className="label" htmlFor={passwordId}>
+          {t('settings.currentPassword')}
+        </label>
         <input
+          id={passwordId}
           className="input glass-inset"
           type="password"
           autoComplete="current-password"
@@ -455,8 +462,11 @@ function SudoDialog({
       </div>
       {active && (
         <div className="field">
-          <label className="label">{t('settings.twoFactor.currentCode')}</label>
+          <label className="label" htmlFor={codeId}>
+            {t('settings.twoFactor.currentCode')}
+          </label>
           <input
+            id={codeId}
             className="input glass-inset"
             autoComplete="one-time-code"
             value={code}
@@ -495,9 +505,16 @@ function BackupCodesDialog({
   const text = (codes ?? []).join('\n');
 
   function copy() {
-    navigator.clipboard?.writeText(text).then(
+    // No clipboard at all on a page that is not secure (plain http on the LAN), which
+    // used to make this button do nothing — and say nothing — on the one screen where
+    // the admin needs to know whether they have the codes.
+    if (!navigator.clipboard) {
+      toast(t('settings.twoFactor.copyFailed'), 'error');
+      return;
+    }
+    navigator.clipboard.writeText(text).then(
       () => toast(t('settings.twoFactor.copied'), 'success'),
-      () => toast(t('errors.generic'), 'error'),
+      () => toast(t('settings.twoFactor.copyFailed'), 'error'),
     );
   }
 
@@ -511,7 +528,9 @@ function BackupCodesDialog({
     a.href = url;
     a.download = 'openmasjidos-backup-codes.txt';
     a.click();
-    URL.revokeObjectURL(url);
+    // Not straight away: some browsers abort a download whose address is revoked
+    // before it has started.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   return (

@@ -11,6 +11,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ShieldCheck, Plus, Trash2, Store as StoreIcon, Search } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { appInitial, appColor } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -162,7 +163,7 @@ function CommunityTab() {
       utils.community.repos.invalidate();
       utils.community.apps.invalidate();
     },
-    onError: (e) => setRepoError(e.message || t('community.addRepoError')),
+    onError: (e) => setRepoError(errorText(e, t('community.addRepoError'))),
   });
   const removeRepo = trpc.community.removeRepo.useMutation({
     onSuccess: () => {
@@ -180,7 +181,7 @@ function CommunityTab() {
     onError: (e) => {
       // The server asks for an explicit risk ack when the compose is dangerous.
       if (e.message.includes('powerful permissions')) setNeedsAck(true);
-      else setInstallError(e.message || t('custom.error'));
+      else setInstallError(errorText(e, t('custom.error')));
     },
   });
 
@@ -344,7 +345,7 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
       toast(t('common.saved'), 'success');
       navigate('/');
     },
-    onError: (e) => setError(e.message || t('custom.error')),
+    onError: (e) => setError(errorText(e, t('custom.error'))),
   });
   const dangers = check.data?.dangers ?? [];
   // Refusals are NOT acknowledgeable — a stack that reaches into another app's

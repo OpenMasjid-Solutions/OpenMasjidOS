@@ -8,6 +8,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ExternalLink, Play, Square, RotateCw, RefreshCw, Globe, ShieldAlert } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { openApp, appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Toggle } from '../components/Toggle';
@@ -45,7 +46,7 @@ export function AppDetail() {
       setReviewOpen(false);
       setRiskAck(false);
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const stop = trpc.apps.stop.useMutation({ onSuccess: onChange });
   const restart = trpc.apps.restart.useMutation({ onSuccess: onChange });
@@ -63,7 +64,7 @@ export function AppDetail() {
       onChange();
       toast(r.exposed ? t('settings.cfExposedOn') : t('settings.cfExposedOff'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   if (appQuery.isLoading) {

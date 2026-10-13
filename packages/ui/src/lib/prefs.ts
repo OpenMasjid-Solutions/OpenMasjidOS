@@ -54,28 +54,31 @@ const DEFAULTS: Prefs = {
  * a third of the 4.5:1 AA needs, and every primary button, avatar and app-icon
  * fallback on the page went with it. Keep each of these above 4.5:1 against its own
  * `primary`; `theme-tokens.test.ts` does the arithmetic.
+ *
+ * `label` here and in WALLPAPERS is an en.json KEY, translated where it is shown;
+ * `i18n-keys.test.ts` checks every one exists.
  */
 export const ACCENTS: Record<
   string,
   { label: string; primary: string; hover: string; subtle: string; onPrimary: string }
 > = {
-  cyan: { label: 'Cyan', primary: '#22D3EE', hover: '#67E8F9', subtle: 'rgba(34,211,238,0.12)', onPrimary: '#00131C' },
-  teal: { label: 'Teal', primary: '#2DD4BF', hover: '#5EEAD4', subtle: 'rgba(45,212,191,0.12)', onPrimary: '#00201B' },
-  sky: { label: 'Sky', primary: '#38BDF8', hover: '#7DD3FC', subtle: 'rgba(56,189,248,0.12)', onPrimary: '#001B2E' },
-  violet: { label: 'Violet', primary: '#A78BFA', hover: '#C4B5FD', subtle: 'rgba(167,139,250,0.14)', onPrimary: '#190B3D' },
-  gold: { label: 'Gold', primary: '#FBBF24', hover: '#FCD34D', subtle: 'rgba(251,191,36,0.14)', onPrimary: '#2B1B00' },
+  cyan: { label: 'settings.accentNames.cyan', primary: '#22D3EE', hover: '#67E8F9', subtle: 'rgba(34,211,238,0.12)', onPrimary: '#00131C' },
+  teal: { label: 'settings.accentNames.teal', primary: '#2DD4BF', hover: '#5EEAD4', subtle: 'rgba(45,212,191,0.12)', onPrimary: '#00201B' },
+  sky: { label: 'settings.accentNames.sky', primary: '#38BDF8', hover: '#7DD3FC', subtle: 'rgba(56,189,248,0.12)', onPrimary: '#001B2E' },
+  violet: { label: 'settings.accentNames.violet', primary: '#A78BFA', hover: '#C4B5FD', subtle: 'rgba(167,139,250,0.14)', onPrimary: '#190B3D' },
+  gold: { label: 'settings.accentNames.gold', primary: '#FBBF24', hover: '#FCD34D', subtle: 'rgba(251,191,36,0.14)', onPrimary: '#2B1B00' },
 };
 
 export const WALLPAPERS: Record<string, { label: string; preview: string }> = {
-  aurora: { label: 'Aurora', preview: 'radial-gradient(circle at 30% 25%, #22D3EE, #0A1828 70%)' },
-  ocean: { label: 'Ocean', preview: 'linear-gradient(150deg, #38BDF8, #2563EB 55%, #0a1838 100%)' },
-  twilight: { label: 'Twilight', preview: 'linear-gradient(150deg, #C084FC, #7C3AED 55%, #0a0618 100%)' },
-  berry: { label: 'Berry', preview: 'linear-gradient(150deg, #F472B6, #A21CAF 55%, #1a0518 100%)' },
-  sunset: { label: 'Sunset', preview: 'linear-gradient(150deg, #FBBF24, #FB7185 55%, #1a0d08 100%)' },
-  ember: { label: 'Ember', preview: 'linear-gradient(150deg, #FB923C, #DC2626 55%, #190806 100%)' },
-  forest: { label: 'Forest', preview: 'linear-gradient(150deg, #4ADE80, #15803D 55%, #04140e 100%)' },
-  night: { label: 'Night', preview: 'linear-gradient(150deg, #60A5FA, #1E3A8A 55%, #02060f 100%)' },
-  graphite: { label: 'Graphite', preview: 'linear-gradient(150deg, #64748B, #334155 55%, #0b0f17 100%)' },
+  aurora: { label: 'settings.wallpaperNames.aurora', preview: 'radial-gradient(circle at 30% 25%, #22D3EE, #0A1828 70%)' },
+  ocean: { label: 'settings.wallpaperNames.ocean', preview: 'linear-gradient(150deg, #38BDF8, #2563EB 55%, #0a1838 100%)' },
+  twilight: { label: 'settings.wallpaperNames.twilight', preview: 'linear-gradient(150deg, #C084FC, #7C3AED 55%, #0a0618 100%)' },
+  berry: { label: 'settings.wallpaperNames.berry', preview: 'linear-gradient(150deg, #F472B6, #A21CAF 55%, #1a0518 100%)' },
+  sunset: { label: 'settings.wallpaperNames.sunset', preview: 'linear-gradient(150deg, #FBBF24, #FB7185 55%, #1a0d08 100%)' },
+  ember: { label: 'settings.wallpaperNames.ember', preview: 'linear-gradient(150deg, #FB923C, #DC2626 55%, #190806 100%)' },
+  forest: { label: 'settings.wallpaperNames.forest', preview: 'linear-gradient(150deg, #4ADE80, #15803D 55%, #04140e 100%)' },
+  night: { label: 'settings.wallpaperNames.night', preview: 'linear-gradient(150deg, #60A5FA, #1E3A8A 55%, #02060f 100%)' },
+  graphite: { label: 'settings.wallpaperNames.graphite', preview: 'linear-gradient(150deg, #64748B, #334155 55%, #0b0f17 100%)' },
 };
 
 const RTL_LANGS = new Set(['ar', 'ur']);

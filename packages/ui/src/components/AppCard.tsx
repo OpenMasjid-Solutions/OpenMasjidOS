@@ -24,6 +24,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { usePrefs, prefsStore } from '../lib/prefs';
 import { openApp } from '../lib/apps';
 import { AppIcon } from './AppIcon';
@@ -139,7 +140,7 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
       setReviewOpen(false);
       setRiskAck(false);
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const stop = trpc.apps.stop.useMutation({ onSuccess: refresh });
   const restart = trpc.apps.restart.useMutation({ onSuccess: refresh });
@@ -157,7 +158,7 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
       refresh();
       toast(t('common.saved'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const tag = TAG[app.kind] ?? TAG.custom;

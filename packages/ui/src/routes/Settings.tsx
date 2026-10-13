@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Platform settings only (CLAUDE.md §13) — appearance, language, account,
- * advanced. No masjid/prayer config ever lives here; that belongs to apps.
+ * Platform settings only (CLAUDE.md §13) — appearance, account, email, WhatsApp,
+ * alerts, payments, remote access, advanced. No masjid/prayer config ever lives here;
+ * that belongs to apps.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, useParams, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Download, Upload, GitBranch, RefreshCw, Check, SquareTerminal, KeyRound, HardDrive, Bell, Heart, ShieldCheck, Cloud, CloudUpload, Trash2, Copy, ExternalLink, CreditCard, Pencil, Globe, Power, AlertTriangle, Image as ImageIcon, Sparkles, Wifi, ScrollText, MessageCircle, SlidersHorizontal } from 'lucide-react';
@@ -31,6 +32,9 @@ import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import { CheckboxField } from '../components/CheckboxField';
 import { TwoFactorPanel } from '../components/TwoFactorPanel';
+import { MIN_PW } from '../components/AuthScreen';
+import { errorText, ShownError } from '../lib/errors';
+import type { RouterOutputs } from '../lib/types';
 
 // IANA zones for the clock picker, when the browser exposes them.
 const TIMEZONES: string[] = (() => {
@@ -99,6 +103,34 @@ function StatusDot({ online, label: override }: { online: boolean | undefined; l
   );
 }
 
+/**
+ * A labelled form field whose label is TIED to its control, so a screen reader names
+ * the box and a click on the label lands in it. `children` is handed the id to put on
+ * the control — the same idea as CheckboxField, for everything that is not a tick.
+ */
+function Field({
+  label,
+  hint,
+  style,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  style?: CSSProperties;
+  children: (id: string) => ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="field" style={style}>
+      <label className="label" htmlFor={id}>
+        {label}
+      </label>
+      {children(id)}
+      {hint && <span className="hint">{hint}</span>}
+    </div>
+  );
+}
+
 /** Masjid logo upload — reused across the masjid's outbound emails (alerts +
  *  receipts an app sends) and notification-webhook avatars. Presentation, not
  *  masjid/prayer config (that lives in apps). */
@@ -123,13 +155,13 @@ function BrandingPanel() {
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error || t('errors.generic'));
+        throw new ShownError(body.error || t('errors.generic'));
       }
       setVer((v) => v + 1);
       setPresent(true);
       toast(t('settings.logoSaved'), 'success');
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(errorText(e, t('errors.generic')), 'error');
     } finally {
       setUploading(false);
     }
@@ -144,12 +176,12 @@ function BrandingPanel() {
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error || t('errors.generic'));
+        throw new ShownError(body.error || t('errors.generic'));
       }
       setVer((v) => v + 1);
       setPresent(false);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(errorText(e, t('errors.generic')), 'error');
     }
   }
 
@@ -317,13 +349,9 @@ export function Settings() {
   const updateClicks = useRef<number[]>([]);
 
   const reboot = trpc.system.reboot.useMutation({
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
-  // Release notes open as a managed window (traffic-light chrome, like the terminal
-  // and file windows). The options come from the shared component so this and the
-  // account menu use the same `dedupeKey` — opening from either focuses the one
-  // window rather than stacking a second copy of the same notes.
   // Move every pending app onto the selected channel, then the OS when returning to
   // Stable. A window (not a modal) because it streams for minutes and the admin
   // should be able to look at something else while it runs.
@@ -341,6 +369,10 @@ export function Settings() {
     });
   }
 
+  // Release notes open as a managed window (traffic-light chrome, like the terminal
+  // and file windows). The options come from the shared component so this and the
+  // account menu use the same `dedupeKey` — opening from either focuses the one
+  // window rather than stacking a second copy of the same notes.
   function openChangelog() {
     windows.open(changelogWindowOptions(t('changelog.title')));
   }
@@ -365,13 +397,13 @@ export function Settings() {
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
         // Not our answer at all: Cloudflare's own page, almost always the size limit.
-        if (!body && isRemoteSession() && res.status === 413) throw new Error(t('settings.restoreTooBigRemote'));
-        throw new Error(body?.error || t('errors.generic'));
+        if (!body && isRemoteSession() && res.status === 413) throw new ShownError(t('settings.restoreTooBigRemote'));
+        throw new ShownError(body?.error || t('errors.generic'));
       }
       setRestoreFile(null);
       setRestoreOpen(true);
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast(errorText(e, t('errors.generic')), 'error');
     } finally {
       setRestoreUploading(false);
     }
@@ -416,11 +448,14 @@ export function Settings() {
 
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: () => utils.settings.get.invalidate(),
+    // A refusal (a change asked for while a backup is being restored, say) would
+    // otherwise leave the switch where it was with nothing saying why.
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const freeSpace = trpc.system.freeSpace.useMutation({
     onSuccess: (r) => toast(r.reclaimed === '0B' ? t('settings.freedNone') : t('settings.freedSpace', { amount: r.reclaimed }), 'success'),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const themes: Array<{ id: 'dark' | 'light' | 'system'; label: string }> = [
@@ -441,8 +476,8 @@ export function Settings() {
 
         {/* Only the chosen section is mounted. That is the point of the split — a pane
             no one is looking at should not be running its polling queries either (the
-            WhatsApp panel alone polls the gateway, and the stats and backup panels each
-            hold their own timers). */}
+            WhatsApp panel alone polls the gateway, and the email, payments and remote
+            access panels each poll a status of their own). */}
         <div className="settings-pane">
 
       {show('appearance') && (
@@ -455,7 +490,12 @@ export function Settings() {
           <div className="setting-row__text"><div className="setting-row__title">{t('settings.theme')}</div></div>
           <div className="segmented glass-inset">
             {themes.map((th) => (
-              <button key={th.id} className={cn(prefs.theme === th.id && 'is-active')} onClick={() => prefsStore.patch({ theme: th.id })}>
+              <button
+                key={th.id}
+                className={cn(prefs.theme === th.id && 'is-active')}
+                aria-pressed={prefs.theme === th.id}
+                onClick={() => prefsStore.patch({ theme: th.id })}
+              >
                 {th.label}
               </button>
             ))}
@@ -470,7 +510,8 @@ export function Settings() {
                 key={id}
                 className={cn('swatch', prefs.accent === id && 'is-active')}
                 style={{ background: a.primary }}
-                aria-label={a.label}
+                aria-label={t(a.label)}
+                aria-pressed={prefs.accent === id}
                 onClick={() => prefsStore.patch({ accent: id })}
               />
             ))}
@@ -485,7 +526,8 @@ export function Settings() {
                 key={id}
                 className={cn('wallpaper', !prefs.wallpaperImage && prefs.wallpaper === id && 'is-active')}
                 style={{ background: w.preview }}
-                aria-label={w.label}
+                aria-label={t(w.label)}
+                aria-pressed={!prefs.wallpaperImage && prefs.wallpaper === id}
                 onClick={() => prefsStore.patch({ wallpaper: id, wallpaperImage: '' })}
               />
             ))}
@@ -502,6 +544,7 @@ export function Settings() {
               className="input glass-inset"
               style={{ maxWidth: '16rem' }}
               placeholder="https://…/wallpaper.jpg"
+              aria-label={t('settings.wallpaperImage')}
               value={prefs.wallpaperImage}
               onChange={(e) => prefsStore.patch({ wallpaperImage: e.target.value.trim() })}
             />
@@ -522,6 +565,7 @@ export function Settings() {
             className="input glass-inset"
             style={{ maxWidth: '14rem' }}
             placeholder={t('settings.dashboardNamePlaceholder')}
+            aria-label={t('settings.dashboardName')}
             value={prefs.dashboardName}
             onChange={(e) => prefsStore.patch({ dashboardName: e.target.value })}
           />
@@ -542,10 +586,18 @@ export function Settings() {
             <div className="setting-row">
               <div className="setting-row__text"><div className="setting-row__title">{t('settings.clockFormat')}</div></div>
               <div className="segmented glass-inset">
-                <button className={cn(!prefs.clock24h && 'is-active')} onClick={() => prefsStore.patch({ clock24h: false })}>
+                <button
+                  className={cn(!prefs.clock24h && 'is-active')}
+                  aria-pressed={!prefs.clock24h}
+                  onClick={() => prefsStore.patch({ clock24h: false })}
+                >
                   {t('settings.clock12h')}
                 </button>
-                <button className={cn(prefs.clock24h && 'is-active')} onClick={() => prefsStore.patch({ clock24h: true })}>
+                <button
+                  className={cn(prefs.clock24h && 'is-active')}
+                  aria-pressed={prefs.clock24h}
+                  onClick={() => prefsStore.patch({ clock24h: true })}
+                >
                   {t('settings.clock24h')}
                 </button>
               </div>
@@ -556,6 +608,7 @@ export function Settings() {
               <select
                 className="select glass-inset"
                 style={{ maxWidth: '16rem' }}
+                aria-label={t('settings.timezone')}
                 value={prefs.timezone}
                 onChange={(e) => prefsStore.patch({ timezone: e.target.value })}
               >
@@ -827,7 +880,7 @@ function SshAccess() {
       setError('');
       toast(t('settings.sshKeyAdded'), 'success');
     },
-    onError: (e) => setError(e.message || t('errors.generic')),
+    onError: (e) => setError(errorText(e, t('errors.generic'))),
   });
 
   return (
@@ -839,6 +892,7 @@ function SshAccess() {
       <textarea
         className="textarea glass-inset"
         style={{ minHeight: '4.5rem' }}
+        aria-label={t('settings.ssh')}
         placeholder={t('settings.sshKeyPlaceholder')}
         value={key}
         onChange={(e) => setKey(e.target.value)}
@@ -865,7 +919,7 @@ function NetworkRow() {
   const info = trpc.system.info.useQuery();
   const reconnect = trpc.system.reconnectApps.useMutation({
     onSuccess: (r) => toast(t('settings.reconnectDone', { count: r.updated.length }), 'success'),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const net = info.data?.network;
   return (
@@ -874,7 +928,10 @@ function NetworkRow() {
         <div className="setting-row__title">{t('settings.network')}</div>
         <div className="setting-row__hint">
           {`${t('settings.address')}: ${net?.addresses?.[0] ?? window.location.host}`}
-          {net?.localDomain ? ` · ${net.localDomain}` : ''}
+          {/* The machine's name, not `<name>.local`: nothing answers to that name yet
+              (mDNS is not built — CLAUDE.md §4), so showing it sent people to an address
+              that goes nowhere. */}
+          {net?.hostname ? ` · ${net.hostname}` : ''}
         </div>
         <div className="setting-row__hint">{t('settings.reconnectHint')}</div>
       </div>
@@ -891,14 +948,19 @@ function SslSection() {
   const utils = trpc.useUtils();
   const tls = trpc.system.tlsInfo.useQuery();
   const [uploadOpen, setUploadOpen] = useState(false);
+  // Asked first: a new certificate replaces an uploaded one with no copy kept, and on a
+  // self-signed box it brings the browser's warning back on every device.
+  const [askRegenerate, setAskRegenerate] = useState(false);
   const [cert, setCert] = useState('');
   const [key, setKey] = useState('');
   const [error, setError] = useState('');
+  const certId = useId();
+  const keyId = useId();
 
   const refresh = () => utils.system.tlsInfo.invalidate();
   const regenerate = trpc.system.regenerateCert.useMutation({
-    onSuccess: () => { refresh(); toast(t('settings.sslRegenerated'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onSuccess: () => { setAskRegenerate(false); refresh(); toast(t('settings.sslRegenerated'), 'success'); },
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const setCustom = trpc.system.setCustomCert.useMutation({
     onSuccess: () => {
@@ -909,7 +971,7 @@ function SslSection() {
       setError('');
       toast(t('settings.sslSaved'), 'success');
     },
-    onError: (e) => setError(e.message || t('errors.generic')),
+    onError: (e) => setError(errorText(e, t('errors.generic'))),
   });
 
   const info = tls.data;
@@ -951,7 +1013,7 @@ function SslSection() {
         </pre>
       )}
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
-        <button className="btn btn--sm" disabled={regenerate.isPending} onClick={() => regenerate.mutate()}>
+        <button className="btn btn--sm" disabled={regenerate.isPending} onClick={() => setAskRegenerate(true)}>
           <RefreshCw size={14} /> {regenerate.isPending ? t('settings.sslRegenerating') : t('settings.sslRegenerate')}
         </button>
         <button className="btn btn--sm" onClick={() => { setError(''); setUploadOpen(true); }}>
@@ -959,18 +1021,31 @@ function SslSection() {
         </button>
       </div>
 
+      <ConfirmDialog
+        open={askRegenerate}
+        onClose={() => setAskRegenerate(false)}
+        onConfirm={() => regenerate.mutate()}
+        title={t('confirm.sslRegenerateTitle')}
+        body={t('confirm.sslRegenerateBody')}
+        cost={info?.type === 'custom' ? t('confirm.sslRegenerateCostCustom') : t('confirm.sslRegenerateCost')}
+        confirmLabel={t('confirm.sslRegenerateConfirm')}
+        pending={regenerate.isPending}
+      />
+
       <Modal open={uploadOpen} onClose={() => !setCustom.isPending && setUploadOpen(false)} title={t('settings.sslUploadTitle')}>
         <p className="setting-row__hint">{t('settings.sslUploadBody')}</p>
-        <label className="label" style={{ marginBlockStart: '0.6rem' }}>{t('settings.sslCertLabel')}</label>
+        <label className="label" htmlFor={certId} style={{ marginBlockStart: '0.6rem' }}>{t('settings.sslCertLabel')}</label>
         <textarea
+          id={certId}
           className="textarea glass-inset"
           style={{ minHeight: '6rem', fontFamily: 'ui-monospace, monospace' }}
           placeholder="-----BEGIN CERTIFICATE-----"
           value={cert}
           onChange={(e) => setCert(e.target.value)}
         />
-        <label className="label" style={{ marginBlockStart: '0.6rem' }}>{t('settings.sslKeyLabel')}</label>
+        <label className="label" htmlFor={keyId} style={{ marginBlockStart: '0.6rem' }}>{t('settings.sslKeyLabel')}</label>
         <textarea
+          id={keyId}
           className="textarea glass-inset"
           style={{ minHeight: '6rem', fontFamily: 'ui-monospace, monospace' }}
           placeholder="-----BEGIN PRIVATE KEY-----"
@@ -1018,15 +1093,24 @@ function ChangePassword() {
     }
   }, [me.data]);
   const saveProfile = trpc.auth.updateProfile.useMutation({
-    onSuccess: () => {
-      utils.auth.me.invalidate();
+    onSuccess: async () => {
       // A new address pauses emailed sign-in codes (core auth/twofactor.ts), and the
       // two-step panel sits just below this form: without this it went on showing
       // them as on until its cache ran out.
-      utils.auth.twoFactor.status.invalidate();
+      void utils.auth.twoFactor.status.invalidate();
+      // Then show what the server now HOLDS rather than what was typed: a cleared email
+      // keeps the old one, and a number it could not use is not stored — the boxes must
+      // not go on showing either as saved.
+      await utils.auth.me.invalidate();
+      const stored = utils.auth.me.getData();
+      if (stored) {
+        setName(stored.name ?? '');
+        setEmail(stored.email ?? '');
+        setPhone(stored.phone ?? '');
+      }
       toast(t('settings.profileSaved'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const change = trpc.auth.changePassword.useMutation({
@@ -1038,21 +1122,20 @@ function ChangePassword() {
       setError('');
       toast(t('settings.passwordChanged'), 'success');
     },
-    onError: (e) => setError(e.message || t('errors.generic')),
+    onError: (e) => setError(errorText(e, t('errors.generic'))),
   });
 
   return (
     <section className="glass-raised panel">
       <h2 className="panel-title">{t('settings.account')}</h2>
-      <div className="field" style={{ maxWidth: '20rem' }}>
-        <label className="label">{t('settings.accountName')}</label>
-        <input className="input glass-inset" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-      <div className="field" style={{ maxWidth: '20rem' }}>
-        <label className="label">{t('settings.accountEmail')}</label>
-        <input className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <span className="hint">{t('settings.accountEmailHint')}</span>
-      </div>
+      <Field label={t('settings.accountName')} style={{ maxWidth: '20rem' }}>
+        {(id) => <input id={id} className="input glass-inset" value={name} onChange={(e) => setName(e.target.value)} />}
+      </Field>
+      <Field label={t('settings.accountEmail')} hint={t('settings.accountEmailHint')} style={{ maxWidth: '20rem' }}>
+        {(id) => (
+          <input id={id} className="input glass-inset" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        )}
+      </Field>
       <PhoneField
         value={phone}
         onChange={setPhone}
@@ -1076,18 +1159,22 @@ function ChangePassword() {
       >
         <Check size={15} /> {t('settings.saveProfile')}
       </button>
-      <div className="field" style={{ maxWidth: '20rem' }}>
-        <label className="label">{t('settings.currentPassword')}</label>
-        <input className="input glass-inset" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
-      </div>
-      <div className="field" style={{ maxWidth: '20rem' }}>
-        <label className="label">{t('settings.newPassword')}</label>
-        <input className="input glass-inset" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
-      </div>
+      <Field label={t('settings.currentPassword')} style={{ maxWidth: '20rem' }}>
+        {(id) => (
+          <input id={id} className="input glass-inset" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+        )}
+      </Field>
+      {/* The rule is said up front: the button below stays greyed until it is met, and a
+          button that will not press without saying why reads as broken. */}
+      <Field label={t('settings.newPassword')} hint={t('auth.passwordHint')} style={{ maxWidth: '20rem' }}>
+        {(id) => (
+          <input id={id} className="input glass-inset" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+        )}
+      </Field>
       {error && <p className="form-error">{error}</p>}
       <button
         className="btn btn--primary"
-        disabled={change.isPending || !current || next.length < 12}
+        disabled={change.isPending || !current || next.length < MIN_PW}
         onClick={() => change.mutate({ currentPassword: current, newPassword: next })}
       >
         <Check size={15} /> {t('settings.changePassword')}
@@ -1118,35 +1205,46 @@ function NotificationsPanel() {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const settings = trpc.settings.get.useQuery();
-  const save = trpc.settings.update.useMutation({ onSuccess: () => utils.settings.get.invalidate() });
+  // URL/label are edited locally and saved on blur; enabled/type save immediately. Each
+  // holds what was typed, or null while its box still shows what is stored — the server
+  // takes all four fields at once, and re-sending what the page opened with put back a
+  // webhook another device had changed since.
+  const [url, setUrl] = useState<string | null>(null);
+  const [label, setLabel] = useState<string | null>(null);
+  const save = trpc.settings.update.useMutation({
+    onSuccess: async (_r, vars) => {
+      await utils.settings.get.invalidate();
+      // Back to showing what is stored — but only for an edit that was saved as it
+      // stands, so a box being typed in while this was in flight keeps its text.
+      setUrl((u) => (u === vars.notifications?.url ? null : u));
+      setLabel((l) => (l === vars.notifications?.label ? null : l));
+    },
+    // Without this a refused save (an address that is not http(s), any change while a
+    // backup is being restored) said nothing at all.
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
   const test = trpc.notifications.test.useMutation({
     onSuccess: () => toast(t('settings.notificationsTestSent'), 'success'),
-    onError: (e) => toast(e.message || t('settings.notificationsTestFailed'), 'error'),
+    onError: (e) => toast(errorText(e, t('settings.notificationsTestFailed')), 'error'),
   });
 
   const n = settings.data?.notifications;
-  // URL/label are edited locally and saved on blur; enabled/type save immediately.
-  const [url, setUrl] = useState('');
-  const [label, setLabel] = useState('');
-  const seeded = useRef(false);
-  useEffect(() => {
-    if (n && !seeded.current) {
-      setUrl(n.url);
-      setLabel(n.label);
-      seeded.current = true;
-    }
-  }, [n]);
-
   if (!n) return null;
 
+  const shownUrl = url ?? n.url;
+  const shownLabel = label ?? n.label;
+  const edited = shownUrl !== n.url || shownLabel !== n.label;
   const config = (next: { enabled?: boolean; type?: NotifType; url?: string; label?: string }) => ({
     enabled: n.enabled,
     type: n.type,
-    url,
-    label,
+    url: shownUrl,
+    label: shownLabel,
     ...next,
   });
   const patch = (next: Parameters<typeof config>[0]) => save.mutate({ notifications: config(next) });
+  const saveIfEdited = () => {
+    if (edited) patch({});
+  };
 
   const types: Array<{ id: NotifType; label: string }> = [
     { id: 'slack', label: t('settings.notificationsSlack') },
@@ -1170,7 +1268,12 @@ function NotificationsPanel() {
             <div className="setting-row__text"><div className="setting-row__title">{t('settings.notificationsService')}</div></div>
             <div className="segmented glass-inset">
               {types.map((ty) => (
-                <button key={ty.id} className={cn(n.type === ty.id && 'is-active')} onClick={() => patch({ type: ty.id })}>
+                <button
+                  key={ty.id}
+                  className={cn(n.type === ty.id && 'is-active')}
+                  aria-pressed={n.type === ty.id}
+                  onClick={() => patch({ type: ty.id })}
+                >
                   {ty.label}
                 </button>
               ))}
@@ -1187,9 +1290,10 @@ function NotificationsPanel() {
               style={{ maxWidth: '18rem' }}
               type="url"
               placeholder="https://hooks.slack.com/…"
-              value={url}
+              aria-label={t('settings.notificationsUrl')}
+              value={shownUrl}
               onChange={(e) => setUrl(e.target.value.trim())}
-              onBlur={() => patch({})}
+              onBlur={saveIfEdited}
             />
           </div>
 
@@ -1201,9 +1305,10 @@ function NotificationsPanel() {
             <input
               className="input glass-inset"
               style={{ maxWidth: '14rem' }}
-              value={label}
+              aria-label={t('settings.notificationsLabel')}
+              value={shownLabel}
               onChange={(e) => setLabel(e.target.value)}
-              onBlur={() => patch({})}
+              onBlur={saveIfEdited}
             />
           </div>
 
@@ -1211,13 +1316,20 @@ function NotificationsPanel() {
             <div className="setting-row__text"><div className="setting-row__title">{t('settings.notificationsTest')}</div></div>
             <button
               className="btn"
-              disabled={test.isPending || !url}
+              disabled={test.isPending || !shownUrl}
+              // Keeps focus in the box being edited, so its own save-on-blur does not run
+              // as well: one save (below), then the test.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={async () => {
-                // Persist the latest URL/label first so the test uses them.
-                try {
-                  await save.mutateAsync({ notifications: config({}) });
-                } catch {
-                  /* surfaced below if the test then fails */
+                // Persist what is in the boxes first so the test uses them — and stop if
+                // that was refused: the test would otherwise go to the webhook stored
+                // before, and say "sent".
+                if (edited) {
+                  try {
+                    await save.mutateAsync({ notifications: config({}) });
+                  } catch {
+                    return; // the save has already said why
+                  }
                 }
                 test.mutate();
               }}
@@ -1263,19 +1375,22 @@ function ScheduledBackupPanel() {
 
   const update = trpc.backups.update.useMutation({
     onSuccess: refresh,
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
+  // Removing the destination deletes its saved sign-in details, so it is asked first —
+  // it sits one click from the harmless "Change".
+  const [askRemove, setAskRemove] = useState(false);
   const clearDest = trpc.backups.clearDestination.useMutation({
-    onSuccess: () => { refresh(); toast(t('settings.backupRemoved'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onSuccess: () => { setAskRemove(false); refresh(); toast(t('settings.backupRemoved'), 'success'); },
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const test = trpc.backups.test.useMutation({
     onSuccess: (r) => toast(r.message || t('settings.backupTestOk'), r.ok ? 'success' : 'error'),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const runNow = trpc.backups.runNow.useMutation({
     onSuccess: () => { refresh(); toast(t('settings.backupRunDone'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const b = status.data;
@@ -1330,12 +1445,23 @@ function ScheduledBackupPanel() {
             <Cloud size={15} /> {b.configured ? t('settings.backupChange') : t('settings.backupSetUp')}
           </button>
           {b.configured && (
-            <button className="btn" disabled={clearDest.isPending} onClick={() => clearDest.mutate()}>
+            <button className="btn" disabled={clearDest.isPending} onClick={() => setAskRemove(true)}>
               <Trash2 size={15} /> {t('settings.backupRemove')}
             </button>
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={askRemove}
+        onClose={() => setAskRemove(false)}
+        onConfirm={() => clearDest.mutate()}
+        title={t('confirm.backupRemoveTitle')}
+        body={t('confirm.backupRemoveBody')}
+        cost={t('confirm.backupRemoveCost')}
+        confirmLabel={t('confirm.backupRemoveConfirm')}
+        pending={clearDest.isPending}
+      />
 
       {b.configured && (
         <>
@@ -1347,10 +1473,18 @@ function ScheduledBackupPanel() {
           <div className="setting-row">
             <div className="setting-row__text"><div className="setting-row__title">{t('settings.backupSchedule')}</div></div>
             <div className="segmented glass-inset">
-              <button className={cn(b.schedule === 'daily' && 'is-active')} onClick={() => update.mutate({ schedule: 'daily' })}>
+              <button
+                className={cn(b.schedule === 'daily' && 'is-active')}
+                aria-pressed={b.schedule === 'daily'}
+                onClick={() => update.mutate({ schedule: 'daily' })}
+              >
                 {t('settings.backupDaily')}
               </button>
-              <button className={cn(b.schedule === 'weekly' && 'is-active')} onClick={() => update.mutate({ schedule: 'weekly' })}>
+              <button
+                className={cn(b.schedule === 'weekly' && 'is-active')}
+                aria-pressed={b.schedule === 'weekly'}
+                onClick={() => update.mutate({ schedule: 'weekly' })}
+              >
                 {t('settings.backupWeekly')}
               </button>
             </div>
@@ -1367,10 +1501,28 @@ function ScheduledBackupPanel() {
               type="number"
               min={1}
               max={365}
+              aria-label={t('settings.backupRetention')}
               defaultValue={b.retention}
+              // The box always ends up saying what is stored: the number as it was saved
+              // (kept in range), or the old one back when it was empty or refused —
+              // never a value that was not kept.
               onBlur={(e) => {
-                const n = Math.max(1, Math.min(365, Math.round(Number(e.target.value) || b.retention)));
-                if (n !== b.retention) update.mutate({ retention: n });
+                const box = e.currentTarget;
+                const typed = Math.round(Number(box.value));
+                if (!box.value.trim() || !Number.isFinite(typed)) {
+                  box.value = String(b.retention);
+                  return;
+                }
+                const n = Math.max(1, Math.min(365, typed));
+                box.value = String(n);
+                if (n === b.retention) return;
+                update.mutate(
+                  { retention: n },
+                  {
+                    onSuccess: (r) => { box.value = String(r.retention); },
+                    onError: () => { box.value = String(b.retention); },
+                  },
+                );
               }}
             />
           </div>
@@ -1409,10 +1561,11 @@ function BackupDestinationForm({ onClose, onSaved }: { onClose: () => void; onSa
   const [keyPem, setKeyPem] = useState('');
   const [driveToken, setDriveToken] = useState('');
   const [error, setError] = useState('');
+  const typeId = useId();
 
   const save = trpc.backups.setDestination.useMutation({
     onSuccess: () => { toast(t('settings.backupSaved'), 'success'); onSaved(); },
-    onError: (e) => setError(e.message || t('errors.generic')),
+    onError: (e) => setError(errorText(e, t('errors.generic'))),
   });
 
   const types: Array<{ id: BackupKind; label: string }> = [
@@ -1445,10 +1598,17 @@ function BackupDestinationForm({ onClose, onSaved }: { onClose: () => void; onSa
 
   return (
     <>
-      <label className="label">{t('settings.backupType')}</label>
-      <div className="segmented glass-inset" style={{ marginBlockEnd: '0.7rem' }}>
+      {/* A group of buttons, not a form control, so it is named by the heading rather
+          than by a <label> that could point at nothing. */}
+      <div className="label" id={typeId}>{t('settings.backupType')}</div>
+      <div className="segmented glass-inset" role="group" aria-labelledby={typeId} style={{ marginBlockEnd: '0.7rem' }}>
         {types.map((ty) => (
-          <button key={ty.id} className={cn(kind === ty.id && 'is-active')} onClick={() => { setKind(ty.id); setError(''); }}>
+          <button
+            key={ty.id}
+            className={cn(kind === ty.id && 'is-active')}
+            aria-pressed={kind === ty.id}
+            onClick={() => { setKind(ty.id); setError(''); }}
+          >
             {ty.label}
           </button>
         ))}
@@ -1495,6 +1655,7 @@ function BackupDestinationForm({ onClose, onSaved }: { onClose: () => void; onSa
             className="textarea glass-inset"
             style={{ minHeight: '5rem', fontFamily: 'ui-monospace, monospace' }}
             placeholder='{"access_token":"…","token_type":"Bearer",…}'
+            aria-label={t('settings.backupDriveTokenLabel')}
             value={driveToken}
             onChange={(e) => setDriveToken(e.target.value)}
           />
@@ -1504,29 +1665,28 @@ function BackupDestinationForm({ onClose, onSaved }: { onClose: () => void; onSa
       {kind === 'sftp' && (
         <>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <div className="field" style={{ flex: 2 }}>
-              <label className="label">{t('settings.backupHost')}</label>
-              <input className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />
-            </div>
-            <div className="field" style={{ flex: 1 }}>
-              <label className="label">{t('settings.backupPort')}</label>
-              <input className="input glass-inset" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
-            </div>
+            <Field label={t('settings.backupHost')} style={{ flex: 2 }}>
+              {(id) => <input id={id} className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />}
+            </Field>
+            <Field label={t('settings.backupPort')} style={{ flex: 1 }}>
+              {(id) => <input id={id} className="input glass-inset" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />}
+            </Field>
           </div>
-          <div className="field">
-            <label className="label">{t('settings.backupUser')}</label>
-            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
-          </div>
-          <div className="field">
-            <label className="label">{t('settings.backupPassword')}</label>
-            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
-          </div>
+          <Field label={t('settings.backupUser')}>
+            {(id) => <input id={id} className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />}
+          </Field>
+          <Field label={t('settings.backupPassword')}>
+            {(id) => (
+              <input id={id} className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+            )}
+          </Field>
           <details>
             <summary className="setting-row__hint" style={{ cursor: 'pointer' }}>{t('settings.backupKeyOptional')}</summary>
             <textarea
               className="textarea glass-inset"
               style={{ minHeight: '4.5rem', fontFamily: 'ui-monospace, monospace', marginBlockStart: '0.4rem' }}
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              aria-label={t('settings.backupKeyLabel')}
               value={keyPem}
               onChange={(e) => setKeyPem(e.target.value)}
             />
@@ -1537,48 +1697,57 @@ function BackupDestinationForm({ onClose, onSaved }: { onClose: () => void; onSa
       {kind === 'smb' && (
         <>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <div className="field" style={{ flex: 2 }}>
-              <label className="label">{t('settings.backupHost')}</label>
-              <input className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />
-            </div>
-            <div className="field" style={{ flex: 1 }}>
-              <label className="label">{t('settings.backupShare')}</label>
-              <input className="input glass-inset" value={share} onChange={(e) => setShare(e.target.value)} placeholder="backups" />
-            </div>
+            <Field label={t('settings.backupHost')} style={{ flex: 2 }}>
+              {(id) => <input id={id} className="input glass-inset" value={host} onChange={(e) => setHost(e.target.value)} placeholder="nas.local" />}
+            </Field>
+            <Field label={t('settings.backupShare')} style={{ flex: 1 }}>
+              {(id) => <input id={id} className="input glass-inset" value={share} onChange={(e) => setShare(e.target.value)} placeholder="backups" />}
+            </Field>
           </div>
-          <div className="field">
-            <label className="label">{t('settings.backupUser')}</label>
-            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
-          </div>
-          <div className="field">
-            <label className="label">{t('settings.backupPassword')}</label>
-            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
-          </div>
+          <Field label={t('settings.backupUser')}>
+            {(id) => <input id={id} className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />}
+          </Field>
+          <Field label={t('settings.backupPassword')}>
+            {(id) => (
+              <input id={id} className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+            )}
+          </Field>
         </>
       )}
 
       {kind === 'webdav' && (
         <>
-          <div className="field">
-            <label className="label">{t('settings.backupUrl')}</label>
-            <input className="input glass-inset" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://nas.local/remote.php/dav/files/me/" />
-          </div>
-          <div className="field">
-            <label className="label">{t('settings.backupUser')}</label>
-            <input className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
-          </div>
-          <div className="field">
-            <label className="label">{t('settings.backupPassword')}</label>
-            <input className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
-          </div>
+          <Field label={t('settings.backupUrl')}>
+            {(id) => (
+              <input
+                id={id}
+                className="input glass-inset"
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://nas.local/remote.php/dav/files/me/"
+              />
+            )}
+          </Field>
+          <Field label={t('settings.backupUser')}>
+            {(id) => <input id={id} className="input glass-inset" value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />}
+          </Field>
+          <Field label={t('settings.backupPassword')}>
+            {(id) => (
+              <input id={id} className="input glass-inset" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+            )}
+          </Field>
         </>
       )}
 
-      <div className="field" style={{ marginBlockStart: '0.4rem' }}>
-        <label className="label">{t('settings.backupFolder')}</label>
-        <input className="input glass-inset" value={folder} onChange={(e) => setFolder(e.target.value)} />
-        <div className="setting-row__hint">{t('settings.backupFolderHint')}</div>
-      </div>
+      <Field label={t('settings.backupFolder')} style={{ marginBlockStart: '0.4rem' }}>
+        {(id) => (
+          <>
+            <input id={id} className="input glass-inset" value={folder} onChange={(e) => setFolder(e.target.value)} />
+            <div className="setting-row__hint">{t('settings.backupFolderHint')}</div>
+          </>
+        )}
+      </Field>
 
       {error && <p className="form-error">{error}</p>}
       <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginBlockStart: '1rem' }}>
@@ -1613,40 +1782,46 @@ function EmailPanel() {
   const [fromEmail, setFromEmail] = useState('');
   const [fromName, setFromName] = useState('');
   const [host, setHost] = useState('');
-  const [port, setPort] = useState(587);
+  // As typed, so the box can be emptied while editing; turned into a number on save.
+  const [port, setPort] = useState('587');
   const [secure, setSecure] = useState(false);
   const [user, setUser] = useState('');
   const [pass, setPass] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const seeded = useRef(false);
+  // What the boxes were filled with. Only what differs from it is sent — the rest is left
+  // as the server has it, so a change made on another device since is not put back.
+  const loaded = useRef<RouterOutputs['email']['get'] | null>(null);
+  const fill = (d: RouterOutputs['email']['get']) => {
+    loaded.current = d;
+    setProvider(d.provider);
+    setFromEmail(d.fromEmail);
+    setFromName(d.fromName);
+    setHost(d.smtp.host);
+    setPort(String(d.smtp.port));
+    setSecure(d.smtp.secure);
+    setUser(d.smtp.user);
+  };
   useEffect(() => {
-    if (cfg.data && !seeded.current) {
-      setProvider(cfg.data.provider);
-      setFromEmail(cfg.data.fromEmail);
-      setFromName(cfg.data.fromName);
-      setHost(cfg.data.smtp.host);
-      setPort(cfg.data.smtp.port);
-      setSecure(cfg.data.smtp.secure);
-      setUser(cfg.data.smtp.user);
-      seeded.current = true;
-    }
+    if (cfg.data && !loaded.current) fill(cfg.data);
   }, [cfg.data]);
 
   const save = trpc.email.save.useMutation({
-    onSuccess: () => {
+    onSuccess: (r) => {
       setPass('');
       setApiKey('');
+      // Show what was stored, as the server tidied it.
+      fill(r);
       utils.email.get.invalidate();
       utils.email.status.invalidate();
       // Another mail account pauses emailed sign-in codes too (see saveProfile).
       utils.auth.twoFactor.status.invalidate();
       toast(t('settings.emailSaved'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const test = trpc.email.test.useMutation({
     onSuccess: (r) => toast(t('settings.emailTestSent', { to: r.to }), 'success'),
-    onError: (e) => toast(e.message || t('settings.emailTestFailed'), 'error'),
+    onError: (e) => toast(errorText(e, t('settings.emailTestFailed')), 'error'),
   });
 
   // Basic From-address validation so an invalid address is caught before Save
@@ -1657,16 +1832,28 @@ function EmailPanel() {
   const canSave = provider === 'none' || EMAIL_OK.test(fromTrimmed);
 
   function onSave() {
+    const was = loaded.current;
+    if (!was) return;
+    // `undefined` leaves a field as the server has it (core store/email.ts).
+    const edited = <T,>(now: T, then: T): T | undefined => (now === then ? undefined : now);
     save.mutate({
-      provider,
-      fromEmail: fromEmail.trim(),
-      fromName: fromName.trim(),
-      smtp: { host: host.trim(), port, secure, user: user.trim(), pass: pass || undefined },
+      provider: edited(provider, was.provider),
+      fromEmail: edited(fromEmail.trim(), was.fromEmail),
+      fromName: edited(fromName.trim(), was.fromName),
+      smtp: {
+        host: edited(host.trim(), was.smtp.host),
+        // An emptied box keeps the stored port rather than sending nothing as a number.
+        port: port.trim() ? edited(Number(port), was.smtp.port) : undefined,
+        secure: edited(secure, was.smtp.secure),
+        user: edited(user.trim(), was.smtp.user),
+        pass: pass || undefined,
+      },
       resend: { apiKey: apiKey || undefined },
     });
   }
 
   if (!cfg.data) return null;
+  const stored = cfg.data;
 
   return (
     <section className="glass-raised panel">
@@ -1675,69 +1862,88 @@ function EmailPanel() {
       </h2>
       <p className="setting-row__hint" style={{ marginBlockEnd: '0.5rem' }}>{t('settings.emailHint')}</p>
 
-      <div className="field" style={{ maxWidth: '22rem' }}>
-        <label className="label">{t('settings.emailProvider')}</label>
-        <select className="input glass-inset" value={provider} onChange={(e) => setProvider(e.target.value as 'none' | 'smtp' | 'resend')}>
-          <option value="none">{t('settings.emailNone')}</option>
-          <option value="smtp">SMTP</option>
-          <option value="resend">Resend</option>
-        </select>
-      </div>
+      <Field label={t('settings.emailProvider')} style={{ maxWidth: '22rem' }}>
+        {(id) => (
+          <select id={id} className="input glass-inset" value={provider} onChange={(e) => setProvider(e.target.value as 'none' | 'smtp' | 'resend')}>
+            <option value="none">{t('settings.emailNone')}</option>
+            <option value="smtp">SMTP</option>
+            <option value="resend">Resend</option>
+          </select>
+        )}
+      </Field>
 
       {provider !== 'none' && (
         <>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.emailFrom')}</label>
-            <input
-              className="input glass-inset"
-              type="email"
-              placeholder="no-reply@yourmasjid.org"
-              value={fromEmail}
-              aria-invalid={fromInvalid}
-              style={fromInvalid ? { borderColor: '#ef4444' } : undefined}
-              onChange={(e) => setFromEmail(e.target.value)}
-            />
-            {fromInvalid && <span className="hint" style={{ color: '#ef4444' }}>{t('settings.emailFromInvalid')}</span>}
-          </div>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.emailFromName')}</label>
-            <input className="input glass-inset" value={fromName} onChange={(e) => setFromName(e.target.value)} />
-          </div>
+          <Field label={t('settings.emailFrom')} style={{ maxWidth: '22rem' }}>
+            {(id) => (
+              <>
+                <input
+                  id={id}
+                  className="input glass-inset"
+                  type="email"
+                  placeholder="no-reply@yourmasjid.org"
+                  value={fromEmail}
+                  aria-invalid={fromInvalid}
+                  style={fromInvalid ? { borderColor: '#ef4444' } : undefined}
+                  onChange={(e) => setFromEmail(e.target.value)}
+                />
+                {fromInvalid && <span className="hint" style={{ color: '#ef4444' }}>{t('settings.emailFromInvalid')}</span>}
+              </>
+            )}
+          </Field>
+          <Field label={t('settings.emailFromName')} style={{ maxWidth: '22rem' }}>
+            {(id) => <input id={id} className="input glass-inset" value={fromName} onChange={(e) => setFromName(e.target.value)} />}
+          </Field>
         </>
       )}
 
       {provider === 'smtp' && (
         <>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.emailSmtpHost')}</label>
-            <input className="input glass-inset" placeholder="smtp.example.org" value={host} onChange={(e) => setHost(e.target.value)} />
-          </div>
+          <Field label={t('settings.emailSmtpHost')} style={{ maxWidth: '22rem' }}>
+            {(id) => <input id={id} className="input glass-inset" placeholder="smtp.example.org" value={host} onChange={(e) => setHost(e.target.value)} />}
+          </Field>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-            <div className="field" style={{ maxWidth: '8rem' }}>
-              <label className="label">{t('settings.emailSmtpPort')}</label>
-              <input className="input glass-inset" type="number" value={port} onChange={(e) => setPort(Number(e.target.value) || 587)} />
-            </div>
+            <Field label={t('settings.emailSmtpPort')} style={{ maxWidth: '8rem' }}>
+              {(id) => <input id={id} className="input glass-inset" type="number" value={port} onChange={(e) => setPort(e.target.value)} />}
+            </Field>
             <div className="setting-row" style={{ alignItems: 'end' }}>
               <div className="setting-row__text"><div className="setting-row__title">{t('settings.emailSmtpSecure')}</div></div>
               <Toggle checked={secure} onChange={setSecure} label={t('settings.emailSmtpSecure')} />
             </div>
           </div>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.emailSmtpUser')}</label>
-            <input className="input glass-inset" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} />
-          </div>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.emailSmtpPass')}</label>
-            <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasSmtpPass ? t('settings.emailSecretKept') : ''} value={pass} onChange={(e) => setPass(e.target.value)} />
-          </div>
+          <Field label={t('settings.emailSmtpUser')} style={{ maxWidth: '22rem' }}>
+            {(id) => <input id={id} className="input glass-inset" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} />}
+          </Field>
+          <Field label={t('settings.emailSmtpPass')} style={{ maxWidth: '22rem' }}>
+            {(id) => (
+              <input
+                id={id}
+                className="input glass-inset"
+                type="password"
+                autoComplete="off"
+                placeholder={stored.hasSmtpPass ? t('settings.emailSecretKept') : ''}
+                value={pass}
+                onChange={(e) => setPass(e.target.value)}
+              />
+            )}
+          </Field>
         </>
       )}
 
       {provider === 'resend' && (
-        <div className="field" style={{ maxWidth: '22rem' }}>
-          <label className="label">{t('settings.emailResendKey')}</label>
-          <input className="input glass-inset" type="password" autoComplete="off" placeholder={cfg.data.hasResendKey ? t('settings.emailSecretKept') : 're_…'} value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
-        </div>
+        <Field label={t('settings.emailResendKey')} style={{ maxWidth: '22rem' }}>
+          {(id) => (
+            <input
+              id={id}
+              className="input glass-inset"
+              type="password"
+              autoComplete="off"
+              placeholder={stored.hasResendKey ? t('settings.emailSecretKept') : 're_…'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+          )}
+        </Field>
       )}
 
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
@@ -1754,8 +1960,6 @@ function EmailPanel() {
   );
 }
 
-/** Granular alert matrix (UniFi-style): OS built-ins + each app's declared alerts,
- *  each routable to Email and/or Webhook (both on by default; both off = muted). */
 /** WhatsApp gateway (OpenWA). The admin installs OpenWA from the App Store, pastes the
  *  API key + session id it was configured with, links the phone with a pairing code, and
  *  every alert/app message then flows through the platform's paced queue. The API key is
@@ -1801,12 +2005,19 @@ function WhatsAppPanel() {
   // one connection, not three places — and the section itself is already addressable as
   // /settings/whatsapp, which is the link anything outside this panel actually wants.
   const [waTab, setWaTab] = useState<'setup' | 'groups' | 'commands'>('setup');
-  // What is being held while the link is down. Polled a little faster than the status
-  // query, because during an outage this is the number the admin is actually watching.
-  const held = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 60_000 });
+  // What is waiting in the queue — during an outage, the number the admin is watching.
+  // Only while WhatsApp is on: off, nothing is held and there is no box to show it in.
+  const held = trpc.whatsapp.held.useQuery(undefined, { refetchInterval: 60_000, enabled: provider !== 'none' });
   const [askDiscard, setAskDiscard] = useState(false);
   /** The gateway's own last words when a start attempt did not stick. */
   const [gatewayCrash, setGatewayCrash] = useState<string | null>(null);
+  // A code nobody typed in is dead within a couple of minutes, and while one is on screen
+  // the gateway is asked for news every three seconds — so it does not stay up for ever.
+  useEffect(() => {
+    if (!pairing) return;
+    const timer = setTimeout(() => setPairing(null), 3 * 60_000);
+    return () => clearTimeout(timer);
+  }, [pairing]);
   // The pairing code stops being useful the instant the phone is linked, and leaving
   // it on screen is what made "did that work?" a page reload.
   useEffect(() => {
@@ -1822,19 +2033,25 @@ function WhatsAppPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairing, status.data?.state]);
 
-  const seededWa = useRef(false);
+  // What the boxes were filled with, or null before they have been. Save sends only what
+  // differs from it, so a change made on another device since is not put back.
+  const seededWa = useRef<{ baseUrl: string; sessionName: string } | null>(null);
+  const fillWa = (d: { provider: 'none' | 'openwa'; baseUrl: string; sessionName: string }) => {
+    seededWa.current = { baseUrl: d.baseUrl, sessionName: d.sessionName };
+    setProvider(d.provider);
+    setBaseUrl(d.baseUrl);
+    setSessionName(d.sessionName);
+  };
   useEffect(() => {
-    if (cfg.data && !seededWa.current) {
-      setProvider(cfg.data.provider);
-      setBaseUrl(cfg.data.baseUrl);
-      setSessionName(cfg.data.sessionName);
-      seededWa.current = true;
-    }
+    if (cfg.data && !seededWa.current) fillWa(cfg.data);
   }, [cfg.data]);
 
   const save = trpc.whatsapp.save.useMutation({
-    onSuccess: () => {
+    onSuccess: (r) => {
       setApiKey('');
+      // What is stored now — the switch included, so it is on only once turning it on
+      // has actually been accepted.
+      fillWa(r);
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
       // Turning the feature on or off changes whether the gateway app is listed at all,
@@ -1842,7 +2059,7 @@ function WhatsAppPanel() {
       utils.store.catalog.invalidate();
       toast(t('settings.whatsappSaved'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const link = trpc.whatsapp.link.useMutation({
     onSuccess: (r) => {
@@ -1850,11 +2067,11 @@ function WhatsAppPanel() {
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const test = trpc.whatsapp.test.useMutation({
     onSuccess: () => toast(t('settings.whatsappTestSent'), 'success'),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const disable = trpc.whatsapp.disable.useMutation({
     onSuccess: (r) => {
@@ -1866,7 +2083,7 @@ function WhatsAppPanel() {
         // after a delete they still hold the old address and session name — and one press
         // of Save would write them straight back. Clearing them (and re-arming the seed)
         // is what makes the delete actually stick.
-        seededWa.current = false;
+        seededWa.current = null;
         setApiKey('');
         setBaseUrl('');
         setSessionName('');
@@ -1899,7 +2116,7 @@ function WhatsAppPanel() {
       utils.store.catalog.invalidate();
       utils.apps.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const unlink = trpc.whatsapp.unlink.useMutation({
     onSuccess: (r) => {
@@ -1915,7 +2132,7 @@ function WhatsAppPanel() {
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const releaseHeld = trpc.whatsapp.releaseHeld.useMutation({
     onSuccess: (r) => {
@@ -1923,7 +2140,7 @@ function WhatsAppPanel() {
       utils.whatsapp.held.invalidate();
       utils.whatsapp.status.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const discardHeld = trpc.whatsapp.discardHeld.useMutation({
     onSuccess: (r) => {
@@ -1931,7 +2148,7 @@ function WhatsAppPanel() {
       toast(t('settings.whatsappHeldDiscarded', { count: r.discarded }), 'success');
       utils.whatsapp.held.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const restartGateway = trpc.whatsapp.restartGateway.useMutation({
     onSuccess: (r) => {
@@ -1942,12 +2159,13 @@ function WhatsAppPanel() {
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   if (!cfg.data) return null;
   const s = status.data;
   const gw = cfg.data.gateway;
+  const hasApiKey = cfg.data.hasApiKey;
   const on = provider !== 'none';
 
   /** Which phone the gateway is actually attached to right now, if any. Deliberately
@@ -1998,11 +2216,9 @@ function WhatsAppPanel() {
       <ConfirmDialog
         open={askEnable}
         onClose={() => setAskEnable(false)}
-        onConfirm={() => {
-          setAskEnable(false);
-          setProvider('openwa');
-          save.mutate({ provider: 'openwa' });
-        }}
+        // The switch follows the server (the save's own success sets it), so a refused
+        // turn-on does not leave it showing ON. The dialog stays up, working, until then.
+        onConfirm={() => save.mutate({ provider: 'openwa' }, { onSettled: () => setAskEnable(false) })}
         title={t('settings.whatsappRiskTitle')}
         body={t('settings.whatsappRiskBody')}
         cost={t('settings.whatsappRiskCost')}
@@ -2228,62 +2444,74 @@ function WhatsAppPanel() {
 
       {on && showSetup && (
         <>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.whatsappSession')}</label>
-            <input
-              className="input glass-inset"
-              value={sessionName}
-              onChange={(e) => setSessionName(e.target.value)}
-              placeholder="openmasjid"
-            />
-            <span className="hint">{t('settings.whatsappSessionHint')}</span>
-          </div>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.whatsappKey')}</label>
-            <input
-              className="input glass-inset"
-              type="password"
-              autoComplete="off"
-              placeholder={cfg.data.hasApiKey ? t('settings.emailSecretKept') : ''}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-            <span className="hint">{t('settings.whatsappKeyHint')}</span>
-          </div>
-          <div className="field" style={{ maxWidth: '22rem' }}>
-            <label className="label">{t('settings.whatsappUrl')}</label>
-            <input
-              className="input glass-inset"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={t('settings.whatsappUrlAuto')}
-            />
-            <span className="hint">{t('settings.whatsappUrlHint')}</span>
-          </div>
+          <Field label={t('settings.whatsappSession')} hint={t('settings.whatsappSessionHint')} style={{ maxWidth: '22rem' }}>
+            {(id) => (
+              <input
+                id={id}
+                className="input glass-inset"
+                value={sessionName}
+                onChange={(e) => setSessionName(e.target.value)}
+                placeholder="openmasjid"
+              />
+            )}
+          </Field>
+          <Field label={t('settings.whatsappKey')} hint={t('settings.whatsappKeyHint')} style={{ maxWidth: '22rem' }}>
+            {(id) => (
+              <input
+                id={id}
+                className="input glass-inset"
+                type="password"
+                autoComplete="off"
+                placeholder={hasApiKey ? t('settings.emailSecretKept') : ''}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            )}
+          </Field>
+          <Field label={t('settings.whatsappUrl')} hint={t('settings.whatsappUrlHint')} style={{ maxWidth: '22rem' }}>
+            {(id) => (
+              <input
+                id={id}
+                className="input glass-inset"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder={t('settings.whatsappUrlAuto')}
+              />
+            )}
+          </Field>
         </>
       )}
 
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.3rem' }}>
-        <button
-          className="btn"
-          disabled={save.isPending}
-          onClick={() =>
-            save.mutate({
-              provider,
-              baseUrl: baseUrl.trim(),
-              sessionName: sessionName.trim() || undefined,
-              apiKey: apiKey.trim() || undefined,
-            })
-          }
-        >
-          <Check size={15} /> {t('common.save')}
-        </button>
-        {cfg.data.configured && (
-          <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>
-            {test.isPending ? t('settings.whatsappTesting') : t('settings.whatsappTest')}
-          </button>
-        )}
-      </div>
+      {/* With the setup, not on every tab: a lone Save under Groups — or with WhatsApp
+          off — re-sent the settings and said "saved" over nothing. */}
+      {showSetup && (on || cfg.data.configured) && (
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.3rem' }}>
+          {on && (
+            <button
+              className="btn"
+              disabled={save.isPending}
+              onClick={() => {
+                // Only what was edited; `undefined` leaves a field as the server has it, so
+                // an address changed on another device is not put back. The switch above
+                // owns on/off, so that is never sent from here.
+                const was = seededWa.current;
+                save.mutate({
+                  baseUrl: was && baseUrl.trim() === was.baseUrl ? undefined : baseUrl.trim(),
+                  sessionName: was && sessionName.trim() === was.sessionName ? undefined : sessionName.trim() || undefined,
+                  apiKey: apiKey.trim() || undefined,
+                });
+              }}
+            >
+              <Check size={15} /> {t('common.save')}
+            </button>
+          )}
+          {cfg.data.configured && (
+            <button className="btn" disabled={test.isPending} onClick={() => test.mutate({})}>
+              {test.isPending ? t('settings.whatsappTesting') : t('settings.whatsappTest')}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Linking by pairing code, not QR: there is no screen on a headless box to
           photograph, and the admin may be nowhere near the machine.
@@ -2519,9 +2747,9 @@ function WhatsAppPanel() {
         <p className="setting-row__hint" style={{ marginBlockStart: '0.8rem' }}>
           {/* One line per distinct state. "Gateway down", "nothing created yet" and
               "created but not linked" have different fixes, so they must read differently. */}
-          {/* The queue depth used to appear only inside the "ready" sentence, so in every
-              state where a backlog was actually piling up it was invisible. It is now
-              appended to whatever the state sentence says. */}
+          {/* The queue depth is part of the "ready" sentence only. In every other state
+              a backlog is counted in the held-messages box above, which shows whenever
+              anything at all is waiting in the queue. */}
           {s.state === 'ready'
             ? t('settings.whatsappStateReady', { queued: s.queued })
             : s.state === 'pending'
@@ -2580,18 +2808,18 @@ function WhatsAppGroups({
   };
   const approve = trpc.whatsapp.approveGroup.useMutation({
     onSuccess: refresh,
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const unapprove = trpc.whatsapp.unapproveGroup.useMutation({
     onSuccess: refresh,
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const rename = trpc.whatsapp.renameGroup.useMutation({
     onSuccess: () => {
       setRenaming(null);
       refresh();
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const testGroup = trpc.whatsapp.testGroup.useMutation({
     onSuccess: () => {
@@ -2600,7 +2828,7 @@ function WhatsAppGroups({
     },
     onError: (e) => {
       setConfirmTest(null);
-      toast(e.message || t('errors.generic'), 'error');
+      toast(errorText(e, t('errors.generic')), 'error');
     },
   });
 
@@ -2624,6 +2852,7 @@ function WhatsAppGroups({
                       className="input glass-inset"
                       style={{ maxWidth: '16rem' }}
                       autoFocus
+                      aria-label={t('settings.whatsappGroupRename')}
                       value={renaming.label}
                       maxLength={80}
                       onChange={(e) => setRenaming({ id: g.id, label: e.target.value })}
@@ -2720,7 +2949,7 @@ function WhatsAppGroups({
           {groups.isLoading ? (
             <p className="setting-row__hint">{t('common.loading')}</p>
           ) : groups.error ? (
-            <p className="setting-row__hint">{groups.error.message || t('errors.generic')}</p>
+            <p className="setting-row__hint">{errorText(groups.error, t('errors.generic'))}</p>
           ) : (groups.data ?? []).length === 0 ? (
             <p className="setting-row__hint">{t('settings.whatsappGroupsNone')}</p>
           ) : (
@@ -2789,7 +3018,7 @@ function WhatsAppCommands() {
     void utils.commands.get.invalidate();
     void utils.commands.status.invalidate();
   };
-  const onError = (e: { message?: string }) => toast(e.message || t('errors.generic'), 'error');
+  const onError = (e: unknown) => toast(errorText(e, t('errors.generic')), 'error');
 
   const setEnabled = trpc.commands.setEnabled.useMutation({ onSuccess: refresh, onError });
   const addPerson = trpc.commands.addPerson.useMutation({
@@ -3060,68 +3289,66 @@ function WhatsAppCommands() {
                   act on: an empty list means the gateway has said nothing at all to us,
                   a non-empty one names exactly what it did say. Event names only —
                   never a payload, never a body. */}
-              {(
-                <div className="glass-inset panel" style={{ marginBlockStart: '0.5rem', padding: '0.6rem 0.9rem' }}>
+              <div className="glass-inset panel" style={{ marginBlockStart: '0.5rem', padding: '0.6rem 0.9rem' }}>
+                <div className="setting-row__hint">
+                  {t('settings.commandsDiagHeard')}{' '}
+                  {s.eventNames.length === 0 ? (
+                    <strong>{t('settings.commandsDiagNothing')}</strong>
+                  ) : (
+                    <code style={{ userSelect: 'all' }}>{s.eventNames.join(', ')}</code>
+                  )}
+                </div>
+                <div className="setting-row__hint">
+                  {t('settings.commandsDiagCounts', {
+                    seen: s.counters.seen,
+                    ignored: s.counters.ignoredUnknown,
+                    unreadable: s.counters.unparseable,
+                  })}
+                </div>
+                {/* The reason a message that DID arrive was thrown away. Without
+                    this, "it arrived and we discarded it" and "nothing arrived" look
+                    identical from here — which is exactly the ambiguity that cost a
+                    round trip. Reason words and counts; no content. */}
+                {Object.keys(s.dropped).length > 0 && (
                   <div className="setting-row__hint">
-                    {t('settings.commandsDiagHeard')}{' '}
-                    {s.eventNames.length === 0 ? (
-                      <strong>{t('settings.commandsDiagNothing')}</strong>
-                    ) : (
-                      <code style={{ userSelect: 'all' }}>{s.eventNames.join(', ')}</code>
-                    )}
+                    {t('settings.commandsDiagDropped')}{' '}
+                    <code style={{ userSelect: 'all' }}>
+                      {Object.entries(s.dropped)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([reason, n]) => `${reason} ×${n}`)
+                        .join(', ')}
+                    </code>
                   </div>
-                  <div className="setting-row__hint">
-                    {t('settings.commandsDiagCounts', {
-                      seen: s.counters.seen,
-                      ignored: s.counters.ignoredUnknown,
-                      unreadable: s.counters.unparseable,
-                    })}
-                  </div>
-                  {/* The reason a message that DID arrive was thrown away. Without
-                      this, "it arrived and we discarded it" and "nothing arrived" look
-                      identical from here — which is exactly the ambiguity that cost a
-                      round trip. Reason words and counts; no content. */}
-                  {Object.keys(s.dropped).length > 0 && (
-                    <div className="setting-row__hint">
-                      {t('settings.commandsDiagDropped')}{' '}
-                      <code style={{ userSelect: 'all' }}>
-                        {Object.entries(s.dropped)
-                          .sort((a, b) => b[1] - a[1])
-                          .map(([reason, n]) => `${reason} ×${n}`)
-                          .join(', ')}
-                      </code>
+                )}
+                <div className="setting-row__hint">
+                  {t('settings.commandsDiagAck', {
+                    ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
+                  })}
+                </div>
+                {/* Raw transport activity vs application events. Traffic with no
+                    events means the gateway is not emitting to us; no traffic at all
+                    means the socket is not really carrying anything despite saying
+                    connected. Opposite fixes, identical symptoms without this. */}
+                <div className="setting-row__hint">
+                  {t('settings.commandsDiagWire', {
+                    packet: s.lastPacketAt ? new Date(s.lastPacketAt).toLocaleTimeString() : '—',
+                    event: s.lastEventAt ? new Date(s.lastEventAt).toLocaleTimeString() : '—',
+                  })}
+                </div>
+                {/* The one question that splits the problem in half: has the GATEWAY
+                    itself heard anything from WhatsApp? If not, nothing on our side
+                    matters. Read-only, and it reads counts and times — never a body. */}
+                <div style={{ marginBlockStart: '0.6rem' }}>
+                  <button className="btn btn--sm" disabled={probe.isPending} onClick={() => probe.mutate()}>
+                    {probe.isPending ? t('common.working') : t('settings.commandsProbe')}
+                  </button>
+                  {probeResult && (
+                    <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>
+                      {probeResult}
                     </div>
                   )}
-                  <div className="setting-row__hint">
-                    {t('settings.commandsDiagAck', {
-                      ack: s.subscribeAck + (s.subscribeAckCode ? ` (${s.subscribeAckCode})` : ''),
-                    })}
-                  </div>
-                  {/* Raw transport activity vs application events. Traffic with no
-                      events means the gateway is not emitting to us; no traffic at all
-                      means the socket is not really carrying anything despite saying
-                      connected. Opposite fixes, identical symptoms without this. */}
-                  <div className="setting-row__hint">
-                    {t('settings.commandsDiagWire', {
-                      packet: s.lastPacketAt ? new Date(s.lastPacketAt).toLocaleTimeString() : '—',
-                      event: s.lastEventAt ? new Date(s.lastEventAt).toLocaleTimeString() : '—',
-                    })}
-                  </div>
-                  {/* The one question that splits the problem in half: has the GATEWAY
-                      itself heard anything from WhatsApp? If not, nothing on our side
-                      matters. Read-only, and it reads counts and times — never a body. */}
-                  <div style={{ marginBlockStart: '0.6rem' }}>
-                    <button className="btn btn--sm" disabled={probe.isPending} onClick={() => probe.mutate()}>
-                      {probe.isPending ? t('common.working') : t('settings.commandsProbe')}
-                    </button>
-                    {probeResult && (
-                      <div className="setting-row__hint" style={{ marginBlockStart: '0.4rem' }}>
-                        {probeResult}
-                      </div>
-                    )}
-                  </div>
                 </div>
-              )}
+              </div>
             </>
           )}
         </>
@@ -3153,6 +3380,8 @@ function WhatsAppCommands() {
   );
 }
 
+/** Granular alert matrix (UniFi-style): OS built-ins + each app's declared alerts,
+ *  each routable to Email and/or Webhook (both on by default; both off = muted). */
 function AlertsPanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -3160,7 +3389,7 @@ function AlertsPanel() {
   const list = trpc.alerts.list.useQuery();
   const setChannel = trpc.alerts.setChannel.useMutation({
     onSuccess: () => utils.alerts.list.invalidate(),
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const rows = list.data ?? [];
@@ -3275,7 +3504,7 @@ function StripePanel() {
 
   const remove = trpc.stripe.remove.useMutation({
     onSuccess: () => { refresh(); toast(t('settings.stripeRemoved'), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const list = accounts.data ?? [];
@@ -3349,9 +3578,6 @@ function StripePanel() {
   );
 }
 
-/** Cloudflare Tunnel — paste a token + domain once; the OS runs cloudflared so the
- *  masjid's apps are reachable from the internet. Apps read their public URL via the
- *  Fabric (`GET /api/fabric/site`). */
 /**
  * Why the tunnel turned recent requests away.
  *
@@ -3425,6 +3651,9 @@ function TunnelRefusals({ port }: { port: number }) {
   );
 }
 
+/** Cloudflare Tunnel — paste a token + domain once; the OS runs cloudflared so the
+ *  masjid's apps are reachable from the internet. Apps read their public URL via the
+ *  Fabric (`GET /api/fabric/site`). */
 function CloudflarePanel() {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -3461,11 +3690,13 @@ function CloudflarePanel() {
       setDomain(r.domain);
       setDomainEdited(false);
       refresh();
+      // The shared-apps table and the setup guide print the apps' address too.
+      utils.cloudflare.routes.invalidate();
       toast(t('settings.cfSaved'), 'success');
     },
     // Refresh the status on a refusal too, so it says what is actually stored. The fields
     // keep what was typed, so a mistyped address can be corrected rather than retyped.
-    onError: (e) => { refresh(); toast(e.message || t('errors.generic'), 'error'); },
+    onError: (e) => { refresh(); toast(errorText(e, t('errors.generic')), 'error'); },
   });
   // A cut-off confirmed from outside takes down the very connection its answer would come
   // back on, so the answer never arrives: Cloudflare sends its own error page instead.
@@ -3480,18 +3711,18 @@ function CloudflarePanel() {
   const setEnabled = trpc.cloudflare.setEnabled.useMutation({
     onSuccess: () => { setCutOff(null); refresh(); },
     onError: (e) => {
-      if (!cutOffEnded(e)) toast(e.message || t('errors.generic'), 'error');
+      if (!cutOffEnded(e)) toast(errorText(e, t('errors.generic')), 'error');
     },
   });
   const clear = trpc.cloudflare.clear.useMutation({
     onSuccess: () => { setCutOff(null); setToken(''); refresh(); toast(t('settings.cfCleared'), 'success'); },
     onError: (e) => {
-      if (!cutOffEnded(e)) toast(e.message || t('errors.generic'), 'error');
+      if (!cutOffEnded(e)) toast(errorText(e, t('errors.generic')), 'error');
     },
   });
   const setPath = trpc.cloudflare.setPath.useMutation({
     onSuccess: (r) => { utils.cloudflare.routes.invalidate(); toast(t('settings.cfPathSaved', { path: r.path }), 'success'); },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   // Publishing the DASHBOARD, as opposed to an app. Turning it on opens a
   // confirmation first — this is the one switch on the page whose effect is
@@ -3504,17 +3735,18 @@ function CloudflarePanel() {
       setCutOff(null);
       toast(r.remoteAdminActive ? t('settings.cfRemoteAdminOn') : t('settings.cfRemoteAdminOff'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
   const setExposed = trpc.cloudflare.setExposed.useMutation({
     onSuccess: (r) => {
       utils.cloudflare.routes.invalidate();
       toast(r.exposed ? t('settings.cfExposedOn') : t('settings.cfExposedOff'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   if (!cf) return null;
+  const tokenSet = cf.hasToken;
 
   return (
     <section className="glass-raised panel">
@@ -3555,6 +3787,7 @@ function CloudflarePanel() {
           className="input glass-inset"
           style={{ maxWidth: '16rem' }}
           placeholder="omos.example.org"
+          aria-label={t('settings.cfDomain')}
           value={domain}
           onChange={(e) => {
             setDomain(e.target.value);
@@ -3563,23 +3796,27 @@ function CloudflarePanel() {
         />
       </div>
 
-      <div className="field">
-        <label className="label">{t('settings.cfToken')}</label>
-        <input
-          className="input glass-inset"
-          type="password"
-          style={{ fontFamily: 'ui-monospace, monospace' }}
-          placeholder={cf.hasToken ? t('settings.cfTokenSet') : 'eyJ…'}
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          autoComplete="off"
-          // From outside the server refuses a new token (a wrong one would cut this
-          // window off), so the field says so instead of letting someone paste one.
-          disabled={remote}
-          title={remote ? t('settings.cfTokenRemote') : undefined}
-        />
-        <div className="setting-row__hint">{remote ? t('settings.cfTokenRemote') : t('settings.cfTokenHint')}</div>
-      </div>
+      <Field label={t('settings.cfToken')}>
+        {(id) => (
+          <>
+            <input
+              id={id}
+              className="input glass-inset"
+              type="password"
+              style={{ fontFamily: 'ui-monospace, monospace' }}
+              placeholder={tokenSet ? t('settings.cfTokenSet') : 'eyJ…'}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              autoComplete="off"
+              // From outside the server refuses a new token (a wrong one would cut this
+              // window off), so the field says so instead of letting someone paste one.
+              disabled={remote}
+              title={remote ? t('settings.cfTokenRemote') : undefined}
+            />
+            <div className="setting-row__hint">{remote ? t('settings.cfTokenRemote') : t('settings.cfTokenHint')}</div>
+          </>
+        )}
+      </Field>
 
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBlockStart: '0.6rem' }}>
         <button
@@ -3614,12 +3851,15 @@ function CloudflarePanel() {
               {t('settings.cfRemoteAdmin')}
             </div>
             <div className="setting-row__hint">
-              {cf.remoteAdminBlocked === 'no-two-factor'
-                ? t('settings.cfRemoteAdminNeeds2fa')
-                : cf.remoteAdminBlocked === 'no-tunnel'
-                  ? t('settings.cfRemoteAdminNeedsTunnel')
-                  : cf.remoteAdmin && !cf.remoteAdminActive
-                    ? t('settings.cfRemoteAdminStalled')
+              {/* Switched on, then two-step sign-in turned off: say THAT, rather than
+                  "set it up first" to someone who had it on a moment ago. The button to
+                  set it up again is below either way. */}
+              {cf.remoteAdmin && cf.remoteAdminBlocked === 'no-two-factor'
+                ? t('settings.cfRemoteAdminStalled')
+                : cf.remoteAdminBlocked === 'no-two-factor'
+                  ? t('settings.cfRemoteAdminNeeds2fa')
+                  : cf.remoteAdminBlocked === 'no-tunnel'
+                    ? t('settings.cfRemoteAdminNeedsTunnel')
                     : t('settings.cfRemoteAdminHint')}
             </div>
           </div>
@@ -3655,34 +3895,46 @@ function CloudflarePanel() {
             <table className="cf-routes" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
               <thead>
                 <tr style={{ textAlign: 'start', color: 'var(--color-ink-muted)' }}>
-                  <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColApp')}</th>
-                  <th style={{ textAlign: 'start', padding: '0.25rem 0.6rem 0.25rem 0' }}>{t('settings.cfColShared')}</th>
+                  <th style={{ textAlign: 'start', paddingBlock: '0.25rem', paddingInlineEnd: '0.6rem' }}>{t('settings.cfColApp')}</th>
+                  <th style={{ textAlign: 'start', paddingBlock: '0.25rem', paddingInlineEnd: '0.6rem' }}>{t('settings.cfColShared')}</th>
                   <th style={{ textAlign: 'start', padding: '0.25rem 0' }}>{t('settings.cfColUrl')}</th>
                 </tr>
               </thead>
               <tbody>
                 {routes.data?.apps.map((r) => (
                   <tr key={r.id} style={{ borderBlockStart: '1px solid var(--color-border)' }}>
-                    <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>{r.name}</td>
-                    <td style={{ padding: '0.3rem 0.6rem 0.3rem 0' }}>
+                    <td style={{ paddingBlock: '0.3rem', paddingInlineEnd: '0.6rem' }}>{r.name}</td>
+                    <td style={{ paddingBlock: '0.3rem', paddingInlineEnd: '0.6rem' }}>
                       <Toggle
                         checked={r.exposed}
                         onChange={(v) => setExposed.mutate({ id: r.id, exposed: v })}
-                        label={t('settings.cfColShared')}
+                        label={`${r.name} — ${t('settings.cfColShared')}`}
                       />
                     </td>
                     <td style={{ padding: '0.3rem 0', fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap' }}>
                       {r.exposed ? (
                         <>
-                          https://{routes.data?.host || 'your-domain'}/
+                          https://{routes.data?.host || t('settings.cfHostUnset')}/
                           <input
                             className="input glass-inset"
                             style={{ width: '7rem', padding: '0.12rem 0.4rem', fontFamily: 'ui-monospace, monospace' }}
                             defaultValue={r.path.replace(/^\//, '')}
-                            aria-label={t('settings.cfColPath')}
+                            aria-label={`${r.name} — ${t('settings.cfColPath')}`}
+                            // The box always ends up saying what is stored: the address as
+                            // the server tidied it, or the old one back after a refusal. An
+                            // emptied box asks for the default (the app's own name).
                             onBlur={(e) => {
-                              const v = e.target.value.trim();
-                              if (v && v !== r.path.replace(/^\//, '')) setPath.mutate({ id: r.id, path: v });
+                              const box = e.currentTarget;
+                              const stored = r.path.replace(/^\//, '');
+                              const v = box.value.trim();
+                              if (v === stored) return;
+                              setPath.mutate(
+                                { id: r.id, path: v },
+                                {
+                                  onSuccess: (res) => { box.value = res.path.replace(/^\//, ''); },
+                                  onError: () => { box.value = stored; },
+                                },
+                              );
                             }}
                           />
                         </>
@@ -3719,7 +3971,7 @@ function CloudflarePanel() {
           <li>
             {t('settings.cfStep3')}
             <ul style={{ margin: '0.35rem 0 0', paddingInlineStart: '1.1rem', color: 'var(--color-ink-muted)' }}>
-              <li>{t('settings.cfStep3Host')} <code>{routes.data?.host || domain || 'your-hostname'}</code></li>
+              <li>{t('settings.cfStep3Host')} <code>{routes.data?.host || domain || t('settings.cfHostnameUnset')}</code></li>
               <li>{t('settings.cfStep3Service', { port: routes.data?.ingressPort ?? 80 })}</li>
             </ul>
           </li>
@@ -3815,7 +4067,7 @@ function StripeAccountForm({ account, onClose, onSaved }: { account: StripeAccou
 
   const save = trpc.stripe.save.useMutation({
     onSuccess: onSaved,
-    onError: (e) => setError(e.message || t('errors.generic')),
+    onError: (e) => setError(errorText(e, t('errors.generic'))),
   });
 
   function submit() {
@@ -3831,23 +4083,55 @@ function StripeAccountForm({ account, onClose, onSaved }: { account: StripeAccou
 
   return (
     <>
-      <div className="field">
-        <label className="label">{t('settings.stripeLabel')}</label>
-        <input className="input glass-inset" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t('settings.stripeLabelPlaceholder')} />
-      </div>
-      <div className="field">
-        <label className="label">{t('settings.stripePublishable')}</label>
-        <input className="input glass-inset" style={{ fontFamily: 'ui-monospace, monospace' }} value={publishableKey} onChange={(e) => setPublishableKey(e.target.value)} placeholder="pk_live_…" autoComplete="off" />
-      </div>
-      <div className="field">
-        <label className="label">{t('settings.stripeSecret')}</label>
-        <input className="input glass-inset" type="password" style={{ fontFamily: 'ui-monospace, monospace' }} value={secretKey} onChange={(e) => setSecretKey(e.target.value)} placeholder={isEdit ? t('settings.stripeKeepBlank') : 'sk_live_…'} autoComplete="off" />
-      </div>
-      <div className="field">
-        <label className="label">{t('settings.stripeWebhook')}</label>
-        <input className="input glass-inset" type="password" style={{ fontFamily: 'ui-monospace, monospace' }} value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} placeholder={isEdit ? t('settings.stripeKeepBlank') : 'whsec_…'} autoComplete="off" />
-        <div className="setting-row__hint">{t('settings.stripeWebhookHint')}</div>
-      </div>
+      <Field label={t('settings.stripeLabel')}>
+        {(id) => (
+          <input id={id} className="input glass-inset" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t('settings.stripeLabelPlaceholder')} />
+        )}
+      </Field>
+      <Field label={t('settings.stripePublishable')}>
+        {(id) => (
+          <input
+            id={id}
+            className="input glass-inset"
+            style={{ fontFamily: 'ui-monospace, monospace' }}
+            value={publishableKey}
+            onChange={(e) => setPublishableKey(e.target.value)}
+            placeholder="pk_live_…"
+            autoComplete="off"
+          />
+        )}
+      </Field>
+      <Field label={t('settings.stripeSecret')}>
+        {(id) => (
+          <input
+            id={id}
+            className="input glass-inset"
+            type="password"
+            style={{ fontFamily: 'ui-monospace, monospace' }}
+            value={secretKey}
+            onChange={(e) => setSecretKey(e.target.value)}
+            placeholder={isEdit ? t('settings.stripeKeepBlank') : 'sk_live_…'}
+            autoComplete="off"
+          />
+        )}
+      </Field>
+      <Field label={t('settings.stripeWebhook')}>
+        {(id) => (
+          <>
+            <input
+              id={id}
+              className="input glass-inset"
+              type="password"
+              style={{ fontFamily: 'ui-monospace, monospace' }}
+              value={webhookSecret}
+              onChange={(e) => setWebhookSecret(e.target.value)}
+              placeholder={isEdit ? t('settings.stripeKeepBlank') : 'whsec_…'}
+              autoComplete="off"
+            />
+            <div className="setting-row__hint">{t('settings.stripeWebhookHint')}</div>
+          </>
+        )}
+      </Field>
       {error && <p className="form-error">{error}</p>}
       <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', marginBlockStart: '1rem' }}>
         <button className="btn" onClick={onClose}>{t('common.cancel')}</button>
