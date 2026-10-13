@@ -97,3 +97,40 @@ test('the alert check follows the Fabric index, which follows every change to an
   assert.equal(manager.appDeclaresAlert('mangled', 'ok-alert'), true);
   assert.ok(manager.findFabricApp('a'.repeat(43)));
 });
+
+// ── What Docker refused is reported ───────────────────────────────────────────
+
+test('A REFUSED START, STOP OR RESTART IS REPORTED, NEVER CALLED A SUCCESS', needsShell, async () => {
+  seed('stubborn');
+  const plainWords = (verb: string) => (err: Error) => {
+    assert.match(err.message, new RegExp(`couldn't be ${verb}`));
+    assert.doesNotMatch(err.message, /daemon/, "Docker's own words stay in the log");
+    return true;
+  };
+  process.env.FAKE_DOCKER_EXIT = '1';
+  try {
+    await assert.rejects(() => manager.stopApp('stubborn'), plainWords('stopped'));
+    await assert.rejects(() => manager.startApp('stubborn'), plainWords('started'));
+    await assert.rejects(() => manager.restartApp('stubborn'), plainWords('restarted'));
+    // An app with no compose file of ours is started with `compose start` instead.
+    fs.rmSync(path.join(APPS, 'stubborn', 'compose.yml'));
+    await assert.rejects(() => manager.startApp('stubborn'), plainWords('started'));
+  } finally {
+    delete process.env.FAKE_DOCKER_EXIT;
+  }
+  // And when Docker does what was asked, nothing is said.
+  await manager.startApp('stubborn');
+  await manager.stopApp('stubborn');
+  await manager.restartApp('stubborn');
+});
+
+test('REMOVING AN APP IS NOT AN OUTAGE — no "has stopped" alert while it goes', needsShell, async () => {
+  seed('leaving');
+  assert.equal(isOfflineSuppressed('leaving'), false);
+  await manager.removeApp('leaving');
+  assert.equal(isOfflineSuppressed('leaving'), true);
+  // Held from before `compose down` starts, which is when it stops.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'manager.ts'), 'utf8');
+  const body = src.slice(src.indexOf('export async function removeApp('));
+  assert.ok(body.indexOf('suppressOfflineAlert(id)') < body.indexOf('composeDown('));
+});

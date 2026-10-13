@@ -22,6 +22,7 @@ import {
   composeLogs,
   composePull,
   composeUpStream,
+  type RunResult,
 } from '../docker/compose';
 import { discoverApps, discoverAppsResult, type DiscoveredApp } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
@@ -1416,16 +1417,23 @@ export async function startApp(id: string, acknowledgeRisk = false): Promise<voi
   }
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
-  if (fs.existsSync(composePath(id))) {
-    await composeUp(projectOf(id), composePath(id), envPath(id));
-  } else {
-    await composeStart(projectOf(id));
-  }
+  const res = fs.existsSync(composePath(id))
+    ? await composeUp(projectOf(id), composePath(id), envPath(id))
+    : await composeStart(projectOf(id));
+  throwIfFailed(res, id, "This app couldn't be started. Its logs may say why.");
 }
 
 export async function stopApp(id: string): Promise<void> {
   suppressOfflineAlert(id); // admin-initiated stop — don't fire the offline alert
-  await composeStop(projectOf(id));
+  throwIfFailed(await composeStop(projectOf(id)), id, "This app couldn't be stopped. Please try again.");
+}
+
+/** docker/compose.ts reports a failure only in the exit code, so say it here: in plain
+ *  words to whoever asked, with Docker's own output in the log. */
+function throwIfFailed(res: RunResult, id: string, message: string): void {
+  if (res.code === 0) return;
+  log.warn(`App ${id}: ${message} ${res.stderr.trim() || `(docker exited with ${res.code})`}`);
+  throw new Error(message);
 }
 
 export async function restartApp(id: string): Promise<void> {
@@ -1439,7 +1447,7 @@ export async function restartApp(id: string): Promise<void> {
   const held = startBlockedReason(id);
   if (held) throw new AppNeedsReviewError(held);
   suppressOfflineAlert(id); // brief intended downtime
-  await composeRestart(projectOf(id));
+  throwIfFailed(await composeRestart(projectOf(id)), id, "This app couldn't be restarted. Its logs may say why.");
 }
 
 export async function appLogs(id: string, tail = 200): Promise<string> {
@@ -1804,6 +1812,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
  */
 export async function removeApp(id: string, deleteData = false): Promise<void> {
   assertAppFree(id, 'remove');
+  // `compose down` stops it for some seconds before its record goes: not an outage.
+  suppressOfflineAlert(id);
   stopProxy(id); // tear down any per-app HTTPS proxy first
   const file = fs.existsSync(composePath(id)) ? composePath(id) : undefined;
   // When deleting data, also drop the app's images so the space is reclaimed.
