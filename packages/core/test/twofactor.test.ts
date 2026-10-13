@@ -370,3 +370,59 @@ test('the config file is written 0600', () => {
     assert.equal(mode, 0o600, `twofactor.json must be 0600, got ${mode.toString(8)}`);
   }
 });
+
+// ── review fixes ────────────────────────────────────────────────────────────
+
+const { writeJson } = req('../src/util/json-store') as typeof import('../src/util/json-store');
+const FILE = path.join(process.env.OPENMASJID_DATA_DIR!, 'config', 'twofactor.json');
+
+test('THE READ-ONLY CHECKS DO NOT RE-READ AN UNCHANGED FILE — and see a change made elsewhere at once', () => {
+  // They run several times on every request from outside.
+  tf.disableTwoFactor();
+  enrol(T);
+  const realRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    if (String(file) === FILE) reads += 1;
+    return (realRead as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync;
+  try {
+    tf.secondFactorEpoch();
+    reads = 0;
+    for (let i = 0; i < 20; i++) {
+      tf.secondFactorEpoch();
+      tf.twoFactorActive();
+      tf.availableFactors();
+      tf.twoFactorStatus();
+    }
+    assert.equal(reads, 0, 'an unchanged file was read again');
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  // Rewritten by another process (the full sign-in reset, a restore): seen at once.
+  writeJson(FILE, { ...(JSON.parse(fs.readFileSync(FILE, 'utf8')) as object), epoch: 'written-elsewhere' });
+  assert.equal(tf.secondFactorEpoch(), 'written-elsewhere');
+  writeJson(FILE, {});
+  assert.equal(tf.twoFactorActive(), false, 'two-step sign-in turned off elsewhere still read as on');
+});
+
+test('a read of that file that fails is not remembered', () => {
+  tf.disableTwoFactor();
+  enrol(T);
+  const realRead = fs.readFileSync;
+  let failed = false;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    if (!failed && String(file) === FILE) {
+      failed = true;
+      throw Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' });
+    }
+    return (realRead as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync;
+  try {
+    assert.equal(tf.twoFactorActive(), false, 'an unreadable file reads as nothing set up, as it always has');
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.ok(failed, 'precondition: the read must have failed');
+  assert.equal(tf.twoFactorActive(), true, 'one failed read was kept until the file next changed');
+});

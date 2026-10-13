@@ -32,6 +32,7 @@
  * not be locked out of their own masjid by a factor they never proved they had.
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
@@ -133,13 +134,56 @@ export interface TwoFactorConfig {
   epoch?: string;
 }
 
+/** A fresh copy of the file, for code that changes it. */
 function load(): TwoFactorConfig {
   return readJson<TwoFactorConfig>(FILE, {});
 }
 
+/**
+ * The file as last read, for the read-only checks below: they run several times on every
+ * request from outside. Kept while the file's stat stamp is unchanged, the way auth/store.ts
+ * notices another process's write (reset-auth, a restore); a read that failed is never kept.
+ */
+let lastRead: { stamp: string; cfg: TwoFactorConfig } | null = null;
+
 function save(cfg: TwoFactorConfig): void {
   // writeJson creates 0600 from the first byte (CLAUDE.md §15, secrets at rest).
   writeJson(FILE, cfg);
+  lastRead = null;
+}
+
+function stampOf(): string | null {
+  try {
+    const st = fs.statSync(FILE);
+    return `${st.ino}:${st.mtimeMs}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The configuration for READING. Never change what this returns — writers use `load()`. */
+function current(): TwoFactorConfig {
+  const stamp = stampOf();
+  if (stamp === null) return {}; // no file: nothing is set up, which is what load() says too
+  if (lastRead?.stamp === stamp) return lastRead.cfg;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    lastRead = { stamp, cfg: parsed as TwoFactorConfig };
+    return lastRead.cfg;
+  } catch {
+    return {}; // as load() answers, but not kept: the next call reads again
+  }
+}
+
+/** An authenticator app is set up and proved. */
+function hasAuthenticator(c: TwoFactorConfig): c is TwoFactorConfig & { totpSecret: string } {
+  return Boolean(c.totpSecret && c.totpConfirmedAt);
+}
+
+/** Some second factor must be satisfied to sign in from outside. */
+function isActive(c: TwoFactorConfig): boolean {
+  return hasAuthenticator(c) || emailUsable(c);
 }
 
 const sha256 = (v: string): string => crypto.createHash('sha256').update(v, 'utf8').digest('hex');
@@ -197,7 +241,7 @@ let epochHold: { epoch: string } | null = null;
  * under (auth/sessions.ts `getSessionUserFor`).
  */
 export function secondFactorEpoch(): string {
-  return epochHold ? epochHold.epoch : (load().epoch ?? '');
+  return epochHold ? epochHold.epoch : (current().epoch ?? '');
 }
 
 /**
@@ -268,7 +312,7 @@ export function adoptLegacyEmailBinding(): void {
 export function sameSecondFactorAs(other: unknown): boolean {
   const o = (other && typeof other === 'object' ? other : {}) as TwoFactorConfig;
   const c = load();
-  const mine = c.totpSecret && c.totpConfirmedAt ? c.totpSecret : null;
+  const mine = hasAuthenticator(c) ? c.totpSecret : null;
   const theirs = typeof o.totpSecret === 'string' && o.totpConfirmedAt ? o.totpSecret : null;
   // With no authenticator to compare, say no. Emailed codes alone are never offered,
   // and whether a restored emailed factor would even work depends on the restored
@@ -279,15 +323,14 @@ export function sameSecondFactorAs(other: unknown): boolean {
 
 /** True when a second factor is enrolled and must be satisfied to sign in. */
 export function twoFactorActive(): boolean {
-  const c = load();
-  return Boolean((c.totpSecret && c.totpConfirmedAt) || emailUsable(c));
+  return isActive(current());
 }
 
 /** What the admin may be asked for, in the order the UI should offer them. */
 export function availableFactors(): SecondFactorKind[] {
-  const c = load();
+  const c = current();
   const out: SecondFactorKind[] = [];
-  if (c.totpSecret && c.totpConfirmedAt) out.push('totp');
+  if (hasAuthenticator(c)) out.push('totp');
   if (emailUsable(c)) out.push('email');
   return out;
 }
@@ -318,10 +361,10 @@ export function twoFactorStatus(nowMs: number = Date.now()): {
   enrolmentPending: boolean;
   backupCodesRemaining: number;
 } {
-  const c = load();
+  const c = current();
   return {
-    active: twoFactorActive(),
-    totp: Boolean(c.totpSecret && c.totpConfirmedAt),
+    active: isActive(c),
+    totp: hasAuthenticator(c),
     email: Boolean(c.emailEnabled),
     emailPaused: Boolean(c.emailEnabled) && !emailUsable(c),
     enrolmentPending: pendingIsLive(c, nowMs),
@@ -455,10 +498,10 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
   // or a sign-in made then was bound to the restored file's and refused at once.
   const epoch = epochHold ? epochHold.epoch : (cfg.epoch ?? '');
   const submitted = code.replace(/\s/g, '').toUpperCase();
-  if (!twoFactorActive()) return { ok: false, reason: 'not-enrolled' };
+  if (!isActive(cfg)) return { ok: false, reason: 'not-enrolled' };
 
   // 1. TOTP.
-  if (cfg.totpSecret && cfg.totpConfirmedAt) {
+  if (hasAuthenticator(cfg)) {
     const counter = verifyTotp(cfg.totpSecret, code, nowMs);
     if (counter !== null) {
       if (cfg.lastCounter !== undefined && counter <= cfg.lastCounter) {
@@ -516,7 +559,7 @@ export function verifySecondFactor(code: string, nowMs: number = Date.now()): Ve
 
   // Nothing matched. Before giving up, work out whether the TOTP code was right
   // and this server's CLOCK is wrong — the one failure the admin cannot guess at.
-  const skew = cfg.totpSecret && cfg.totpConfirmedAt ? clockSkewSteps(cfg.totpSecret, code, nowMs) : null;
+  const skew = hasAuthenticator(cfg) ? clockSkewSteps(cfg.totpSecret, code, nowMs) : null;
   return skew === null ? { ok: false, reason: 'bad-code' } : { ok: false, reason: 'bad-code', skewSteps: skew };
 }
 
