@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { APPS_DIR, PORT } from '../config';
 import { log } from '../logger';
-import { readJson, writeJson, ensureDir } from '../util/json-store';
+import { writeJson, ensureDir } from '../util/json-store';
 import {
   composeUp,
   composeDown,
@@ -22,9 +22,9 @@ import {
   composeLogs,
   composePull,
   composeUpStream,
+  type RunResult,
 } from '../docker/compose';
-import { discoverApps, discoverAppsResult } from '../docker/discovery';
-import { docker } from '../docker/client';
+import { discoverApps, discoverAppsResult, type DiscoveredApp } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
 import { assertAppFree, withUpdateLock } from '../system/update-lock';
@@ -114,9 +114,7 @@ const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
 export function appsPendingChannel(): { id: string; name: string; from: Channel }[] {
   const target = getSettings().updateChannel;
   const out: { id: string; name: string; from: Channel }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     // Only catalog apps track a channel: community and custom apps come from a URL
     // or a pasted compose the admin owns, so the OS has no other version of them
     // to offer and must not claim they are "pending".
@@ -159,32 +157,95 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CAPABILITY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const GRANT_RE = /^[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,39}$/;
 
-function writeEnvFile(id: string, env: Record<string, string>): void {
+/** A value can never span lines: CR/LF become a space. */
+const oneLine = (v: string | undefined): string => String(v ?? '').replace(/[\r\n]+/g, ' ');
+
+/** What `docker compose` reads differently in an UNQUOTED .env value: `$` interpolates,
+ *  ` #` starts a comment, quotes and backslashes are syntax, and edge whitespace is trimmed. */
+const NEEDS_QUOTES = /[$#"'\\]|^[\s\u0085]|[\s\u0085]$/;
+
+/**
+ * A literal value as .env text that compose reads back unchanged. A plain value is left
+ * exactly as it is; anything else is double-quoted with `\` and `"` escaped and `$`
+ * doubled (compose-go's dotenv rules: double quotes interpolate, and `$$` is one `$`).
+ */
+export function encodeEnvValue(value: string): string {
+  const v = oneLine(value);
+  if (!NEEDS_QUOTES.test(v)) return v;
+  return `"${v.replace(/[\\"$]/g, (c) => (c === '$' ? '$$' : `\\${c}`))}"`;
+}
+
+/** The inverse of encodeEnvValue. A value the platform did not quote is returned as written. */
+export function decodeEnvValue(raw: string): string {
+  const quoted = /^"(.*)"$/.exec(raw);
+  if (!quoted) return raw;
+  return quoted[1].replace(/\\([\\"])|\$\$/g, (_seq, escaped?: string) => escaped ?? '$');
+}
+
+/** The key a .env line sets, or null for a blank line or a comment. */
+function envKeyOf(line: string): string | null {
+  const t = line.trim();
+  if (!t || t.startsWith('#')) return null;
+  const i = t.indexOf('=');
+  return i > 0 ? t.slice(0, i) : null;
+}
+
+function readEnvLines(id: string): string[] {
+  try {
+    return fs.readFileSync(envPath(id), 'utf8').split('\n');
+  } catch {
+    return []; // no env file yet
+  }
+}
+
+/**
+ * Write an app's .env afresh, at install. `values` are literal (a setting as typed, a
+ * platform address) and are encoded; `pasted` is a custom app's .env as the admin pasted
+ * it — .env text already — and is written as given, as it always has been.
+ */
+function writeEnvFile(id: string, values: Record<string, string>, pasted: Record<string, string> = {}): void {
   const lines: string[] = [];
-  for (const [k, v] of Object.entries(env)) {
+  for (const [k, v] of Object.entries({ ...pasted, ...values })) {
     if (!ENV_KEY_RE.test(k)) {
       log.warn(`Ignoring invalid env key for ${id}: ${JSON.stringify(k)}`);
       continue;
     }
-    // Strip CR/LF from values so a single value can never span multiple lines.
-    lines.push(`${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`);
+    lines.push(`${k}=${Object.hasOwn(values, k) ? encodeEnvValue(v) : oneLine(v)}`);
   }
   fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
 }
 
-/** Parse an app's .env back into a map. Used on update to keep the user's
- *  settings + the install-time base URL while reconciling the Fabric secret. */
+/**
+ * Set some keys of an app's .env (`undefined` removes one) and leave every other line
+ * exactly as it is, so a platform rewrite never changes what the app reads elsewhere.
+ */
+function updateEnvFile(id: string, changes: Record<string, string | undefined>): void {
+  const changed = new Map(Object.entries(changes));
+  const placed = new Set<string>();
+  const lines: string[] = [];
+  const place = (key: string): void => {
+    placed.add(key);
+    const value = changed.get(key);
+    if (value !== undefined) lines.push(`${key}=${encodeEnvValue(value)}`);
+  };
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null && changed.has(key)) {
+      if (!placed.has(key)) place(key); // where it was, and only once
+    } else if (line) {
+      lines.push(line);
+    }
+  }
+  for (const key of changed.keys()) if (!placed.has(key)) place(key);
+  fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
+}
+
+/** An app's .env as a map of values. */
 function readEnvFile(id: string): Record<string, string> {
   const out: Record<string, string> = {};
-  try {
-    for (const line of fs.readFileSync(envPath(id), 'utf8').split('\n')) {
-      const t = line.trim();
-      if (!t || t.startsWith('#')) continue;
-      const i = t.indexOf('=');
-      if (i > 0) out[t.slice(0, i)] = t.slice(i + 1);
-    }
-  } catch {
-    /* no env file yet */
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null) out[key] = decodeEnvValue(line.trim().slice(key.length + 1));
   }
   return out;
 }
@@ -213,18 +274,16 @@ function resolveBaseUrl(reqHost?: string | null): string {
  * Rewrite `OPENMASJID_BASE_URL` in every installed app's .env to the current
  * platform address, and report which apps need restarting to pick it up.
  *
- * Mirrors `reconcilePublicUrls`: read-modify-write through readEnvFile/writeEnvFile
- * so `ENV_KEY_RE` filtering still applies and the app's own settings +
- * `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty value — that
- * would de-authorise every Fabric app at once.
+ * Mirrors `reconcilePublicUrls`: only that one line of the .env changes, so the app's
+ * own settings and `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty
+ * value — that would de-authorise every Fabric app at once.
  */
 export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] } {
   const changed: string[] = [];
   const needRestart: string[] = [];
   const want = desiredBaseUrl();
   if (!want) return { changed, needRestart };
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
+  for (const { id, meta } of listMetas()) {
     const env = readEnvFile(id);
     // Write when the app already has the key, or when it plainly wants one (its
     // compose interpolates it, or it holds a Fabric secret) — an app installed
@@ -238,11 +297,10 @@ export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] 
     const wantsIt =
       env.OPENMASJID_BASE_URL !== undefined ||
       compose.includes('OPENMASJID_BASE_URL') ||
-      loadMeta(id)?.ssoSecret !== undefined;
+      meta?.ssoSecret !== undefined;
     if (!wantsIt) continue;
     if (env.OPENMASJID_BASE_URL === want) continue;
-    env.OPENMASJID_BASE_URL = want;
-    writeEnvFile(id, env);
+    updateEnvFile(id, { OPENMASJID_BASE_URL: want });
     changed.push(id);
     // A restart is only useful if the container actually reads the var through
     // compose interpolation; otherwise the new .env is picked up next time anyway.
@@ -280,6 +338,8 @@ export interface FabricApp {
 
 interface FabricEntry extends FabricApp {
   ssoSecret: string;
+  /** The alert ids its manifest declared — the gate for POST /api/fabric/alert. */
+  alerts: string[];
 }
 
 // In-memory index of issued Fabric secrets. /api/fabric/* is reachable
@@ -297,8 +357,8 @@ export function invalidateFabricIndex(): void {
 function fabricEntries(): FabricEntry[] {
   if (fabricCache) return fabricCache;
   const out: FabricEntry[] = [];
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  // Platform infrastructure ids are NOT skipped here, unlike every other listing.
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (meta?.ssoSecret) {
       out.push({
         id,
@@ -312,6 +372,8 @@ function fabricEntries(): FabricEntry[] {
         provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
         consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
+        // Defensive: one malformed record must not break every app's Fabric lookups.
+        alerts: Array.isArray(meta.appAlerts) ? meta.appAlerts.map((a) => a?.id).filter((x) => typeof x === 'string') : [],
       });
     }
   }
@@ -430,9 +492,7 @@ export function parseAlerts(alerts: unknown, appId: string): DeclaredAlert[] {
 /** Every installed app's declared alert types — for the granular Settings list. */
 export function listAppAlerts(): { appId: string; appName: string; alerts: DeclaredAlert[] }[] {
   const out: { appId: string; appName: string; alerts: DeclaredAlert[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appAlerts) && meta.appAlerts.length) {
       out.push({ appId: id, appName: meta.name ?? id, alerts: meta.appAlerts });
     }
@@ -440,10 +500,10 @@ export function listAppAlerts(): { appId: string; appName: string; alerts: Decla
   return out;
 }
 
-/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.) */
+/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.)
+ *  Read from the Fabric index: declaring an alert issues the secret the caller proved. */
 export function appDeclaresAlert(appId: string, alertId: string): boolean {
-  const meta = loadMeta(appId);
-  return Boolean(meta?.appAlerts?.some((a) => a.id === alertId));
+  return fabricEntries().find((e) => e.id === appId)?.alerts.includes(alertId) ?? false;
 }
 
 /**
@@ -539,9 +599,7 @@ export function parseCommands(commands: unknown, appId: string): DeclaredCommand
  *  arriving message, so it must not wait on Docker. */
 export function listAppCommands(): { appId: string; appName: string; commands: DeclaredCommand[] }[] {
   const out: { appId: string; appName: string; commands: DeclaredCommand[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appCommands) && meta.appCommands.length) {
       out.push({ appId: id, appName: meta.name ?? id, commands: meta.appCommands });
     }
@@ -561,9 +619,7 @@ export function getAppCommand(appId: string, commandId: string): DeclaredCommand
  *  listInstalled() when you need running state or ports. */
 export function listMetaSummaries(): { id: string; name: string; kind: AppMeta['kind'] }[] {
   const out: { id: string; name: string; kind: AppMeta['kind'] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta) out.push({ id, name: meta.name ?? id, kind: meta.kind });
   }
   return out;
@@ -647,6 +703,16 @@ function listMetaIds(): string[] {
   }
 }
 
+/**
+ * Every app that has a meta.json, with its record (null when the file cannot be read).
+ * OpenMasjidOS's own infrastructure ids (RESERVED_APP_IDS) are left out unless asked for.
+ */
+function listMetas({ includeInfra = false } = {}): { id: string; meta: AppMeta | null }[] {
+  return listMetaIds()
+    .filter((id) => includeInfra || !RESERVED_APP_IDS.has(id))
+    .map((id) => ({ id, meta: loadMeta(id) }));
+}
+
 /** The open target for an app: its dedicated HTTPS proxy port when it's a flagged
  *  (Stripe) app, otherwise its first published HTTP port. */
 function openTarget(meta: AppMeta | null, ports: number[]): { https: boolean; openPort: number | null } {
@@ -658,17 +724,22 @@ function openTarget(meta: AppMeta | null, ports: number[]): { https: boolean; op
  *  assigned to other apps and any live proxy. Null if the range is exhausted. */
 function pickHttpsPort(): number | null {
   const used = activeProxyPorts();
-  for (const id of listMetaIds()) {
-    const hp = loadMeta(id)?.httpsPort;
-    if (hp) used.add(hp);
+  for (const { meta } of listMetas({ includeInfra: true })) {
+    if (meta?.httpsPort) used.add(meta.httpsPort);
   }
   return allocateHttpsPort(used);
 }
 
+/** How long to wait before asking Docker again, when it could not be read at boot. */
+const PROXY_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
+
 /** Re-establish the TLS proxy for every flagged app on boot (their ports are
- *  fixed, so this points each proxy at the app's published HTTP port again). */
-export async function restoreAppProxies(): Promise<void> {
-  const apps = await listInstalled();
+ *  fixed, so this points each proxy at the app's published HTTP port again).
+ *  `attempt` counts the earlier tries Docker could not be read for. */
+export async function restoreAppProxies(attempt = 0): Promise<void> {
+  const { apps, discoveryOk } = await listInstalledWithHealth();
+  // Docker unreadable is not "no app has a port": decide nothing, and ask again.
+  if (!discoveryOk) return retryAppProxies(attempt);
   for (const a of apps) {
     const meta = loadMeta(a.id);
     if (meta?.https && meta.httpsPort && a.ports[0] != null) {
@@ -681,6 +752,20 @@ export async function restoreAppProxies(): Promise<void> {
       }
     }
   }
+}
+
+/** Try restoreAppProxies again after the next wait; after the last, say whose HTTPS is down. */
+function retryAppProxies(attempt: number): void {
+  const flagged = listMetas().filter(({ meta }) => meta?.https && meta.httpsPort);
+  if (flagged.length === 0) return; // no app has an HTTPS address to restore
+  const wait = PROXY_RETRY_MS[attempt];
+  if (wait === undefined) {
+    const names = flagged.map(({ id, meta }) => meta?.name ?? id).join(', ');
+    log.warn(`Docker could not be read, so the HTTPS address of ${names} was not restored. Restarting OpenMasjidOS tries again.`);
+    return;
+  }
+  const retry = () => restoreAppProxies(attempt + 1).catch((err) => log.error('Could not restore app HTTPS proxies.', err));
+  setTimeout(retry, wait).unref(); // never what keeps the process (or a test) alive
 }
 
 /** Merge on-disk metadata with live Docker state; recover orphans. */
@@ -718,24 +803,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
     }
     const meta = loadMeta(id);
     if (!meta) continue;
-    const disc = discovered.get(projectOf(id));
-    byId.set(id, {
-      id: meta.id,
-      name: meta.name,
-      kind: meta.kind,
-      icon: meta.icon,
-      category: meta.category,
-      running: disc?.running ?? false,
-      ports: disc?.ports ?? [],
-      createdAt: meta.createdAt,
-      // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
-      fabric: meta.sso === true || meta.notify === true,
-      managed: isPlatformManaged(meta.id),
-      exposed: isExposedMeta(meta),
-      path: getAppPath(meta.id),
-      review: meta.review ?? null,
-      ...openTarget(meta, disc?.ports ?? []),
-    });
+    byId.set(id, toInstalled(meta, discovered.get(projectOf(id))));
   }
 
   // 2. Running/known projects without metadata — recover them (golden rule).
@@ -782,7 +850,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // other app: a recovered catalog app stays reachable, a recovered
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
-      path: getAppPath(disc.id),
+      path: appPathOf(disc.id, recovered),
       // A recovered orphan has no compose file of ours to have vetted, and it is
       // ALREADY running — holding it for a review we never performed would show
       // the admin a finding that does not exist. It starts un-held, exactly as
@@ -795,9 +863,34 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
   return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The dashboard row for an app we hold a record for, given what Docker reports for it. */
+function toInstalled(meta: AppMeta, disc: DiscoveredApp | undefined): InstalledApp {
+  return {
+    id: meta.id,
+    name: meta.name,
+    kind: meta.kind,
+    icon: meta.icon,
+    category: meta.category,
+    running: disc?.running ?? false,
+    ports: disc?.ports ?? [],
+    createdAt: meta.createdAt,
+    // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
+    fabric: meta.sso === true || meta.notify === true,
+    managed: isPlatformManaged(meta.id),
+    exposed: isExposedMeta(meta),
+    path: appPathOf(meta.id, meta),
+    review: meta.review ?? null,
+    ...openTarget(meta, disc?.ports ?? []),
+  };
+}
+
+/** One installed app — the same row listInstalled() gives, without reading every app. */
 export async function getInstalled(id: string): Promise<InstalledApp | null> {
-  const all = await listInstalled();
-  return all.find((a) => a.id === id) ?? null;
+  if (RESERVED_APP_IDS.has(id)) return null;
+  const meta = loadMeta(id);
+  // No record of our own (an orphan): only the full listing recovers one.
+  if (!meta || meta.id !== id) return (await listInstalled()).find((a) => a.id === id) ?? null;
+  return toInstalled(meta, (await discoverApps()).get(projectOf(id)));
 }
 
 /** Install a catalog app: write its files (with settings as env) and start it. */
@@ -927,7 +1020,7 @@ async function installStack(opts: {
   const address = addressForNewApp(id);
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
-  writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
+  writeEnvFile(id, platformEnv(id, baseUrl), env);
   noteDisplacedAddress(id, address);
   // Record the exposure decision EXPLICITLY, exactly like the catalog path
   // (`exposed = expose === true`). Omitting the key used to leave it `undefined`,
@@ -1088,7 +1181,7 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
       if (env.OPENMASJID_BASE_URL) {
         const base = resolveBaseUrl(null);
         if (base && base !== env.OPENMASJID_BASE_URL) {
-          writeEnvFile(id, { ...env, OPENMASJID_BASE_URL: base });
+          updateEnvFile(id, { OPENMASJID_BASE_URL: base });
           onLine(`  (updated platform address → ${base})`);
         }
       }
@@ -1119,13 +1212,11 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
  */
 export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
   let rotated = 0;
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (!meta?.ssoSecret) continue; // only apps that opted into the Fabric hold a secret
     const secret = crypto.randomBytes(32).toString('base64url');
     saveMeta({ ...meta, ssoSecret: secret });
-    const env = readEnvFile(id);
-    writeEnvFile(id, { ...env, OPENMASJID_APP_SECRET: secret });
+    updateEnvFile(id, { OPENMASJID_APP_SECRET: secret });
     rotated += 1;
     onLine?.(`• ${meta.name ?? id}`);
   }
@@ -1149,9 +1240,37 @@ function sanitizePath(p: string): string {
  *  Public-Hostname path AND the Fabric `basePath`. Admin-configurable; defaults
  *  to the app id (e.g. donations → "donations"; the admin can change it to "donate"). */
 export function getAppPath(id: string): string {
-  const raw = loadMeta(id)?.path;
-  const clean = raw ? sanitizePath(raw) : '';
+  return appPathOf(id, loadMeta(id));
+}
+
+/** getAppPath, for a record already in hand. */
+function appPathOf(id: string, meta: AppMeta | null): string {
+  const recorded = recordedPath(id, meta);
+  return meta && isReservedPathSegment(recorded) ? moveOffReservedPath(id, meta, recorded) : recorded;
+}
+
+/** The address an app's record names: its own path when one is set, otherwise its id. */
+function recordedPath(id: string, meta: AppMeta | null): string {
+  const clean = meta?.path ? sanitizePath(meta.path) : '';
   return clean || id;
+}
+
+/**
+ * Move an app off an address OpenMasjidOS has since taken for itself (0.51.2-dev.17
+ * reserved the dashboard's pages), once and for good, to the address a new app would get.
+ * Left there it had no public page, and its links and QR codes opened the dashboard.
+ */
+function moveOffReservedPath(id: string, meta: AppMeta, recorded: string): string {
+  const moved = freeAddress(id);
+  try {
+    saveMeta({ ...meta, path: moved === id ? undefined : moved });
+    const url = intendedPublicUrl(id, isExposedMeta(meta), moved);
+    if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== url) updateEnvFile(id, { OPENMASJID_PUBLIC_URL: url });
+    log.warn(`"${id}" was at /${recorded}, which OpenMasjidOS now uses for itself, so it moves to /${moved}. Change it in Settings → Remote access.`);
+  } catch (err) {
+    log.warn(`Could not record "${id}"'s move from /${recorded} to /${moved}.`, err);
+  }
+  return moved;
 }
 
 /**
@@ -1180,9 +1299,8 @@ export function setAppPath(id: string, path: string): string {
 
 /** The installed app (other than `exceptId`) that answers to `seg`, or null. */
 function pathTakenBy(seg: string, exceptId: string): string | null {
-  for (const other of listMetaIds()) {
-    if (other === exceptId || RESERVED_APP_IDS.has(other)) continue;
-    if (getAppPath(other) === seg) return other;
+  for (const { id, meta } of listMetas()) {
+    if (id !== exceptId && recordedPath(id, meta) === seg) return id;
   }
   return null;
 }
@@ -1200,16 +1318,22 @@ function pathTakenBy(seg: string, exceptId: string): string | null {
  */
 function addressForNewApp(id: string): { path?: string; displaced?: string } {
   const existing = loadMeta(id)?.path;
-  if (existing) return { path: existing }; // a reinstall keeps the address it had
+  // A reinstall keeps the address it had, unless OpenMasjidOS has since taken it.
+  if (existing && !isReservedPathSegment(sanitizePath(existing))) return { path: existing };
   const taken = isReservedPathSegment(id) ? 'OpenMasjidOS' : pathTakenBy(id, id);
   if (!taken) return {};
+  return { path: freeAddress(id), displaced: taken };
+}
+
+/** The app's id when no app answers to it and OpenMasjidOS does not keep it, otherwise
+ *  the id with the first free number after it. */
+function freeAddress(id: string): string {
+  if (!isReservedPathSegment(id) && !pathTakenBy(id, id)) return id;
   for (let n = 2; n < 1000; n++) {
     // Room for the number inside sanitizePath's 40 characters, so what is stored is
     // exactly what getAppPath will read back.
     const candidate = sanitizePath(`${id.slice(0, 34)}-${n}`);
-    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) {
-      return { path: candidate, displaced: taken };
-    }
+    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) return candidate;
   }
   throw new Error('Every address for this app is taken. Change another app’s address in Settings → Remote access, then try again.');
 }
@@ -1244,9 +1368,7 @@ export function setExposed(id: string, exposed: boolean): void {
   const meta = loadMeta(id);
   if (!meta) throw new Error('That app is not installed.');
   saveMeta({ ...meta, exposed });
-  const env = readEnvFile(id);
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, exposed);
-  writeEnvFile(id, env);
+  updateEnvFile(id, { OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, exposed) });
 }
 
 /** Recompute OPENMASJID_PUBLIC_URL for every installed app from the current
@@ -1255,15 +1377,14 @@ export function setExposed(id: string, exposed: boolean): void {
  *  is enabled/disabled or the domain/path changes, so exposed apps learn their URL. */
 export function reconcilePublicUrls(): string[] {
   const changed: string[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (!meta) continue;
+    // Read before working out the URL: that can move the app off a reserved address,
+    // which rewrites this line itself, and the app still needs its reup.
+    const had = readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '';
     const want = intendedPublicUrl(id, isExposedMeta(meta));
-    const env = readEnvFile(id);
-    if ((env.OPENMASJID_PUBLIC_URL ?? '') !== want) {
-      env.OPENMASJID_PUBLIC_URL = want;
-      writeEnvFile(id, env);
+    if (had !== want) {
+      updateEnvFile(id, { OPENMASJID_PUBLIC_URL: want });
       changed.push(id);
     }
   }
@@ -1405,16 +1526,23 @@ export async function startApp(id: string, acknowledgeRisk = false): Promise<voi
   }
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
-  if (fs.existsSync(composePath(id))) {
-    await composeUp(projectOf(id), composePath(id), envPath(id));
-  } else {
-    await composeStart(projectOf(id));
-  }
+  const res = fs.existsSync(composePath(id))
+    ? await composeUp(projectOf(id), composePath(id), envPath(id))
+    : await composeStart(projectOf(id));
+  throwIfFailed(res, id, "This app couldn't be started. Its logs may say why.");
 }
 
 export async function stopApp(id: string): Promise<void> {
   suppressOfflineAlert(id); // admin-initiated stop — don't fire the offline alert
-  await composeStop(projectOf(id));
+  throwIfFailed(await composeStop(projectOf(id)), id, "This app couldn't be stopped. Please try again.");
+}
+
+/** docker/compose.ts reports a failure only in the exit code, so say it here: in plain
+ *  words to whoever asked, with Docker's own output in the log. */
+function throwIfFailed(res: RunResult, id: string, message: string): void {
+  if (res.code === 0) return;
+  log.warn(`App ${id}: ${message} ${res.stderr.trim() || `(docker exited with ${res.code})`}`);
+  throw new Error(message);
 }
 
 export async function restartApp(id: string): Promise<void> {
@@ -1428,7 +1556,7 @@ export async function restartApp(id: string): Promise<void> {
   const held = startBlockedReason(id);
   if (held) throw new AppNeedsReviewError(held);
   suppressOfflineAlert(id); // brief intended downtime
-  await composeRestart(projectOf(id));
+  throwIfFailed(await composeRestart(projectOf(id)), id, "This app couldn't be restarted. Its logs may say why.");
 }
 
 export async function appLogs(id: string, tail = 200): Promise<string> {
@@ -1438,6 +1566,8 @@ export async function appLogs(id: string, tail = 200): Promise<string> {
 /** How long to give a container to prove it is going to stay up. */
 const SETTLE_MS = 3_000;
 const SETTLE_SAMPLES = 3;
+/** Shown where an app's last log lines would be, when it is down and left none to read. */
+const NO_LOGS_TO_SHOW = "(It isn't running, and it left no logs we could read.)";
 
 /**
  * Did the app actually STAY running?
@@ -1453,7 +1583,8 @@ const SETTLE_SAMPLES = 3;
  * Sampled a few times rather than once, because a crash-loop spends part of its cycle
  * genuinely `running` and a single check can land in that window.
  *
- * Returns null when it is up, or the last few log lines when it is not.
+ * Returns null when it is up, or the last few log lines when it is not (a sentence
+ * saying so when there are none to show).
  */
 export async function verifyStayedUp(id: string): Promise<string | null> {
   let up = false;
@@ -1463,11 +1594,11 @@ export async function verifyStayedUp(id: string): Promise<string | null> {
     if (!up) break; // one bad sample is enough — a healthy app is up on every one
   }
   if (up) return null;
+  // Every caller reads null as "it stayed up", so an app that is down always gets words.
   try {
-    const logs = await composeLogs(projectOf(id), 40);
-    return logs.trim() || null;
+    return (await composeLogs(projectOf(id), 40)).trim() || NO_LOGS_TO_SHOW;
   } catch {
-    return null;
+    return NO_LOGS_TO_SHOW;
   }
 }
 
@@ -1687,13 +1818,12 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   } else {
     ssoSecret = undefined;
   }
-  const env = readEnvFile(id);
-  env.OPENMASJID_APP_ID = id;
-  if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
-  else delete env.OPENMASJID_APP_SECRET;
-  // Keep the app's public URL in sync with its exposure (preserved from meta).
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, meta.exposed !== false);
-  writeEnvFile(id, env);
+  updateEnvFile(id, {
+    OPENMASJID_APP_ID: id,
+    OPENMASJID_APP_SECRET: ssoSecret, // removed when the app no longer needs one
+    // Keep the app's public URL in sync with its exposure (preserved from meta).
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, meta.exposed !== false),
+  });
 
   // Reconcile per-app HTTPS the same way — an app can gain (or lose) the Stripe
   // HTTPS requirement on update. Keep an already-assigned port; allocate one if
@@ -1793,6 +1923,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
  */
 export async function removeApp(id: string, deleteData = false): Promise<void> {
   assertAppFree(id, 'remove');
+  // `compose down` stops it for some seconds before its record goes: not an outage.
+  suppressOfflineAlert(id);
   stopProxy(id); // tear down any per-app HTTPS proxy first
   const file = fs.existsSync(composePath(id)) ? composePath(id) : undefined;
   // When deleting data, also drop the app's images so the space is reclaimed.
