@@ -42,8 +42,9 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
    *
    * `ChannelMigrate` learned this the hard way in the other direction: it took a prop
    * captured at open time and replayed itself for ever. The fix there was to read live
-   * state once and then freeze it, and the freezing half applies here too — each finished
-   * app invalidates `apps.updates`, so a list read live would shrink underneath `index`
+   * state once and then freeze it, and the freezing half applies here too — the list of
+   * updates can be refetched while this runs (the dashboard polls it, and an app updated
+   * from its own card refreshes it), so a list read live could shrink underneath `index`
    * and skip whatever moved up into the slot just vacated.
    */
   const [plan] = useState<UpdatableApp[]>(() => apps);

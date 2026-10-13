@@ -1,15 +1,46 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { brotliCompressSync, gzipSync, constants as zlib } from 'node:zlib';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+
+/**
+ * Writes `<file>.br` and `<file>.gz` beside each file in dist/assets, so the core can
+ * send a compressed copy (@fastify/static `preCompressed`) instead of the whole file —
+ * or compressing it again on a Raspberry Pi for every visitor. index.html is not in
+ * dist/assets and is left alone. Formats that are compressed already (fonts, images,
+ * video) are skipped: squeezing them again saves nothing.
+ */
+function precompress(): Plugin {
+  const ALREADY_COMPRESSED = /\.(woff2?|png|jpe?g|gif|webp|avif|mp4|webm|br|gz)$/i;
+  return {
+    name: 'omos-precompress',
+    apply: 'build',
+    closeBundle() {
+      const dir = fileURLToPath(new URL('./dist/assets', import.meta.url));
+      for (const name of readdirSync(dir)) {
+        if (ALREADY_COMPRESSED.test(name)) continue;
+        const file = join(dir, name);
+        const data = readFileSync(file);
+        const br = brotliCompressSync(data, {
+          params: { [zlib.BROTLI_PARAM_QUALITY]: zlib.BROTLI_MAX_QUALITY, [zlib.BROTLI_PARAM_SIZE_HINT]: data.length },
+        });
+        writeFileSync(`${file}.br`, br);
+        writeFileSync(`${file}.gz`, gzipSync(data, { level: zlib.Z_BEST_COMPRESSION }));
+      }
+    },
+  };
+}
 
 // In dev the UI runs on Vite (5173) and proxies API + WebSocket traffic to the
 // core daemon (8723). In production the core serves the built UI itself, so no
 // proxy is needed and the client uses same-origin relative URLs.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), precompress()],
   resolve: {
     // Must mirror tsconfig.json's "@/*" path exactly. The shadcn CLI bakes
     // `@/lib/cn` into every component it writes, so a mismatch between these

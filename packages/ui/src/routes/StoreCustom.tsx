@@ -143,6 +143,9 @@ function CommunityTab() {
 
   const check = trpc.community.check.useMutation();
   const conflicts = check.data?.conflicts ?? [];
+  // What the app would be allowed to do that an ordinary one is not — said BEFORE the
+  // admin is asked to accept the risk, not left for them to guess.
+  const dangers = check.data?.dangers ?? [];
   // Never acknowledgeable — the server blocks these outright (cross-app data access).
   const refusals = check.data?.refusals ?? [];
 
@@ -179,8 +182,10 @@ function CommunityTab() {
       toast(t('common.saved'), 'success');
     },
     onError: (e) => {
-      // The server asks for an explicit risk ack when the compose is dangerous.
-      if (e.message.includes('powerful permissions')) setNeedsAck(true);
+      // The server asks for an explicit risk ack when the compose is dangerous. It uses
+      // the same code for a port clash, so the dangers the check found decide which this
+      // is — never the wording of the message, which is free to change.
+      if (e.data?.code === 'PRECONDITION_FAILED' && dangers.length > 0 && !needsAck) setNeedsAck(true);
       else setInstallError(errorText(e, t('custom.error')));
     },
   });
@@ -298,10 +303,13 @@ function CommunityTab() {
             <p className="hint" style={{ marginBlock: '0.5rem 0' }}>{t('custom.refusalsBody')}</p>
           </div>
         )}
-        {needsAck && (
+        {dangers.length > 0 && (
           <div className="glass-inset panel" style={{ marginBottom: '1rem' }}>
             <strong style={{ color: 'var(--color-warning)' }}>{t('custom.dangersTitle')}</strong>
-            <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>
+            <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
+              {dangers.map((d, i) => <li key={i}>{d}</li>)}
+            </ul>
+            {needsAck && <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>}
           </div>
         )}
         <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
@@ -339,7 +347,11 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
   const [portRemap, setPortRemap] = useState<Record<string, number>>({});
   const [expose, setExpose] = useState(false);
 
-  const check = trpc.custom.check.useMutation();
+  // A compose that does not parse is refused with the reason — which used to go nowhere,
+  // so pressing Check on a broken file did nothing visible at all.
+  const check = trpc.custom.check.useMutation({
+    onError: (e) => setError(errorText(e, t('custom.error'))),
+  });
   const install = trpc.custom.install.useMutation({
     onSuccess: () => {
       toast(t('common.saved'), 'success');
@@ -372,7 +384,18 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
         </div>
         <div className="field">
           <label className="label">{t('custom.compose')}</label>
-          <textarea className="textarea glass-inset" placeholder={t('custom.composePlaceholder')} value={compose} onChange={(e) => { setCompose(e.target.value); check.reset(); }} />
+          {/* An edit throws the last check away, and the risk tick with it: kept, it had
+              a more dangerous file arrive with its list already ticked. */}
+          <textarea
+            className="textarea glass-inset"
+            placeholder={t('custom.composePlaceholder')}
+            value={compose}
+            onChange={(e) => {
+              setCompose(e.target.value);
+              check.reset();
+              setAck(false);
+            }}
+          />
         </div>
         <div className="field">
           <label className="label">{t('custom.env')}</label>

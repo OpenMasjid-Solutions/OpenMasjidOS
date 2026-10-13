@@ -77,6 +77,9 @@
     "setupSubtitle": "Let's create your admin account to get started.",
     "loginTitle": "Welcome back",
     "loginSubtitle": "Sign in to manage your masjid's apps.",
+    "unreachableTitle": "Can't reach OpenMasjidOS right now",
+    "unreachableBody": "It may be restarting. This page keeps trying, and carries on by itself as soon as it answers.",
+    "retryNow": "Try again now",
     "username": "Username",
     "name": "Your name",
     "nameHint": "This is your sign-in username.",
@@ -981,7 +984,9 @@
     "notFound": "Page not found",
     "notFoundHint": "The page you're looking for doesn't exist.",
     "goHome": "Go to Dashboard",
-    "boundary": "Something went wrong here. Try closing and reopening this window."
+    "boundary": "Something went wrong here. Try closing and reopening this window.",
+    "pageLoad": "This page couldn't be opened. OpenMasjidOS may have been updated since you opened the dashboard — reloading the page fixes that.",
+    "reload": "Reload the page"
   },
   "updateAll": {
     "title": "Updating your apps",

@@ -230,7 +230,7 @@ function InstallModal({
 
   return (
     <Modal open onClose={onClose} title={t('store.installTitle', { name: app.name })}>
-      {app.description && <p style={{ marginBottom: '1rem' }}>{app.tagline}</p>}
+      {app.tagline && <p style={{ marginBottom: '1rem' }}>{app.tagline}</p>}
       {fields.map((f) => (
         <div className="field" key={f.key}>
           <label className="label">{f.label}</label>

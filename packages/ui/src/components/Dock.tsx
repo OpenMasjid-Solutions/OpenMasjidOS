@@ -40,8 +40,6 @@ export function Dock() {
   const [dropHint, setDropHint] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const appsQuery = trpc.apps.list.useQuery(undefined, { refetchInterval: 8000 });
-  // Whether this session came from outside the masjid — some of the dock is not
-  // available there (see the Files link below).
   // Same rule as the dashboard grid: an app the platform drives is not pinnable, because
   // it is not somewhere the masjid goes (see apps/managed.ts).
   const apps = (appsQuery.data ?? []).filter((a) => !a.managed);
@@ -102,14 +100,6 @@ export function Dock() {
             className={cn('dock-item', dragId === app.id && 'dock-item--dragging')}
             aria-label={app.name}
             draggable
-            onMouseEnter={() => {
-              void utils.apps.get.prefetch({ id: app.id });
-              void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-            }}
-            onFocus={() => {
-              void utils.apps.get.prefetch({ id: app.id });
-              void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-            }}
             onDragStart={(e) => {
               setDragId(app.id);
               e.dataTransfer.effectAllowed = 'move';
@@ -123,7 +113,9 @@ export function Dock() {
               if (!dragId || dragId === app.id) return;
               e.preventDefault();
               const r = e.currentTarget.getBoundingClientRect();
-              reorderPins(dragId, app.id, e.clientX > r.left + r.width / 2);
+              // "After" is the right half left to right, and the left half right to left.
+              const pastMiddle = e.clientX > r.left + r.width / 2;
+              reorderPins(dragId, app.id, document.documentElement.dir === 'rtl' ? !pastMiddle : pastMiddle);
             }}
             onDragEnd={() => setDragId(null)}
             onDrop={(e) => {

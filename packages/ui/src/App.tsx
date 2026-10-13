@@ -9,7 +9,6 @@ import { makeTrpcClient } from './lib/trpcClient';
 import { clearCsrf } from './lib/session';
 import { SceneBackground } from './components/SceneBackground';
 import { ToastProvider } from './components/ToastProvider';
-import { WindowsProvider } from './components/Windows';
 import { Root } from './Root';
 
 // True when a tRPC error means "not signed in" (expired session, or a missing/
@@ -69,11 +68,9 @@ export function App() {
         <MotionConfig reducedMotion="user">
           <SceneBackground />
           <ToastProvider>
-            <WindowsProvider>
-              <BrowserRouter>
-                <Root />
-              </BrowserRouter>
-            </WindowsProvider>
+            <BrowserRouter>
+              <Root />
+            </BrowserRouter>
           </ToastProvider>
         </MotionConfig>
       </QueryClientProvider>

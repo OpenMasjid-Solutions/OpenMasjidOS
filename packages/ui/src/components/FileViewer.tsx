@@ -42,11 +42,18 @@ export function FileViewer({ path, name, kind }: { path: string; name: string; k
 function TextEditor({ path }: { path: string }) {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const utils = trpc.useUtils();
   const read = trpc.files.read.useQuery({ path }, { retry: false });
   const [text, setText] = useState<string | null>(null);
 
   const write = trpc.files.write.useMutation({
-    onSuccess: () => toast(t('files.saved'), 'success'),
+    onSuccess: (_r, vars) => {
+      // The cached copy is what this editor opens with next time: left alone, reopening
+      // the file showed the old text, and saving again put it back over this save.
+      utils.files.read.setData({ path: vars.path }, (old) => (old ? { ...old, content: vars.content } : old));
+      void utils.files.list.invalidate();
+      toast(t('files.saved'), 'success');
+    },
     onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
 

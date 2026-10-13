@@ -4,7 +4,7 @@
  * Home: a live system-stats strip (tRPC subscription, seeded by a query for
  * instant first paint) above the installed-apps grid.
  */
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
@@ -40,6 +40,16 @@ function greetingKey(): 'morning' | 'afternoon' | 'evening' {
   return 'evening';
 }
 
+function subscribeVisibility(onChange: () => void): () => void {
+  document.addEventListener('visibilitychange', onChange);
+  return () => document.removeEventListener('visibilitychange', onChange);
+}
+
+/** Whether this tab is the one on screen. */
+function usePageVisible(): boolean {
+  return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === 'visible');
+}
+
 /** True when any metric is high enough to warrant an "under load" tagline. */
 function isUnderLoad(s: StatsSnapshot | null): boolean {
   if (!s) return false;
@@ -59,7 +69,11 @@ export function Dashboard() {
   // first paint, with a slow refetch as a fallback that self-disables while the
   // socket is healthy (no redundant 30s poll once live data is flowing).
   const initial = trpc.stats.get.useQuery(undefined, { refetchInterval: live ? false : 30000 });
+  // Only while this tab is in front: a hidden one has nobody watching it, and the
+  // server sends a fresh sample the moment the stream is asked for again.
+  const visible = usePageVisible();
   trpc.stats.stream.useSubscription(undefined, {
+    enabled: visible,
     onData: (d: StatsSnapshot) => setLive(d),
   });
   const stats = live ?? initial.data ?? null;

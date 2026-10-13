@@ -109,7 +109,7 @@ export function Files() {
         </button>
         {segments.map((seg, i) => (
           <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <ChevronRight size={14} className="crumb-sep" />
+            <ChevronRight size={14} className="crumb-sep flip-rtl" />
             <button className="crumb" onClick={() => setPath(crumbPath(i))}>{seg}</button>
           </span>
         ))}

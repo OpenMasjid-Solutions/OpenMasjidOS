@@ -36,21 +36,18 @@ export function ChangePassword() {
     }
   }, [me.data]);
   const saveProfile = trpc.auth.updateProfile.useMutation({
-    onSuccess: async () => {
+    onSuccess: (stored) => {
+      // Show what the server STORED — its answer — rather than what was typed: a cleared
+      // email keeps the old address, and the boxes must not go on looking saved blank.
+      // (A number it cannot read is refused instead, and that message is shown below.)
+      setName(stored.name ?? '');
+      setEmail(stored.email ?? '');
+      setPhone(stored.phone ?? '');
+      void utils.auth.me.invalidate();
       // A new address pauses emailed sign-in codes (core auth/twofactor.ts), and the
       // two-step panel sits just below this form: without this it went on showing
       // them as on until its cache ran out.
       void utils.auth.twoFactor.status.invalidate();
-      // Then show what the server now HOLDS rather than what was typed: a cleared email
-      // keeps the old one, and a number it could not use is not stored — the boxes must
-      // not go on showing either as saved.
-      await utils.auth.me.invalidate();
-      const stored = utils.auth.me.getData();
-      if (stored) {
-        setName(stored.name ?? '');
-        setEmail(stored.email ?? '');
-        setPhone(stored.phone ?? '');
-      }
       toast(t('settings.profileSaved'), 'success');
     },
     onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),

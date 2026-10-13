@@ -46,7 +46,8 @@ import { staggerItem } from '../lib/motion';
 import type { InstalledApp } from '../lib/types';
 import { CheckboxField } from './CheckboxField';
 
-const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
+/** Where an app came from, as its tag says it — shared with the app's own page. */
+export const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
   catalog: { cls: 'tag--official', key: 'tags.official' },
   community: { cls: 'tag--community', key: 'tags.community' },
   custom: { cls: 'tag--custom', key: 'tags.custom' },
@@ -123,11 +124,14 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
   }, [app.id, app.name, t, windows]);
 
   // Warm the detail page + logs caches on hover/focus so opening a card is
-  // instant (the data is usually already there by the time the click lands).
+  // instant (the data is usually already there by the time the click lands) —
+  // but only when a click would open that page. A running app with a web page
+  // opens the app itself, and each logs fetch runs `docker compose logs`.
   const prefetch = useCallback(() => {
+    if (app.running && app.openPort != null) return;
     void utils.apps.get.prefetch({ id: app.id });
     void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-  }, [app.id, utils]);
+  }, [app.id, app.running, app.openPort, utils]);
 
   // The hand-rolled click-outside listener that used to live here is gone —
   // Radix dismisses on outside pointerdown, on Escape, and on focus leaving,

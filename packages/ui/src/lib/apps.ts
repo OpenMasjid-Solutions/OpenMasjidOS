@@ -79,8 +79,10 @@ export function appColor(id: string): string {
 }
 
 /**
- * Open an app in a new tab. Returns false when there is nothing to open from here
- * (no web port, or a pop-up blocker said no), so a caller can offer something else.
+ * Open an app in a new tab. Returns false when there is nothing to open from here (no
+ * web port — or, from outside, a pop-up blocker said no), so a caller can offer
+ * something else. On the masjid's network the tab opens with `noopener`, which hides
+ * whether it was blocked, so there a blocked tab still returns true.
  */
 export function openApp(app: OpenableApp & { id: string; fabric?: boolean }): boolean {
   // Only hand the appearance prefs (the OpenMasjidOS Fabric `#omos=` fragment) to
@@ -96,8 +98,8 @@ export function openApp(app: OpenableApp & { id: string; fabric?: boolean }): bo
 
 /**
  * From outside: ask the platform for the app's one-use address, then send a new tab
- * there. It signs that tab in to that one app, on the apps' own hostname — never this
- * one (core system/app-access.ts).
+ * there. It signs that tab in to that one app, with a token for that app alone — never
+ * the dashboard's own session (core system/app-access.ts).
  *
  * The tab is opened FIRST, empty, while the click is still a click: a pop-up blocker
  * allows a new tab only in direct response to one, and the address takes a round trip

@@ -13,6 +13,7 @@ import { openApp, appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Toggle } from '../components/Toggle';
 import { AppReviewDialog } from '../components/AppReviewDialog';
+import { TAG } from '../components/AppCard';
 import { useToast } from '../components/ToastProvider';
 
 export function AppDetail() {
@@ -91,10 +92,12 @@ export function AppDetail() {
     );
   }
 
+  const tag = TAG[app.kind] ?? TAG.custom;
+
   return (
     <Page>
       <button className="btn btn--ghost btn--sm" onClick={() => navigate('/')} style={{ marginBottom: '1rem' }}>
-        <ArrowLeft size={15} /> {t('appDetail.back')}
+        <ArrowLeft size={15} className="flip-rtl" /> {t('appDetail.back')}
       </button>
 
       <div className="glass-raised panel" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -106,9 +109,8 @@ export function AppDetail() {
           <div className="app-meta">
             <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
             {app.running ? t('appDetail.running') : t('appDetail.stopped')}
-            <span className={`tag ${app.kind === 'custom' ? 'tag--custom' : 'tag--official'}`}>
-              {app.kind === 'custom' ? t('tags.custom') : t('tags.official')}
-            </span>
+            {/* The card's own tags, so a community app is not called "Official" here. */}
+            <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
           </div>
         </div>
       </div>
