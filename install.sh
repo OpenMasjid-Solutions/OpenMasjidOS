@@ -1039,6 +1039,13 @@ do_uninstall() {
   else
     docker rm -f openmasjid-core 2>/dev/null || true
   fi
+  # The core runs the Cloudflare tunnel as a container of its own that restarts by itself,
+  # so it would go on forwarding the public addresses to this machine — and after every
+  # reboot. Its token stays in config/, and reinstalling turns it back on.
+  if docker inspect --type container openmasjid-cloudflared &>/dev/null; then
+    docker rm -f openmasjid-cloudflared &>/dev/null || true
+    info "Remote access (the Cloudflare tunnel) is off until OpenMasjidOS is reinstalled."
+  fi
   echo ""
   info "The OpenMasjidOS core has been removed."
   echo "  Your installed apps are still running and your data is intact at ${DATA_DIR}."
@@ -1063,6 +1070,16 @@ do_uninstall() {
         # hijack the teardown — `down` then operates purely by project label.
         [ -n "$proj" ] && ( cd /tmp && docker compose -p "$proj" down -v ) 2>/dev/null || true
       done <<< "$projects"
+    fi
+    # An app removed earlier with "keep its data" has volumes but no containers, so the
+    # loop above never sees it. Remove every volume still belonging to an omos-* project.
+    local volumes=""
+    volumes="$(docker volume ls --format '{{.Name}} {{.Label "com.docker.compose.project"}}' 2>/dev/null \
+      | awk '$2 ~ /^omos-/ {print $1}' || true)"
+    if [ -n "$volumes" ]; then
+      while read -r vol; do
+        [ -n "$vol" ] && docker volume rm "$vol" &>/dev/null || true
+      done <<< "$volumes"
     fi
     rm -rf "${DATA_DIR}"
     info "Everything has been removed."
