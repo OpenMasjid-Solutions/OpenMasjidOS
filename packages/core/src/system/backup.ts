@@ -117,12 +117,22 @@ function cleanupStaging(): void {
   }
 }
 
+/** Remove the staging copy — every app's data — of a backup cut off by a restart or a crash.
+ *  For boot, when no backup can be running. */
+export function removeBackupLeftovers(): void {
+  if (!fs.existsSync(STAGING)) return;
+  cleanupStaging();
+  log.warn('Removed .backup-staging left behind by a backup that did not finish.');
+}
+
 /** Named Docker volumes that belong to installed apps (compose project omos-*),
  *  excluding OpenMasjidOS's own infra (e.g. the Cloudflare tunnel). `ok: false`
  *  means we could not ASK Docker — very different from "there are none", since
- *  treating it as "none" would quietly produce a backup with no app data. */
+ *  treating it as "none" would quietly produce a backup with no app data.
+ *  By NAME, not compose's project label: a volume an older restore created has no label,
+ *  and every backup after it left that app's data out while saying it had worked. */
 async function appVolumeNames(): Promise<{ ok: boolean; names: string[] }> {
-  const res = await sh('docker', ['volume', 'ls', '--filter', 'label=com.docker.compose.project', '--format', '{{.Name}}']);
+  const res = await sh('docker', ['volume', 'ls', '--format', '{{.Name}}']);
   if (res.code !== 0) return { ok: false, names: [] };
   return {
     ok: true,
@@ -138,7 +148,11 @@ async function appVolumeNames(): Promise<{ ok: boolean; names: string[] }> {
  *  archive can never be folded into the backup and restored over good data). */
 function tarVolume(vol: string, outFile: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn('docker', ['run', '--rm', '-v', `${vol}:/from:ro`, VOL_IMAGE, 'tar', '-czf', '-', '-C', '/from', '.']);
+    // No log driver: the archive goes to stdout, which Docker would otherwise also write,
+    // escaped and several times over, into the container's log until --rm removed it.
+    const child = spawn('docker', [
+      'run', '--rm', '--log-driver', 'none', '-v', `${vol}:/from:ro`, VOL_IMAGE, 'tar', '-czf', '-', '-C', '/from', '.',
+    ]);
     const out = fs.createWriteStream(outFile);
     let err = '';
     let settled = false;
@@ -178,6 +192,9 @@ function tarVolume(vol: string, outFile: string): Promise<string | null> {
       closed = true;
       writeFailed = true;
       code ??= -1;
+      // Nothing reads its output any more: the client would block on a full pipe for ever,
+      // and its container with it, the volume still mounted. Every retry leaked another.
+      child.kill('SIGKILL');
       finish();
     });
     child.on('error', (e) => {
@@ -216,12 +233,6 @@ async function stageVolumes(): Promise<{ any: boolean }> {
 }
 
 /**
- * Produce a tar.gz stream of config/ + apps/ + each app's volume data. Stages
- * volumes first (async), then streams; the staging dir is removed when the stream
- * ends. Throws BackupBusyError if one is already running, or a friendly Error if
- * the app data couldn't be staged in full (nothing is streamed in that case).
- */
-/**
  * The `tar` arguments for a backup. Exported so a test can run them through the
  * real `tar` binary rather than checking the order by reading this file.
  *
@@ -242,8 +253,12 @@ export function backupTarArgs(haveVolumes: boolean): string[] {
     if (fs.existsSync(`${DATA_DIR}/${dir}`)) targets.push(dir);
   }
   const args = [
-    '-czf',
+    '-cf',
     '-',
+    // Still gzip, which a restore reads with -xzf, but fast: the app data in it is gzipped
+    // already, so the default level only spent minutes of a Pi's CPU for next to nothing.
+    '-I',
+    'gzip -1',
     // ANCHORED, and switched back off straight after. GNU tar matches exclusion
     // patterns ANYWHERE in a member name by default, so a bare
     // `--exclude=config/sessions.json` also silently dropped any app's own
@@ -257,12 +272,18 @@ export function backupTarArgs(haveVolumes: boolean): string[] {
     '--no-anchored',
     '-C',
     DATA_DIR,
-    ...(targets.length > 0 ? targets : ['.']),
+    ...targets,
   ];
   if (haveVolumes) args.push('-C', STAGING, 'volumes');
   return args;
 }
 
+/**
+ * Produce a tar.gz stream of config/ + apps/ + each app's volume data. Stages
+ * volumes first (async), then streams; the staging dir is removed when the stream
+ * ends. Throws BackupBusyError if one is already running, or a friendly Error if
+ * the app data couldn't be staged in full (nothing is streamed in that case).
+ */
 export async function backupStream(): Promise<BackupHandle> {
   const refused = backupRefusal();
   if (refused) throw new BackupBusyError(refused);
