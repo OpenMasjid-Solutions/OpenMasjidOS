@@ -34,7 +34,7 @@ const CONNECTED = NOW - 10 * 60_000;
 
 function enable(): void {
   fs.rmSync(path.join(dataDir, 'config', 'commands.json'), { force: true });
-  store.__reloadCommandConfigForTests();
+  store.reloadCommandConfig();
   store.setCommandsEnabled(true);
   store.addCommandPerson(ALICE, 'Alice', [store.OS_READ, store.OS_CONTROL]);
   __resetGateForTests();
@@ -189,6 +189,17 @@ test('an unknown sender is dropped and gets NO reply', () => {
   assert.equal(r.pass === false && r.drop, 'unknown-sender');
   // The whole outcome must carry nothing that could become a reply.
   assert.equal(r.pass === false && r.notice, undefined);
+});
+
+test('someone on the list with nothing granted gets the same silence', () => {
+  // Settings adds people with nothing ticked, and they are kept on the list. There is
+  // nothing they may run, so nothing reaches the executor and nothing replies.
+  enable();
+  const SCOPELESS = '447700900321';
+  store.addCommandPerson(SCOPELESS, 'Not yet', []);
+  const r = run(msg({ chatId: `${SCOPELESS}@c.us`, body: '!help' }));
+  assert.equal(r.pass === false && r.drop, 'no-grants');
+  assert.equal(r.pass === false && r.notice, undefined, 'nothing that could become a reply');
 });
 
 test('the same message twice runs once', () => {

@@ -13,15 +13,16 @@
  *     admin's own phone (auth/store.ts) is NOT one — that number was collected as a
  *     destination for alerts, never as an authenticator, and auto-granting it would
  *     hand every existing masjid a live grant the instant they flicked the switch.
- *   - A person with no scopes is dropped on load rather than kept as an empty shell.
+ *   - A person with no scopes stays on the list (Settings shows "nothing allowed yet")
+ *     but may run nothing, and the gate gives them the same silence as a stranger.
  *
- * The file is chmod 600: it is a list of the masjid's trustees and their phone
- * numbers. Deliberately separate from `whatsapp.json`, whose whole config object is
+ * The file is written 0600 (writeJson): it is a list of the masjid's trustees and their
+ * phone numbers. Deliberately separate from `whatsapp.json`, whose whole config object is
  * handed to the sender — an authorisation list has no business travelling there.
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
+import { log } from '../logger';
 import { readJson, writeJson } from '../util/json-store';
 import { toDigits } from '../util/phone';
 
@@ -52,9 +53,10 @@ const MAX_PEOPLE = 10;
 export interface CommandPerson {
   /** Bare digits (toDigits output) — one number, one representation. THE identity. */
   phone: string;
-  /** The admin's label for them. Shown in Settings; never sent anywhere. */
+  /** The admin's label for them. Shown in Settings, used to greet them over WhatsApp
+   *  ("Hello <label>") and to name them in the command-run alert. */
   label: string;
-  /** What they may run. Empty is impossible — such an entry is dropped on load. */
+  /** What they may run. Empty means nothing: the gate drops their messages unanswered. */
   scopes: string[];
   addedAt: string;
   /** So an admin can spot a grant nobody has used in a year. */
@@ -85,7 +87,9 @@ function sanitizeScopes(v: unknown): string[] {
   return out;
 }
 
-/** Drop anything malformed rather than trusting the file on disk. */
+/** Drop anything malformed or duplicated rather than trusting the file on disk. A person
+ *  with no scopes is kept: Settings lists them, and dropping them on load made them
+ *  vanish at the next restart. */
 function sanitizePeople(list: unknown): CommandPerson[] {
   if (!Array.isArray(list)) return []; // absence means nobody, which is the safe answer
   const seen = new Set<string>();
@@ -97,13 +101,11 @@ function sanitizePeople(list: unknown): CommandPerson[] {
     // and the admin is left wondering why their commands are ignored.
     const phone = toDigits(String(p?.phone ?? ''));
     if (!phone || seen.has(phone)) continue;
-    const scopes = sanitizeScopes(p?.scopes);
-    if (scopes.length === 0) continue; // a person who may do nothing is not a person here
     seen.add(phone);
     out.push({
       phone,
       label: typeof p?.label === 'string' && p.label.trim() ? p.label.trim().slice(0, 60) : phone,
-      scopes,
+      scopes: sanitizeScopes(p?.scopes),
       addedAt: typeof p?.addedAt === 'string' ? p.addedAt : new Date(0).toISOString(),
       lastUsedAt: typeof p?.lastUsedAt === 'string' ? p.lastUsedAt : null,
     });
@@ -124,22 +126,15 @@ function withDefaults(c: Partial<CommandConfig> | undefined): CommandConfig {
   };
 }
 
-let cache: CommandConfig = withDefaults(
-  readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands,
-);
+function load(): CommandConfig {
+  return withDefaults(readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands);
+}
+
+let cache: CommandConfig = load();
 
 /** Re-read the commands configuration from disk — for a restore, which replaces it under this process. */
 export function reloadCommandConfig(): void {
-  cache = withDefaults(readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands);
-}
-
-function persist(): void {
-  writeJson(COMMANDS_PATH, { commands: cache });
-  try {
-    fs.chmodSync(COMMANDS_PATH, 0o600);
-  } catch {
-    /* best effort (non-POSIX dev) */
-  }
+  cache = load();
 }
 
 /** Called after any change so the inbound listener re-evaluates whether to connect
@@ -150,8 +145,16 @@ const hooks: ChangeHook[] = [];
 export function onCommandConfigChange(fn: ChangeHook): void {
   hooks.push(fn);
 }
-function changed(): void {
-  persist();
+
+/** Write first, then believe it: a write that fails leaves memory as it was, so the
+ *  running code never acts on a change the disk does not hold. */
+function save(next: CommandConfig): void {
+  writeJson(COMMANDS_PATH, { commands: next });
+  cache = next;
+}
+
+function commit(next: CommandConfig): void {
+  save(next);
   for (const fn of hooks) {
     try {
       fn();
@@ -174,6 +177,7 @@ export function areCommandsEnabled(): boolean {
  * inbound path is parsing; this is the boundary.
  *
  * Fail-closed at every step, and a null is a SILENT drop — the caller must not reply.
+ * A listed person with no scopes is returned; the gate's next step drops them.
  *
  * A plain linear find is right here: this is ten entries of a phone number, which is
  * not a secret, so a constant-time compare would buy nothing and cost legibility.
@@ -200,54 +204,43 @@ export function authoriseSender(rawFrom: string | null | undefined): CommandPers
 // is worse than no function.
 
 export function setCommandsEnabled(on: boolean): CommandConfig {
-  cache = { ...cache, enabled: on === true };
-  changed();
+  commit({ ...cache, enabled: on === true });
   return cache;
 }
 
 /** Throws a friendly error on a number we cannot canonicalise — the same sentence the
- *  send path uses, so an admin sees one wording for one problem. */
-export function addCommandPerson(rawPhone: string, label: string, scopes: string[] = []): CommandPerson[] {
+ *  send path uses, so an admin sees one wording for one problem. Adding someone already
+ *  listed renames them; their grants are kept unless `scopes` is given. */
+export function addCommandPerson(rawPhone: string, label: string, scopes?: string[]): CommandPerson[] {
   const phone = toDigits(rawPhone);
   if (!phone) throw new Error('That phone number needs a country code, e.g. +1 555 010 1234.');
   const name = String(label ?? '').trim().slice(0, 60);
   if (!name) throw new Error('Give this person a name so you can recognise them later.');
-  const clean = sanitizeScopes(scopes);
-  const existing = cache.people.find((p) => p.phone === phone);
-  if (existing) {
-    cache = {
+  if (cache.people.some((p) => p.phone === phone)) {
+    commit({
       ...cache,
-      people: cache.people.map((p) => (p.phone === phone ? { ...p, label: name, scopes: clean } : p)),
-    };
-  } else {
-    if (cache.people.length >= MAX_PEOPLE) {
-      throw new Error(`You can have at most ${MAX_PEOPLE} people on this list.`);
-    }
-    cache = {
-      ...cache,
-      people: [
-        ...cache.people,
-        { phone, label: name, scopes: clean, addedAt: new Date().toISOString(), lastUsedAt: null },
-      ],
-    };
+      people: cache.people.map((p) =>
+        p.phone === phone ? { ...p, label: name, scopes: scopes ? sanitizeScopes(scopes) : p.scopes } : p,
+      ),
+    });
+    return cache.people;
   }
-  changed();
-  return cache.people;
-}
-
-export function renameCommandPerson(rawPhone: string, label: string): CommandPerson[] {
-  const phone = toDigits(rawPhone);
-  const name = String(label ?? '').trim().slice(0, 60);
-  if (!name) throw new Error('Give this person a name so you can recognise them later.');
-  cache = { ...cache, people: cache.people.map((p) => (p.phone === phone ? { ...p, label: name } : p)) };
-  changed();
+  if (cache.people.length >= MAX_PEOPLE) {
+    throw new Error(`You can have at most ${MAX_PEOPLE} people on this list.`);
+  }
+  commit({
+    ...cache,
+    people: [
+      ...cache.people,
+      { phone, label: name, scopes: sanitizeScopes(scopes), addedAt: new Date().toISOString(), lastUsedAt: null },
+    ],
+  });
   return cache.people;
 }
 
 export function removeCommandPerson(rawPhone: string): CommandPerson[] {
   const phone = toDigits(rawPhone);
-  cache = { ...cache, people: cache.people.filter((p) => p.phone !== phone) };
-  changed();
+  commit({ ...cache, people: cache.people.filter((p) => p.phone !== phone) });
   return cache.people;
 }
 
@@ -260,12 +253,11 @@ export function removeCommandPerson(rawPhone: string): CommandPerson[] {
  * silently re-arms whichever numbers were trusted back then, including a volunteer's
  * phone that has since changed hands. So it goes with everything else.
  *
- * One call to `changed()`, not one per person: the hook re-reconciles the inbound socket
- * and resets conversations, and firing that per row would do the same work N times.
+ * One `commit()`, not one per person: the hook re-reconciles the inbound socket and
+ * resets conversations, and firing that per row would do the same work N times.
  */
 export function clearCommandPeople(): CommandPerson[] {
-  cache = { ...cache, people: [] };
-  changed();
+  commit({ ...cache, people: [] });
   return cache.people;
 }
 
@@ -275,7 +267,7 @@ export function clearCommandPeople(): CommandPerson[] {
 export function setCommandScope(rawPhone: string, scope: string, allowed: boolean): CommandPerson[] {
   const phone = toDigits(rawPhone);
   if (!phone || !isScopeKey(scope)) throw new Error('That permission could not be changed.');
-  cache = {
+  commit({
     ...cache,
     people: cache.people.map((p) => {
       if (p.phone !== phone) return p;
@@ -283,27 +275,30 @@ export function setCommandScope(rawPhone: string, scope: string, allowed: boolea
       if (allowed) scopes.push(scope);
       return { ...p, scopes };
     }),
-  };
-  changed();
+  });
   return cache.people;
 }
 
-/** Stamp last-used, at most once a minute per person — this is a nicety for the
- *  Settings list, not something worth an fsync per message. */
+/** Stamp last-used, at most once a minute — this is a nicety for the Settings list,
+ *  not something worth an fsync per message. */
 let lastUseWrite = 0;
+let useWriteFailing = false;
 export function recordCommandUse(phone: string, now = Date.now()): void {
   if (now - lastUseWrite < 60_000) return;
-  const person = cache.people.find((p) => p.phone === phone);
-  if (!person) return;
+  if (!cache.people.some((p) => p.phone === phone)) return;
   lastUseWrite = now;
-  cache = {
-    ...cache,
-    people: cache.people.map((p) => (p.phone === phone ? { ...p, lastUsedAt: new Date(now).toISOString() } : p)),
-  };
-  persist(); // no hooks: nothing about reachability or access changed
-}
-
-/** Test seam — reload from disk after a fixture writes the file. */
-export function __reloadCommandConfigForTests(): void {
-  cache = withDefaults(readJson<CommandFile>(COMMANDS_PATH, { commands: DEFAULT_CONFIG }).commands);
+  try {
+    // No hooks: nothing about reachability or access changed.
+    save({
+      ...cache,
+      people: cache.people.map((p) => (p.phone === phone ? { ...p, lastUsedAt: new Date(now).toISOString() } : p)),
+    });
+    useWriteFailing = false;
+  } catch (err) {
+    // A full or read-only card must not cost the sender their answer. Logged once per run of failures.
+    if (!useWriteFailing) {
+      log.warn(`WhatsApp commands: could not record when a command was last used — ${(err as Error).message}`);
+    }
+    useWriteFailing = true;
+  }
 }

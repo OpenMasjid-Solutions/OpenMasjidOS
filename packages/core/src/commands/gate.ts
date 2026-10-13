@@ -51,13 +51,13 @@ export type DropReason =
   | 'stale'
   | 'future'
   | 'unknown-sender'
+  | 'no-grants'
   | 'duplicate'
   | 'no-prefix'
   | 'rate-limited';
 
 export type GateOutcome =
   | { pass: true; person: CommandPerson; msg: InboundMessage; digits: string }
-  /** `notice` is set ONLY for 'rate-limited' — the one drop that may answer. */
   /**
    * `notice` is set ONLY for 'rate-limited' — the one drop that may answer.
    * `prefixed` is set ONLY for 'unknown-sender', and says the ignored message
@@ -178,6 +178,9 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
       prefixed: body.startsWith(COMMAND_PREFIX),
     };
   }
+  // 10b. On the list with nothing granted: there is nothing they may run, so the same
+  //      silence, counted under its own reason so the diagnostics can tell them apart.
+  if (person.scopes.length === 0) return { pass: false, drop: 'no-grants' };
 
   // 11. Duplicate suppression, recorded before execution and kept regardless of
   //     outcome. Without an id we key on the content so a redelivery still collides.
