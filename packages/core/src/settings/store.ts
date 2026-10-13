@@ -163,8 +163,11 @@ export function getSettings(): PlatformSettings {
 }
 
 export function updateSettings(patch: Partial<PlatformSettings>): PlatformSettings {
-  cache = { ...cache, ...patch };
-  writeJson(SETTINGS_PATH, cache);
+  const next = { ...cache, ...patch };
+  writeJson(SETTINGS_PATH, next);
+  // Believed only once it is on disk: a write the disk refused must not stay in
+  // effect until the next restart and then silently revert.
+  cache = next;
   return cache;
 }
 
