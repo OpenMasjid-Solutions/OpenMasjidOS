@@ -164,6 +164,182 @@ const image = (id: string) => ({
 });
 const noHistory = () => ({ sends: [], groupSends: [], lastPerRecipient: new Map<string, number>(), outcomes: [] });
 
+// ── the pump ─────────────────────────────────────────────────────────────────────
+
+test('A DISCARD DURING A SEND NEVER COSTS A NEWER MESSAGE — the sent one is found again', async () => {
+  // The pump removed the item it had sent by the index it found BEFORE the send. Discard
+  // empties the queue meanwhile, an app enqueues again, and that index now named the newer
+  // message: it was dropped unsent, its outcome stuck at "queued" for ever.
+  let first = true;
+  const gw = await stubGateway((_m, url) => {
+    if (url.endsWith('/messages/send-text') && first) {
+      first = false;
+      return 'hold';
+    }
+    return undefined;
+  });
+  try {
+    wa.__resetPacingForTests();
+    const a = wa.enqueue({ to: PARENT, text: 'first', source: 'students' });
+    await waitFor('the first send to reach the gateway', () => gw.held.length === 1);
+
+    wa.discardHeldMessages();
+    assert.match(
+      String(wa.whatsappOutcome(a.id!, 'students')?.reason),
+      /discarded by an admin before it was sent/,
+      'nothing was paused, so the record must not blame a lost link',
+    );
+    const b = wa.enqueue({ to: PARENT, text: 'second', source: 'students' });
+    gw.held.shift()!();
+
+    await waitFor('the newer message to go out', () => wa.whatsappOutcome(b.id!, 'students')?.state === 'sent');
+    assert.deepEqual(gw.texts, ['first', 'second'], 'the newer message really was sent');
+    assert.equal(wa.whatsappOutcome(a.id!, 'students')?.state, 'sent', 'and the discarded one is recorded as having gone');
+  } finally {
+    await settle();
+    await gw.close();
+  }
+});
+
+test('a discard during an outage says so', async () => {
+  const gw = await stubGateway();
+  try {
+    wa.pauseQueue('test');
+    const r = wa.enqueue({ to: PARENT, text: 'held', source: 'students' });
+    wa.discardHeldMessages();
+    assert.match(String(wa.whatsappOutcome(r.id!, 'students')?.reason), /after the WhatsApp link was lost/);
+    assert.equal(wa.isQueuePaused(), false);
+  } finally {
+    await gw.close();
+  }
+});
+
+test('A BACKLOG OLDER THAN A DAY IS DROPPED WHILE RUNNING, not only at boot', async () => {
+  // The bound was applied only when the queue was loaded at boot, so a core that stayed up
+  // through a long gateway outage sent the whole backlog back to back when it returned.
+  const gw = await stubGateway();
+  try {
+    const now = Date.now();
+    qstore.saveQueueState({
+      ...noHistory(),
+      queue: [person('stale-1', 'yesterday', now - qstore.MAX_HELD_MS - 60_000), person('fresh-1', 'today', now - 60_000)],
+    });
+    // Loaded as at a boot two minutes ago, when the old one was still inside the bound.
+    assert.equal(qstore.loadQueueState(now - 2 * 60_000).queue.length, 2, 'precondition: both were inside it then');
+    wa.restoreWhatsAppQueue(now - 2 * 60_000);
+
+    await waitFor('the fresh message to go out', () => wa.whatsappOutcome('fresh-1', 'students')?.state === 'sent');
+    assert.equal(wa.whatsappOutcome('stale-1', 'students')?.state, 'expired');
+    assert.deepEqual(gw.texts, ['today'], 'the day-old message never reached the gateway');
+  } finally {
+    await settle();
+    await gw.close();
+  }
+});
+
+test('WHO WAS MESSAGED IS KEPT FOR A DAY, not for ever', async () => {
+  // `lastToRecipient` was never pruned: a persisted, ever-growing list of every number the
+  // masjid had messaged, read by nothing.
+  const gw = await stubGateway();
+  try {
+    const now = Date.now();
+    qstore.saveQueueState({
+      ...noHistory(),
+      queue: [person('fresh-2', 'hello', now)],
+      lastPerRecipient: new Map([['15550109999', now - 3 * DAY]]),
+    });
+    wa.restoreWhatsAppQueue(now);
+    await waitFor('the message to go out', () => wa.whatsappOutcome('fresh-2', 'students')?.state === 'sent');
+
+    const saved = JSON.parse(fs.readFileSync(path.join(CONFIG, 'whatsapp-queue.json'), 'utf8')) as {
+      lastPerRecipient: [string, number][];
+    };
+    const numbers = saved.lastPerRecipient.map(([key]) => key);
+    assert.ok(!numbers.includes('15550109999'), 'a number messaged three days ago is no longer on disk');
+    assert.ok(numbers.includes('15550101234'), "today's is kept");
+  } finally {
+    await settle();
+    await gw.close();
+  }
+});
+
+// ── images on disk ───────────────────────────────────────────────────────────────
+
+test('AN IMAGE IS WRITTEN ONCE, BESIDE THE QUEUE FILE — never rewritten inside it', () => {
+  // Inline, up to ~11 MB of base64 was rewritten (and fsynced) on every enqueue and send.
+  const id = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const img = path.join(CONFIG, 'whatsapp-media', id);
+  qstore.saveQueueState({ ...noHistory(), queue: [image(id)] });
+
+  const raw = fs.readFileSync(path.join(CONFIG, 'whatsapp-queue.json'), 'utf8');
+  assert.ok(!raw.includes(PNG), 'the bytes are not in the queue file');
+  assert.ok(!raw.includes('\n'), 'and the queue file is compact');
+  assert.equal(fs.readFileSync(img, 'utf8'), PNG);
+  assert.equal(fs.statSync(img).mode & 0o777, 0o600, 'an image can carry a child’s photo');
+
+  const ino = fs.statSync(img).ino;
+  qstore.saveQueueState({ ...noHistory(), queue: [image(id)] });
+  assert.equal(fs.statSync(img).ino, ino, 'an image already on disk is not written again');
+
+  assert.equal(qstore.loadQueueState(Date.now()).queue[0]?.media?.data, PNG, 'the bytes come back for the send');
+
+  qstore.saveQueueState({ ...noHistory(), queue: [] });
+  assert.equal(fs.existsSync(img), false, 'and go once the message has left the queue');
+});
+
+test('an image that cannot be read back fails that message alone — the queue goes on', async () => {
+  // A restore puts the backup's config/ in place while the old core runs on with its own
+  // queue, so a queue file can name an image that is not there.
+  const gw = await stubGateway();
+  try {
+    store.approveGroup(GROUP, 'Parents');
+    const lost = 'bbbbbbbb-1111-2222-3333-444444444444';
+    qstore.saveQueueState({ ...noHistory(), queue: [image(lost), person('text-1', 'still goes')] });
+    fs.rmSync(path.join(CONFIG, 'whatsapp-media', lost));
+
+    wa.restoreWhatsAppQueue();
+    assert.equal(wa.whatsappOutcome(lost, 'display')?.state, 'failed');
+    assert.match(String(wa.whatsappOutcome(lost, 'display')?.reason), /image could not be read back/);
+    await waitFor('the other message to go out', () => wa.whatsappOutcome('text-1', 'students')?.state === 'sent');
+    assert.ok(!gw.calls.some((c) => c.includes('send-image')), 'nothing was sent for the lost image');
+  } finally {
+    await settle();
+    await gw.close();
+  }
+});
+
+test('a queue file written with the image inside still loads, and the image moves out', () => {
+  const id = 'cccccccc-1111-2222-3333-444444444444';
+  fs.writeFileSync(
+    path.join(CONFIG, 'whatsapp-queue.json'),
+    JSON.stringify({ queue: [image(id)], sends: [], groupSends: [], lastPerRecipient: [], outcomes: [] }),
+  );
+  const loaded = qstore.loadQueueState(Date.now());
+  assert.equal(loaded.queue[0]?.media?.data, PNG, 'the inline bytes are kept');
+  qstore.saveQueueState({ ...noHistory(), queue: loaded.queue });
+  assert.equal(fs.readFileSync(path.join(CONFIG, 'whatsapp-media', id), 'utf8'), PNG);
+  assert.ok(!fs.readFileSync(path.join(CONFIG, 'whatsapp-queue.json'), 'utf8').includes(PNG));
+
+  qstore.clearQueueStore();
+  assert.equal(fs.existsSync(path.join(CONFIG, 'whatsapp-media')), false, 'deleting WhatsApp takes the images too');
+});
+
+test('an id read off disk never becomes a path', () => {
+  fs.mkdirSync(CONFIG, { recursive: true });
+  fs.writeFileSync(
+    path.join(CONFIG, 'whatsapp-queue.json'),
+    JSON.stringify({ queue: [{ ...image('../../escape'), media: { mimeType: 'image/png' } }] }),
+  );
+  const loaded = qstore.loadQueueState(Date.now());
+  assert.deepEqual(loaded.queue, []);
+  assert.deepEqual(
+    loaded.lost.map((l) => l.id),
+    ['../../escape'],
+    'refused as unreadable, never looked up',
+  );
+  qstore.clearQueueStore();
+});
+
 test('A NUMBER STARTING WITH 0 IS REFUSED — no country code starts with one', () => {
   // "07700 900123" (a national number) and "0044 7700 900123" (a dialling prefix) were both
   // accepted, answered 202, and became a chat id WhatsApp can never deliver to.

@@ -68,10 +68,11 @@ import {
   saveQueueState,
   trimOutcomes,
   bankPausedTime,
+  effectiveHeldMs,
   MAX_HELD_MS,
+  type ItemRef,
   type OutcomeRecord,
   type OutcomeState,
-  type StoredItem,
 } from './whatsapp-queue-store';
 import { getInstalled } from '../apps/manager';
 import { OPENWA_APP_ID } from '../apps/managed';
@@ -136,9 +137,9 @@ export const MAX_CAPTION = 1024;
 /**
  * How many image messages may sit in the queue at once.
  *
- * Queued items are persisted, and a cap or the warm-up ramp can hold them — on a Raspberry
- * Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3 the
- * bytes). Beyond that an app is REFUSED with a clear message rather than the platform
+ * A queued image is held in memory until it goes, and an outage can hold it for days — on a
+ * Raspberry Pi that matters. Four at the 2 MB cap is ~11 MB held worst case (base64 is 4/3
+ * the bytes). Beyond that an app is REFUSED with a clear message rather than the platform
  * quietly growing; a refusal it can retry is better than an out-of-memory kill that takes
  * the masjid's whole dashboard with it.
  */
@@ -840,6 +841,8 @@ function prune(now: number): void {
   const dayAgo = now - 86_400_000;
   while (sentAt.length > 0 && sentAt[0]! < dayAgo) sentAt.shift();
   while (groupSentAt.length > 0 && groupSentAt[0]! < dayAgo) groupSentAt.shift();
+  // It names the people messaged, so it must not outlive the day the arrays above keep.
+  for (const [key, at] of lastToRecipient) if (at < dayAgo) lastToRecipient.delete(key);
 }
 
 /**
@@ -1009,6 +1012,8 @@ let pausedSince: number | null = null;
  */
 const sendSignals = { authFailures: 0, checkFailures: 0, lastAuthFailAt: 0 };
 let presenceOn = false;
+/** What the pump is waiting on, so the log says it once rather than every minute. */
+let waitingFor: string | null = null;
 
 /**
  * Recent per-message outcomes, so an app can find out what became of a `202`.
@@ -1032,7 +1037,7 @@ function persist(): void {
   });
 }
 
-function noteOutcome(item: QueueItem, state: OutcomeState, reason?: string): void {
+function noteOutcome(item: ItemRef, state: OutcomeState, reason?: string): void {
   const existing = outcomes.find((o) => o.id === item.id);
   if (existing) {
     existing.state = state;
@@ -1092,18 +1097,17 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
 
   // Anything held longer than a day is not sent. Recorded as an outcome rather than
   // vanishing, so an app that asks gets a real answer instead of silence.
-  for (const stale of state.expired) {
-    noteOutcome(
-      stale as QueueItem,
-      'expired',
-      'It waited more than 24 hours of working connection, so it was not sent.',
-    );
+  noteExpired(state.expired);
+  // An image is kept in a file of its own; one that cannot be read back (a restore put an
+  // older config/ in place, say) fails that message alone.
+  const damaged = queue.filter((item) => item.media && mediaProblem(item.media));
+  const unreadable: ItemRef[] = [...state.lost, ...damaged];
+  for (const item of unreadable) {
+    noteOutcome(item, 'failed', 'Its image could not be read back after a restart, so it was not sent.');
   }
-  if (state.expired.length > 0) {
-    log.warn(
-      `WhatsApp: dropped ${state.expired.length} message(s) held longer than ` +
-        `${Math.round(MAX_HELD_MS / 3_600_000)}h — releasing a backlog at once is what gets a number restricted.`,
-    );
+  if (unreadable.length > 0) {
+    log.warn(`WhatsApp: ${unreadable.length} queued image(s) could not be read back after a restart; not sent.`);
+    queue.splice(0, queue.length, ...queue.filter((item) => !damaged.includes(item)));
   }
   if (queue.length > 0) {
     log.info(`WhatsApp: restored ${queue.length} queued message(s) from the previous run.`);
@@ -1116,8 +1120,33 @@ export function restoreWhatsAppQueue(now = Date.now()): { restored: number; expi
       void pump();
     }
   }
-  if (state.expired.length > 0 || queue.length > 0) persist();
+  if (state.expired.length > 0 || unreadable.length > 0 || queue.length > 0) persist();
   return { restored: queue.length, expired: state.expired.length };
+}
+
+const HELD_TOO_LONG = 'It waited more than 24 hours of working connection, so it was not sent.';
+
+/** Record messages dropped for waiting longer than `MAX_HELD_MS`. */
+function noteExpired(items: ItemRef[]): void {
+  if (items.length === 0) return;
+  for (const item of items) noteOutcome(item, 'expired', HELD_TOO_LONG);
+  log.warn(
+    `WhatsApp: dropped ${items.length} message(s) held longer than ` +
+      `${Math.round(MAX_HELD_MS / 3_600_000)}h — releasing a backlog at once is what gets a number restricted.`,
+  );
+}
+
+/**
+ * The same bound while the core stays up. Checked only at boot, it let a core that ran
+ * through a long gateway outage send the whole backlog back to back once the gateway
+ * returned. Only called while the queue runs, so no pause is in progress.
+ */
+function expireHeldTooLong(now: number): void {
+  const stale = queue.filter((item) => effectiveHeldMs(item, now, null) > MAX_HELD_MS);
+  if (stale.length === 0) return;
+  noteExpired(stale);
+  queue.splice(0, queue.length, ...queue.filter((item) => !stale.includes(item)));
+  persist();
 }
 
 export function queueDepth(): number {
@@ -1196,8 +1225,12 @@ export function releaseQueue(): { released: number } {
  *  answer rather than the 404 an unknown id produces. */
 export function discardHeldMessages(): { discarded: number } {
   const n = queue.length;
+  // Settings offers Discard whenever anything is waiting, not only during an outage.
+  const reason = paused
+    ? 'It was discarded by an admin after the WhatsApp link was lost.'
+    : 'It was discarded by an admin before it was sent.';
   for (const item of queue) {
-    noteOutcome(item, 'failed', 'It was discarded by an admin after the WhatsApp link was lost.');
+    noteOutcome(item, 'failed', reason);
   }
   queue.length = 0;
   if (paused) {
@@ -1368,8 +1401,39 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string; id
 }
 
 /**
- * Drain the queue, one message at a time, pausing for whatever the policy says. Never
- * runs twice concurrently — `running` is the whole point of this module.
+ * The first item that may go now, or — when none may — the soonest moment one will.
+ *
+ * The first SENDABLE item, never simply the head. Reading `queue[0]` and waiting on it was
+ * a head-of-line block: one message waiting out its backoff held up every app's traffic
+ * behind it. A waiting message is DELAYED, never dropped: it stays on the persisted queue
+ * and is reconsidered every pass.
+ */
+function nextSendable(cfg: WhatsAppConfig, now: number): { index: number; wakeAt: number } {
+  const history = { sends: sentAt, groupSends: groupSentAt, lastPerRecipient: lastToRecipient };
+  let wakeAt = Infinity;
+  for (let i = 0; i < queue.length; i++) {
+    const notBefore = queue[i]!.notBefore ?? 0;
+    if (notBefore > now) {
+      wakeAt = Math.min(wakeAt, notBefore);
+      continue;
+    }
+    // Where a ceiling would be applied if one ever returns; nothing blocks today.
+    if (blockedReason(now, queue[i]!.target, cfg.limits, cfg.linkedAt, history) === null) {
+      return { index: i, wakeAt: now };
+    }
+  }
+  return { index: -1, wakeAt };
+}
+
+/** Say what the pump is waiting on once, not once a minute; null when it is not waiting. */
+function noteWaiting(why: string | null): void {
+  if (why && why !== waitingFor) log.warn(`WhatsApp: ${why}; waiting.`);
+  waitingFor = why;
+}
+
+/**
+ * Drain the queue, one message at a time. Never runs twice concurrently — `running` is
+ * the whole point of this module.
  */
 async function pump(): Promise<void> {
   if (running) return;
@@ -1395,48 +1459,17 @@ async function pump(): Promise<void> {
       }
       const now = Date.now();
       prune(now);
+      expireHeldTooLong(now);
+      if (queue.length === 0) break;
 
-      // Find the first SENDABLE item, rather than stalling on the head of the queue.
-      //
-      // This was a head-of-line block, and it is the mechanism behind "one app's message
-      // never arrives while another app's later messages do". The loop read `queue[0]`, and
-      // if that item could not go yet it slept and `continue`d — re-reading the SAME item.
-      // So one message that was waiting held up every message behind it, from every app, for
-      // as long as its own wait lasted. With the 30-minute per-group cooldown that meant a
-      // single group post stopped all WhatsApp traffic for half an hour.
-      //
-      // Skipping keeps the property that matters — a blocked message is DELAYED, never
-      // dropped; it stays on the persisted queue and is reconsidered every pass — and drops
-      // the one that never made sense: one target's limit applying to every other target.
-      let index = -1;
-      let firstReason: string | null = null;
-      let soonest = Infinity;
-      for (let i = 0; i < queue.length; i++) {
-        const waitUntil = queue[i]!.notBefore ?? 0;
-        if (waitUntil > now) {
-          soonest = Math.min(soonest, waitUntil);
-          firstReason ??= 'a previous attempt failed; backing off';
-          continue;
-        }
-        const reason = blockedReason(now, queue[i]!.target, cfg.limits, cfg.linkedAt, {
-          sends: sentAt,
-          groupSends: groupSentAt,
-          lastPerRecipient: lastToRecipient,
-        });
-        if (!reason) {
-          index = i;
-          break;
-        }
-        firstReason ??= reason;
-      }
+      let { index, wakeAt } = nextSendable(cfg, now);
       if (index < 0) {
-        // Nothing can go right now. Sleep only until the soonest item is due, so a short
-        // backoff is not rounded up to a whole minute — with a floor so this can never
-        // become a busy loop.
-        const nap = Number.isFinite(soonest) ? Math.min(60_000, Math.max(1_000, soonest - now)) : 60_000;
+        // Nothing can go right now. Sleep until the soonest item is due — at most a minute,
+        // so a message enqueued meanwhile is not kept waiting behind a long backoff, and at
+        // least a second, so this can never become a busy loop.
+        const nap = Math.min(60_000, Math.max(1_000, wakeAt - now));
         log.info(
-          `WhatsApp: ${queue.length} message(s) waiting — ${firstReason ?? 'rate limited'}. ` +
-            `Retrying in ${Math.round(nap / 1000)}s.`,
+          `WhatsApp: ${queue.length} message(s) waiting to be retried. Next try in ${Math.round(nap / 1000)}s.`,
         );
         await setPresence(cfg, false);
         await sleep(nap);
@@ -1449,7 +1482,7 @@ async function pump(): Promise<void> {
       if (!cfg.sessionId) {
         const s = await ensureSession();
         if (!s.ok) {
-          log.warn(`WhatsApp: no usable session yet (${s.error ?? 'unknown'}); will retry.`);
+          noteWaiting(`no usable session yet (${s.error ?? 'unknown'})`);
           await sleep(60_000);
           continue;
         }
@@ -1469,14 +1502,27 @@ async function pump(): Promise<void> {
       // retry attempts. `ensureStarted` also recovers a stopped-but-credentialled session.
       const live = await ensureStarted(cfg);
       if (!live.ready) {
-        log.warn(`WhatsApp: session not ready to send (${live.error ?? 'not linked yet'}); waiting.`);
+        noteWaiting(`session not ready to send (${live.error ?? 'not linked yet'})`);
         await setPresence(cfg, false);
         await sleep(60_000);
         continue;
       }
+      noteWaiting(null);
 
       await setPresence(cfg, true);
       const outcome = await sendOne(cfg, item);
+
+      // Find it again: the queue can change during the send (an admin's Discard empties it
+      // while apps go on enqueueing), and the old index may now name a newer message.
+      index = queue.indexOf(item);
+      if (index < 0) {
+        // Discarded mid-send. Its record keeps the admin's decision, unless it went out anyway.
+        if (outcome.ok && outcomes.some((o) => o.id === item.id)) {
+          noteOutcome(item, 'sent');
+          persist();
+        }
+        continue;
+      }
 
       // TRANSIENT failures must not lose the message. The first version shifted the item
       // off the queue whatever happened, so a 429 (or a restarting gateway, or a dropped
@@ -1841,14 +1887,11 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
  * Send one message and WAIT — the ONE non-queued path, shared by the admin's test
  * button and the command reply lane.
  *
- * Bypasses the queue. There is no longer any budget to bypass: the hour/day caps this
- * used to be metered against are gone (see the header), so `sentAt` / `groupSentAt` are
- * now a record of what was sent, not an allowance being spent. Kept because the history
- * is what any future ceiling would have to be built on, and because it is the honest
- * answer to "how much has this number sent recently?".
- *
- * It also writes `lastToRecipient`, which nothing reads any more — the per-recipient
- * cooldown that consumed it was removed. Kept for the same reason.
+ * Bypasses the queue. There is no budget to bypass: the hour/day caps are gone (see the
+ * header), so what it adds to `sentAt` / `groupSentAt` / `lastToRecipient` is a record of
+ * what was sent, not an allowance spent. NOT persisted from here: nothing reads that
+ * record, the next queue write saves it, and rewriting the whole store for every command
+ * reply cost an SD card a full write for nothing.
  *
  * What bounds this path is therefore NOT a cap. It is that a reply is only ever sent in
  * answer to an inbound message from an already-authorised sender, and the inbound rate
@@ -1872,10 +1915,6 @@ export async function sendImmediate(target: Target, text: string, source: string
   if (outcome.ok) {
     (target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
     lastToRecipient.set(targetKey(target), Date.now());
-    // Persisted so the send history survives a restart. Not a budget any more (there
-    // are no caps), but it is the record any future ceiling would have to be built on,
-    // and a box in a restart loop that forgets what it sent has no history at all.
-    persist();
   }
   return outcome;
 }

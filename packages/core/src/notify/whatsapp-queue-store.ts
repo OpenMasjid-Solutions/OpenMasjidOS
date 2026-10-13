@@ -24,22 +24,23 @@
  *
  * WHERE. `config/whatsapp-queue.json`. Not because it is a credential, but because a
  * queued message body routinely carries a child's name and a family's fees. `CONFIG_DIR`
- * is 0700, `writeJson` makes the file 0600, and `files/manager.ts` refuses `config/**` to
- * the File Explorer — so the same protection the secrets get, for the same reason.
+ * is 0700, the file is 0600, and `files/manager.ts` refuses `config/**` to the File
+ * Explorer — so the same protection the secrets get, for the same reason.
  *
- * SIZE. Bounded by limits that already existed: at most `MAX_QUEUE` items, of which at
- * most `MAX_QUEUED_MEDIA` (4) carry an image of at most 2 MB decoded. Base64 inflates by
- * about a third, so the worst case is roughly 11 MB, written a few times per message
- * rather than continuously. That is acceptable on an SD card at this frequency; a
- * continuously-rewritten file of that size would not be.
+ * SIZE. The file is rewritten on every enqueue, send and retry, so it is kept small and
+ * compact. An image is NOT in it: each queued image (at most `MAX_QUEUED_MEDIA`, 2 MB
+ * decoded) is written ONCE to `config/whatsapp-media/<id>` and removed once its message
+ * has left the queue. Inline, up to ~11 MB of base64 was rewritten, fsync and all, for
+ * every message of a roster run.
  */
 import path from 'node:path';
 import fs from 'node:fs';
 import { CONFIG_DIR } from '../config';
-import { readJson, writeJson } from '../util/json-store';
+import { readJson } from '../util/json-store';
 import { log } from '../logger';
 
 const STORE_PATH = path.join(CONFIG_DIR, 'whatsapp-queue.json');
+const MEDIA_DIR = path.join(CONFIG_DIR, 'whatsapp-media');
 
 /**
  * A message held longer than this is dropped rather than sent on load.
@@ -138,8 +139,15 @@ export interface StoredItem {
   heldWhilePausedMs?: number;
 }
 
+/** An item as written to the queue file: its image's bytes are in a file of their own
+ *  (`data` is only ever present in a file written before that). */
+type WrittenItem = Omit<StoredItem, 'media'> & { media?: { data?: string; mimeType: string; filename?: string } };
+
+/** Enough of an item to record what became of it. */
+export type ItemRef = Pick<StoredItem, 'id' | 'source' | 'target'>;
+
 interface PersistedState {
-  queue: StoredItem[];
+  queue: WrittenItem[];
   /** Individual send timestamps within the rolling day. */
   sends: number[];
   /** Group post timestamps within the rolling day. */
@@ -177,7 +185,11 @@ const EMPTY: PersistedState = {
  * `Math.max` is what keeps an item enqueued mid-outage honest — it is only credited from
  * its own arrival, not from the start of the pause.
  */
-export function effectiveHeldMs(item: StoredItem, now: number, pausedSince: number | null): number {
+export function effectiveHeldMs(
+  item: Pick<StoredItem, 'enqueuedAt' | 'heldWhilePausedMs'>,
+  now: number,
+  pausedSince: number | null,
+): number {
   const banked = item.heldWhilePausedMs ?? 0;
   const current = pausedSince == null ? 0 : Math.max(0, now - Math.max(item.enqueuedAt, pausedSince));
   return Math.max(0, now - item.enqueuedAt - banked - current);
@@ -251,17 +263,66 @@ export function trimOutcomes(all: OutcomeRecord[], now: number): OutcomeRecord[]
 }
 
 /** Is this a plausible stored item? A hand-edited or truncated file must not crash boot. */
-function validItem(v: unknown): v is StoredItem {
+function validItem(v: unknown): v is WrittenItem {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   if (typeof o.id !== 'string' || typeof o.source !== 'string') return false;
   if (typeof o.text !== 'string') return false;
   if (typeof o.enqueuedAt !== 'number' || !Number.isFinite(o.enqueuedAt)) return false;
+  const m = o.media as Record<string, unknown> | null | undefined;
+  if (m !== undefined && (typeof m !== 'object' || m === null || typeof m.mimeType !== 'string')) return false;
   const t = o.target as Record<string, unknown> | undefined;
   if (!t || typeof t !== 'object') return false;
   if (t.kind === 'person') return typeof t.digits === 'string' && t.digits.length > 0;
   if (t.kind === 'group') return typeof t.groupId === 'string' && t.groupId.length > 0;
   return false;
+}
+
+/** Where a queued image is kept. The id comes off disk, so only a UUID-like one names a file. */
+function mediaPath(id: string): string | null {
+  return /^[A-Za-z0-9-]{1,64}$/.test(id) ? path.join(MEDIA_DIR, id) : null;
+}
+
+/** Put a queued image's bytes back from its file; false when they cannot be found. */
+function readImageBack(item: WrittenItem): item is StoredItem {
+  if (!item.media || typeof item.media.data === 'string') return true; // none, or inline (older file)
+  const file = mediaPath(item.id);
+  if (!file) return false;
+  try {
+    item.media.data = fs.readFileSync(file, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `writeJson`'s atomic 0600 write, for text already made: the compact queue file, or an image. */
+function writePrivate(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.tmp`;
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
+}
+
+/** Remove every image file whose message has left the queue (sent, failed, expired, discarded). */
+function dropImagesNotIn(queue: StoredItem[]): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(MEDIA_DIR);
+  } catch {
+    return; // no folder: nothing to remove
+  }
+  const keep = new Set(queue.filter((item) => item.media).map((item) => item.id));
+  for (const name of names) {
+    if (!keep.has(name)) fs.rmSync(path.join(MEDIA_DIR, name), { recursive: true, force: true });
+  }
 }
 
 function numbers(v: unknown): number[] {
@@ -275,7 +336,9 @@ export interface LoadedState {
   lastPerRecipient: Map<string, number>;
   outcomes: OutcomeRecord[];
   /** Items dropped for being older than MAX_HELD_MS, so the caller can log it. */
-  expired: StoredItem[];
+  expired: ItemRef[];
+  /** Items whose image could not be read back, so the caller can fail each one. */
+  lost: ItemRef[];
   /** Whether the queue was paused when the process stopped. */
   paused: boolean;
   pausedSince: number | null;
@@ -303,9 +366,12 @@ export function loadQueueState(now: number): LoadedState {
   const pausedSince =
     paused && typeof raw.pausedSince === 'number' && Number.isFinite(raw.pausedSince) ? raw.pausedSince : paused ? now : null;
   const queue: StoredItem[] = [];
-  const expired: StoredItem[] = [];
+  const expired: ItemRef[] = [];
+  const lost: ItemRef[] = [];
   for (const item of all) {
-    (effectiveHeldMs(item, now, pausedSince) > MAX_HELD_MS ? expired : queue).push(item);
+    if (effectiveHeldMs(item, now, pausedSince) > MAX_HELD_MS) expired.push(item);
+    else if (readImageBack(item)) queue.push(item);
+    else lost.push(item);
   }
 
   const pairs = Array.isArray(raw.lastPerRecipient) ? raw.lastPerRecipient : [];
@@ -330,6 +396,7 @@ export function loadQueueState(now: number): LoadedState {
     lastPerRecipient,
     outcomes: trimOutcomes(outcomes, now),
     expired,
+    lost,
     paused,
     pausedSince,
   };
@@ -352,8 +419,17 @@ export function saveQueueState(state: {
   pausedSince?: number | null;
 }): void {
   try {
+    // Images first and once each (only when missing), so the queue file never names an
+    // image that is not on disk. A restore that swapped config/ is put right here too.
+    for (const item of state.queue) {
+      if (!item.media) continue;
+      const file = mediaPath(item.id);
+      if (file && !fs.existsSync(file)) writePrivate(file, item.media.data);
+    }
     const out: PersistedState = {
-      queue: state.queue,
+      queue: state.queue.map((item) =>
+        item.media ? { ...item, media: { mimeType: item.media.mimeType, filename: item.media.filename } } : item,
+      ),
       sends: state.sends,
       groupSends: state.groupSends,
       lastPerRecipient: [...state.lastPerRecipient.entries()],
@@ -361,19 +437,20 @@ export function saveQueueState(state: {
       paused: state.paused === true,
       pausedSince: state.paused === true ? (state.pausedSince ?? null) : null,
     };
-    writeJson(STORE_PATH, out);
+    writePrivate(STORE_PATH, JSON.stringify(out));
+    dropImagesNotIn(state.queue);
   } catch (err) {
     log.warn('WhatsApp: could not save the queue; it will not survive a restart.', err);
   }
 }
 
-/** Remove the store — used by the tests, and when WhatsApp is deconfigured. */
+/** Remove the store and its images — used by the tests, and when WhatsApp is deleted. */
 export function clearQueueStore(): void {
-  try {
-    fs.rmSync(STORE_PATH, { force: true });
-  } catch {
-    /* best effort */
+  for (const target of [STORE_PATH, MEDIA_DIR]) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
   }
 }
-
-export { STORE_PATH as QUEUE_STORE_PATH };
