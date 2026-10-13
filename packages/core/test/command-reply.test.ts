@@ -95,11 +95,13 @@ test('the lead line changes when something is actually wrong', () => {
 });
 
 test('the app list is numbered and says what to do next', () => {
+  // ", an update is waiting" used to be appended from an `updateAvailable` field nothing
+  // ever set; both are gone, and `!os updates` is where updates are listed.
   const apps: AppRow[] = [
     { id: 'prayer-times', name: 'Prayer Times', running: true },
     { id: 'donations', name: 'Donations', running: true },
     { id: 'notice-board', name: 'Notice Board', running: false },
-    { id: 'madrasah', name: 'Madrasah', running: true, updateAvailable: true },
+    { id: 'madrasah', name: 'Madrasah', running: true },
   ];
   assert.equal(
     appListText(apps),
@@ -109,12 +111,20 @@ test('the app list is numbered and says what to do next', () => {
       '1. Prayer Times - running',
       '2. Donations - running',
       '3. Notice Board - stopped',
-      '4. Madrasah - running, an update is waiting',
+      '4. Madrasah - running',
       '',
       'To start or stop one, send !os start 1 or !os stop 1.',
     ].join('\n'),
   );
   assert.equal(appListText([]), "You don't have any apps installed yet.");
+});
+
+test('someone who may only look is not told to send commands they cannot run', () => {
+  const apps: AppRow[] = [{ id: 'donations', name: 'Donations', running: true }];
+  assert.equal(appListText(apps, false), 'Your apps:\n\n1. Donations - running');
+  const rows = [{ id: 'a', name: 'A', from: '1.0.0', to: '1.1.0', reason: 'version' as const }];
+  assert.doesNotMatch(updatesText(rows, { canControl: false }), /!os update/);
+  assert.match(updatesText(rows), /To update one, send !os update 1\.$/);
 });
 
 test('a long list truncates on a line boundary and says how many were left', () => {
@@ -128,6 +138,9 @@ test('a long list truncates on a line boundary and says how many were left', () 
   assert.ok(out.length <= MAX_REPLY_CHARS, `too long: ${out.length}`);
   assert.match(out, /\.\.\.and \d+ more\. The dashboard has the full list\./);
   assert.ok(!/\n\s*$/.test(out.split('...and')[0]!.replace(/\n$/, '')), 'no dangling partial line');
+  // The room kept for the "...and N more" line was too small, so cap() cut the closing
+  // line off instead — the one that says what to do next.
+  assert.match(out, /\n\nTo start or stop one, send !os start 1 or !os stop 1\.$/);
 });
 
 test('a channel move never renders as a version downgrade', () => {
@@ -165,6 +178,17 @@ test('a channel move names the direction it is actually going', () => {
 test('nothing to update says so, rather than showing an empty list', () => {
   assert.equal(updatesText([]), 'Everything is up to date.');
   assert.match(updatesText([{ id: 'a', name: 'A', from: '1', to: '2', reason: 'version' }]), /^One app has an update/);
+});
+
+test('an app that could not be checked is never called up to date', () => {
+  // A catalogue that could not be read answered "Everything is up to date." — couldn't
+  // ask is not an answer.
+  const none = updatesText([], { unchecked: 2 });
+  assert.doesNotMatch(none, /up to date/);
+  assert.match(none, /couldn't check 2 apps/);
+  const some = updatesText([{ id: 'a', name: 'A', from: '1', to: '2', reason: 'version' }], { unchecked: 1 });
+  assert.match(some, /couldn't check one app/);
+  assert.match(some, /To update one, send !os update 1\.$/);
 });
 
 test('a menu tells you how to answer it', () => {
@@ -221,11 +245,13 @@ test('EVERY reply is plain text: no markdown, no links, no emoji, within the cap
   const outputs: string[] = [
     statsText(STATS),
     statsText({ ...STATS, cpuTempC: null, appsRunning: 1 }),
-    appListText([{ id: 'a', name: 'Prayer Times', running: true, updateAvailable: true }]),
+    appListText([{ id: 'a', name: 'Prayer Times', running: true }]),
+    appListText([{ id: 'a', name: 'Prayer Times', running: true }], false),
     appListText([]),
     pickAppText(DISPLAY.commands[0]!, [{ id: 'a', name: 'Prayer Times', running: false }]),
     updatesText([{ id: 'a', name: 'A', from: '1.0.0', to: '1.1.0', reason: 'version' }]),
     updatesText([]),
+    updatesText([], { unchecked: 1 }),
     menuText(DISPLAY),
     menuText(OS),
     helpText('Yusuf', [OS, DISPLAY]),
@@ -241,12 +267,12 @@ test('EVERY reply is plain text: no markdown, no links, no emoji, within the cap
     say.missingArgument(DISPLAY, DISPLAY.commands[1]!),
     say.unwantedArgument(DISPLAY, DISPLAY.commands[2]!),
     say.unknownApp('prayr'),
-    say.tooLong(),
     say.throttled(),
     say.expiredConfirm(),
-    say.expiredMenu('display'),
+    say.needCode(),
     say.cancelled(),
     say.nothingToCancel(),
+    say.finishOnDashboard(),
     say.managedApp('WhatsApp Gateway'),
     ...['target_not_installed', 'target_unreachable', 'timeout', 'response_too_large', 'unknown_command', 'not_ready', 'payload_too_large', 'no_secret', 'anything-else'].map(
       (c) => appFailureText('Notice Board', c, 'notice-board'),

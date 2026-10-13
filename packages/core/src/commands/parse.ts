@@ -22,15 +22,15 @@ import { COMMAND_PREFIX } from '../store/commands';
 export const MENU_TTL_MS = 5 * 60_000;
 /** Longer than any command; the gate already caps the whole body at 512. */
 const MAX_ARG_CHARS = 300;
-const MAX_BODY_CHARS = 512;
 
 export interface ParseContext {
   now: number;
-  /** Already filtered to this sender by registry.namespacesFor(). The parser never
-   *  re-decides authorisation; it only reports when a word exists but is not here. */
+  /** Already narrowed to this sender (registry.ts grantedNamespaces). The parser never
+   *  re-decides authorisation; it only reports when something exists but is not here. */
   namespaces: CommandNamespace[];
-  /** Every namespace that exists, for telling "you may not" from "no such thing". */
-  allWords: string[];
+  /** Every namespace that exists, with all of its commands, for telling "you may not"
+   *  from "no such thing". */
+  all: CommandNamespace[];
   /** The last menu this sender was shown, if any. */
   menu: MenuSnapshot | null;
 }
@@ -47,27 +47,30 @@ export type ParseResult =
   | { kind: 'need-app'; ns: CommandNamespace; command: CommandEntry }
   | { kind: 'unknown-namespace'; word: string; suggestion?: string }
   | { kind: 'unknown-command'; ns: CommandNamespace; word: string; suggestion?: string }
+  /** `word` is what they asked for: a namespace (`donations`) or one command (`os start`). */
   | { kind: 'not-allowed'; word: string }
   | { kind: 'bad-number'; ns: CommandNamespace; max: number }
   | { kind: 'missing-argument'; ns: CommandNamespace; command: CommandEntry }
-  | { kind: 'unwanted-argument'; ns: CommandNamespace; command: CommandEntry }
-  | { kind: 'too-long' };
+  | { kind: 'unwanted-argument'; ns: CommandNamespace; command: CommandEntry };
 
-/** Words the platform owns at the top level, so no app can shadow them. Mirrored by
- *  the reserved-id check in apps/manager.ts parseCommands. */
+/** Words the platform owns at the top level. Matched before any namespace, so an app
+ *  whose id is one of them is unreachable by it rather than able to shadow it. */
 const HELP_WORDS = new Set(['help', '?']);
 const YES_WORDS = new Set(['yes', 'y']);
 const NO_WORDS = new Set(['no', 'n', 'cancel']);
 
-export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
-  const body = String(raw ?? '')
-    // A leading non-breaking space (phone keyboards insert them) would otherwise
-    // stop the prefix ever matching.
-    .replace(/^[\s ​﻿]+/, '')
+/** Strip what a phone keyboard puts in front of a message without the sender seeing it
+ *  (non-breaking and zero-width spaces). Shared with the gate: String.trim keeps U+200B,
+ *  so trimming alone would hide the prefix. */
+export function tidyBody(raw: string): string {
+  return String(raw ?? '')
+    .replace(/^[\s\u00A0\u200B\uFEFF]+/, '')
     .trimEnd();
+}
 
+export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
+  const body = tidyBody(raw);
   if (!body.startsWith(COMMAND_PREFIX)) return { kind: 'ignore' };
-  if (body.length > MAX_BODY_CHARS) return { kind: 'too-long' };
 
   const rest = body.slice(COMMAND_PREFIX.length).trim();
   if (!rest) return { kind: 'help' };
@@ -89,13 +92,13 @@ export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
   if (!ns) {
     // "You may not" and "no such thing" are different answers, and only the first is
     // safe to give — but both go to someone already on the list, so both are fine.
-    if (ctx.allWords.includes(first)) return { kind: 'not-allowed', word: first };
+    if (ctx.all.some((n) => n.word === first)) return { kind: 'not-allowed', word: first };
     return { kind: 'unknown-namespace', word: first, suggestion: suggest(first, ctx.namespaces.map((n) => n.word)) };
   }
 
   if (!tail) return { kind: 'menu', ns };
 
-  const [selectorRaw, ...argParts] = tail.split(/\s+/);
+  const [selectorRaw] = tail.split(/\s+/);
   const selector = normaliseWord(selectorRaw!);
   const argText = tail.slice(selectorRaw!.length).trim();
 
@@ -108,7 +111,7 @@ export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
     // live menu do we fall back to the current order.
     const live = ctx.menu && ctx.menu.word === ns.word && ctx.now - ctx.menu.at <= MENU_TTL_MS ? ctx.menu : null;
     const ids = live ? live.ids : ns.commands.map((c) => c.id);
-    if (n < 1 || n > ids.length) return { kind: 'bad-number', ns, max: ns.commands.length };
+    if (n < 1 || n > ids.length) return { kind: 'bad-number', ns, max: ids.length };
     // Re-validate against what exists NOW: a snapshot can name a command the app has
     // since withdrawn, and a stale number must not run something else.
     command = ns.commands.find((c) => c.id === ids[n - 1]);
@@ -116,14 +119,15 @@ export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
   } else {
     command = ns.commands.find((c) => c.id === selector);
     if (!command) {
-      const known = ns.commands.map((c) => c.id);
       // Distinguish "that command exists but is not yours" from "no such command".
+      const exists = ctx.all.find((n) => n.word === ns.word)?.commands.some((c) => c.id === selector);
+      if (exists) return { kind: 'not-allowed', word: `${ns.word} ${selector}` };
+      const known = ns.commands.map((c) => c.id);
       return { kind: 'unknown-command', ns, word: selector, suggestion: suggest(selector, known) };
     }
   }
 
   const text = argText.slice(0, MAX_ARG_CHARS) || undefined;
-  void argParts;
 
   if (command.argKind === 'none') {
     // Refused, never silently dropped: a volunteer who typed a notice must not be

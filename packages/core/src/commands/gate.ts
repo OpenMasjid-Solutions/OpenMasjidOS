@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { authoriseSender, areCommandsEnabled, COMMAND_PREFIX, type CommandPerson } from '../store/commands';
 import { normaliseInbound, type InboundMessage } from './normalise';
 import { awaitingReply, shouldNoticeThrottle, takeToken, touch } from './conversation';
+import { tidyBody } from './parse';
 
 /** Backlog replays land in the moments after a socket comes up. Nobody types a
  *  command in the same three seconds, so this costs a real admin nothing. */
@@ -145,7 +146,9 @@ export function gateMessage(msg: InboundMessage, ctx: GateContext): GateOutcome 
     return { pass: false, drop: 'not-text' };
   }
 
-  const body = msg.body.trim();
+  // The parser's own tidy: String.trim keeps a leading zero-width space, which would
+  // hide the prefix from the steps below while the parser still saw a command.
+  const body = tidyBody(msg.body);
   if (!body) return { pass: false, drop: 'empty' };
   if (body.length > MAX_BODY_CHARS) return { pass: false, drop: 'too-long', digits: msg.fromDigits };
 

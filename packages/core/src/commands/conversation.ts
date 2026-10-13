@@ -137,7 +137,8 @@ export function takeToken(digits: string, now: number): boolean {
   const refill = Math.floor((now - e.tokensAt) / BUCKET_REFILL_MS);
   if (refill > 0) {
     e.tokens = Math.min(BUCKET_CAP, e.tokens + refill);
-    e.tokensAt = now;
+    // Keep the part of an interval already waited, or every refill would lose it.
+    e.tokensAt = e.tokens === BUCKET_CAP ? now : e.tokensAt + refill * BUCKET_REFILL_MS;
   }
   if (e.tokens <= 0) return false;
   e.tokens -= 1;

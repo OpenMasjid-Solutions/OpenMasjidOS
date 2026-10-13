@@ -202,6 +202,33 @@ test('someone on the list with nothing granted gets the same silence', () => {
   assert.equal(r.pass === false && r.notice, undefined, 'nothing that could become a reply');
 });
 
+test('a command behind a zero-width space reaches the parser', () => {
+  // String.trim keeps U+200B, so the gate saw no prefix and dropped a command the
+  // parser would have run.
+  enable();
+  const r = run(msg({ body: '\u200B!os stats' }));
+  assert.equal(r.pass, true);
+  assert.equal(r.pass && r.msg.body, '!os stats');
+});
+
+test('a message longer than any command is dropped at the gate, unanswered', () => {
+  // Where the length limit actually lives: the parser never sees a body this long.
+  enable();
+  const r = run(msg({ body: `!display post-notice ${'x'.repeat(600)}` }));
+  assert.equal(r.pass === false && r.drop, 'too-long');
+});
+
+test('a refill keeps the part of an interval already waited', () => {
+  // The bucket used to restart its clock on every refill, so a sender who waited 29
+  // seconds got one token and lost the other 14 seconds of waiting.
+  convo.resetConversations();
+  for (let i = 0; i < 5; i++) assert.equal(convo.takeToken(ALICE, NOW), true);
+  assert.equal(convo.takeToken(ALICE, NOW), false, 'empty');
+  assert.equal(convo.takeToken(ALICE, NOW + 29_000), true, 'one interval: one token');
+  assert.equal(convo.takeToken(ALICE, NOW + 30_000), true, 'the second interval completed at 30 s');
+  assert.equal(convo.takeToken(ALICE, NOW + 30_000), false);
+});
+
 test('the same message twice runs once', () => {
   enable();
   const m = msg({ id: 'fixed-id' });
