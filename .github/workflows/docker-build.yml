@@ -45,11 +45,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Node
-        # Node 20 to match the runtime image (node:20-alpine), so we test on the
+        # Node 22 to match the runtime image (node:22-alpine), so we test on the
         # version we actually ship rather than whatever the runner defaults to.
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Install
         run: npm ci
@@ -78,7 +78,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Audit the committed lockfile
         run: npm audit --audit-level=high --package-lock-only
 
