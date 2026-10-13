@@ -176,6 +176,33 @@ test('A NUMBER STARTING WITH 0 IS REFUSED — no country code starts with one', 
   assert.match(String(r.error), /country code/);
 });
 
+// ── turning it off, and the outage record ────────────────────────────────────────
+
+test('A FULL OR READ-ONLY CARD CANNOT STOP AN OUTAGE BEING HANDLED — saving the link state never throws', async () => {
+  // save() threw between pausing the queue and telling the admin; every later tick then saw
+  // `down` and returned. Paused, with nobody told.
+  const gw = await stubGateway((_m, url) => (url.endsWith('/chats?limit=1') ? { status: 503 } : undefined));
+  try {
+    store.recordLinkedPhone(LINKED);
+    await mon.checkWhatsAppHealthNow();
+    await mon.checkWhatsAppHealthNow(); // two agreeing ticks
+    assert.equal(mon.whatsAppHealth().down, true, 'precondition: the outage is confirmed');
+    assert.equal(mon.whatsAppHealth().cause, 'session-expired');
+
+    const tmp = path.join(CONFIG, 'whatsapp-health.json.tmp');
+    fs.mkdirSync(tmp); // the write's temp file is a folder, so the write fails
+    try {
+      assert.doesNotThrow(() => mon.clearWhatsAppIncident());
+      assert.equal(mon.whatsAppHealth().down, false, 'the copy everything reads is still right');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  } finally {
+    wa.releaseQueue(); // the confirmed outage paused it
+    await gw.close();
+  }
+});
+
 // ── the inbound socket ───────────────────────────────────────────────────────────
 
 /**

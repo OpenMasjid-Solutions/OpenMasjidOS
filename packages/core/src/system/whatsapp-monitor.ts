@@ -152,9 +152,18 @@ function load(): HealthState {
   return cached;
 }
 
+/**
+ * Never throws. The in-memory copy is what everything reads; a throw here (a full or
+ * read-only SD card) stopped the tick between pausing the queue and telling the admin, and
+ * every later tick then saw `down` and returned — paused, with nobody told.
+ */
 function save(state: HealthState): void {
   cached = state;
-  writeJson(STATE_PATH, state);
+  try {
+    writeJson(STATE_PATH, state);
+  } catch (err) {
+    log.warn('WhatsApp health: could not save the link state; it will not survive a restart.', err);
+  }
 }
 
 /** The previous tick's verdict, for the two-agreeing-ticks rule. In memory on purpose: a
