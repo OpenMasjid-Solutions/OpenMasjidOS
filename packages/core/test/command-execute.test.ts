@@ -133,6 +133,57 @@ test('a hung app times out rather than hanging the conversation', async () => {
   }
 });
 
+/** Settles with the call's outcome, or 'hung' if it has not settled in `ms`. */
+function settledWithin(p: Promise<unknown>, ms: number): Promise<unknown> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const hung = new Promise((resolve) => {
+    t = setTimeout(() => resolve('hung'), ms);
+  });
+  return Promise.race([p.then(() => 'resolved', (e: unknown) => e), hung]).finally(() => clearTimeout(t));
+}
+
+test('a response that goes over the cap PART-WAY through is refused, not left hanging', async () => {
+  // Destroying a response mid-body emits neither 'end' nor 'error', so a call that waited
+  // for 'end' never settled: a leaked socket, and a WhatsApp command with no reply.
+  const s = await serve((_rq, rs) => {
+    rs.on('error', () => undefined);
+    rs.writeHead(200, { 'content-type': 'application/json' });
+    let sent = 0;
+    const tick = setInterval(() => {
+      if (rs.destroyed || sent >= 8) {
+        clearInterval(tick);
+        if (!rs.destroyed) rs.end();
+        return;
+      }
+      rs.write('x'.repeat(4 * 1024));
+      sent += 1;
+    }, 20);
+    rs.on('close', () => clearInterval(tick));
+  });
+  try {
+    const out = await settledWithin(call(s.port, { maxResponseBytes: 10 * 1024, timeoutMs: 5000 }), 3000);
+    assert.ok(out instanceof CodedError && out.code === 'response_too_large', `expected response_too_large, got ${String(out)}`);
+  } finally {
+    s.close();
+  }
+});
+
+test('an app that trickles its answer is cut off at the time limit', async () => {
+  // The old limit was the socket's IDLE timer, which a byte every so often never trips.
+  const s = await serve((_rq, rs) => {
+    rs.on('error', () => undefined);
+    rs.writeHead(200, { 'content-type': 'application/json' });
+    const tick = setInterval(() => rs.write(' '), 50);
+    rs.on('close', () => clearInterval(tick));
+  });
+  try {
+    const out = await settledWithin(call(s.port, { timeoutMs: 300 }), 3000);
+    assert.ok(out instanceof CodedError && out.code === 'timeout', `expected timeout, got ${String(out)}`);
+  } finally {
+    s.close();
+  }
+});
+
 test('a closed port is unreachable, not a crash', async () => {
   await assert.rejects(
     () => call(1, { timeoutMs: 500 }),
