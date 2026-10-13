@@ -187,24 +187,37 @@ detect_os() {
     aarch64 | arm64)
       ARCH="arm64"
       ;;
-    armv7l | armhf)
-      # 32-bit ARM — common on older Raspberry Pi models
-      ARCH="armv7"
-      ;;
-    *)
-      echo ""
-      echo -e "${CLR_RED}Sorry, your CPU architecture ($raw_arch) is not supported yet.${CLR_RESET}"
-      echo ""
-      echo "  OpenMasjidOS currently supports:"
-      echo "    • amd64  (standard desktop/server PCs)"
-      echo "    • arm64  (Raspberry Pi 4/5, Apple Silicon servers)"
-      echo ""
-      echo "  If you would like support for your architecture, please open an issue at:"
-      echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
-      echo ""
-      exit 1
-      ;;
   esac
+
+  # A 64-bit kernel can run a 32-bit system on top (older Raspberry Pi OS images do), and
+  # Docker there wants 32-bit images — which we don't publish, so the download would fail
+  # only after Docker had been installed. Ask the package manager, not just the kernel.
+  if [ "$ARCH" = "arm64" ] && command -v dpkg &>/dev/null \
+    && [ "$(dpkg --print-architecture 2>/dev/null)" = "armhf" ]; then
+    ARCH=""
+    raw_arch="armhf"
+  fi
+
+  if [ -z "$ARCH" ]; then
+    echo ""
+    echo -e "${CLR_RED}Sorry, your CPU architecture ($raw_arch) is not supported yet.${CLR_RESET}"
+    echo ""
+    echo "  OpenMasjidOS currently supports:"
+    echo "    • amd64  (standard desktop/server PCs)"
+    echo "    • arm64  (Raspberry Pi 4/5, Apple Silicon servers)"
+    echo ""
+    case "$raw_arch" in
+      arm*)
+        echo "  This is a 32-bit system. On a Raspberry Pi 3, 4 or 5, install the 64-bit"
+        echo "  Raspberry Pi OS (or Ubuntu Server 64-bit) and run this again."
+        echo ""
+        ;;
+    esac
+    echo "  If you would like support for your architecture, please open an issue at:"
+    echo "  https://github.com/OpenMasjid-Solutions/OpenMasjidOS/issues"
+    echo ""
+    exit 1
+  fi
 
   # --- Operating System ---
   # We read /etc/os-release which is the standard on all modern Linux distros
@@ -257,7 +270,7 @@ detect_os() {
           echo "  OpenMasjidOS currently supports:"
           echo "    • Ubuntu 20.04 / 22.04 / 24.04"
           echo "    • Debian 11 / 12"
-          echo "    • Raspberry Pi OS (Bookworm / Bullseye)"
+          echo "    • Raspberry Pi OS 64-bit (Bookworm / Bullseye)"
           echo "    • Fedora (a release that is still supported)"
           echo "    • Rocky Linux / AlmaLinux / RHEL 8+"
           echo ""
