@@ -149,7 +149,7 @@ async function sendViaResend(
       // No attachments. The masjid logo used to ride along here as a `content_id`
       // inline image; it is now a remote <img> (or the wordmark), because a client
       // lists ANY part with a filename in its attachment row and Resend exposes no
-      // content_disposition field to say otherwise. See brandedEmail.
+      // content_disposition field to say otherwise. See logoTag.
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -171,7 +171,7 @@ async function sendViaSmtp(
     subject,
     text,
     html,
-    // No attachments — see the note in sendViaResend and in brandedEmail.
+    // No attachments — see the note in sendViaResend and on logoTag.
   });
 }
 
