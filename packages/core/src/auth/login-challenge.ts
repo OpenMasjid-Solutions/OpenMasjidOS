@@ -39,8 +39,6 @@ interface Challenge {
   username: string;
   /** The origin this challenge was issued to. Completion must match. */
   viaTunnel: boolean;
-  /** Cloudflare's client IP when over the tunnel; null otherwise. */
-  remoteIp: string | null;
   /** Fingerprint of the password hash the password was verified against. */
   cred: string;
   expiresAt: number;
@@ -56,7 +54,7 @@ function sweep(now: number): void {
 /** Mint a challenge for a username whose password has just been verified. */
 export function createChallenge(
   username: string,
-  origin: { viaTunnel: boolean; remoteIp: string | null; cred?: string },
+  origin: { viaTunnel: boolean; cred?: string },
   nowMs: number = Date.now(),
 ): string {
   sweep(nowMs);
@@ -65,7 +63,6 @@ export function createChallenge(
     id,
     username,
     viaTunnel: origin.viaTunnel,
-    remoteIp: origin.remoteIp,
     // Absent only for direct callers (tests). An empty credential never matches a
     // real fingerprint, so such a challenge can never complete into a session.
     cred: origin.cred ?? '',
@@ -90,7 +87,7 @@ export type ClaimResult =
  */
 export function claimChallenge(
   id: string,
-  origin: { viaTunnel: boolean; remoteIp: string | null },
+  origin: { viaTunnel: boolean },
   nowMs: number = Date.now(),
 ): ClaimResult {
   // Look up BEFORE sweeping. Sweeping first deletes the very challenge we are

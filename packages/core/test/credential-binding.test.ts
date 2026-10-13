@@ -211,6 +211,18 @@ test('...nor once a reset from ANOTHER process has replaced it', async () => {
   assert.equal(cookie(), null);
 });
 
+test('...and a backup code offered then is not spent on a sign-in that cannot finish', async () => {
+  // The password is checked before the code, so one of the admin's ten ways back in is
+  // not used up for nothing.
+  const { challenge } = await startTunnelLogin();
+  const [backup] = tf.regenerateBackupCodes();
+  store.updatePasswordHash(NEW_HASH);
+  const res = await call(TUNNEL).caller.completeLogin({ challenge, code: backup! });
+  assert.equal(res.restart, true);
+  assert.match(res.message ?? '', /password was changed/);
+  assert.equal(tf.twoFactorStatus().backupCodesRemaining, tf.BACKUP_CODE_COUNT, 'the backup code was spent');
+});
+
 test('a session minted with a credential that is no longer current is born dead', async () => {
   // What makes passing the PROVED credential safe: if it is already stale, the
   // session simply never works, rather than quietly taking on the current one.

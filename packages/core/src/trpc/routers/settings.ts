@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Platform settings the SERVER must own (security-relevant). Presentation prefs
- * live in the browser; this is the custom-apps gate, the terminal toggles, and
- * the update channel (CLAUDE.md §13). No masjid/prayer config ever lives here.
+ * Platform settings the SERVER owns: the custom-apps gate and the terminal toggles
+ * (security-relevant), the mirror of the dashboard's presentation prefs that apps
+ * read (`appearance`), and the notification webhook. The update channel is NOT
+ * changed here — that is system.setUpdateChannel (CLAUDE.md §13.4). No masjid/prayer
+ * config ever lives here.
  */
 import { z } from 'zod';
 import { router, protectedProcedure } from '../trpc';

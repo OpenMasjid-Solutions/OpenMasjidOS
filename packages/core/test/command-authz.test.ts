@@ -32,7 +32,7 @@ const BOB = '447700900123';
 
 function reset(): void {
   fs.rmSync(path.join(dataDir, 'config', 'commands.json'), { force: true });
-  store.__reloadCommandConfigForTests();
+  store.reloadCommandConfig();
 }
 
 test('off by default, and nobody is on the list', () => {
@@ -172,17 +172,62 @@ test('a hand-edited config file is sanitised, not trusted', () => {
       },
     }),
   );
-  store.__reloadCommandConfigForTests();
+  store.reloadCommandConfig();
 
   assert.equal(store.areCommandsEnabled(), false, '"yes" is not true');
   const people = store.listCommandPeople();
+  // The scope-less entry is KEPT now. Dropping it on load made a person the admin had
+  // just added (Settings adds people with nothing ticked) vanish at the next restart.
+  // Keeping them confers nothing: the gate drops a person with no grants unanswered
+  // (command-inbound.test.ts).
   assert.deepEqual(
     people.map((p) => p.phone),
-    ['447700900123', '15550109999'],
-    'malformed, duplicate and scope-less entries are dropped',
+    ['447700900123', '15550101234', '15550109999'],
+    'malformed and duplicate entries are dropped; one with no scopes is kept',
   );
   assert.equal(people[0]!.phone, '447700900123', 're-canonicalised from the human spelling');
-  assert.deepEqual(people[1]!.scopes, ['os:read'], 'the bogus scope is dropped, the good one kept');
+  assert.deepEqual(people[0]!.scopes, ['os:read'], 'the first of two duplicates wins');
+  assert.deepEqual(people[1]!.scopes, [], 'kept, and allowed nothing');
+  assert.deepEqual(people[2]!.scopes, ['os:read'], 'the bogus scope is dropped, the good one kept');
+  // And still allowed nothing, once the switch is on.
+  store.setCommandsEnabled(true);
+  assert.deepEqual(registry.namespacesFor('15550101234'), []);
+});
+
+test('adding someone already on the list renames them and keeps their grants', () => {
+  // Settings adds by phone and name only, so re-entering a number to fix a name used to
+  // wipe every grant that person had.
+  reset();
+  store.addCommandPerson(ALICE, 'Alice', [store.OS_READ, store.OS_CONTROL]);
+  store.addCommandPerson('+1 555 010 1234', 'Alice B');
+  const [alice] = store.listCommandPeople();
+  assert.equal(alice!.label, 'Alice B');
+  assert.deepEqual(alice!.scopes, [store.OS_READ, store.OS_CONTROL]);
+  // A person added with nothing given starts with nothing.
+  store.addCommandPerson(BOB, 'Bob');
+  assert.deepEqual(store.listCommandPeople()[1]!.scopes, []);
+});
+
+test('a change the disk refuses is not believed in memory', () => {
+  // Write first, then believe it: revoking a grant whose write fails must leave it in
+  // force in memory exactly as on disk, and say so, rather than half-apply.
+  reset();
+  store.setCommandsEnabled(true);
+  store.addCommandPerson(ALICE, 'Alice', [store.OS_READ, store.OS_CONTROL]);
+  const blocker = path.join(dataDir, 'config', 'commands.json.tmp');
+  fs.mkdirSync(blocker); // every write of commands.json now fails
+  try {
+    assert.throws(() => store.setCommandScope(ALICE, store.OS_CONTROL, false));
+    assert.deepEqual(store.listCommandPeople()[0]!.scopes, [store.OS_READ, store.OS_CONTROL]);
+    assert.throws(() => store.setCommandsEnabled(false));
+    assert.equal(store.areCommandsEnabled(), true);
+    // Recording when a command was last used is a nicety: a full or read-only card
+    // must never turn it into a failed command.
+    assert.doesNotThrow(() => store.recordCommandUse(ALICE, Date.now() + 10 * 60_000));
+    assert.equal(store.listCommandPeople()[0]!.lastUsedAt, null);
+  } finally {
+    fs.rmSync(blocker, { recursive: true, force: true });
+  }
 });
 
 test('scope keys are validated', () => {

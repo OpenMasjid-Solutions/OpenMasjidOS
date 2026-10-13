@@ -43,7 +43,9 @@ export function registerBranding(server: FastifyInstance): void {
     const bad = guard(req);
     if (bad) return reply.code(bad.code).send({ error: bad.error });
     try {
-      const file = await req.file({ limits: { fileSize: MAX_LOGO_BYTES } });
+      // Not thrown: an oversized image is marked truncated, so it gets the 413 below
+      // rather than the library's own "request file too large".
+      const file = await req.file({ throwFileSizeLimit: false, limits: { fileSize: MAX_LOGO_BYTES } });
       if (!file) return reply.code(400).send({ error: 'No image was uploaded.' });
       if (!isAllowedLogoMime(file.mimetype)) {
         // Drain the stream so the connection closes cleanly, then reject.
@@ -58,14 +60,21 @@ export function registerBranding(server: FastifyInstance): void {
       log.info('Masjid logo updated.');
       return { ok: true };
     } catch (e) {
-      return reply.code(400).send({ error: (e as Error).message });
+      // The detail (a full disk, with the data path in it) is for the log, not the toast.
+      log.warn(`The masjid logo could not be saved: ${(e as Error).message}`);
+      return reply.code(500).send({ error: "The logo couldn't be saved. Please try again in a moment." });
     }
   });
 
   server.delete('/api/branding/logo', async (req, reply) => {
     const bad = guard(req);
     if (bad) return reply.code(bad.code).send({ error: bad.error });
-    removeLogo();
+    try {
+      removeLogo();
+    } catch (e) {
+      log.warn(`The masjid logo could not be removed: ${(e as Error).message}`);
+      return reply.code(500).send({ error: "The logo couldn't be removed. Please try again in a moment." });
+    }
     log.info('Masjid logo removed.');
     return { ok: true };
   });

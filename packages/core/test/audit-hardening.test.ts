@@ -150,13 +150,18 @@ test('a reserved id that gets its directory deleted is also refused at install',
 
 test('the app-to-app broker bounds UNAUTHENTICATED work', () => {
   // The per-caller limiter keys on caller.id, which only exists after a secret is
-  // accepted — so it bounded a misbehaving app and nothing else. Every wrong secret
-  // still costs a constant-time compare against every registered app.
+  // accepted — so it bounded a misbehaving app and nothing else. The per-source tier
+  // covers the rest, but ONLY for a caller that presented no valid secret: it used to run
+  // before authentication and charge every app, and every app shares one source address,
+  // so apps inside their own budgets emptied it for all of them. (broker.test.ts drives
+  // both halves for real.)
   const src = read('fabric', 'appLink.ts');
-  const ipGate = src.indexOf('ipRateOk(');
   const auth = src.indexOf('deps.resolveCaller(');
-  assert.ok(ipGate > 0, 'a per-source limiter must exist');
-  assert.ok(ipGate < auth, 'and must run BEFORE authentication, or it bounds nothing');
+  const unidentified = src.indexOf('if (!caller) {', auth);
+  const ipGate = src.indexOf('ipRateOk(', auth);
+  assert.ok(auth > 0 && ipGate > 0, 'a per-source limiter must exist');
+  assert.ok(unidentified > auth && ipGate > unidentified, 'it is charged only to a caller that was not identified');
+  assert.ok(ipGate < src.indexOf("'unauthorized'", auth), 'and before that caller is told no');
 });
 
 // ── "could not ask" is never an answer ──────────────────────────────────────

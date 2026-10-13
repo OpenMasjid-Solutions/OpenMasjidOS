@@ -214,6 +214,11 @@ test('the alert copy fits an inbox, and admits what cannot be resent', () => {
   // The honest part: it must say the unconfirmed ones cannot be resent from here.
   assert.match(JSON.stringify(c), /cannot be resent|does not keep their contents/i);
   assert.match(c.action?.path ?? '', /^\/settings\/whatsapp$/);
+  // It names the button the dashboard really shows. It said "press Resend" — the name of
+  // an email provider, and of no button anywhere.
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'lib', 'i18n', 'en.json'), 'utf8'));
+  assert.ok(c.detail?.includes(`"${en.settings.whatsappHeldResend}"`), `the detail must name "${en.settings.whatsappHeldResend}"`);
+  assert.doesNotMatch(c.detail ?? '', /\bResend\b/);
 });
 
 // ── holding and releasing ────────────────────────────────────────────────────────

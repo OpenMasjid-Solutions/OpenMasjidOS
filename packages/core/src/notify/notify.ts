@@ -14,6 +14,7 @@
  */
 import { getSettings } from '../settings/store';
 import { hasLogo } from '../store/branding';
+import { appHostname } from '../system/remote-admin';
 import { log } from '../logger';
 
 export interface NotifyInput {
@@ -61,18 +62,16 @@ function neutralizeSlack(s: string): string {
 }
 
 /**
- * The masjid logo as an internet-reachable URL, for the webhook avatar. Slack /
- * Discord fetch the icon from THEIR servers, so a LAN address is useless — we only
- * offer it when remote access (the Cloudflare tunnel + domain) is configured, where
- * /api/public/logo is publicly reachable. Undefined otherwise (webhook still sends,
- * just without a custom avatar).
+ * The masjid logo as an internet-reachable URL — the webhook avatar, and the image in
+ * an alert email. Slack, Discord and a recipient's mail provider fetch it from THEIR
+ * servers, so a LAN address is useless: it is offered only when remote access (the
+ * Cloudflare tunnel + the apps' address) is set up, where /api/public/logo is public.
+ * Undefined otherwise (the message still sends, just without the logo).
  */
-function publicLogoUrl(): string | undefined {
+export function publicLogoUrl(): string | undefined {
   if (!hasLogo()) return undefined;
-  const cf = getSettings().cloudflare;
-  if (!cf?.enabled || !cf.domain) return undefined;
-  const domain = String(cf.domain).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  return domain ? `https://${domain}/api/public/logo` : undefined;
+  const host = appHostname();
+  return getSettings().cloudflare.enabled && host ? `https://${host}/api/public/logo` : undefined;
 }
 
 /** Shape the message for the configured service. App text is untrusted display

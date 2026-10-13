@@ -18,26 +18,24 @@ import { DASHBOARD_SEGMENTS, wasHandedOver } from '../system/remote-admin';
 import { sessionKey } from '../auth/sessions';
 import { requestSessionToken, requestUser } from './ws-auth';
 
-/** Prefixes that must always 404 as JSON rather than fall back to the SPA. */
-const API_PREFIXES = ['/trpc', '/api'];
-
 /**
- * Serve the built files, without claiming the not-found handler.
- *
- * Split out because the HTTP front door already has a not-found handler of its
- * own — the one that 404s tunnel traffic and 308-redirects everything else — and
- * Fastify allows exactly one per instance. The front door composes the SPA
- * fallback into that handler instead of replacing it (see `spaFallback`), so
- * remote administration can serve the dashboard without losing the refusal
- * recording that makes a wrong public address diagnosable.
+ * Prefixes that must always 404 rather than fall back to the SPA: the APIs, and the
+ * fingerprinted bundles — a missing chunk (a tab left open across an update) must fail
+ * as a 404, not load index.html as if it were JavaScript.
  */
-export async function registerStaticFiles(server: FastifyInstance, uiDir: string): Promise<boolean> {
+const NO_FALLBACK_PREFIXES = ['/trpc', '/api', '/assets/'];
+
+/** Serve the built files. The not-found handler is registerStaticUI's. */
+async function registerStaticFiles(server: FastifyInstance, uiDir: string): Promise<boolean> {
   const haveUI = fs.existsSync(uiDir);
   if (haveUI) {
     await server.register(fastifyStatic, {
       root: uiDir,
       prefix: '/',
       wildcard: false,
+      // The UI build writes .br/.gz beside each bundle; a browser that accepts one gets it
+      // (about a third of the bytes on the masjid's network), and anything else gets the file.
+      preCompressed: true,
       cacheControl: false,
       // Vite fingerprints everything under /assets/ — cache those forever so
       // repeat visits are instant. index.html must always revalidate so a new
@@ -62,32 +60,25 @@ export async function registerStaticFiles(server: FastifyInstance, uiDir: string
 }
 
 /**
- * The SPA fallback, as a plain function so either listener can use it.
+ * The SPA fallback: index.html for any other GET, so a reload on /settings/… works.
  *
- * Returns `false` when it declined to answer, so a caller that has its own
- * not-found behaviour (the front door's tunnel refusal + HTTPS redirect) can
- * carry on rather than having the reply half-written underneath it.
+ * Never for a request the front door handed over. From outside, the dashboard's pages
+ * come only from registerRemoteDashboardPages, which carries the key rule's headers;
+ * a plain index.html there (for `/assets/x` or `/assets/../settings`) could be framed by
+ * an app page and signed into in LAN mode, which stores the key where that app can read it.
  */
-export function spaFallback(haveUI: boolean) {
-  return (req: FastifyRequest, reply: FastifyReply): boolean => {
-    // Compared on the decoded path as well as the raw one, for the same reason the
-    // Fabric guard is: the router dispatches on the decoded path, so `/%61pi/…`
-    // is an API request that a raw `startsWith('/api')` does not recognise. The
-    // consequence here is milder than the Fabric case — the worst outcome is
-    // index.html where JSON belonged — but an API path must not answer with the
-    // dashboard shell, and the two checks should not disagree about what `/api` is.
+function spaFallback(haveUI: boolean) {
+  return (req: FastifyRequest, reply: FastifyReply): void => {
+    // The raw AND the decoded path: the router dispatches on the decoded one, so
+    // `/%61pi/…` is an API request a raw `startsWith('/api')` does not recognise.
     const raw = req.url.split('?')[0]!.split('#')[0]!;
     const dec = decodedPath(req.url);
-    const isApi = API_PREFIXES.some((p) => raw.startsWith(p) || dec.startsWith(p));
-    if (isApi) {
-      reply.code(404).send({ error: 'Not found' });
-      return true;
-    }
-    if (haveUI && req.method === 'GET') {
+    const noFallback = NO_FALLBACK_PREFIXES.some((p) => raw.startsWith(p) || dec.startsWith(p));
+    if (!noFallback && haveUI && req.method === 'GET' && !wasHandedOver(req.raw)) {
       reply.type('text/html').sendFile('index.html');
-      return true;
+      return;
     }
-    return false;
+    reply.code(404).send({ error: 'Not found' });
   };
 }
 
@@ -144,9 +135,6 @@ function registerRemoteDashboardPages(server: FastifyInstance, uiDir: string): v
 export async function registerStaticUI(server: FastifyInstance, uiDir: string): Promise<boolean> {
   const haveUI = await registerStaticFiles(server, uiDir);
   if (haveUI) registerRemoteDashboardPages(server, uiDir);
-  const fallback = spaFallback(haveUI);
-  server.setNotFoundHandler((req, reply) => {
-    if (!fallback(req, reply)) reply.code(404).send({ error: 'Not found' });
-  });
+  server.setNotFoundHandler(spaFallback(haveUI));
   return haveUI;
 }

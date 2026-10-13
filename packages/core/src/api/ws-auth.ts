@@ -2,31 +2,21 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /** Shared session-cookie auth for the raw WebSocket / streaming HTTP routes. */
 import type { FastifyRequest } from 'fastify';
-import { COOKIE_NAME, CSRF_HEADER, REMOTE_COOKIE_NAME, getSessionUserFor, verifyCsrf } from '../auth/sessions';
+import {
+  COOKIE_NAME,
+  CSRF_HEADER,
+  REMOTE_COOKIE_NAME,
+  getSessionUserFor,
+  sessionTokenFromCookieHeader,
+  verifyCsrf,
+} from '../auth/sessions';
 import { isViaTunnel } from '../system/via-tunnel';
 import { remoteAdminEnabled, wasHandedOver } from '../system/remote-admin';
-
-function parseCookie(header: string | undefined, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx !== -1 && part.slice(0, idx).trim() === name) {
-      const raw = part.slice(idx + 1).trim();
-      // A malformed %-escape must not throw in every WS/streaming route.
-      try {
-        return decodeURIComponent(raw);
-      } catch {
-        return raw;
-      }
-    }
-  }
-  return null;
-}
 
 function tokenOf(req: FastifyRequest): string | null {
   // The remote dashboard has its own cookie (auth/sessions.ts REMOTE_COOKIE_NAME).
   const name = wasHandedOver(req.raw) ? REMOTE_COOKIE_NAME : COOKIE_NAME;
-  return (req.cookies && req.cookies[name]) ?? parseCookie(req.headers?.cookie, name);
+  return (req.cookies && req.cookies[name]) ?? sessionTokenFromCookieHeader(req.headers?.cookie, name);
 }
 
 /** The session token a raw-route request carries (the remote cookie if handed over). */

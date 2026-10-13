@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 OpenMasjid-Solutions
-# OpenMasjidOS — core service definition
-# This file is written by install.sh and managed by the installer.
-# Edit with care; re-running install.sh will refresh it.
+# OpenMasjidOS — core service definition: a REFERENCE COPY, for reading and local use.
+# It is not what a masjid runs. install.sh writes its own /opt/openmasjid/docker-compose.yml
+# (`write_compose_file`), which is the source of truth and carries more than this does —
+# the HTTPS and per-app proxy ports' settings, and the machine's LAN address for apps.
 
 services:
   core:
@@ -21,7 +22,7 @@ services:
     volumes:
       # The Docker socket — the core manages app containers through it.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent data: config, app state, per-app volumes.
+      # Persistent data: config and app state (apps' own data is in Docker volumes).
       - /opt/openmasjid:/data
       # Host /proc (read-only) so memory/CPU stats reflect the machine/LXC.
       - /proc:/host/proc:ro

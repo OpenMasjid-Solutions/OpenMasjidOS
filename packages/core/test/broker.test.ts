@@ -189,6 +189,24 @@ test('rate_limited: over the per-caller limit → 429', async () => {
   await t.close();
 });
 
+test("identified apps never spend the per-source bucket an unidentified flood is bounded by", async () => {
+  // Every app reaches the core from the same bridge address, so a per-source bucket is one
+  // bucket for the whole box. Charging identified callers to it let apps that each stayed
+  // inside their own budget lock every app out of the broker.
+  const app = buildBroker({ getTarget: async () => ({ running: false, port: null }), rateMax: 10_000 });
+  const path = '/api/fabric/app/students/billing/lookup';
+  for (let i = 0; i < 650; i++) {
+    const r = await callBroker(app, { path, secret: CALLER_SECRET });
+    assert.notEqual(r.statusCode, 429, `identified call ${i + 1} was refused by the shared per-source tier`);
+  }
+  // A caller with no valid secret is still bounded by it.
+  let last = 0;
+  for (let i = 0; i < 605; i++) last = (await callBroker(app, { path, secret: 'not-a-real-secret-0123456789' })).statusCode;
+  assert.equal(last, 429, 'an unidentified flood must still be refused');
+  // And the identified app is unaffected by that flood.
+  assert.notEqual((await callBroker(app, { path, secret: CALLER_SECRET })).statusCode, 429);
+});
+
 test('tunnel-origin request is blocked by the LAN-only guard → 404', async () => {
   const app = buildBroker({}, /* withGuard */ true);
   const r = await callBroker(app, {

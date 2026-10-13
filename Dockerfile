@@ -3,16 +3,20 @@
 # Copyright (C) 2026 OpenMasjid-Solutions
 #
 # OpenMasjidOS core — multi-stage build.
-#   1. build:   install the monorepo, build the React UI (Vite) and the
-#               TypeScript daemon (tsc), then drop dev dependencies.
+#   1. build:   install the monorepo, build the React UI (Vite) and bundle the
+#               TypeScript daemon (esbuild), then drop dev dependencies.
 #   2. runtime: a slim Node + Docker-CLI image that runs the daemon, which
-#               serves the built UI and the tRPC API on one port.
+#               serves the built UI and the tRPC API — HTTPS on 443, an HTTP
+#               front door on 80, and per-app HTTPS proxies on 8443-8452.
 #
 # We use Alpine and @node-rs/argon2 (prebuilt musl binaries) so the multi-arch
 # (amd64 + arm64) build needs no native compilation. See docs/ARCHITECTURE.md.
+#
+# Node 22 is the current LTS line; Node 20 stopped receiving security fixes on
+# 2026-04-30, and this daemon runs as root with the Docker socket.
 
 # ---- Build stage ------------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 
 # Copy workspace manifests + lockfile first so dependency layers cache well.
@@ -32,7 +36,7 @@ RUN npm run build
 RUN npm prune --omit=dev --no-audit --no-fund
 
 # ---- Runtime stage ----------------------------------------------------------
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
 
 # The core installs/removes apps by shelling out to `docker` + `docker compose`

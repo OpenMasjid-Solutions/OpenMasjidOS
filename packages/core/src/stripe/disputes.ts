@@ -206,7 +206,13 @@ export async function fetchDisputes(secretKey: string): Promise<FetchResult> {
       }
       return { ok: false, disputes: [], error: detail };
     }
-    return { ok: true, disputes: parseDisputeList(await res.json()) };
+    const body: unknown = await res.json();
+    // A 200 with no list is not "no disputes": recorded as that, a first check would mark
+    // the account checked with nothing seen, and the next real answer would alert its history.
+    if (!Array.isArray((body as { data?: unknown } | null)?.data)) {
+      return { ok: false, disputes: [], error: 'Stripe answered without a list of disputes' };
+    }
+    return { ok: true, disputes: parseDisputeList(body) };
   } catch (err) {
     const aborted = (err as Error).name === 'AbortError';
     return { ok: false, disputes: [], error: aborted ? 'Stripe did not respond in time' : (err as Error).message };

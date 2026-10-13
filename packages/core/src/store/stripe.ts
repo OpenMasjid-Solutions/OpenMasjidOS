@@ -91,8 +91,9 @@ export interface UpsertInput {
   webhookSecret?: string;
 }
 
-/** Add a new account or update an existing one (by id). On update, a blank
- *  secret/webhook means "keep the existing one" so the admin needn't re-paste. */
+/** Add a new account or update an existing one (by id). On update, a blank secret key
+ *  keeps the existing one so the admin needn't re-paste it; an omitted webhook secret
+ *  keeps the existing one too, and an empty one clears it (it is optional). */
 export function upsertAccount(input: UpsertInput): StripeAccountPublic {
   const label = input.label.trim();
   if (!label) throw new Error('Give this Stripe account a name.');

@@ -604,6 +604,7 @@ test('A RESTORE PUTS ITS SETTINGS IN PLACE AT ONCE — not at the next restart',
   // The stores keep what they read at boot. The restored files sat under a daemon that
   // went on using the old ones — and the next save from it wrote them back over the backup.
   const docker = fakeDocker();
+  const alerts = req('../src/notify/alerts') as typeof import('../src/notify/alerts');
   try {
     settings.updateSettings({ allowCustomApps: false });
     upload(
@@ -611,18 +612,21 @@ test('A RESTORE PUTS ITS SETTINGS IN PLACE AT ONCE — not at the next restart',
         const st = json(path.join(cfg, 'settings.json'));
         write(path.join(cfg, 'settings.json'), { ...st, allowCustomApps: true });
         write(path.join(cfg, 'email.json'), { email: { provider: 'none', fromEmail: '', fromName: 'From the backup' } });
+        write(path.join(cfg, 'alerts.json'), { channels: { 'os:core-update': { email: false, webhook: true } } });
       }),
     );
     assert.equal(await runRestore(() => undefined), 'restarting');
     assert.equal(settings.getSettings().allowCustomApps, true, 'the restored settings are not the ones in use');
     assert.equal(email.getEmailConfig().fromName, 'From the backup', 'the restored mail settings are not the ones in use');
+    assert.equal(alerts.getAlertChannels('os', 'core-update').email, false, 'the restored alert routing is not the one in use');
     // Every store with a cache is reloaded.
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'system', 'restore.ts'), 'utf8');
-    for (const fn of ['reloadSettings', 'reloadEmailConfig', 'reloadStripeConfig', 'reloadWhatsAppConfig', 'reloadCommandConfig']) {
+    for (const fn of ['reloadSettings', 'reloadEmailConfig', 'reloadStripeConfig', 'reloadWhatsAppConfig', 'reloadCommandConfig', 'reloadAlertChannels']) {
       assert.match(src, new RegExp(`\\b${fn}\\(\\);`), fn);
     }
   } finally {
     settings.updateSettings({ allowCustomApps: false });
+    alerts.setAlertChannel('os', 'core-update', 'email', true);
     docker.restore();
   }
 });
