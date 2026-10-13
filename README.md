@@ -356,7 +356,7 @@ Each app lives in its **own** repository and is catalogued by **[OpenMasjidAPPS]
 
 ## Development
 
-TypeScript monorepo (npm workspaces): a Node + Fastify + tRPC daemon (`packages/core`) and a React + Vite + Tailwind dashboard (`packages/ui`). Requires Node 20+ and Docker.
+TypeScript monorepo (npm workspaces): a Node + Fastify + tRPC daemon (`packages/core`) and a React + Vite + Tailwind dashboard (`packages/ui`). Requires Node 22 (the version the image runs) and Docker.
 
 ```bash
 git clone https://github.com/OpenMasjid-Solutions/OpenMasjidOS.git && cd OpenMasjidOS

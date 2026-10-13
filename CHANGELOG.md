@@ -1392,6 +1392,141 @@ things **worse** than the bug being fixed. Recorded because they are the interes
   4.99–6.19:1 but light's `#DC2626` only 3.84–4.19:1, under AA for the tag's small bold text.
   Light now uses `#B91C1C` (5.14–5.61:1).
 
+### Full audit: bugs, stale code, readability and speed (dev.18)
+
+A sweep of the whole platform, area by area. Every fix came with a test that fails without it
+(each one checked by putting the bug back), and nothing that worked changed behaviour.
+
+#### Managing from outside, and the front door
+
+- **From outside, an address the dashboard doesn't know is a plain 404 — never the plain
+  dashboard page.** A missing `/assets` file, or an address like `/x/../settings`, got
+  `index.html` without the headers that stop an app page framing it, and signing in on such a
+  framed page stored the dashboard key where that app could read it.
+- **A missing bundle is a 404 everywhere**, so a tab left open across an update fails cleanly
+  instead of loading the page as if it were JavaScript.
+- The remote dashboard's pages keep `X-Frame-Options: DENY`; the listener's catch-all header
+  overwrote it with `SAMEORIGIN`.
+- **Terminals keep what you type while the shell starts** (the first resize was dropped), and a
+  shell whose browser left in the meantime is closed instead of left running.
+- **One request carries at most 40 calls** (the dashboard splits at 20). A single batched request
+  could carry hundreds of sign-in attempts past every per-request check, each an argon2 run.
+- A socket from outside is tracked only with a live remote session, and a multipart upload from
+  a stranger is refused before anything reads it.
+- The front door asks whether managing from outside is on only for a tunnel request to a
+  dashboard address, not for every app page and Fabric call.
+
+#### Signing in
+
+- **The per-address lockout really bounds guessing from outside now.** A right password cleared
+  the address's failures, wrong codes included, so anyone holding the password could alternate
+  and guess codes without limit; and the lockout was asked only on arrival, so a batch of
+  sign-ins all got past it before any had failed. Failures are cleared only once the code is
+  right, and the lockout is asked again when each attempt's turn comes.
+- **The clock-skew note can't be used to find a working code.** When a wrong code matched a step
+  still to come, the note said so and the same code was accepted when that step came round. Such
+  a step is now refused as replayed; the note stays, because a drifted clock is why it exists.
+- A sign-in whose password changed while it waited for its code no longer spends the code first.
+- A backup code typed without its dash, or with a space, matches.
+- When an emailed code couldn't be sent, asking again no longer says "a code was just sent".
+- Signing in with an unreadable admin record says so, instead of "username or password is
+  incorrect" to an admin retyping the right one.
+- A WhatsApp number that isn't a whole number is refused, instead of silently clearing the stored
+  one.
+- The two-step settings are read again only when their file changes; they were read and parsed
+  several times on every request from outside.
+
+#### WhatsApp commands
+
+- **A trustee added in Settings no longer vanishes at the next restart.** People are added with
+  nothing ticked, and such a person was dropped on every load. They are kept, and until something
+  is granted their messages get the same silence as a stranger's (new drop reason `no-grants`).
+- Re-adding a listed number keeps their permissions. The list is written before it is believed,
+  and a full disk no longer costs a command its answer.
+- **A held confirmation answers its own question only.** Any other command abandons it, so a
+  reflexive "ok" later can't stop the app asked about earlier, and a confirmation re-checks the
+  sender's permission before it runs.
+- `!os updates` numbers what it showed, so `!os update 1` means that row. An app the store can't
+  answer for is never called up to date. `!os update` says when an app updated but isn't staying
+  running, and its "finished" reply is no longer dropped after a long update.
+- Read-only trustees aren't invited to send control commands; a command that exists but isn't
+  granted is "not allowed", not "no such command"; naming the WhatsApp gateway gets its own
+  refusal instead of "can't find it".
+- "stop" or "cancel" said to a confirmation reads as cancelled, `!yes` with no code asks for it,
+  `!exit` mid-exchange says the exchange ended, and a question that reaches the turn limit says
+  to finish on the dashboard.
+- A command behind a zero-width space (some phone keyboards add one) is no longer dropped; the
+  rate limit keeps part-waited refill time; a long list keeps its closing line.
+- Every app's commands are read once per message instead of once per step.
+
+#### Fabric, email, alerts and payments
+
+- **An app-to-app call always settles.** A reply over the size cap that arrived in several reads,
+  or one trickled a byte at a time, hung for ever — leaking a socket, and leaving a WhatsApp
+  command with no answer.
+- **Apps no longer share one request budget.** Every app reaches the core from the same address,
+  so one busy app emptied the per-address bucket and every app's email, WhatsApp, alerts and
+  Stripe calls were refused for the rest of the minute. Only a caller with no valid secret pays it.
+- **Email Save checks what sending will really do.** Resend sending-only keys (the least-privilege
+  kind) now pass and invalid ones are refused; SMTP Save logs in with the same TLS rule as sending.
+- App mail over 100 KB is refused (`too_large`), instead of being cut off mid-tag and reported
+  sent.
+- **An app's alert emails have their own budget**, so a burst from one app can't drop the
+  platform's own — a chargeback alert is never retried. A restore's alert routing is used at once.
+- Replacing a Stripe account's key starts a first check, instead of alerting every past dispute
+  of the new account as new; a reply with no dispute list is "couldn't ask"; Settings → Payments'
+  status dot follows a save.
+- The address monitor keeps retrying apps it couldn't recreate when the machine's address changed.
+
+#### Settings, stats, certificate and logo
+
+- **A setting is believed only once it is on disk.** A failed write (a full SD card) showed an
+  error but kept the change until the next restart.
+- **Storage is measured on the filesystem holding the data**, as `df` does, instead of against
+  every disk added together. On Ubuntu Server's default LVM a full volume read about 40%, so the
+  low-storage warnings never fired. The host-OS reserve is 16 GB, or a quarter under 64 GB (a
+  16 GB SD card read "6 GB / 0 B").
+- Memory matches `free` on a bare-metal host, and the CPU figure no longer freezes when the clock
+  is stepped back.
+- **One stats collection is shared by every open tab**, and a stuck Docker, `df` or temperature
+  probe can no longer freeze the cards.
+- A certificate Node won't serve (a weak key) is refused, or replaced when found at boot; a new
+  pair is checked before it replaces the working one; the self-signed certificate names the
+  machine's LAN address.
+- The logo: plain errors on upload, the old logo kept until the new one is in, and served from
+  memory instead of read from disk on every request.
+
+#### Installer, image and CI
+
+- **Docker installs on Fedora 41+ and on Rocky, Alma and RHEL**, and a Docker that is installed
+  but stopped is started rather than reinstalled.
+- **32-bit ARM is refused before anything is installed**, with a pointer to the 64-bit OS.
+- **The installer keeps the machine's channel and registry** even when its compose file is
+  missing, and a fresh `--channel=dev` install is set up as Development.
+- **Repair no longer moves the machine to a newer build**: it downloads only an image it doesn't
+  have. **Reset sign-in works under `curl … | sudo bash`** (it reads the terminal). An unknown
+  option is refused instead of ignored.
+- **Remove turns the tunnel off**, and DELETE removes app data left behind by an earlier removal.
+- After a slow start the installer stops with an error instead of announcing success, and it now
+  says that apps' data lives in Docker volumes, so a backup is how to move machines.
+- **The image runs on Node 22 LTS** (Node 20 is end-of-life). CI's token is read-only by default
+  and the Docker actions are pinned to commits; the lockfile workflow, which committed straight to
+  the stable branch, is gone.
+
+#### Speed
+
+- The dashboard's bundles go precompressed to browsers on the masjid's network.
+- Stats, the two-step settings and the logo are no longer re-collected or re-read on every
+  request (above).
+
+#### Removed
+
+- Unused dependencies `qrcode`, `@types/qrcode` and `class-variance-authority`; the
+  `CATALOG_URL` constant; the commands routes `renamePerson` and `preview`; the parser's
+  unreachable `too-long` branch; test hooks nothing used; copies of the cookie parser and the
+  path-spelling helper; and comments still describing the two-hostname design or features that
+  had since changed.
+
 ## 0.51.1
 
 A maintenance release. Most of it is work you will not see — a full review of the

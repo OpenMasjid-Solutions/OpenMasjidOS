@@ -502,10 +502,11 @@ POST ${OPENMASJID_BASE_URL}/api/fabric/email
   X-OpenMasjid-App-Secret: <OPENMASJID_APP_SECRET>
   Content-Type: application/json
   { "to": "donor@example.org", "subject": "Your receipt", "text": "JazakAllah…", "html": "<p>…</p>" }
-→ 200 { "sent": true }   |   { "sent": false, "reason": "not_configured" | "rate_limited" | "bad_recipient" | … }
+→ 200 { "sent": true }   |   { "sent": false, "reason": "not_configured" | "rate_limited" | "bad_recipient" | "too_large" | … }
 ```
 
-`text` (or `html`) + `to` + `subject` are required. **Fail soft**: if email isn't configured you get
+`text` (or `html`) + `to` + `subject` are required. A `text` or `html` over 100 KB is refused with
+`reason: "too_large"` — it is never cut short, because a body cut mid-tag would still read as sent. **Fail soft**: if email isn't configured you get
 `{ sent:false, reason:"not_configured" }` — keep working (e.g. still record the donation; show the
 receipt on screen). Rate-limited per app. Server→server, not CORS-enabled.
 

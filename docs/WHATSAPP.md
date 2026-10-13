@@ -236,7 +236,13 @@ something is waiting, a plain `yes` or `no` is enough to confirm.
   every member of an announcement group would have the restart button.
 - **A number that is not on the list gets no reply whatsoever.** Not even "you're not allowed".
   Answering would tell a stranger this number runs your server, and would spend the sending
-  allowance your fee reminders need.
+  allowance your fee reminders need. Someone on the list with **nothing ticked yet** gets the
+  same silence until you tick something for them; they stay on the list meanwhile.
+- **A question you were asked only answers itself.** If a confirmation is waiting and you send a
+  different command, the confirmation is dropped, so a stray "ok" later cannot run it.
+- **`!os updates` says when it could not check an app**, rather than calling it up to date, and
+  `!os update 1` means the first app in the list it just showed you. If an app updates but then
+  will not stay running, `!os update` tells you so.
 - **Anything that changes something is also emailed to you** (Settings → Alerts → "Something was
   changed from WhatsApp"). There is one admin account, so this is your record of who did what.
 - Replies are in English, whatever your dashboard language — the same limitation the alert

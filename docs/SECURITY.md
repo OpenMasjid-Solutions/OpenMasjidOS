@@ -97,9 +97,10 @@ assumptions and the knobs for hardening a more exposed deployment.
   below.
 - **Through the tunnel, sign-in has a real per-address lockout.** Ten failed
   attempts from one address — wrong passwords and wrong second-factor codes both
-  count, each within 15 minutes of the last — refuse that address for 15 minutes. A
-  correct password clears the address's count: this is aimed at someone guessing the
-  password, and the code step has its own limit (five wrong codes, then the sign-in
+  count, each within 15 minutes of the last — refuse that address for 15 minutes.
+  Only a correct second-factor code clears the address's count; a correct password
+  does not, so someone who has the password cannot reset the count and keep guessing
+  codes. The code step also has its own limit (five wrong codes, then the sign-in
   starts again from the password). It can be per-address here and nowhere else
   because Cloudflare sets `CF-Connecting-IP` at its edge, and a visitor coming
   through the tunnel cannot forge it; on any other request the header is ignored,
