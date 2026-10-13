@@ -18,9 +18,10 @@
  *
  * So the probe has to ask a question that actually goes through to WhatsApp:
  * `notify/whatsapp.ts` `probeLink()` calls `/chats`, whose 503 is OpenWA saying the engine's
- * WhatsApp connection is gone. `gatewayStatus()` is still consulted, but only for the states
- * it genuinely does catch (`no-session`, `pending`, `problem`, `unreachable`) — its `ready`
- * is never treated as proof of health.
+ * WhatsApp connection is gone. `gatewayStatus()` is still consulted, but only for the bad
+ * news it genuinely does catch (`no-session`, `pending`, `bad-key`, `problem`) — its `ready`
+ * is never treated as proof of health, and `unreachable` is "could not ask", never a dead
+ * link.
  *
  * ── RULES THAT MUST NOT REGRESS ─────────────────────────────────────────────────
  *

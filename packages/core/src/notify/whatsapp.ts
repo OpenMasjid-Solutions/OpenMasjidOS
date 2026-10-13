@@ -13,8 +13,9 @@
  * If the students app and a donations app each send "politely" at the same moment, the
  * number still emits a burst; WhatsApp sees a phone number, not our request
  * boundaries. So every message the whole platform sends — OS alerts and every app's
- * Fabric call alike — goes through the ONE serialised queue below. Nothing is ever in
- * flight concurrently.
+ * Fabric call alike — goes through the ONE serialised queue below, one at a time. The
+ * only sends beside it are the admin's own (`sendImmediate`: the test button and command
+ * replies), each an answer to something the admin just did.
  *
  * This is also why we do NOT use OpenWA's `POST .../messages/send-bulk`. It paces
  * within a single request (3s default + jitter), which is fine in isolation and useless
@@ -29,9 +30,9 @@
  * the most dangerous kind of stale comment, because it is the first thing anyone reads
  * before deciding whether a change here is safe.
  *
- *  1. **Serialised.** One message in flight, ever. This is the one that still carries
- *     real weight: ban risk attaches to the NUMBER, so two callers each sending
- *     "politely" at once is still a burst.
+ *  1. **Serialised.** The queue sends one message at a time, whoever asked. This is the
+ *     one that still carries real weight: ban risk attaches to the NUMBER, so two callers
+ *     each sending "politely" at once is still a burst.
  *  2. **Typing indicator**, for a duration scaled to the message length (people take
  *     longer over longer messages), then `paused`, then the send. With everything below
  *     gone, this is now the ONLY delay between two messages — a few seconds.
@@ -104,10 +105,9 @@ const MAX_ATTEMPTS = 5;
  * Who a message is for.
  *
  * A group is not "a recipient with a funny number": it has its own address space
- * (`@g.us` rather than `@c.us`), its own rate budget (one message reaches everyone, so
- * it must not spend the allowance individual reminders need), and `contacts/check` is
- * meaningless for it. Making the distinction a type rather than a string test means
- * every place that treats the two differently has to say so.
+ * (`@g.us` rather than `@c.us`), only a group the admin approved may be named, and
+ * `contacts/check` is meaningless for it. Making the distinction a type rather than a
+ * string test means every place that treats the two differently has to say so.
  */
 export type Target = { kind: 'person'; digits: string } | { kind: 'group'; groupId: string };
 
@@ -213,8 +213,8 @@ export function mediaProblem(m: OutgoingMedia): string | null {
   return null;
 }
 
-/** The pacing key for a target — also the cooldown map's key, so a person and a group
- *  can never collide (`@g.us` cannot appear in a digits-only string). */
+/** The key the send history records a target under. A person and a group can never
+ *  collide (`@g.us` cannot appear in a digits-only string). */
 function targetKey(t: Target): string {
   return t.kind === 'person' ? t.digits : `group:${t.groupId}`;
 }
@@ -826,17 +826,17 @@ async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boo
 }
 
 // ── pacing ───────────────────────────────────────────────────────────────────────
+//
+// What this number sent in the last day, persisted with the queue. A RECORD, not an
+// allowance: nothing brakes on it any more (see the header). It is what a ceiling would be
+// built on if one ever returns, so it is kept — and kept to a day, like any record of who
+// the masjid messaged.
 
-/** Individual sends within the last rolling day, newest last. Used for both caps. */
+/** Individual sends within the last rolling day, newest last. */
 const sentAt: number[] = [];
-/**
- * Group posts within the last rolling day. SEPARATE from `sentAt` on purpose: one group
- * message reaches everyone, so it must not consume the allowance that fee reminders need
- * — and equally it needs a brake of its own, since a group posted to every few minutes is
- * the kind of spam people actually complain about.
- */
+/** Group posts within the last rolling day — apart from `sentAt`, because one reaches everyone. */
 const groupSentAt: number[] = [];
-/** target key → last send, for the per-recipient / per-group cooldown. */
+/** target key → its last send within the last rolling day. */
 const lastToRecipient = new Map<string, number>();
 
 function prune(now: number): void {
@@ -848,9 +848,9 @@ function prune(now: number): void {
 }
 
 /**
- * The warm-up multiplier. A number linked today gets a quarter of the allowance; by
- * the end of the ramp it gets all of it. Returns 1 when nothing is known about when
- * the link happened — an unknown link date shouldn't lock a working masjid out.
+ * The warm-up multiplier. INERT: the ramp it fed is gone and nothing calls this; it is
+ * kept for the reasoning and its tests. A number linked today got a quarter of the
+ * allowance; by the end of the ramp, all of it. 1 when the link date is unknown.
  */
 export function warmupFactor(linkedAt: string | null, limits: WhatsAppLimits, now: number): number {
   if (!linkedAt || limits.warmupDays <= 0) return 1;
@@ -883,10 +883,8 @@ export function warmupFactor(linkedAt: string | null, limits: WhatsAppLimits, no
 // about who a recipient is, so it is the wrong place to make that judgement.
 
 /**
- * The hour/day caps alone, warm-up applied. Split out of `blockedReason` so the cap
- * arithmetic exists in ONE place and the reply lane can ask the cap question without
- * also asking about the per-recipient cooldown, which does not
- * applies to answering someone who just messaged us (see `replyTo`).
+ * Where an hourly or daily ceiling would be decided, if one is ever reinstated. INERT: it
+ * always answers null, and its only caller is `blockedReason`.
  */
 export function capExceeded(
   now: number,
@@ -895,17 +893,16 @@ export function capExceeded(
   linkedAt: string | null,
   history: { sends: number[]; groupSends: number[] },
 ): 'hour' | 'day' | null {
-  // INDIVIDUAL messages are deliberately uncapped. Spacing is the whole brake for them:
-  // the randomised 6-20s gap plus the per-recipient cooldown. Removed at the maintainer's
-  // decision after the caps repeatedly blocked ordinary use — with the warm-up ramp they
-  // came to 3/hour on a freshly linked number, which is unusable even for testing, and a
-  // masjid messaging parents one at a time is not the threat the caps were written for.
+  // INDIVIDUAL messages are deliberately uncapped, removed at the maintainer's decision
+  // after the caps repeatedly blocked ordinary use — with the warm-up ramp they came to
+  // 3/hour on a freshly linked number, which is unusable even for testing, and a masjid
+  // messaging parents one at a time is not the threat the caps were written for.
   //
   // Known trade-off, recorded because it is not the admin's mistake if it bites: the queue
-  // is shared, so an app looping over 200 parents will now send all 200, spaced but
-  // unbounded. Ban risk attaches to the NUMBER and a ban is terminal, so if this proves
-  // too loose the fix is a cap here, not a per-app one — a per-app limiter cannot see the
-  // number's total traffic.
+  // is shared, so an app looping over 200 parents will now send all 200, back to back, as
+  // fast as the typing indicator allows. Ban risk attaches to the NUMBER and a ban is
+  // terminal, so if this proves too loose the fix is a cap here, not a per-app one — a
+  // per-app limiter cannot see the number's total traffic.
   // GROUP caps are gone too, at the maintainer's decision, and they were the LAST thing
   // that could hold a message for an hour with nothing telling the sender why. 4/hour and
   // 10/day, quartered by the warm-up ramp to as little as 1/hour on a recently linked
@@ -952,9 +949,8 @@ export function blockedReason(
   // with the head-of-line bug that used to be in `pump` one group image could hold up every
   // other app's messages for that entire window.
   //
-  // `lastToRecipient` is still WRITTEN, deliberately. It costs nothing, `sendImmediate`
-  // documents relying on the write, and it is what any future per-recipient policy would
-  // need. Nothing READS it as a brake any more.
+  // `lastToRecipient` is still WRITTEN, deliberately. It is pruned to a day, and it is what
+  // any future per-recipient policy would need. Nothing READS it as a brake any more.
   return null;
 }
 
@@ -1024,7 +1020,7 @@ let waitingFor: string | null = null;
  */
 const outcomes: OutcomeRecord[] = [];
 
-/** Persist queue + pacing history + outcomes. Called after every mutation. */
+/** Persist queue + send history + outcomes. Called after every mutation. */
 function persist(): void {
   saveQueueState({
     queue,
@@ -1325,9 +1321,10 @@ export function outcomesInWindow(
 }
 
 /**
- * Enqueue a message. Returns immediately — this is a QUEUE, not a send. Human pacing
- * means delivery is seconds to hours away (a cap, the warm-up ramp), so nothing auth-critical may
- * depend on it. That contract is stated to apps in `docs/WHATSAPP.md`.
+ * Enqueue a message. Returns immediately — this is a QUEUE, not a send. Delivery is
+ * seconds away on a healthy link and can be hours or days away on a broken one (a paused
+ * queue, a gateway that is down), so nothing auth-critical may depend on it. That contract
+ * is stated to apps in `docs/WHATSAPP.md`.
  */
 export function enqueue(req: SendRequest): { queued: boolean; error?: string; id?: string } {
   if (!isWhatsAppConfigured()) return { queued: false, error: 'WhatsApp is not set up.' };
@@ -1563,16 +1560,14 @@ async function pump(): Promise<void> {
 
       queue.splice(index, 1);
       if (outcome.ok) {
-        // Count against the budget the target actually spends.
+        // Recorded under the kind of target it was, for the send history.
         (item.target.kind === 'group' ? groupSentAt : sentAt).push(Date.now());
         lastToRecipient.set(targetKey(item.target), Date.now());
         noteOutcome(item, 'sent');
       } else {
         noteOutcome(item, 'failed', outcome.error ?? 'The gateway would not accept it.');
       }
-      // The queue and the pacing history both just changed. Persisting here is what makes
-      // the caps real across a restart: without it a box in a restart loop would forget
-      // every send it had made and could blow through its daily allowance repeatedly.
+      // The message has left the queue: on disk too, so a restart never sends it twice.
       persist();
       // No inter-message gap. There was a randomised 6-20s sleep here; it is gone at the
       // maintainer's decision. With several apps sharing one queue it made delivery
@@ -1977,17 +1972,12 @@ async function sendTestTo(target: Target, text: string): Promise<SendOutcome> {
  *
  * Takes DIGITS, never a JID, so it is structurally incapable of posting into a group.
  *
- * Why this is allowed to skip the pacing at all: a solicited reply to a known contact
- * is the LOWEST-risk traffic this number can emit — it is the same shape WhatsApp's
- * own commercial API models as a customer-service window. What gets a number flagged
- * is unsolicited volume to non-contacts, which is the opposite. And a reply that
- * arrives forty minutes later, behind a backlog, is not a reply;
- * it is a bug. The cooldown protects a recipient from noise they did not
- * ask for — someone who typed a command at 23:00 is not being woken by the answer.
- *
- * The per-recipient cooldown is deliberately NOT consulted: it exists to stop three
- * apps independently messaging one parent, and applied here it would make a
- * back-and-forth impossible (`!os stats`, answer, then 55 seconds of silence).
+ * Why it skips the queue: a solicited reply to a known contact is the LOWEST-risk
+ * traffic this number can emit — it is the same shape WhatsApp's own commercial API
+ * models as a customer-service window. What gets a number flagged is unsolicited volume
+ * to non-contacts, which is the opposite. And a reply that arrives forty minutes later,
+ * behind a backlog, is not a reply; it is a bug. What bounds it is the inbound rate limit
+ * in commands/gate.ts (see `sendImmediate`).
  */
 export async function replyTo(digits: string, text: string): Promise<SendOutcome> {
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };

@@ -9,9 +9,9 @@
  * WhatsApp, rather than photographing a QR off a headless server.
  *
  * `test` sends one real message to the admin's own number and WAITS for the answer,
- * because a test the admin is watching needs a result on screen — so it bypasses the
- * paced queue (see notify/whatsapp.ts `sendTestMessage`). Every other send goes
- * through the queue.
+ * because a test the admin is watching needs a result on screen — so it skips the queue
+ * (see notify/whatsapp.ts `sendTestMessage`). Every other send goes through the queue,
+ * except replies to admin commands.
  */
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
@@ -152,11 +152,10 @@ export const whatsappRouter = router({
     }),
 
   /**
-   * Ask the gateway for a pairing code, and restart the warm-up ramp.
+   * Ask the gateway for a pairing code, and record when the number was linked.
    *
-   * The ramp restart is the important part: a freshly linked number is the one
-   * WhatsApp watches hardest, so it must not inherit the allowance an older number
-   * earned. Linking is exactly when that happens.
+   * Nothing is limited by that date any more (the warm-up ramp it started is gone), but
+   * "how long has this number been in use?" is still worth knowing.
    */
   link: protectedProcedure
     .input(z.object({ phone: z.string().trim().min(6).max(24) }))

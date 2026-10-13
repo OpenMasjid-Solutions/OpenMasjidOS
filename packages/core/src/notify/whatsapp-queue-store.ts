@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Durable storage for the WhatsApp send queue, its pacing history, and the outcome of
+ * Durable storage for the WhatsApp send queue, its send history, and the outcome of
  * recent messages.
  *
  * WHY THIS EXISTS. The queue was a module-level array and nothing else. That is fine
- * until something holds a message — a cap, the warm-up ramp, or (until v0.51.1) a
- * time-of-day window — because a held message lives only in the process. Restart the
- * container and it is gone: the caller was told `202 {queued:true}`, the message was
- * logged as queued, and then it simply never existed again. No error, no log line, no
- * way for the app that sent it to ever learn otherwise.
+ * until something holds a message — a paused queue after a lost link, a gateway that is
+ * down, a retry's backoff (and, once, caps and a time-of-day window) — because a held
+ * message lives only in the process. Restart the container and it is gone: the caller was
+ * told `202 {queued:true}`, the message was logged as queued, and then it simply never
+ * existed again. No error, no log line, no way for the app that sent it to ever learn
+ * otherwise.
  *
  * That is not a hypothetical. It is the reported failure on a live install: messages
  * accepted for over 24 hours, none delivered, nothing in any log, while `!os` commands
@@ -17,10 +18,9 @@
  * bypasses the queue entirely. "Commands work but messages do not" is exactly the
  * signature of a broken queue and a working transport.
  *
- * The pacing HISTORY is persisted for a different and equally important reason: it is the
- * ban-risk budget. If `sentAt` empties on every restart then the hourly and daily caps are
- * not really caps, and a box in a restart loop could send its daily allowance many times
- * over — the precise behaviour the whole pacer exists to prevent.
+ * The send HISTORY is persisted with it. It was once the ban-risk budget the caps spent;
+ * the caps are gone, and it is now only a record of the last day's sends, kept for any
+ * ceiling that ever returns.
  *
  * WHERE. `config/whatsapp-queue.json`. Not because it is a credential, but because a
  * queued message body routinely carries a child's name and a family's fees. `CONFIG_DIR`
