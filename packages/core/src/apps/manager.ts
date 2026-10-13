@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { APPS_DIR, PORT } from '../config';
 import { log } from '../logger';
-import { readJson, writeJson, ensureDir } from '../util/json-store';
+import { writeJson, ensureDir } from '../util/json-store';
 import {
   composeUp,
   composeDown,
@@ -23,8 +23,7 @@ import {
   composePull,
   composeUpStream,
 } from '../docker/compose';
-import { discoverApps, discoverAppsResult } from '../docker/discovery';
-import { docker } from '../docker/client';
+import { discoverApps, discoverAppsResult, type DiscoveredApp } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
 import { assertAppFree, withUpdateLock } from '../system/update-lock';
@@ -114,9 +113,7 @@ const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
 export function appsPendingChannel(): { id: string; name: string; from: Channel }[] {
   const target = getSettings().updateChannel;
   const out: { id: string; name: string; from: Channel }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     // Only catalog apps track a channel: community and custom apps come from a URL
     // or a pasted compose the admin owns, so the OS has no other version of them
     // to offer and must not claim they are "pending".
@@ -223,8 +220,7 @@ export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] 
   const needRestart: string[] = [];
   const want = desiredBaseUrl();
   if (!want) return { changed, needRestart };
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
+  for (const { id, meta } of listMetas()) {
     const env = readEnvFile(id);
     // Write when the app already has the key, or when it plainly wants one (its
     // compose interpolates it, or it holds a Fabric secret) — an app installed
@@ -238,7 +234,7 @@ export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] 
     const wantsIt =
       env.OPENMASJID_BASE_URL !== undefined ||
       compose.includes('OPENMASJID_BASE_URL') ||
-      loadMeta(id)?.ssoSecret !== undefined;
+      meta?.ssoSecret !== undefined;
     if (!wantsIt) continue;
     if (env.OPENMASJID_BASE_URL === want) continue;
     env.OPENMASJID_BASE_URL = want;
@@ -280,6 +276,8 @@ export interface FabricApp {
 
 interface FabricEntry extends FabricApp {
   ssoSecret: string;
+  /** The alert ids its manifest declared — the gate for POST /api/fabric/alert. */
+  alerts: string[];
 }
 
 // In-memory index of issued Fabric secrets. /api/fabric/* is reachable
@@ -297,8 +295,8 @@ export function invalidateFabricIndex(): void {
 function fabricEntries(): FabricEntry[] {
   if (fabricCache) return fabricCache;
   const out: FabricEntry[] = [];
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  // Platform infrastructure ids are NOT skipped here, unlike every other listing.
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (meta?.ssoSecret) {
       out.push({
         id,
@@ -312,6 +310,8 @@ function fabricEntries(): FabricEntry[] {
         provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
         consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
+        // Defensive: one malformed record must not break every app's Fabric lookups.
+        alerts: Array.isArray(meta.appAlerts) ? meta.appAlerts.map((a) => a?.id).filter((x) => typeof x === 'string') : [],
       });
     }
   }
@@ -430,9 +430,7 @@ export function parseAlerts(alerts: unknown, appId: string): DeclaredAlert[] {
 /** Every installed app's declared alert types — for the granular Settings list. */
 export function listAppAlerts(): { appId: string; appName: string; alerts: DeclaredAlert[] }[] {
   const out: { appId: string; appName: string; alerts: DeclaredAlert[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appAlerts) && meta.appAlerts.length) {
       out.push({ appId: id, appName: meta.name ?? id, alerts: meta.appAlerts });
     }
@@ -440,10 +438,10 @@ export function listAppAlerts(): { appId: string; appName: string; alerts: Decla
   return out;
 }
 
-/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.) */
+/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.)
+ *  Read from the Fabric index: declaring an alert issues the secret the caller proved. */
 export function appDeclaresAlert(appId: string, alertId: string): boolean {
-  const meta = loadMeta(appId);
-  return Boolean(meta?.appAlerts?.some((a) => a.id === alertId));
+  return fabricEntries().find((e) => e.id === appId)?.alerts.includes(alertId) ?? false;
 }
 
 /**
@@ -539,9 +537,7 @@ export function parseCommands(commands: unknown, appId: string): DeclaredCommand
  *  arriving message, so it must not wait on Docker. */
 export function listAppCommands(): { appId: string; appName: string; commands: DeclaredCommand[] }[] {
   const out: { appId: string; appName: string; commands: DeclaredCommand[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appCommands) && meta.appCommands.length) {
       out.push({ appId: id, appName: meta.name ?? id, commands: meta.appCommands });
     }
@@ -561,9 +557,7 @@ export function getAppCommand(appId: string, commandId: string): DeclaredCommand
  *  listInstalled() when you need running state or ports. */
 export function listMetaSummaries(): { id: string; name: string; kind: AppMeta['kind'] }[] {
   const out: { id: string; name: string; kind: AppMeta['kind'] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta) out.push({ id, name: meta.name ?? id, kind: meta.kind });
   }
   return out;
@@ -647,6 +641,16 @@ function listMetaIds(): string[] {
   }
 }
 
+/**
+ * Every app that has a meta.json, with its record (null when the file cannot be read).
+ * OpenMasjidOS's own infrastructure ids (RESERVED_APP_IDS) are left out unless asked for.
+ */
+function listMetas({ includeInfra = false } = {}): { id: string; meta: AppMeta | null }[] {
+  return listMetaIds()
+    .filter((id) => includeInfra || !RESERVED_APP_IDS.has(id))
+    .map((id) => ({ id, meta: loadMeta(id) }));
+}
+
 /** The open target for an app: its dedicated HTTPS proxy port when it's a flagged
  *  (Stripe) app, otherwise its first published HTTP port. */
 function openTarget(meta: AppMeta | null, ports: number[]): { https: boolean; openPort: number | null } {
@@ -658,9 +662,8 @@ function openTarget(meta: AppMeta | null, ports: number[]): { https: boolean; op
  *  assigned to other apps and any live proxy. Null if the range is exhausted. */
 function pickHttpsPort(): number | null {
   const used = activeProxyPorts();
-  for (const id of listMetaIds()) {
-    const hp = loadMeta(id)?.httpsPort;
-    if (hp) used.add(hp);
+  for (const { meta } of listMetas({ includeInfra: true })) {
+    if (meta?.httpsPort) used.add(meta.httpsPort);
   }
   return allocateHttpsPort(used);
 }
@@ -718,24 +721,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
     }
     const meta = loadMeta(id);
     if (!meta) continue;
-    const disc = discovered.get(projectOf(id));
-    byId.set(id, {
-      id: meta.id,
-      name: meta.name,
-      kind: meta.kind,
-      icon: meta.icon,
-      category: meta.category,
-      running: disc?.running ?? false,
-      ports: disc?.ports ?? [],
-      createdAt: meta.createdAt,
-      // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
-      fabric: meta.sso === true || meta.notify === true,
-      managed: isPlatformManaged(meta.id),
-      exposed: isExposedMeta(meta),
-      path: getAppPath(meta.id),
-      review: meta.review ?? null,
-      ...openTarget(meta, disc?.ports ?? []),
-    });
+    byId.set(id, toInstalled(meta, discovered.get(projectOf(id))));
   }
 
   // 2. Running/known projects without metadata — recover them (golden rule).
@@ -782,7 +768,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // other app: a recovered catalog app stays reachable, a recovered
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
-      path: getAppPath(disc.id),
+      path: appPathOf(disc.id, recovered),
       // A recovered orphan has no compose file of ours to have vetted, and it is
       // ALREADY running — holding it for a review we never performed would show
       // the admin a finding that does not exist. It starts un-held, exactly as
@@ -795,9 +781,34 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
   return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The dashboard row for an app we hold a record for, given what Docker reports for it. */
+function toInstalled(meta: AppMeta, disc: DiscoveredApp | undefined): InstalledApp {
+  return {
+    id: meta.id,
+    name: meta.name,
+    kind: meta.kind,
+    icon: meta.icon,
+    category: meta.category,
+    running: disc?.running ?? false,
+    ports: disc?.ports ?? [],
+    createdAt: meta.createdAt,
+    // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
+    fabric: meta.sso === true || meta.notify === true,
+    managed: isPlatformManaged(meta.id),
+    exposed: isExposedMeta(meta),
+    path: appPathOf(meta.id, meta),
+    review: meta.review ?? null,
+    ...openTarget(meta, disc?.ports ?? []),
+  };
+}
+
+/** One installed app — the same row listInstalled() gives, without reading every app. */
 export async function getInstalled(id: string): Promise<InstalledApp | null> {
-  const all = await listInstalled();
-  return all.find((a) => a.id === id) ?? null;
+  if (RESERVED_APP_IDS.has(id)) return null;
+  const meta = loadMeta(id);
+  // No record of our own (an orphan): only the full listing recovers one.
+  if (!meta || meta.id !== id) return (await listInstalled()).find((a) => a.id === id) ?? null;
+  return toInstalled(meta, (await discoverApps()).get(projectOf(id)));
 }
 
 /** Install a catalog app: write its files (with settings as env) and start it. */
@@ -1119,8 +1130,7 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
  */
 export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
   let rotated = 0;
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (!meta?.ssoSecret) continue; // only apps that opted into the Fabric hold a secret
     const secret = crypto.randomBytes(32).toString('base64url');
     saveMeta({ ...meta, ssoSecret: secret });
@@ -1149,8 +1159,12 @@ function sanitizePath(p: string): string {
  *  Public-Hostname path AND the Fabric `basePath`. Admin-configurable; defaults
  *  to the app id (e.g. donations → "donations"; the admin can change it to "donate"). */
 export function getAppPath(id: string): string {
-  const raw = loadMeta(id)?.path;
-  const clean = raw ? sanitizePath(raw) : '';
+  return appPathOf(id, loadMeta(id));
+}
+
+/** getAppPath, for a record already in hand. */
+function appPathOf(id: string, meta: AppMeta | null): string {
+  const clean = meta?.path ? sanitizePath(meta.path) : '';
   return clean || id;
 }
 
@@ -1180,9 +1194,8 @@ export function setAppPath(id: string, path: string): string {
 
 /** The installed app (other than `exceptId`) that answers to `seg`, or null. */
 function pathTakenBy(seg: string, exceptId: string): string | null {
-  for (const other of listMetaIds()) {
-    if (other === exceptId || RESERVED_APP_IDS.has(other)) continue;
-    if (getAppPath(other) === seg) return other;
+  for (const { id, meta } of listMetas()) {
+    if (id !== exceptId && appPathOf(id, meta) === seg) return id;
   }
   return null;
 }
@@ -1255,9 +1268,7 @@ export function setExposed(id: string, exposed: boolean): void {
  *  is enabled/disabled or the domain/path changes, so exposed apps learn their URL. */
 export function reconcilePublicUrls(): string[] {
   const changed: string[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (!meta) continue;
     const want = intendedPublicUrl(id, isExposedMeta(meta));
     const env = readEnvFile(id);
