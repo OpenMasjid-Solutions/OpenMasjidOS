@@ -23,10 +23,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const UI = path.join(__dirname, '..', '..', 'ui', 'src');
+// The shell: the section table, the gates, the Advanced pane and the dialogs.
 const settings = fs.readFileSync(path.join(UI, 'routes', 'Settings.tsx'), 'utf8');
+// The panels the shell renders, one file each.
+const PANES = path.join(UI, 'routes', 'settings');
+const whatsapp = fs.readFileSync(path.join(PANES, 'WhatsAppPanel.tsx'), 'utf8');
 const en = JSON.parse(fs.readFileSync(path.join(UI, 'lib', 'i18n', 'en.json'), 'utf8')) as {
   settings: { nav?: Record<string, string>; whatsappTab?: Record<string, string> };
 };
+
+/** Every .tsx file under `dir`, subdirectories included. */
+function tsxFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) return tsxFiles(p);
+    return e.name.endsWith('.tsx') ? [p] : [];
+  });
+}
 
 /** The ids declared in the SECTIONS table, read from the source itself. */
 function sectionIds(): string[] {
@@ -83,9 +96,14 @@ test('NO PANEL WAS ORPHANED by the split', () => {
     'SslSection',
     'SshAccess',
   ];
+  // The shell and every panel file: a panel may be rendered by another panel (the logo
+  // by the Appearance pane), as Groups and Commands always were.
+  const everywhere = [settings, ...tsxFiles(PANES).map((f) => fs.readFileSync(f, 'utf8'))].join('\n');
   for (const p of panels) {
-    assert.match(settings, new RegExp(`<${p}[\\s/>]`), `${p} is defined but no longer rendered anywhere`);
+    assert.match(everywhere, new RegExp(`<${p}[\\s/>]`), `${p} is defined but no longer rendered anywhere`);
   }
+  // And the Appearance pane — which carries the logo panel — is itself under its gate.
+  assert.match(settings, /\{show\('appearance'\) && <AppearancePane \/>\}/, 'the Appearance pane is not rendered');
 });
 
 test("the WhatsApp sub-tabs each render, and only once a phone is linked", () => {
@@ -96,10 +114,10 @@ test("the WhatsApp sub-tabs each render, and only once a phone is linked", () =>
   // Groups and Commands error before a phone is linked, so both are gated on `waLinked`
   // as well as on the tab. Showing three tabs where two of them fail is worse than
   // showing none.
-  assert.match(settings, /waLinked && waTab === 'groups' && <WhatsAppGroups/);
-  assert.match(settings, /waLinked && waTab === 'commands' && <WhatsAppCommands/);
+  assert.match(whatsapp, /waLinked && waTab === 'groups' && <WhatsAppGroups/);
+  assert.match(whatsapp, /waLinked && waTab === 'commands' && <WhatsAppCommands/);
   // And the strip itself only appears then.
-  assert.match(settings, /\{on && waLinked && \(/);
+  assert.match(whatsapp, /\{on && waLinked && \(/);
 });
 
 test('the section routes exist, or every nav link is a 404', () => {
@@ -161,9 +179,10 @@ test('IN-PRODUCT LINKS point at the section they name, not at bare /settings', (
   // particular setting, so bare /settings is correct there and it lives in components/.
   const routes = path.join(UI, 'routes');
   const offenders: string[] = [];
-  for (const f of fs.readdirSync(routes)) {
-    if (!f.endsWith('.tsx')) continue;
-    const src = fs.readFileSync(path.join(routes, f), 'utf8');
+  // Subdirectories included: the Settings panels live in routes/settings/.
+  for (const file of tsxFiles(routes)) {
+    const src = fs.readFileSync(file, 'utf8');
+    const f = path.relative(routes, file).replace(/\\/g, '/');
     src.split('\n').forEach((line, i) => {
       if (line.includes('to="/settings"')) offenders.push(`routes/${f}:${i + 1}`);
     });
@@ -177,10 +196,8 @@ test('every section a deep link targets actually exists', () => {
   const ids = sectionIds();
   const targets = new Set<string>();
   for (const dir of ['routes', 'components']) {
-    const d = path.join(UI, dir);
-    for (const f of fs.readdirSync(d)) {
-      if (!f.endsWith('.tsx')) continue;
-      const src = fs.readFileSync(path.join(d, f), 'utf8');
+    for (const file of tsxFiles(path.join(UI, dir))) {
+      const src = fs.readFileSync(file, 'utf8');
       for (const m of src.matchAll(/to="\/settings\/([a-z]+)"/g)) targets.add(m[1]!);
     }
   }
@@ -196,7 +213,7 @@ test('the unconfirmed-unlink notice lives OUTSIDE the linked-number block', () =
   // toast (suppressed on purpose, because this was meant to carry the message) and a
   // paragraph that flashed for under a second, for the one outcome where their phone may
   // still hold a device they can no longer revoke from here.
-  const src = fs.readFileSync(path.join(UI, 'routes', 'Settings.tsx'), 'utf8');
+  const src = whatsapp;
   const warn = src.indexOf('{unlinkWarning && (');
   assert.ok(warn > 0, 'the warning block must exist');
   const linkedBlock = src.indexOf('{linkedPhone && showSetup && (');
@@ -212,7 +229,7 @@ test('an unconfirmed unlink is decided by `unlinked`, never by `stillLinked` alo
   // There are TWO ways to fail: a 502 (tried, could not confirm) sets `stillLinked`; not
   // reaching the gateway at all sets neither — and that is a common reason to be deleting
   // in the first place. Branching on `stillLinked` treated "we never asked" as success.
-  const src = fs.readFileSync(path.join(UI, 'routes', 'Settings.tsx'), 'utf8');
+  const src = whatsapp;
   assert.match(src, /const confirmed = r\.unlinked;/, 'both handlers must key off `unlinked`');
   assert.doesNotMatch(
     src,

@@ -134,5 +134,7 @@ test('the migration window reads what is pending instead of trusting a stale pro
     path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'),
     'utf8',
   );
+  // Found first, or the check below passes on a file that no longer renders it at all.
+  assert.match(caller, /<ChannelMigrate\b/, 'the Settings shell must still open the migration window');
   assert.doesNotMatch(caller, /<ChannelMigrate[^>]*apps=/, 'the caller must not pass a stale list');
 });

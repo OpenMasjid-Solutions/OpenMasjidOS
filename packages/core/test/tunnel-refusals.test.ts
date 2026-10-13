@@ -140,7 +140,7 @@ test('the reason list is read from the type, all of it', () => {
 test('EVERY REASON HAS ITS OWN WORDS in "Recently turned away"', () => {
   // The label falls back to "Local network only" — which is how a Cloudflare hostname
   // pointed at the wrong port was once shown, with nothing to say what to fix.
-  const settings = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
+  const settings = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'settings', 'CloudflarePanel.tsx'), 'utf8');
   const panel = settings.slice(settings.indexOf('function TunnelRefusals'), settings.indexOf('function CloudflarePanel'));
   for (const reason of REASONS) {
     if (reason === 'lan-only-route') continue; // the fallback IS its label

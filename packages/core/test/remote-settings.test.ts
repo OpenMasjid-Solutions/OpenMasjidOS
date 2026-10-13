@@ -244,7 +244,7 @@ test('a tunnel stuck restarting on a refused token is not shown as running', () 
   assert.equal(cloudflared.tunnelContainerUp({ Running: false }), false);
   assert.equal(cloudflared.tunnelContainerUp(undefined), false);
   // And Settings says so: a tunnel that is switched on and not up is not "turned off".
-  const settingsUi = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
+  const settingsUi = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'settings', 'CloudflarePanel.tsx'), 'utf8');
   assert.match(settingsUi, /: cf\.enabled\s*\? t\('settings\.cfNotConnecting'\)\s*: t\('settings\.cfStopped'\)/);
 });
 
@@ -301,8 +301,10 @@ test('the panel sends the address only when it was edited, and keeps the token l
   // Sending what a field held since the page loaded put back an address another device
   // had changed. And from outside the tunnel token is the masjid's to change: the server
   // refuses, and the field says so first.
-  const ui = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'), 'utf8');
-  const panel = ui.slice(ui.indexOf('function CloudflarePanel'), ui.indexOf('function StripeAccountForm'));
+  const ui = fs.readFileSync(path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'settings', 'CloudflarePanel.tsx'), 'utf8');
+  const from = ui.indexOf('function CloudflarePanel');
+  assert.ok(from > 0, 'the panel must be found');
+  const panel = ui.slice(from);
   assert.match(panel, /domain: domainEdited \? domain\.trim\(\) : undefined/);
   assert.match(panel, /disabled=\{remote\}\s*title=\{remote \? t\('settings\.cfTokenRemote'\)/, 'the token must be locked from outside');
   assert.doesNotMatch(panel, /adminHost/, 'the dashboard address field is back');
