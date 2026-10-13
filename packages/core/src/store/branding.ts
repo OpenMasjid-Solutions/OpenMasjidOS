@@ -2,14 +2,15 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Masjid branding — the logo the admin uploads once in Settings, reused across the
- * masjid's outbound communications: OS-sent emails (alerts + the test message) embed
- * it inline, notification webhooks (Slack/Discord) show it as the sender avatar, and
- * apps can pull it over the Fabric to brand their own receipts.
+ * masjid's outbound communications: OS-sent emails (alerts + the test message) and
+ * notification webhooks (Slack/Discord) link it from /api/public/logo — only when
+ * remote access is set up, since the mail or chat service fetches it from its own
+ * network — and apps can pull it over the Fabric to brand their own receipts.
  *
- * We store the RAW bytes on disk (not a data URI in settings.json) because email
- * needs them for a CID inline attachment and the public endpoint streams them. Only
- * raster formats are accepted (PNG/JPG/WebP): email clients render those reliably,
- * and refusing SVG sidesteps SVG-borne script entirely.
+ * We store the RAW bytes on disk (not a data URI in settings.json) because the public
+ * endpoint serves them and emails size the logo from its header. Only raster formats
+ * are accepted (PNG/JPG/WebP): email clients render those reliably, and refusing SVG
+ * sidesteps SVG-borne script entirely.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,6 +33,12 @@ interface BrandingMeta {
   logo?: { ext: string; mime: string };
 }
 
+interface Logo {
+  buf: Buffer;
+  mime: string;
+  ext: string;
+}
+
 function readMeta(): BrandingMeta {
   return readJson<BrandingMeta>(META_PATH, {});
 }
@@ -43,12 +50,10 @@ export function isAllowedLogoMime(mime: string): boolean {
 
 /** True when a logo has been uploaded. */
 export function hasLogo(): boolean {
-  const m = readMeta();
-  return Boolean(m.logo && fs.existsSync(path.join(BRANDING_DIR, `logo.${m.logo.ext}`)));
+  return getLogo() !== null;
 }
 
-/** The stored logo's bytes + MIME, or null if none set. */
-export function getLogo(): { buf: Buffer; mime: string; ext: string } | null {
+function readLogo(): Logo | null {
   const m = readMeta();
   if (!m.logo) return null;
   try {
@@ -57,6 +62,32 @@ export function getLogo(): { buf: Buffer; mime: string; ext: string } | null {
   } catch {
     return null;
   }
+}
+
+/** The logo as last read, with the identity of branding.json it was read under. */
+let memo: { stamp: string; logo: Logo } | null = null;
+
+/** Identity of branding.json on disk. A restore replaces config/, so it changes this. */
+function stampOf(): string {
+  try {
+    const st = fs.statSync(META_PATH);
+    return `${st.ino}:${st.mtimeMs}:${st.size}`;
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/**
+ * The stored logo's bytes + MIME, or null if none set. A public route serves it (and the
+ * root icons), so it costs one stat; the files are read again only when they changed.
+ */
+export function getLogo(): Logo | null {
+  const stamp = stampOf();
+  if (memo?.stamp === stamp) return memo.logo;
+  const logo = readLogo();
+  // Only a logo actually read is remembered: "none" or a failed read is asked again.
+  memo = logo ? { stamp, logo } : null;
+  return logo;
 }
 
 /**
@@ -70,31 +101,46 @@ export function getLogoSize(): { width: number; height: number } | null {
   return logo ? imageSize(logo.buf, logo.mime) : null;
 }
 
-/** Persist a new logo (replacing any previous one). Caller validates size + MIME. */
-export function saveLogo(buf: Buffer, mime: string): void {
-  const ext = MIME_EXT[mime];
-  if (!ext) throw new Error('Unsupported logo format.');
-  ensureDir(BRANDING_DIR);
-  // Drop any previous logo file first so a format change can't leave two behind.
-  for (const e of Object.values(MIME_EXT)) {
-    fs.rmSync(path.join(BRANDING_DIR, `logo.${e}`), { force: true });
-  }
-  const file = path.join(BRANDING_DIR, `logo.${ext}`);
-  const fd = fs.openSync(file, 'w', 0o600);
+/** Write a private file through a temp file + rename, so a failed write leaves the old one. */
+function writePrivateFile(file: string, buf: Buffer): void {
+  const tmp = `${file}.tmp`;
+  const fd = fs.openSync(tmp, 'w', 0o600);
   try {
     fs.writeFileSync(fd, buf);
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
   }
-  fs.chmodSync(file, 0o600);
-  writeJson(META_PATH, { logo: { ext, mime } } satisfies BrandingMeta);
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
 }
 
-/** Remove the logo, if any. */
-export function removeLogo(): void {
-  for (const e of Object.values(MIME_EXT)) {
-    fs.rmSync(path.join(BRANDING_DIR, `logo.${e}`), { force: true });
+/** Persist a new logo (replacing any previous one). Caller validates size + MIME. */
+export function saveLogo(buf: Buffer, mime: string): void {
+  const ext = MIME_EXT[mime];
+  if (!ext) throw new Error('Unsupported logo format.');
+  ensureDir(BRANDING_DIR);
+  try {
+    // The new file, then the record naming it, and only then the old file: a write that
+    // fails part-way (a full SD card) leaves the previous logo working, not none at all.
+    writePrivateFile(path.join(BRANDING_DIR, `logo.${ext}`), buf);
+    writeJson(META_PATH, { logo: { ext, mime } } satisfies BrandingMeta);
+    for (const e of Object.values(MIME_EXT)) {
+      if (e !== ext) fs.rmSync(path.join(BRANDING_DIR, `logo.${e}`), { force: true });
+    }
+  } finally {
+    memo = null;
   }
-  writeJson(META_PATH, {} satisfies BrandingMeta);
+}
+
+/** Remove the logo, if any. The record first, so a refused write removes nothing. */
+export function removeLogo(): void {
+  try {
+    writeJson(META_PATH, {} satisfies BrandingMeta);
+    for (const e of Object.values(MIME_EXT)) {
+      fs.rmSync(path.join(BRANDING_DIR, `logo.${e}`), { force: true });
+    }
+  } finally {
+    memo = null;
+  }
 }
