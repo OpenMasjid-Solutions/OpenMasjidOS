@@ -340,6 +340,95 @@ test('an id read off disk never becomes a path', () => {
   qstore.clearQueueStore();
 });
 
+// ── the gateway client ───────────────────────────────────────────────────────────
+
+test('A FAILED PRIVACY-ID LOOKUP IS ASKED AGAIN — only a real answer is remembered', async () => {
+  // A 503 while the gateway restarted was cached as "no number", so a trustee writing from a
+  // @lid chat was dropped as unidentifiable until the core itself restarted.
+  let restarting = true;
+  const gw = await stubGateway((_m, url) => {
+    if (url.includes('/contacts/111%40lid/phone')) {
+      if (restarting) {
+        restarting = false;
+        return { status: 503, body: { message: 'restarting' } };
+      }
+      return { status: 200, body: { phone: '+1 555 010 1234' } };
+    }
+    if (url.includes('/contacts/222%40lid/phone')) return { status: 404, body: { message: 'unknown' } };
+    return undefined;
+  });
+  try {
+    assert.equal(await wa.resolveLidPhone('111@lid'), null, 'the gateway was restarting');
+    assert.equal(await wa.resolveLidPhone('111@lid'), '15550101234', 'so it is asked again');
+    assert.equal(await wa.resolveLidPhone('111@lid'), '15550101234');
+    assert.equal(gw.calls.filter((c) => c.includes('111%40lid')).length, 2, 'a real answer is remembered');
+
+    assert.equal(await wa.resolveLidPhone('222@lid'), null);
+    assert.equal(await wa.resolveLidPhone('222@lid'), null);
+    assert.equal(gw.calls.filter((c) => c.includes('222%40lid')).length, 1, '"no number" is an answer too');
+  } finally {
+    await gw.close();
+  }
+});
+
+test('A SEND THAT TIMED OUT IS REPORTED, NOT SENT AGAIN — and a send has time to finish', () => {
+  // Every gateway call had 15 s, a 2 MB send-image included, and a timed-out send (usually
+  // delivered anyway) was retried as transient: up to five copies into a 200-member group.
+  const code = codeOf('notify/whatsapp.ts');
+  const limit = Number(/const SEND_TIMEOUT_MS = ([\d_]+)/.exec(code)?.[1]?.replace(/_/g, ''));
+  assert.ok(limit >= 60_000, `a send needs far longer than a status read; got ${limit}`);
+
+  const fn = code.slice(code.indexOf('async function sendOne'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.equal((body.match(/SEND_TIMEOUT_MS/g) ?? []).length, 2, 'send-text and send-image both get it');
+  const at = body.indexOf('if (r.timedOut)');
+  assert.ok(at > 0, 'a timeout is told apart from a refusal');
+  const branch = body.slice(at, body.indexOf('\n    }\n', at));
+  assert.match(branch, /retryable: false/, 'and is never retried');
+  assert.match(branch, /may or may not have arrived/, 'and the record says what is known, and no more');
+  assert.match(codeOf('notify/whatsapp.ts'), /timedOut: \(err as Error\)\?\.name === 'TimeoutError'/);
+});
+
+test('A TEST BEFORE A PHONE IS LINKED SAYS SO — no fake typing, no bare gateway error', async () => {
+  let linked = false;
+  const gw = await stubGateway((method, url) => {
+    if (linked) return undefined;
+    if (method === 'GET' && url === '/api/sessions/:id') {
+      return { status: 200, body: { id: SESSION_ID, status: 'qr_ready', engineLoaded: true } };
+    }
+    if (url.includes('/chats/') || url.includes('/messages/')) return { status: 400, body: { message: 'not ready' } };
+    return undefined;
+  });
+  try {
+    store.approveGroup(GROUP, 'Parents');
+    const started = Date.now();
+    const toPerson = await wa.sendTestMessage(PARENT, 'test');
+    const toGroup = await wa.sendTestToGroup(GROUP, 'test');
+    assert.equal(toPerson.ok, false);
+    assert.match(String(toPerson.error), /Link a phone first/);
+    assert.match(String(toGroup.error), /Link a phone first/);
+    assert.ok(Date.now() - started < 1_500, 'answered at once, not after seconds of "typing"');
+    assert.ok(!gw.calls.some((c) => /\/chats\/typing|\/messages\//.test(c)), 'nothing went towards a phone');
+
+    linked = true;
+    assert.equal((await wa.sendTestMessage(PARENT, 'test')).ok, true, 'a linked phone is not held up by the check');
+  } finally {
+    await gw.close();
+  }
+});
+
+test('an already-linked phone is changed in Settings, never in OpenWA’s own screen', async () => {
+  const gw = await stubGateway();
+  try {
+    const r = await wa.requestPairingCode(PARENT);
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /Settings → WhatsApp/);
+    assert.doesNotMatch(String(r.error), /in OpenWA/);
+  } finally {
+    await gw.close();
+  }
+});
+
 test('A NUMBER STARTING WITH 0 IS REFUSED — no country code starts with one', () => {
   // "07700 900123" (a national number) and "0044 7700 900123" (a dialling prefix) were both
   // accepted, answered 202, and became a chat id WhatsApp can never deliver to.
@@ -350,6 +439,23 @@ test('A NUMBER STARTING WITH 0 IS REFUSED — no country code starts with one', 
   const r = wa.enqueue({ to: '0044 7700 900123', text: 'hello', source: 'students' });
   assert.equal(r.queued, false, 'refused at the door, while the app is still listening');
   assert.match(String(r.error), /country code/);
+});
+
+test('the cause apps are told comes from the status code, never from the wording', async () => {
+  for (const [status, cause] of [
+    [503, 'session-expired'],
+    [401, 'key-rejected'],
+    [403, 'key-rejected'],
+  ] as const) {
+    const gw = await stubGateway((_m, url) => (url.endsWith('/chats?limit=1') ? { status } : undefined));
+    try {
+      const probe = await wa.probeLink();
+      assert.equal(probe.alive, false);
+      assert.equal(probe.cause, cause, `a ${status}`);
+    } finally {
+      await gw.close();
+    }
+  }
 });
 
 // ── turning it off, and the outage record ────────────────────────────────────────

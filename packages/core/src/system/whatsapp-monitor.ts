@@ -188,11 +188,7 @@ async function assess(): Promise<{ alive: boolean | null; reason: string; cause:
   // 2. The real probe — a question that has to reach WhatsApp.
   const probe = await probeLink();
   if (probe.alive === false) {
-    return {
-      alive: false,
-      reason: probe.detail ?? 'the link is down',
-      cause: probe.detail?.includes('key') ? 'key-rejected' : 'session-expired',
-    };
+    return { alive: false, reason: probe.detail ?? 'the link is down', cause: probe.cause ?? 'session-expired' };
   }
 
   // 3. The session row, for the states it genuinely detects. Its `ready` proves nothing,
