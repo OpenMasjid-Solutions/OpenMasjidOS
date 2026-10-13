@@ -4,15 +4,14 @@
  * "What's new" — fetches the project CHANGELOG.md so the dashboard can show what
  * a release contains.
  *
- * Fetched from `master` at view time rather than baked into the image, and this is
- * the whole point: a version baked in can only ever describe the version you are
- * ALREADY running, which is backwards for the question an admin actually has
- * ("what's in the update you're offering me?"). The trade is that it needs
- * internet — the same trade the existing update check already makes, and it fails
- * soft the same way.
+ * Fetched from the channel's branch (`master` for Stable, `dev` for Development) at
+ * view time rather than baked into the image, and this is the whole point: a version
+ * baked in can only ever describe the version you are ALREADY running, which is
+ * backwards for the question an admin actually has ("what's in the update you're
+ * offering me?"). The trade is that it needs internet — the same trade the existing
+ * update check already makes, and it fails soft the same way.
  *
- * Fetched SERVER-side, like the catalog: the dashboard is LAN-only and must never
- * be asked to reach GitHub from the browser.
+ * Fetched SERVER-side, like the catalog: the browser is never asked to reach GitHub.
  */
 import { log } from '../logger';
 import { getSettings } from '../settings/store';

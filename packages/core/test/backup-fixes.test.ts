@@ -27,6 +27,7 @@ const offsite = req('../src/system/backup-upload') as typeof import('../src/syst
 const settings = req('../src/settings/store') as typeof import('../src/settings/store');
 const lock = req('../src/system/update-lock') as typeof import('../src/system/update-lock');
 const { runUpdate, recreateCore } = req('../src/docker/update') as typeof import('../src/docker/update');
+const { networkInfo } = req('../src/system/system') as typeof import('../src/system/system');
 
 const CONFIG = path.join(DATA, 'config');
 fs.mkdirSync(CONFIG, { recursive: true });
@@ -355,5 +356,14 @@ test('AN UPDATE WHOSE COMPOSE FILE CANNOT NAME THE NEW VERSION CHANGES NOTHING �
   } finally {
     docker.restore();
     fs.rmSync(compose, { force: true });
+  }
+});
+
+test("SETTINGS → NETWORK SHOWS THE MACHINE'S ADDRESS — not the container's 172.x and id", () => {
+  process.env.OPENMASJID_HOST_IP = '192.168.1.24';
+  try {
+    assert.deepEqual(networkInfo(), { localDomain: '', addresses: ['192.168.1.24'] });
+  } finally {
+    delete process.env.OPENMASJID_HOST_IP;
   }
 });
