@@ -430,6 +430,19 @@ setup_data_dir() {
   info "Data directory ready."
 }
 
+# seed_channel — tell a NEW install that it is on the Development channel. The platform
+# reads its channel from config/settings.json and treats a missing one as Stable, so a
+# fresh --channel=dev box ran a Development build while serving the Stable catalogue and
+# offering a "downgrade" to Stable. A settings file that already exists is never touched.
+seed_channel() {
+  local settings="${DATA_DIR}/config/settings.json"
+  if [ "${CHANNEL:-}" = "dev" ] && [ ! -e "${settings}" ]; then
+    # 0600, root-owned, like every file the core keeps in config/.
+    ( umask 077 && printf '{\n  "updateChannel": "dev"\n}\n' > "${settings}" )
+    info "This machine is set up on the Development channel."
+  fi
+}
+
 # =============================================================================
 # Step 5: Write (or refresh) the core docker-compose.yml
 # =============================================================================
@@ -440,10 +453,35 @@ setup_data_dir() {
 # writes this same line (`alignComposeImage` in docker/update.ts), so it reflects a
 # channel switch made from Settings. Anchored to our repo name so an app's image, a
 # comment or a volume path can never be picked up.
+#
+# A missing or damaged compose file (is_installed accepts config/ alone) must not read as
+# "no reference" — Update and Repair would then put a Development box on Stable. The core
+# container, while it exists, still names the image it was started from.
 current_core_ref() {
-  [ -f "${DATA_DIR}/docker-compose.yml" ] || return 0
-  sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*openmasjid-core[^[:space:]]*\)[[:space:]]*$|\1|p' \
-    "${DATA_DIR}/docker-compose.yml" | head -n 1
+  local ref=""
+  if [ -f "${DATA_DIR}/docker-compose.yml" ]; then
+    ref="$(sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*openmasjid-core[^[:space:]]*\)[[:space:]]*$|\1|p' \
+      "${DATA_DIR}/docker-compose.yml" | head -n 1)"
+  fi
+  if [ -z "${ref}" ] && command -v docker &>/dev/null; then
+    ref="$(docker inspect --type container -f '{{.Config.Image}}' openmasjid-core 2>/dev/null || true)"
+    case "${ref}" in
+      *openmasjid-core*) ;;
+      *) ref="" ;;
+    esac
+  fi
+  echo "${ref}"
+}
+
+# image_repo — an image reference without its tag or digest, keeping any registry port:
+# a ':' starts a tag only after the last '/' (my-mirror:5000/openmasjid-core:dev). The same
+# rule as `retarget` in docker/update.ts.
+image_repo() {
+  local ref="${1%%@*}"
+  case "${ref##*/}" in
+    *:*) ref="${ref%:*}" ;;
+  esac
+  echo "${ref}"
 }
 
 # current_channel — dev or main, read from the tag the box is on.
@@ -476,16 +514,23 @@ current_channel() {
 # A digest pin is preserved in BOTH modes, exactly as the dashboard's updater does — an
 # operator who pinned it meant it, and quietly unpinning it would be the worst of the
 # three outcomes.
+#
+# Only the TAG ever changes: the registry this machine already pulls from (a private
+# mirror, say) is kept, again exactly as the dashboard's updater does.
 resolve_image() {
   local mode="${1:-channel}"
-  local existing
+  local existing repo
   existing="$(current_core_ref)"
+  repo="${CORE_REPO}"
+  if [ -n "${existing}" ]; then
+    repo="$(image_repo "${existing}")"
+  fi
 
   # An explicit --channel always wins: that is the operator saying so, on this run.
   if [ -n "${CHANNEL:-}" ]; then
     case "${CHANNEL}" in
-      dev)  IMAGE="${CORE_REPO}:dev" ;;
-      *)    IMAGE="${CORE_REPO}:latest" ;;
+      dev)  IMAGE="${repo}:dev" ;;
+      *)    IMAGE="${repo}:latest" ;;
     esac
     return 0
   fi
@@ -506,15 +551,17 @@ resolve_image() {
   fi
 
   if [ "$(current_channel)" = "dev" ]; then
-    IMAGE="${CORE_REPO}:dev"
+    IMAGE="${repo}:dev"
     info "This machine is on the Development channel — updating to the latest Development build."
   else
-    IMAGE="${CORE_REPO}:latest"
+    IMAGE="${repo}:latest"
   fi
 }
 
+# write_compose_file — write the core's compose file naming ${IMAGE}. Callers decide the
+# image first (resolve_image), because WHEN it is written matters: Update downloads before
+# it writes (see do_update).
 write_compose_file() {
-  resolve_image "${IMAGE_MODE:-channel}"
   info "Writing core service configuration..."
 
   # We always overwrite this file so re-running the installer picks up any
@@ -905,8 +952,10 @@ do_install() {
 
   step "Creating a safe place for your data"
   setup_data_dir
+  seed_channel
 
   step "Writing the configuration"
+  resolve_image channel
   write_compose_file
 
   step "Downloading OpenMasjidOS and starting it up"
@@ -929,7 +978,7 @@ do_update() {
   # Download BEFORE writing the new image into the compose file. A failed download stops
   # the script here (set -e), and a compose file already naming the new image would then
   # be what the next restart of the core reads — coming back on a build it never ran.
-  resolve_image "${IMAGE_MODE:-channel}"
+  resolve_image channel
   info "Updating to the latest version..."
   docker pull "${IMAGE}"
   write_compose_file
@@ -952,7 +1001,7 @@ do_repair() {
   # Repair must not move the machine to a different version — only make what is already
   # there work again. This is the path a masjid reaches for when an update went wrong,
   # so changing the version underneath them is the last thing it should do.
-  IMAGE_MODE=keep
+  resolve_image keep
   write_compose_file
   info "Repairing — re-pulling and recreating the core service..."
   docker pull "${IMAGE}"
