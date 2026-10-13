@@ -26,11 +26,10 @@ export function NetworkRow() {
       <div className="setting-row__text">
         <div className="setting-row__title">{t('settings.network')}</div>
         <div className="setting-row__hint">
+          {/* The address alone: no `<name>.local` beside it, because nothing answers to
+              one (mDNS is not built — CLAUDE.md §4) and inside the container the name is
+              its id, which reaches nothing. */}
           {`${t('settings.address')}: ${net?.addresses?.[0] ?? window.location.host}`}
-          {/* The machine's name, not `<name>.local`: nothing answers to that name yet
-              (mDNS is not built — CLAUDE.md §4), so showing it sent people to an address
-              that goes nowhere. */}
-          {net?.hostname ? ` · ${net.hostname}` : ''}
         </div>
         <div className="setting-row__hint">{t('settings.reconnectHint')}</div>
       </div>
