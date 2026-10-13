@@ -274,3 +274,43 @@ test("a custom app's pasted .env is written as the admin pasted it", needsShell,
   assert.match(env, /^OPENMASJID_APP_ID=pasted$/m, 'the platform still sets its own keys');
   assert.doesNotMatch(env, /spoofed/);
 });
+
+// ── No app keeps an address the platform has since taken ──────────────────────
+
+test('AN APP LEFT ON AN ADDRESS OPENMASJIDOS NOW USES IS MOVED, ONCE AND FOR GOOD', () => {
+  // dev.17 reserved the dashboard's pages. An app given /store before that had no public
+  // page any more, while its links and QR codes, still saying /store, opened the dashboard.
+  settings.updateCloudflare({ enabled: true, domain: 'omos.example.org' });
+  seed('shop', { path: 'store', exposed: true }, 'SHOP_NAME=Masjid shop\nOPENMASJID_PUBLIC_URL=https://omos.example.org/store\n');
+  seed('blocker', { path: 'shop' }); // the id the shop would move to is another app's address
+  seed('files'); // an app whose own id is now the dashboard's
+  const warned: string[] = [];
+  const warn = log.warn;
+  log.warn = (msg: string) => void warned.push(msg);
+  try {
+    assert.equal(manager.getAppPath('shop'), 'shop-2', 'the address a new app would get');
+    assert.equal(metaOf('shop').path, 'shop-2', 'and it is kept');
+    const env = envOf('shop');
+    assert.match(env, /^OPENMASJID_PUBLIC_URL=https:\/\/omos\.example\.org\/shop-2$/m, 'the app is told where it is now');
+    assert.match(env, /^SHOP_NAME=Masjid shop$/m);
+    assert.equal(manager.getAppPath('files'), 'files-2');
+
+    // Every way in agrees, and it is said once, not on every read.
+    assert.equal(manager.getAppPath('shop'), 'shop-2');
+    assert.equal(manager.reconcilePublicUrls().includes('shop'), false, 'already told, by the move itself');
+    assert.equal(warned.filter((m) => m.includes('"shop" was at /store')).length, 1);
+  } finally {
+    log.warn = warn;
+    settings.updateCloudflare({ enabled: false, domain: '' });
+  }
+});
+
+test('a reinstall keeps its address — unless OpenMasjidOS has since taken it', needsShell, async () => {
+  seed('kept', { kind: 'custom', path: 'kept-here' });
+  await manager.installCustomApp({ id: 'kept', name: 'Kept', composeText: 'services: {}\n', env: {} });
+  assert.equal(manager.getAppPath('kept'), 'kept-here');
+  seed('kiosk', { kind: 'custom', path: 'apps' });
+  await manager.installCustomApp({ id: 'kiosk', name: 'Kiosk', composeText: 'services: {}\n', env: {} });
+  assert.equal(manager.getAppPath('kiosk'), 'kiosk');
+  assert.equal(metaOf('kiosk').path, undefined, 'it follows its id again');
+});

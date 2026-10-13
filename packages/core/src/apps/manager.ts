@@ -1225,8 +1225,32 @@ export function getAppPath(id: string): string {
 
 /** getAppPath, for a record already in hand. */
 function appPathOf(id: string, meta: AppMeta | null): string {
+  const recorded = recordedPath(id, meta);
+  return meta && isReservedPathSegment(recorded) ? moveOffReservedPath(id, meta, recorded) : recorded;
+}
+
+/** The address an app's record names: its own path when one is set, otherwise its id. */
+function recordedPath(id: string, meta: AppMeta | null): string {
   const clean = meta?.path ? sanitizePath(meta.path) : '';
   return clean || id;
+}
+
+/**
+ * Move an app off an address OpenMasjidOS has since taken for itself (0.51.2-dev.17
+ * reserved the dashboard's pages), once and for good, to the address a new app would get.
+ * Left there it had no public page, and its links and QR codes opened the dashboard.
+ */
+function moveOffReservedPath(id: string, meta: AppMeta, recorded: string): string {
+  const moved = freeAddress(id);
+  try {
+    saveMeta({ ...meta, path: moved === id ? undefined : moved });
+    const url = intendedPublicUrl(id, isExposedMeta(meta), moved);
+    if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== url) updateEnvFile(id, { OPENMASJID_PUBLIC_URL: url });
+    log.warn(`"${id}" was at /${recorded}, which OpenMasjidOS now uses for itself, so it moves to /${moved}. Change it in Settings → Remote access.`);
+  } catch (err) {
+    log.warn(`Could not record "${id}"'s move from /${recorded} to /${moved}.`, err);
+  }
+  return moved;
 }
 
 /**
@@ -1256,7 +1280,7 @@ export function setAppPath(id: string, path: string): string {
 /** The installed app (other than `exceptId`) that answers to `seg`, or null. */
 function pathTakenBy(seg: string, exceptId: string): string | null {
   for (const { id, meta } of listMetas()) {
-    if (id !== exceptId && appPathOf(id, meta) === seg) return id;
+    if (id !== exceptId && recordedPath(id, meta) === seg) return id;
   }
   return null;
 }
@@ -1274,16 +1298,22 @@ function pathTakenBy(seg: string, exceptId: string): string | null {
  */
 function addressForNewApp(id: string): { path?: string; displaced?: string } {
   const existing = loadMeta(id)?.path;
-  if (existing) return { path: existing }; // a reinstall keeps the address it had
+  // A reinstall keeps the address it had, unless OpenMasjidOS has since taken it.
+  if (existing && !isReservedPathSegment(sanitizePath(existing))) return { path: existing };
   const taken = isReservedPathSegment(id) ? 'OpenMasjidOS' : pathTakenBy(id, id);
   if (!taken) return {};
+  return { path: freeAddress(id), displaced: taken };
+}
+
+/** The app's id when no app answers to it and OpenMasjidOS does not keep it, otherwise
+ *  the id with the first free number after it. */
+function freeAddress(id: string): string {
+  if (!isReservedPathSegment(id) && !pathTakenBy(id, id)) return id;
   for (let n = 2; n < 1000; n++) {
     // Room for the number inside sanitizePath's 40 characters, so what is stored is
     // exactly what getAppPath will read back.
     const candidate = sanitizePath(`${id.slice(0, 34)}-${n}`);
-    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) {
-      return { path: candidate, displaced: taken };
-    }
+    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) return candidate;
   }
   throw new Error('Every address for this app is taken. Change another app’s address in Settings → Remote access, then try again.');
 }
@@ -1329,8 +1359,11 @@ export function reconcilePublicUrls(): string[] {
   const changed: string[] = [];
   for (const { id, meta } of listMetas()) {
     if (!meta) continue;
+    // Read before working out the URL: that can move the app off a reserved address,
+    // which rewrites this line itself, and the app still needs its reup.
+    const had = readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '';
     const want = intendedPublicUrl(id, isExposedMeta(meta));
-    if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== want) {
+    if (had !== want) {
       updateEnvFile(id, { OPENMASJID_PUBLIC_URL: want });
       changed.push(id);
     }
