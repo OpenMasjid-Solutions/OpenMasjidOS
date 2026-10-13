@@ -1,0 +1,284 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
+/**
+ * Regressions from a review of the WhatsApp subsystem.
+ *
+ * Most of these drive the real queue against a stub gateway that answers like OpenWA,
+ * because the bugs lived BETWEEN calls: a Discard landing during a send, a backlog outliving
+ * its bound while the core stayed up, a failed lookup remembered as an answer, a status
+ * check's "no" forgotten at the next tick. A check of the code's shape passes on all of them.
+ *
+ * Order matters below: the tests share one process, one queue and one data folder, and the
+ * inbound-socket tests come last because they start a supervisor.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { createRequire } from 'node:module';
+
+const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-wa-fixes-'));
+process.env.OPENMASJID_DATA_DIR = DATA;
+const CONFIG = path.join(DATA, 'config');
+
+const req = createRequire(__filename);
+const wa = req('../src/notify/whatsapp') as typeof import('../src/notify/whatsapp');
+const store = req('../src/store/whatsapp') as typeof import('../src/store/whatsapp');
+const qstore = req('../src/notify/whatsapp-queue-store') as typeof import('../src/notify/whatsapp-queue-store');
+const phone = req('../src/util/phone') as typeof import('../src/util/phone');
+const commands = req('../src/store/commands') as typeof import('../src/store/commands');
+const mon = req('../src/system/whatsapp-monitor') as typeof import('../src/system/whatsapp-monitor');
+
+const SESSION_ID = '11111111-2222-3333-4444-555555555555';
+/** The masjid's own number, as the gateway reports it. */
+const LINKED = '447700900000';
+const PARENT = '+1 555 010 1234';
+const GROUP = '120363012345678901@g.us';
+const PNG = Buffer.from('not a real png, but real bytes').toString('base64');
+const DAY = 86_400_000;
+
+/** Source with comments stripped — structural assertions are about code, never prose. */
+const codeOf = (rel: string) =>
+  fs
+    .readFileSync(path.join(__dirname, '..', 'src', rel), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function waitFor(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > until) assert.fail(`timed out waiting for ${what}`);
+    await sleep(25);
+  }
+}
+
+/** Let the queue drain, and the pump's last "offline" presence call land. */
+async function settle(): Promise<void> {
+  await waitFor('the queue to drain', () => wa.queueDepth() === 0);
+  await sleep(300);
+}
+
+// An outage confirmed three days ago, with nine of the students app's messages reported sent
+// in its blind window. Written before anything reads the health file.
+fs.mkdirSync(CONFIG, { recursive: true });
+fs.writeFileSync(
+  path.join(CONFIG, 'whatsapp-health.json'),
+  JSON.stringify({
+    down: true,
+    detectedAt: Date.now() - 3 * DAY,
+    lastKnownGood: Date.now() - 3 * DAY - 3_600_000,
+    reason: "the gateway's connection to WhatsApp has died",
+    cause: 'session-expired',
+    incidents: [
+      {
+        from: Date.now() - 3 * DAY - 3_600_000,
+        to: Date.now() - 3 * DAY,
+        cause: 'session-expired',
+        reason: "the gateway's connection to WhatsApp has died",
+        perSource: [{ source: 'students', count: 9, ids: [], truncated: false }],
+      },
+    ],
+  }),
+);
+
+// ── a stub gateway ───────────────────────────────────────────────────────────────
+
+type Reply = { status: number; body?: unknown } | 'hold';
+type Route = (method: string, url: string) => Reply | undefined;
+
+/** What a linked, healthy OpenWA answers. */
+function linkedGateway(method: string, url: string): { status: number; body?: unknown } {
+  if (method === 'GET' && url === '/api/sessions/:id') {
+    return { status: 200, body: { id: SESSION_ID, status: 'ready', engineLoaded: true, phone: LINKED } };
+  }
+  if (url.includes('/contacts/check/')) return { status: 200, body: { exists: true } };
+  if (url.endsWith('/presence') || url.endsWith('/chats/typing') || url.includes('/messages/send-')) {
+    return { status: 200, body: { id: 'm1' } };
+  }
+  if (url.endsWith('/chats?limit=1')) return { status: 200, body: [] };
+  return { status: 404, body: { message: 'not found' } };
+}
+
+/**
+ * A gateway answering like a linked OpenWA unless `route` says otherwise ('hold' keeps the
+ * reply until the test releases it), recording each call with the session id as `:id` and
+ * the text of every send-text in order. Configures WhatsApp to use it.
+ */
+async function stubGateway(route: Route = () => undefined) {
+  const calls: string[] = [];
+  const texts: string[] = [];
+  const held: (() => void)[] = [];
+  const server = http.createServer((r, res) => {
+    let raw = '';
+    r.on('data', (c) => (raw += c));
+    r.on('end', () => {
+      const method = r.method ?? 'GET';
+      const url = (r.url ?? '').replace(SESSION_ID, ':id');
+      calls.push(`${method} ${url}`);
+      if (url.endsWith('/messages/send-text')) texts.push(String((JSON.parse(raw) as { text?: unknown }).text));
+      const send = (status: number, body: unknown = {}) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const reply = route(method, url) ?? linkedGateway(method, url);
+      if (reply === 'hold') held.push(() => send(200, { id: 'm1' }));
+      else send(reply.status, reply.body);
+    });
+  });
+  await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+  const port = (server.address() as { port: number }).port;
+  store.saveWhatsAppConfig({ provider: 'openwa', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}` });
+  store.recordSessionId(SESSION_ID);
+  return {
+    calls,
+    texts,
+    held,
+    close: () =>
+      new Promise<void>((ok) => {
+        server.closeAllConnections();
+        server.close(() => ok());
+      }),
+  };
+}
+
+const person = (id: string, text: string, enqueuedAt = Date.now()) => ({
+  id,
+  text,
+  source: 'students',
+  target: { kind: 'person' as const, digits: '15550101234' },
+  enqueuedAt,
+  attempts: 0,
+});
+const image = (id: string) => ({
+  id,
+  text: 'poster',
+  source: 'display',
+  target: { kind: 'group' as const, groupId: GROUP },
+  media: { data: PNG, mimeType: 'image/png' },
+  enqueuedAt: Date.now(),
+  attempts: 0,
+});
+const noHistory = () => ({ sends: [], groupSends: [], lastPerRecipient: new Map<string, number>(), outcomes: [] });
+
+// ── the inbound socket ───────────────────────────────────────────────────────────
+
+/**
+ * OpenWA's status route plus just enough of its Socket.IO endpoint, over long-polling, to
+ * refuse a key the way it does: accept the connection, send an UNAUTHORIZED error frame,
+ * then disconnect. Engine.IO v4 framing — packets in one poll are joined by \x1e, and "4"
+ * carries a Socket.IO packet ("0" connect, "1" disconnect, "2" event) for the namespace.
+ */
+async function refusingGateway(statusCode: number) {
+  const text = (res: http.ServerResponse, body: string) => {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=UTF-8' });
+    res.end(body);
+  };
+  const refusal = [
+    '40/events,{"sid":"N1"}',
+    '42/events,["message",{"type":"error","code":"UNAUTHORIZED"}]',
+    '41/events,',
+  ].join('\x1e');
+  const polls: http.ServerResponse[] = [];
+  let joinAsked = false;
+  let refused = false;
+  let socketRequests = 0;
+  const flush = () => {
+    if (!joinAsked || refused || polls.length === 0) return;
+    refused = true;
+    text(polls.shift()!, refusal);
+  };
+  const server = http.createServer((r, res) => {
+    let raw = '';
+    r.on('data', (c) => (raw += c));
+    r.on('end', () => {
+      const url = r.url ?? '';
+      if (!url.startsWith('/socket.io/')) {
+        res.writeHead(statusCode, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id: SESSION_ID, status: 'ready', engineLoaded: true, phone: LINKED }));
+        return;
+      }
+      socketRequests += 1;
+      if (!new URL(url, 'http://x').searchParams.get('sid')) {
+        const open = { sid: 'S1', upgrades: [], pingInterval: 25_000, pingTimeout: 20_000, maxPayload: 1_000_000 };
+        return text(res, `0${JSON.stringify(open)}`);
+      }
+      if (r.method === 'POST') {
+        text(res, 'ok');
+        if (raw.includes('40/events')) joinAsked = true;
+        return flush();
+      }
+      polls.push(res); // the long poll, answered once the client has asked to join /events
+      flush();
+    });
+  });
+  await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+  const port = (server.address() as { port: number }).port;
+  store.saveWhatsAppConfig({ provider: 'openwa', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}` });
+  store.recordSessionId(SESSION_ID);
+  return {
+    socketRequests: () => socketRequests,
+    close: () =>
+      new Promise<void>((ok) => {
+        server.closeAllConnections();
+        server.close(() => ok());
+      }),
+  };
+}
+
+test('THE INBOUND SOCKET RECORDS RAW TRAFFIC, AND A REFUSED KEY SAYS SO when the gateway hangs up', async () => {
+  // Two bugs on one connection. The packet listener was attached before connect(), when the
+  // engine does not exist yet, so `lastPacketAt` was never set. And OpenWA's refusal (an
+  // error frame, then a disconnect) ended as "the gateway connection dropped".
+  const inbound = req('../src/notify/whatsapp-inbound') as typeof import('../src/notify/whatsapp-inbound');
+  const gw = await refusingGateway(200);
+  try {
+    commands.setCommandsEnabled(true);
+    commands.addCommandPerson('15550101234', 'Imam', []);
+    inbound.startWhatsAppInbound();
+    await waitFor('the gateway to hang up', () => inbound.inboundStatus().retryInMs !== null, 10_000);
+
+    const s = inbound.inboundStatus();
+    assert.equal(s.detail, 'The gateway refused the connection (UNAUTHORIZED).', 'the refusal, not "dropped"');
+    assert.ok(s.lastPacketAt, 'raw transport traffic is recorded');
+  } finally {
+    inbound.stopWhatsAppInbound();
+    await gw.close();
+  }
+});
+
+test('A "NO" FROM THE STATUS CHECK HOLDS UNTIL IT IS ASKED AGAIN — the next tick does not connect anyway', async () => {
+  // The check runs at most once a minute, and its "no" counted for one reconcile only: 30 s
+  // later the supervisor connected regardless, to a gateway that had just turned it down.
+  delete req.cache[req.resolve('../src/notify/whatsapp-inbound')];
+  const inbound = req('../src/notify/whatsapp-inbound') as typeof import('../src/notify/whatsapp-inbound');
+  const gw = await refusingGateway(401);
+  try {
+    inbound.startWhatsAppInbound();
+    await waitFor('the status check to refuse', () => inbound.inboundStatus().state === 'bad-key');
+
+    inbound.reconcileWhatsAppInbound(); // what the 30-second tick does
+    await sleep(1_500);
+    assert.equal(inbound.inboundStatus().state, 'bad-key');
+    assert.equal(gw.socketRequests(), 0, 'no connection was opened');
+  } finally {
+    inbound.stopWhatsAppInbound();
+    commands.setCommandsEnabled(false);
+    await gw.close();
+  }
+});
+
+test('a refused key adds up across reconnects, and only a confirmed subscribe resets the count', () => {
+  // OpenWA accepts the connection before refusing the key, so resetting on connect meant the
+  // connect, error, disconnect cycle never reached AUTH_FAIL_LIMIT.
+  const code = codeOf('notify/whatsapp-inbound.ts');
+  const onConnect = code.slice(code.indexOf("s.on('connect'"), code.indexOf("s.on('connect_error'"));
+  assert.doesNotMatch(onConnect, /authFailures = 0/);
+  const frame = code.slice(code.indexOf('function handleFrame'));
+  assert.match(frame.slice(frame.indexOf("type === 'subscribed'"), frame.indexOf("type === 'error'")), /authFailures = 0/);
+  const drop = code.slice(code.indexOf("s.on('disconnect'"), code.indexOf('s.on(FRAME_CHANNEL'));
+  assert.match(drop, /authFailures >= AUTH_FAIL_LIMIT/, 'the refusals that end in a disconnect are what count');
+});

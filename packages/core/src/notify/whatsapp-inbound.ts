@@ -32,8 +32,8 @@
  * frame is sent, and the socket is closed. So not listening on `'message'` also meant
  * silently discarding the one message that would have explained the silence.
  *
- * This module NEVER sends. Replies go out through notify/whatsapp.ts, which owns the
- * one queue and the budget.
+ * This module NEVER sends. Replies go out through notify/whatsapp.ts `replyTo`, beside the
+ * queue rather than through it (a reply behind a backlog is not a reply).
  */
 import type { Socket } from 'socket.io-client';
 import { log } from '../logger';
@@ -43,7 +43,7 @@ import { maskDigits } from '../util/phone';
 import { gate, gateMessage, type GateOutcome } from '../commands/gate';
 import { normaliseInbound } from '../commands/normalise';
 import { resetConversations } from '../commands/conversation';
-import { gatewayStatus, resolveBaseUrl, resolveLidPhone } from './whatsapp';
+import { gatewayStatus, resolveBaseUrl, resolveLidPhone, type GatewayStatus } from './whatsapp';
 
 const RECONCILE_MS = 30_000;
 const STATUS_PROBE_MS = 60_000;
@@ -116,8 +116,6 @@ export interface InboundStatus {
 const EVENTS_NAMESPACE = '/events';
 /** Every server frame — events, subscribe acks and errors — arrives on this channel. */
 const FRAME_CHANNEL = 'message';
-/** The one `payload.event` we act on. */
-const INBOUND_EVENT = 'message.received';
 
 // ── event-name filtering ─────────────────────────────────────────────────────────
 
@@ -167,6 +165,10 @@ let ackCode = '';
 /** Generous: this is one round trip on a LAN, but a busy gateway can be slow to boot. */
 const SUBSCRIBE_ACK_MS = 10_000;
 let lastProbeAt = 0;
+/** The status check's last "no", kept until the check runs again (at most once a minute). */
+let probeRefusal: Extract<Desire, { want: false }> | null = null;
+/** The code the gateway refused this connection with, if it did — more use than "dropped". */
+let refusedWith = '';
 let stopped = true;
 let state: InboundState = 'off';
 let detail = 'Commands are switched off.';
@@ -284,18 +286,25 @@ async function desired(): Promise<Desire> {
   if (!cfg.sessionId) return { want: false, state: 'not-linked', detail: 'No phone is linked yet.' };
 
   // The status probe costs an HTTP call, so only while disconnected and at most once
-  // a minute. Once connected, the socket itself is the liveness signal.
+  // a minute. Once connected, the socket itself is the liveness signal. Its "no" holds
+  // until it is asked again: forgotten at the next 30-second tick, it connected anyway.
   const now = Date.now();
   if (!socket && now - lastProbeAt > STATUS_PROBE_MS) {
     lastProbeAt = now;
-    const s = await gatewayStatus();
-    if (s.restriction) {
-      return { want: false, state: 'error', detail: `WhatsApp has restricted this number (${s.restriction}).` };
-    }
-    if (s.state === 'bad-key') return { want: false, state: 'bad-key', detail: 'The gateway rejected the API key.' };
-    if (s.state !== 'ready') return { want: false, state: 'not-linked', detail: s.detail };
+    probeRefusal = refusalFrom(await gatewayStatus());
   }
+  if (!socket && probeRefusal) return probeRefusal;
   return { want: true, origin, key: cfg.apiKey, sessionId: cfg.sessionId };
+}
+
+/** The status check's answer as a reason not to connect, or null when a phone is linked. */
+function refusalFrom(s: GatewayStatus): Extract<Desire, { want: false }> | null {
+  if (s.restriction) {
+    return { want: false, state: 'error', detail: `WhatsApp has restricted this number (${s.restriction}).` };
+  }
+  if (s.state === 'bad-key') return { want: false, state: 'bad-key', detail: 'The gateway rejected the API key.' };
+  if (s.state !== 'ready') return { want: false, state: 'not-linked', detail: s.detail };
+  return null;
 }
 
 // ── connecting ───────────────────────────────────────────────────────────────────
@@ -342,7 +351,9 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
     connectedAt = Date.now();
     // Otherwise retryInMs keeps counting down a retry that already happened.
     retryAt = 0;
-    authFailures = 0;
+    // NOT authFailures: OpenWA accepts the connection before refusing the key, so
+    // resetting here meant a run of refusals never added up. A confirmed subscribe resets it.
+    refusedWith = '';
     subscribed = false;
     ackState = 'pending';
     setState('connected', 'Connected — subscribing…');
@@ -403,21 +414,23 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
 
   s.on('disconnect', (reason: string) => {
     teardown();
-    scheduleRetry(`The gateway connection dropped (${reason}).`);
+    // A refused key arrives as an error frame and THEN this disconnect, so this is where a
+    // run of refusals adds up, and the refusal says more than "dropped" does.
+    if (authFailures >= AUTH_FAIL_LIMIT) {
+      setState('bad-key', 'The gateway rejected the API key. Check it in Settings.');
+      return;
+    }
+    scheduleRetry(
+      refusedWith
+        ? `The gateway refused the connection (${refusedWith}).`
+        : `The gateway connection dropped (${reason}).`,
+    );
   });
 
   // Everything the gateway says arrives here: subscribe acks, errors, and events.
   s.on(FRAME_CHANNEL, (frame: unknown) => {
     lastEventAt = Date.now();
     handleFrame(frame);
-  });
-
-  // Raw transport activity, independent of anything the application layer does with
-  // it. This is the one signal that separates "the server is not emitting to us" from
-  // "the socket is not really carrying anything" — two states that look identical
-  // from a `connected` flag and an empty event list.
-  s.io.engine?.on('packet', () => {
-    lastPacketAt = Date.now();
   });
 
   // Kept purely as a diagnostic. If the gateway ever moves to another channel, this
@@ -430,6 +443,15 @@ async function connect(d: Extract<Desire, { want: true }>): Promise<void> {
   });
 
   s.connect();
+
+  // Raw transport activity, independent of anything the application layer does with
+  // it. This is the one signal that separates "the server is not emitting to us" from
+  // "the socket is not really carrying anything" — two states that look identical
+  // from a `connected` flag and an empty event list. Attached AFTER connect(): with
+  // autoConnect off, the engine does not exist until then, and before it this was a no-op.
+  s.io.engine?.on('packet', () => {
+    lastPacketAt = Date.now();
+  });
 }
 
 /** One frame from the gateway. Names and types only ever reach the log — never data. */
@@ -446,6 +468,7 @@ function handleFrame(frame: unknown): void {
   if (type === 'subscribed') {
     subscribed = true;
     ackState = 'confirmed';
+    authFailures = 0; // the key is accepted; only now is a run of refusals over
     setState('connected', 'Listening for commands.');
     return;
   }
@@ -463,6 +486,7 @@ function handleFrame(frame: unknown): void {
     }
     noteEventName(`error:${code}`);
     if (/UNAUTHORIZED|FORBIDDEN/i.test(code)) authFailures += 1;
+    refusedWith = code;
     setState('error', `The gateway refused the connection (${code}).`);
     log.warn(`WhatsApp commands: the gateway sent an error frame (${code}).`);
     return;
@@ -702,6 +726,8 @@ export function startWhatsAppInbound(): void {
   timer.unref?.();
 }
 
+/** Stop for good: nothing calls this in the daemon (a re-enable must be able to reconnect),
+ *  but a test that drives a real connection has to be able to end it. */
 export function stopWhatsAppInbound(): void {
   stopped = true;
   if (timer) clearInterval(timer);
