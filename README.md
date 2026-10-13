@@ -344,7 +344,7 @@ Open the Pi's IP. For a stable address, add a DHCP reservation in your router.
   ```bash
   docker exec -it openmasjid-core node packages/core/dist/reset-password.js
   ```
-- **Backups** — Settings → Advanced → Download a backup (or restore one), or schedule off-site backups to Google Drive, SFTP, SMB or WebDAV. Everything lives under `/opt/openmasjid/` (`config/` = settings + hashed admin account, `apps/<id>/` = each app's compose/env/data).
+- **Backups** — Settings → Advanced → Download a backup (or restore one), or schedule off-site backups to Google Drive, SFTP, SMB or WebDAV. Settings live under `/opt/openmasjid/` (`config/` = settings + hashed admin account, `apps/<id>/` = each app's compose and env); each app's own data is in Docker volumes, so move to a new machine with a backup, not by copying that folder.
 
 ---
 
