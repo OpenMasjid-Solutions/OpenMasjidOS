@@ -338,5 +338,6 @@ test('the hold is on the row the dashboard already renders', () => {
   // If it were not in the DTO, the card could not warn before the click.
   const src = code(read('apps', 'manager.ts'));
   assert.match(src, /review: meta\.review \?\? null/, 'installed apps carry their hold');
-  assert.match(src, /review: null/, 'recovered orphans are explicitly un-held');
+  // Un-held — unless the record exists and will not parse (apps-fixes.test.ts drives that).
+  assert.match(src, /review: unreadable \? unreadableMeta\([^)]*\) : null/, 'recovered orphans are explicitly un-held');
 });

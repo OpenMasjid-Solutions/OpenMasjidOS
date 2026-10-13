@@ -77,6 +77,26 @@ test("ONE APP'S ROW IS THE ROW THE FULL LISTING GIVES — without reading every 
   }
 });
 
+test('AN APP WHOSE RECORD WILL NOT PARSE IS HELD, NOT RECOVERED OVER', async () => {
+  // Recovering it as an orphan wrote a fresh record with no review over the broken one,
+  // so a backup pairing a broken meta.json with a privileged compose — for an app whose
+  // containers are already on the box — became an ordinary Start button.
+  fs.mkdirSync(path.join(APPS, 'broken-app'), { recursive: true });
+  fs.writeFileSync(path.join(APPS, 'broken-app', 'compose.yml'), 'services:\n  app:\n    image: x\n    privileged: true\n');
+  fs.writeFileSync(path.join(APPS, 'broken-app', 'meta.json'), '{"id": "broken-app", "review": ');
+  const original = client.docker.listContainers;
+  client.docker.listContainers = () =>
+    Promise.resolve([{ Labels: { 'com.docker.compose.project': 'omos-broken-app' }, State: 'exited', Ports: [] }]);
+  try {
+    const row = (await manager.listInstalled()).find((a) => a.id === 'broken-app');
+    assert.equal(row?.review?.kind, 'unreadable', 'the row must show the app held');
+    assert.equal(fs.readFileSync(path.join(APPS, 'broken-app', 'meta.json'), 'utf8'), '{"id": "broken-app", "review": ');
+    assert.equal(manager.startBlockedReason('broken-app')?.kind, 'unreadable');
+  } finally {
+    client.docker.listContainers = original;
+  }
+});
+
 test('the alert check follows the Fabric index, which follows every change to an app', () => {
   seed('alerting', { ssoSecret: 'a'.repeat(43), appAlerts: [{ id: 'reader-offline', label: 'Reader offline' }] });
   seed('secretless', { appAlerts: [{ id: 'reader-offline', label: 'Reader offline' }] });

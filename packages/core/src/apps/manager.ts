@@ -831,12 +831,19 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       exposed: false,
       createdAt: new Date().toISOString(),
     };
-    try {
-      ensureDir(appDir(disc.id));
-      saveMeta(recovered);
-      log.warn(`Recovered orphaned app from Docker: ${disc.id}`);
-    } catch {
-      /* best-effort persistence; still show it this session */
+    // A record that EXISTS but will not parse is not an orphan: it is shown held, as
+    // startBlockedReason holds it, and left on disk. Recovering it wrote a fresh record
+    // with no review over it, so a backup pairing a broken meta.json with a privileged
+    // compose, for an app already on the box, became an ordinary Start button.
+    const unreadable = fs.existsSync(metaPath(disc.id));
+    if (!unreadable) {
+      try {
+        ensureDir(appDir(disc.id));
+        saveMeta(recovered);
+        log.warn(`Recovered orphaned app from Docker: ${disc.id}`);
+      } catch {
+        /* best-effort persistence; still show it this session */
+      }
     }
     byId.set(disc.id, {
       ...recovered,
@@ -855,7 +862,8 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // ALREADY running — holding it for a review we never performed would show
       // the admin a finding that does not exist. It starts un-held, exactly as
       // before; what keeps it honest is that it can never claim to be "Official".
-      review: null,
+      // One whose record exists but will not parse is held instead (above).
+      review: unreadable ? unreadableMeta(recovered.createdAt) : null,
       ...openTarget(recovered, disc.ports),
     });
   }
