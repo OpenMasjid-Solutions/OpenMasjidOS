@@ -272,6 +272,7 @@ request*, which does nothing about two requests overlapping.
 | Presence | online while working, offline when idle | A permanently-online number that never reads anything looks like what it is |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
 | Retry on a transient failure | up to 5 attempts, widening backoff | A 429 or a restarting gateway is a "not yet", not a "no" |
+| A send that times out | **not** retried; `failed`, "may have arrived" | Sends get 120 s; one still unanswered has usually been delivered, and a retry put up to five copies into a group |
 | Rate caps | **none** | Removed — see below |
 | Cooldowns | **none** | Removed — see below |
 | Gap between messages | **none** | Removed — see below |
@@ -486,6 +487,11 @@ Rules that are not negotiable:
   can now **ask what became of it**: the `202` carries an `id`, and
   `GET /api/fabric/whatsapp/status/<id>` answers `queued` / `sent` / `failed` / `expired`
   with a reason. Scoped to your own app’s messages.
+  - **`failed` does not always mean "not delivered".** A send the gateway did not answer within
+    two minutes is reported `failed` with a reason saying it may have arrived, and it is never sent
+    again — a second copy in a parents' group is the worse mistake. Don't resend it automatically.
+  - **A number must carry its country code and must not start with 0** (`07700 900123`,
+    `0044 7700 900123`); such a number is refused with `400` when you send, never queued.
   - **The history is bounded per app, not globally: the most recent 500 of *your* messages,
     for up to 24 hours.** Another app's traffic cannot evict your records — a shared 200-record
     ring did allow exactly that until v0.51.1-dev.8, so one app messaging a large roster wiped

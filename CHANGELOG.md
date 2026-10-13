@@ -1513,19 +1513,116 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
   and the Docker actions are pinned to commits; the lockfile workflow, which committed straight to
   the stable branch, is gone.
 
+#### Backups, restores and the File Explorer
+
+- **Every backup keeps every app's data.** A volume that an earlier restore created carried no
+  Docker label, and backups picked volumes by that label, so every later backup left that app's
+  data out while saying it had worked. Volumes are picked by name now, and a restore labels the
+  volumes it creates.
+- **A restore swaps each app's data in whole.** It used to unpack over what was there, which
+  kept a newer SQLite `-wal` file beside the restored database (a corrupted database) and, on a
+  failure part-way, left old and new mixed. Each volume is unpacked into a fresh folder and
+  swapped in only once complete; one that fails is left exactly as it was.
+- **A restore whose app data would fill the disk is refused before any app is stopped.** The
+  data is measured unpacked, against the space left once the backup itself is unpacked.
+- **An off-site backup can no longer hang everything after it.** When the destination stopped
+  reading (a wrong password, a NAS gone offline) the backup waited for ever, and every later
+  backup and restore was refused as "already running" until a restart. A run refused because
+  another was running is no longer recorded as a failure, and whatever a failed run left on the
+  destination is removed.
+- **Updating OpenMasjidOS waits for a backup being made**, instead of cutting it off half
+  written. A backup cut off by a restart leaves no copy of the apps' data behind.
+- **File Explorer:** app folders open again (they were drawn as locked); the editor never writes
+  through a link (a dangling one created its target wherever it pointed, `config/` included); an
+  upload replaces a file only once it has all arrived (a cancelled one used to leave half a
+  file); a download keeps its real name ("Jumuah notes.pdf", not "Jumuah%20notes.pdf"); and a
+  folder of thousands of photos no longer stalls the dashboard while it is listed.
+- Settings → Advanced shows the machine's address on the masjid's network; it showed the
+  container's internal address and a `.local` name nothing answers to.
+
+#### Apps
+
+- **A setting reaches the app exactly as typed.** Values went into the app's settings file
+  unquoted, where Docker Compose reads `$` and `#` specially: a password `pa$$w0rd` arrived as
+  `pa$w0rd`. Such values are quoted now (plain ones are written as before), and the platform's
+  own rewrites of that file change only their own lines.
+- **When Docker refuses to start, stop or restart an app, you are told** — on the dashboard and
+  over WhatsApp — instead of being told it worked; an app that is down is never reported as
+  having stayed up; removing an app no longer emails "has stopped".
+- **An app whose address the dashboard has since taken** (`store`, `apps`, `files`, `settings`,
+  `design-system`) is moved to a free one, so its links and QR codes stop opening the dashboard.
+- **After a reboot, apps' HTTPS addresses come back even when Docker answers late.**
+- **An app whose record can't be read is held for review**, instead of a fresh record being
+  written over it — which let a crafted backup start a privileged app with no warning.
+
+#### The dashboard and Settings
+
+- **Errors follow one rule**: the server's own message, or a plain fallback — never a dropped
+  connection's or Cloudflare's own error text.
+- A refused webhook save no longer goes on to test the old webhook and say "sent"; the Advanced
+  switches say when they were refused; Account shows what was actually stored; regenerating the
+  certificate and removing the backup destination ask first.
+- Forms send only what was edited, so a change made on another device is not put back.
+- Every Settings label is tied to its box, and selection buttons say which one is chosen.
+- Escape no longer closes a window when a menu or a text box used it (unsaved file text, a live
+  terminal); a saved file shows its new text when opened again; windows end with the sign-in.
+- **If OpenMasjidOS can't be reached when the dashboard opens**, it says so and keeps trying,
+  instead of showing the create-the-admin-account screen; a page left open across an update
+  offers to reload instead of going blank.
+- A community app is no longer labelled Official on its own page, and its install lists the
+  risks before asking you to accept them.
+- **A 0 typed at the start of a phone number after its country code is left off** (Italy keeps
+  it): +44 07700 900123 was stored as a number WhatsApp doesn't know, so alerts to it vanished.
+- Storage names the disk's size when it is clearly bigger than the usable total, and Stop and
+  Restart say when Docker refused them.
+- Window title bars drag by touch, the background video stands still under reduced motion, and
+  arrows point the right way in right-to-left languages.
+- Settings is one file per panel now (`routes/settings/`), with nothing changed in what it does.
+
+#### WhatsApp
+
+- **Discarding held messages while one was sending dropped a different, newer message** unsent;
+  only the discarded ones go now.
+- **A send that times out is never repeated.** It was retried up to five times, which could put
+  five copies into a group; sends now get two minutes, and one that still times out is reported
+  as possibly delivered.
+- The 24-hour limit on a held message applies all the time, not only at start-up, so a long
+  gateway outage no longer ends with the whole backlog sent back to back.
+- Turning WhatsApp off clears a "WhatsApp is down" banner that otherwise stayed for ever, and
+  deleting everything also forgets the pause (the first message after setting up again was held).
+- "N may not have arrived" no longer reads 0 after a weekend outage.
+- **A number starting with 0 is refused at the door** ("needs a country code") instead of being
+  accepted and never delivered.
+- The commands connection respects a rejected key or an unlinked phone between checks, and a
+  trustee writing from a privacy id is no longer ignored until a restart after one failed lookup.
+- "Send test" before a phone is linked says to link one; "a phone is already linked" points at
+  Settings → WhatsApp → Unlink.
+- A full SD card no longer stops the health monitor between pausing the queue and telling you.
+
 #### Speed
 
-- The dashboard's bundles go precompressed to browsers on the masjid's network.
-- Stats, the two-step settings and the logo are no longer re-collected or re-read on every
-  request (above).
+- The dashboard's bundles are compressed when it is built and sent compressed to browsers on
+  the masjid's network.
+- The logo image went from 146 KB to 18 KB and the favicon from 196 KB to 2.4 KB; live stats
+  pause in a hidden tab; the dashboard prefetches less; the saved theme is applied before the
+  first paint.
+- Queued WhatsApp images are written once, to `config/whatsapp-media/`, instead of being written
+  again — up to 11 MB, onto the SD card — with every message sent.
+- A backup's outer archive uses fast compression (the app data in it is compressed already),
+  and Docker no longer logs every volume archive.
+- Stats, the two-step settings, the logo and one app's row are no longer re-collected or
+  re-read on every request (above).
 
 #### Removed
 
 - Unused dependencies `qrcode`, `@types/qrcode` and `class-variance-authority`; the
-  `CATALOG_URL` constant; the commands routes `renamePerson` and `preview`; the parser's
-  unreachable `too-long` branch; test hooks nothing used; copies of the cookie parser and the
-  path-spelling helper; and comments still describing the two-hostname design or features that
-  had since changed.
+  `CATALOG_URL` and `MACHINE_HOSTNAME` constants; the commands routes `renamePerson` and
+  `preview`; the WhatsApp router's `save.limits`, `get.defaults` and `recheck`; the network
+  info's `hostname` and `port` and the channel's `branch` and `imageTag`; the parser's
+  unreachable `too-long` branch; unused styles, strings and types; test hooks nothing used;
+  copies of the cookie parser, the path-spelling helper and the app-listing loop; and comments
+  still describing the two-hostname design, removed WhatsApp limits, or features that had since
+  changed.
 
 ## 0.51.1
 
