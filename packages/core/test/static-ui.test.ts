@@ -66,6 +66,16 @@ test('fingerprinted assets are cached immutably', async () => {
   assert.equal(res.headers['cache-control'], 'public, max-age=31536000, immutable');
 });
 
+test('a missing bundle 404s — never index.html served as if it were JavaScript', async () => {
+  // A tab left open across an update asks for a chunk that no longer exists; the SPA
+  // fallback answered with the page, which then failed to load as a module.
+  for (const url of ['/assets/Settings-oldhash.js', '/%61ssets/Settings-oldhash.js', '/assets/missing.css']) {
+    const res = await app.inject({ method: 'GET', url });
+    assert.equal(res.statusCode, 404, url);
+    assert.deepEqual(res.json(), { error: 'Not found' }, url);
+  }
+});
+
 test('a non-asset file at the root is served but not cached', async () => {
   const res = await app.inject({ method: 'GET', url: '/favicon.svg' });
   assert.equal(res.statusCode, 200);

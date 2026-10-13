@@ -128,13 +128,16 @@ export function resolveDotSegments(path: string): string {
 }
 
 /**
- * Block the SECRET-GATED Fabric routes when a request arrived via the tunnel.
- * Covers `/api/auth/session` (exact) and everything under `/api/fabric` (prefix)
- * — which includes the app-to-app broker at `/api/fabric/app/*`. App backends
- * always call these over the LAN base URL, so this never breaks a real flow; it
- * only removes the unintended public exposure. `/api/public/appearance` is
- * intentionally NOT matched and stays reachable over the tunnel.
+ * Every spelling of a request's path that the router or the far end might act on: raw,
+ * percent-decoded, and each with its dot segments resolved. A guard that must trigger
+ * on any of them asks `.some(…)`; an allow that holds only if all agree asks `.every(…)`.
  */
+export function pathSpellings(url: string): string[] {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  const decoded = decodedPath(url);
+  return [raw, decoded, resolveDotSegments(raw), resolveDotSegments(decoded)];
+}
+
 /** Does this URL address a secret-gated route, under ANY spelling the router
  *  would accept? Checked against the raw and the decoded path, so the guard
  *  fails CLOSED for both `/api/fabric/...` and `/api/%66abric/...`. */
@@ -199,6 +202,14 @@ export function registerOriginFormGuard(server: FastifyInstance): void {
   });
 }
 
+/**
+ * Block the SECRET-GATED Fabric routes when a request arrived via the tunnel.
+ * Covers `/api/auth/session` (exact) and everything under `/api/fabric` (prefix)
+ * — which includes the app-to-app broker at `/api/fabric/app/*`. App backends
+ * always call these over the LAN base URL, so this never breaks a real flow; it
+ * only removes the unintended public exposure. `/api/public/appearance` is
+ * intentionally NOT matched and stays reachable over the tunnel.
+ */
 export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();

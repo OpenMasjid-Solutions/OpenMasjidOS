@@ -48,6 +48,7 @@ import {
   registerDashboardRequestLimits,
   registerHandoffOnlyGuard,
   remoteAdminEnabled,
+  touchesDashboardPath,
   wasHandedOver,
 } from './system/remote-admin';
 import { trackHandedOverSocket } from './system/remote-sockets';
@@ -137,7 +138,7 @@ async function main() {
     // clearing `tls` also keeps the tunnel refused (in this fallback the whole dashboard
     // sits on the tunnel-facing port, unguarded) and routes us down the HTTP branch below.
     log.error(
-      'Could not start the HTTPS listener — falling back to plain HTTP so the dashboard stays reachable. Regenerate the certificate in Settings → Security.',
+      'Could not start the HTTPS listener — falling back to plain HTTP so the dashboard stays reachable. Regenerate the certificate in Settings → Advanced.',
       err,
     );
     tls = null;
@@ -179,10 +180,11 @@ async function main() {
 
   // Security headers on every response. frame-ancestors/X-Frame-Options stop the
   // dashboard from being framed by a malicious app on another port (same host =
-  // same-site, so the cookie would ride along) — clickjacking defence. We don't
-  // overwrite a route's own CSP (the file raw-viewer sets a strict sandbox CSP).
+  // same-site, so the cookie would ride along) — clickjacking defence. A route's own
+  // framing headers win: the raw file viewer's sandbox CSP, and the remote dashboard
+  // page's DENY (api/static-ui.ts), which this used to overwrite with SAMEORIGIN.
   server.addHook('onSend', async (req, reply, payload) => {
-    reply.header('X-Frame-Options', 'SAMEORIGIN');
+    if (!reply.getHeader('x-frame-options')) reply.header('X-Frame-Options', 'SAMEORIGIN');
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     if (!reply.getHeader('content-security-policy')) {
@@ -430,10 +432,13 @@ async function main() {
 
     front.addHook('onRequest', (req, reply, done) => {
       // ONE pure decision, shared with the tests (system/remote-admin.ts says why the
-      // first version's hand-built test copy could not be trusted).
+      // first version's hand-built test copy could not be trusted). The door is read
+      // only when the decision can use it — a tunnel request for a dashboard path — so
+      // every app's LAN Fabric call and every public app page skips that work.
+      const viaTunnel = isViaTunnel(req);
       const d = frontDoorDecision(req.url, req.headers, {
-        viaTunnel: isViaTunnel(req),
-        remoteAdminEnabled: remoteAdminEnabled(),
+        viaTunnel,
+        remoteAdminEnabled: viaTunnel && touchesDashboardPath(req.url) && remoteAdminEnabled(),
         appsHost: appHostname(),
       });
       switch (d.kind) {
@@ -558,15 +563,15 @@ async function main() {
 
   // Listen for admin commands sent to the masjid's WhatsApp number. No-op — it does
   // not even open a socket — until the feature is switched on AND someone is on the
-  // authorised list AND a phone is linked. Outbound is untouched: replies go through
-  // the one queue in notify/whatsapp.ts.
+  // authorised list AND a phone is linked. A reply answers the person who asked
+  // straight away (notify/whatsapp.ts sendImmediate); it does not wait in the queue.
   setInboundHandler(handleInboundCommand);
   startWhatsAppInbound();
 
   // Bring back anything the send queue was holding when we last stopped. Without this a
-  // message held by a cap or the warm-up ramp is destroyed by a restart, silently: the
-  // caller was told 202 and there is nothing anywhere to contradict it. That was a real
-  // masjid, accepted-and-never-delivered for over 24 hours.
+  // queued message is destroyed by a restart, silently: the caller was told 202 and there
+  // is nothing anywhere to contradict it. That was a real masjid, accepted-and-never-
+  // delivered for over 24 hours.
   restoreWhatsAppQueue();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.

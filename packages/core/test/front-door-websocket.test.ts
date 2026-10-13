@@ -512,6 +512,21 @@ test('A DASHBOARD SOCKET REFUSES A MESSAGE OVER THE LIMIT', { timeout: 15_000 },
   await fd.close();
 });
 
+test('a socket with no live remote session is refused, never kept and judged by the door alone', () => {
+  // The front door hands over only signed-in remote sessions; one that slipped through
+  // used to be recorded with no session, which the sweep then kept while the door was open.
+  setRemoteAdmin(true);
+  const s = new PassThrough();
+  try {
+    for (const cookie of [{}, { cookie: `${sessions.REMOTE_COOKIE_NAME}=not-a-session` }]) {
+      const req = { headers: { host: APPS, ...cookie } } as unknown as import('node:http').IncomingMessage;
+      assert.equal(remoteSockets.trackHandedOverSocket(req, s), false, JSON.stringify(cookie));
+    }
+  } finally {
+    s.destroy();
+  }
+});
+
 test('the table of open connections from outside is bounded', () => {
   // Every socket recorded belongs to a signed-in remote session, so the admin never
   // nears the bound; it is there because the table is filled from the internet.

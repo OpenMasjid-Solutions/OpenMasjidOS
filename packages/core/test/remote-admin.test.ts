@@ -481,7 +481,7 @@ test('THE FRONT DOOR SERVES NO DASHBOARD OF ITS OWN — it hands a permitted vis
   // dashboard over plain HTTP on the LAN.
   const body = frontDoorSource();
   assert.doesNotMatch(body, /front\.register\(\s*fastifyTRPCPlugin/, 'tRPC is registered on the front door again');
-  assert.doesNotMatch(body, /registerStaticFiles\(\s*front/, 'the UI is served by the front door again');
+  assert.doesNotMatch(body, /front\.register\(\s*fastifyStatic/, 'the UI is served by the front door again');
   assert.doesNotMatch(body, /registerStaticUI\(\s*front/, 'the UI is served by the front door again');
   assert.match(
     body,
@@ -1071,6 +1071,37 @@ test('tRPC TAKES JSON ONLY — its unlimited multipart path is closed to everyon
     }
     // A query carries no body and no type, and is untouched.
     assert.equal((await dash.inject({ method: 'GET', url: '/trpc/auth.me' })).statusCode, 200);
+  } finally {
+    await dash.close();
+  }
+});
+
+test('A STRANGER FROM OUTSIDE CANNOT START AN UPLOAD — refused before any route reads it', async () => {
+  // The multipart parser reads the raw request, not the counted stream above, so the
+  // 64 KB limit held for uploads only because every upload route checks the sign-in first.
+  setState({ tunnel: true, remoteAdmin: true, twoFactor: true });
+  const dash = await dashboardWithLimits();
+  const upload = { 'content-type': 'multipart/form-data; boundary=x' };
+  try {
+    for (const url of ['/api/files/upload', '/api/restore/upload', '/api/branding/logo']) {
+      const res = await dash.inject({ method: 'POST', url, headers: { ...upload, 'x-test-handed-over': '1' }, payload: '--x--' });
+      assert.equal(res.statusCode, 401, `${url}: a stranger's upload was let through to the route`);
+    }
+    // A remote admin who signed in, and anyone on the masjid's network, reach the route.
+    const remote = sessionsMod.createSession('admin', sessionsMod.currentCredential(), {
+      remote: true,
+      tf: tf.secondFactorEpoch(),
+      handedOver: true,
+    });
+    const signedIn = await dash.inject({
+      method: 'POST',
+      url: '/api/files/upload',
+      headers: { ...upload, 'x-test-handed-over': '1', cookie: `${sessionsMod.REMOTE_COOKIE_NAME}=${remote.token}` },
+      payload: '--x--',
+    });
+    assert.notEqual(signedIn.statusCode, 401);
+    const lan = await dash.inject({ method: 'POST', url: '/api/files/upload', headers: upload, payload: '--x--' });
+    assert.notEqual(lan.statusCode, 401);
   } finally {
     await dash.close();
   }

@@ -4,8 +4,8 @@
  * Remote administration: serving the dashboard over the Cloudflare tunnel.
  *
  * This is the one place that decides whether that is allowed, the one place that
- * says which paths the dashboard owns, and the one place that says WHICH HOSTNAME
- * it lives on. All three are security decisions and this codebase has twice
+ * says which paths the dashboard owns, and the one place that explains how it shares
+ * the apps' hostname safely (the key rule, below). All three are security decisions and this codebase has twice
  * shipped a second, subtly different copy of a check like this (CLAUDE.md §15's
  * raw-vs-decoded bullet, and the front door's own hand-rolled
  * `x-forwarded-proto` comparison). A second factor that is required or not
@@ -84,7 +84,7 @@ import { refuseOverTunnel } from './tunnel-refusals';
 import { REMOTE_COOKIE_NAME, isRemoteSession, sessionTokenFromCookieHeader } from '../auth/sessions';
 import { twoFactorActive } from '../auth/twofactor';
 import { isConfigured } from '../auth/store';
-import { decodedPath, isViaTunnelHeaders, resolveDotSegments, urlHasPrefix, visitorScheme } from './via-tunnel';
+import { isViaTunnelHeaders, pathSpellings, urlHasPrefix, visitorScheme } from './via-tunnel';
 import { compareVersions } from '../util/version';
 
 /** What the HTTP front door does with a request, before any route sees it. */
@@ -101,11 +101,10 @@ export type FrontDoorDecision =
   | { kind: 'refuse'; reason: 'lan-only-route' | 'plain-http-no-host' };
 
 /**
- * A Host header as a bare, comparable hostname: lower-case, no port, no trailing
- * dot, so two spellings of the SAME name are never told apart.
+ * A hostname in one comparable spelling: lower-case, no port, no trailing dot, so two
+ * spellings of the SAME name are never told apart.
  */
-export function normalizeHost(host: string | string[] | undefined | null): string {
-  const raw = Array.isArray(host) ? host[0] : host;
+function normalizeHost(raw: string): string {
   if (!raw) return '';
   let h = raw.trim().toLowerCase();
   // `[v6]:port` keeps its brackets; a DNS name loses its port.
@@ -201,7 +200,7 @@ export function claimsDashboardSocket(
   ctx: { remoteAdminEnabled: boolean; appsHost: string },
 ): boolean {
   if (!isViaTunnelHeaders(headers)) return false;
-  if (!spellings(url).every((p) => DASHBOARD_SOCKETS.some((sock) => under(p, sock)))) return false;
+  if (!pathSpellings(url).every((p) => DASHBOARD_SOCKETS.some((sock) => under(p, sock)))) return false;
   if (frontDoorDecision(url, headers, { viaTunnel: true, ...ctx }).kind !== 'serve') return false;
   // ONLY FOR A SIGNED-IN REMOTE SESSION. Every one of these sockets is useless without
   // one, and the dashboard opens its live socket only while something is subscribed
@@ -426,13 +425,18 @@ function limitAnonymousBody(payload: Readable): Readable {
  *    buffer a body of any size.
  *  - A remote stranger's body is counted as it arrives and stopped at
  *    ANONYMOUS_BODY_LIMIT. "Remote stranger" means handed over by the front door
- *    (`wasHandedOver`) with no session that passed the second factor.
+ *    (`wasHandedOver`) with no session that passed the second factor. A multipart
+ *    upload from one is refused outright: @fastify/multipart reads the raw request, not
+ *    the counted stream, so only the upload routes' own sign-in checks stood in its way.
  */
 export function registerDashboardRequestLimits(server: FastifyInstance): void {
   server.addHook('onRequest', async (req, reply) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return;
-    if (!urlHasPrefix(req.url, '/trpc')) return;
     const type = String(req.headers['content-type'] ?? '').toLowerCase();
+    if (type.startsWith('multipart/') && wasHandedOver(req.raw) && !hasRemoteSession(req.headers)) {
+      return reply.code(401).send({ error: 'Please sign in.' });
+    }
+    if (!urlHasPrefix(req.url, '/trpc')) return;
     if (!type.startsWith('application/json')) {
       return reply.code(415).send({ error: 'This request is not in a form the dashboard accepts.' });
     }
@@ -532,7 +536,7 @@ function firstSegment(path: string): string {
  * that runs before this one.
  */
 export function isDashboardPath(url: string): boolean {
-  return spellings(url).every(spellingIsDashboard);
+  return pathSpellings(url).every(spellingIsDashboard);
 }
 
 /**
@@ -556,12 +560,7 @@ export function isDashboardPath(url: string): boolean {
  * guards, which run first.
  */
 export function touchesDashboardPath(url: string): boolean {
-  return spellings(url).some(spellingIsDashboard);
-}
-
-function spellings(url: string): string[] {
-  const raw = url.split('?')[0]!.split('#')[0]!;
-  return [raw, decodedPath(url), resolveDotSegments(raw), resolveDotSegments(decodedPath(url))];
+  return pathSpellings(url).some(spellingIsDashboard);
 }
 
 function spellingIsDashboard(p: string): boolean {
