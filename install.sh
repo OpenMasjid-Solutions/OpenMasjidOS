@@ -1003,8 +1003,10 @@ do_repair() {
   # so changing the version underneath them is the last thing it should do.
   resolve_image keep
   write_compose_file
-  info "Repairing — re-pulling and recreating the core service..."
-  docker pull "${IMAGE}"
+  info "Repairing — recreating the core service..."
+  # Download only what this machine doesn't have. The reference is often a moving tag
+  # (`:latest`, `:dev`), and pulling one again would move the machine to a newer build.
+  docker image inspect "${IMAGE}" &>/dev/null || docker pull "${IMAGE}"
   docker compose --project-name "${COMPOSE_PROJECT}" --file "${DATA_DIR}/docker-compose.yml" up --detach --force-recreate
   wait_for_health
   echo ""
