@@ -13,15 +13,15 @@
  *    app behind its TLS proxy). The scheme comes from the APP, never from the
  *    dashboard's own page: the dashboard is HTTPS, most apps are not.
  *
- *  - **From outside** (the remote dashboard, on its own hostname) there is no such
- *    port, and the apps are on ANOTHER hostname — `https://<the apps' hostname>/<its
- *    path>/` — never the dashboard's. That separation is a security boundary, not a
- *    detail: an app page on the dashboard's hostname could drive the dashboard as the
- *    admin (core system/remote-admin.ts). So there is no URL to build here for
- *    OPENING an app from outside — the dashboard asks the platform for a one-use one
- *    (`apps.openRemote`, lib/apps.ts) that signs the browser in to that app alone.
- *    What is built here is only the address of a SHARED app's public files, which
- *    anyone may load — its icon, say.
+ *  - **From outside** (the remote dashboard, at the root of the apps' hostname) there
+ *    is no such port: an app is at `https://<the apps' hostname>/<its path>/`, the
+ *    dashboard's own origin. What stops an app page driving the dashboard as the admin
+ *    is not the address but the dashboard key, which only the dashboard's own page
+ *    holds, in memory (lib/session.ts; core system/remote-admin.ts). There is still no
+ *    URL to build here for OPENING an app from outside — the dashboard asks the
+ *    platform for a one-use one (`apps.openRemote`, lib/apps.ts) that signs the browser
+ *    in to that app alone. What is built here is only the address of a SHARED app's
+ *    public files, which anyone may load — its icon, say.
  */
 
 export interface OpenableApp {

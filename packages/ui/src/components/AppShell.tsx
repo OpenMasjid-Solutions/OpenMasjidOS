@@ -12,6 +12,7 @@ import { Splash } from './Splash';
 import { WindowManager } from './WindowManager';
 import { Clock } from './Clock';
 import { AppearanceSync } from './AppearanceSync';
+import { WindowsProvider } from './Windows';
 import { usePrefs } from '../lib/prefs';
 
 const SPLASH_FLAG = 'omos-splash-shown';
@@ -41,25 +42,30 @@ export function AppShell({ children, onSignedOut }: { children: ReactNode; onSig
   }, [showSplash]);
 
   return (
-    <div className="app-shell">
-      <AnimatePresence>
-        {showSplash && (
-          <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'var(--scene-base)' }}>
-            <Splash onSkip={() => setShowSplash(false)} />
-          </div>
-        )}
-      </AnimatePresence>
+    // The windows belong to this sign-in. Held above the sign-in screen, they outlived a
+    // sign-out, and signing back in remounted every one — an app's update window ran
+    // its update again, and "Update all" started over from the first app.
+    <WindowsProvider>
+      <div className="app-shell">
+        <AnimatePresence>
+          {showSplash && (
+            <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'var(--scene-base)' }}>
+              <Splash onSkip={() => setShowSplash(false)} />
+            </div>
+          )}
+        </AnimatePresence>
 
-      <div className="topbar">
-        <Clock />
-        <div style={{ marginInlineStart: 'auto' }}>
-          <ProfileMenu onSignedOut={onSignedOut} />
+        <div className="topbar">
+          <Clock />
+          <div style={{ marginInlineStart: 'auto' }}>
+            <ProfileMenu onSignedOut={onSignedOut} />
+          </div>
         </div>
+        <main className="app-main">{children}</main>
+        <WindowManager />
+        <Dock />
+        <AppearanceSync />
       </div>
-      <main className="app-main">{children}</main>
-      <WindowManager />
-      <Dock />
-      <AppearanceSync />
-    </div>
+    </WindowsProvider>
   );
 }

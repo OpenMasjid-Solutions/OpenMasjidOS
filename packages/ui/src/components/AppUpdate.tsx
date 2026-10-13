@@ -44,6 +44,8 @@ export function AppUpdate({
           setEnding(appUpdateEnding(code, opened));
           utils.apps.list.invalidate();
           utils.apps.get.invalidate({ id });
+          // Or the dashboard goes on offering this update until its next check, hours away.
+          utils.apps.updates.invalidate();
           onDone?.();
         }}
       />

@@ -46,14 +46,14 @@ export function ChannelMigrate({
   // What still needs moving, read LIVE and then snapshotted once.
   //
   // It used to arrive as a prop captured when the window was opened, and that made the
-  // migration replay itself for ever. Updating the OS restarts the core, which drops
-  // every in-memory session; the dashboard falls back to the sign-in screen, which
-  // unmounts AppShell — and the window layer renders inside the Dock, so THIS component
-  // unmounts while the window itself survives in WindowsProvider above the router.
-  // Signing back in remounted it with `index` reset to 0 and the original, now-stale
-  // list, so it updated every app again and finished by updating the OS again, which
-  // signed you out again. The only escape was closing the window in the seconds before
-  // the restart landed.
+  // migration replay itself for ever. Updating the OS restarted the core, which then
+  // dropped every session (they were held in memory); the dashboard fell back to the
+  // sign-in screen, which unmounted AppShell — where the windows render — so THIS
+  // component unmounted while the window itself survived in WindowsProvider, then above
+  // the router. Signing back in remounted it with `index` reset to 0 and the original,
+  // now-stale list, so it updated every app again and finished by updating the OS again,
+  // which signed you out again. Sessions now survive a restart and the windows close on
+  // sign-out (WindowsProvider lives in AppShell), but a remount must still not replay.
   //
   // Reading live state means a remount after a completed migration sees nothing pending
   // and simply reports done. Snapshotting it means the list can't shift under the index

@@ -10,6 +10,7 @@ import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Search, Plus, RefreshCw, Check } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -17,7 +18,7 @@ import { MasjidScene } from '../components/Glyphs';
 import { useToast } from '../components/ToastProvider';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import type { CatalogApp } from '../lib/types';
-import { CheckboxField } from '../components/CheckboxField';
+import { ShareOnlineChoice } from '../components/ShareOnlineChoice';
 
 export function Store() {
   const { t } = useTranslation();
@@ -40,7 +41,7 @@ export function Store() {
   // that need input (a setting) still open the install dialog.
   const directInstall = trpc.store.install.useMutation({
     onSuccess: () => { utils.apps.list.invalidate(); toast(t('common.saved'), 'success'); },
-    onError: (e) => toast(e.message || t('store.installError'), 'error'),
+    onError: (e) => toast(errorText(e, t('store.installError')), 'error'),
     onSettled: () => setInstallingId(null),
   });
   function startInstall(app: CatalogApp) {
@@ -200,10 +201,6 @@ function InstallModal({
   // say no. Nothing becomes public without them clicking Install with it ticked.
   const wantsTunnel = app.tunnel === true;
   const [expose, setExpose] = useState(wantsTunnel);
-  // Ticking the box only means anything once Remote access is set up, so tell the
-  // admin when it isn't rather than letting them think the app is now reachable.
-  const cloudflare = trpc.cloudflare.status.useQuery(undefined, { enabled: wantsTunnel });
-  const remoteReady = cloudflare.data?.enabled === true && Boolean(cloudflare.data?.domain);
   // A `stripe-account` field is a picker of the Stripe accounts configured in the
   // OS — the admin chooses one instead of re-typing keys (see Settings → Payments).
   const hasStripeField = fields.some((f) => f.type === 'stripe-account');
@@ -224,12 +221,12 @@ function InstallModal({
 
   const install = trpc.store.install.useMutation({
     onSuccess: onInstalled,
-    onError: (e) => toast(e.message || t('store.installError'), 'error'),
+    onError: (e) => toast(errorText(e, t('store.installError')), 'error'),
   });
 
   return (
     <Modal open onClose={onClose} title={t('store.installTitle', { name: app.name })}>
-      {app.description && <p style={{ marginBottom: '1rem' }}>{app.tagline}</p>}
+      {app.tagline && <p style={{ marginBottom: '1rem' }}>{app.tagline}</p>}
       {fields.map((f) => (
         <div className="field" key={f.key}>
           <label className="label">{f.label}</label>
@@ -271,25 +268,13 @@ function InstallModal({
         </div>
       ))}
       {wantsTunnel && (
-        <div className="glass-inset panel" style={{ marginBlockEnd: '1rem' }}>
-          <CheckboxField id="store-expose" checked={expose} onChange={setExpose} align="start" flush>
-            <span>
-              <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
-              <span className="setting-row__hint" style={{ display: 'block' }}>
-                {t('store.shareOnlineHint', { name: app.name })}
-              </span>
-            </span>
-          </CheckboxField>
-          {expose && !remoteReady && (
-            <p className="setting-row__hint" style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}>
-              {t('store.shareOnlineNoRemote')}{' '}
-              <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>{t('store.shareOnlineSettingsLink')}</Link>
-            </p>
-          )}
-          <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-            {t('store.shareOnlineChangeLater')}
-          </p>
-        </div>
+        <ShareOnlineChoice
+          id="store-expose"
+          value={expose}
+          onChange={setExpose}
+          hint={t('store.shareOnlineHint', { name: app.name })}
+          style={{ marginBlockEnd: '1rem' }}
+        />
       )}
       {install.isPending ? (
         <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>

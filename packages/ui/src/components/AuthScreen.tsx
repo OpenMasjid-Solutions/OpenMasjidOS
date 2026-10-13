@@ -13,9 +13,11 @@ import { MasjidMark } from './Glyphs';
 import { Modal } from './Modal';
 import { RestoreModal } from './RestoreModal';
 import { fadeRise } from '../lib/motion';
+import { errorText, ShownError } from '../lib/errors';
 
 // Keep in step with MIN_PASSWORD_LENGTH on the server (packages/core/src/auth/passwords.ts).
-const MIN_PW = 12;
+// Exported so Settings' change-password form holds new passwords to the same rule.
+export const MIN_PW = 12;
 const STRENGTH_COLORS = ['#ef4444', '#f59e0b', '#eab308', '#22c55e'];
 const STRENGTH_KEYS = ['auth.pwWeak', 'auth.pwFair', 'auth.pwGood', 'auth.pwStrong'];
 
@@ -38,7 +40,7 @@ export function AuthScreen({
   onAuthed: () => void;
 }) {
   const { t } = useTranslation();
-  const [username, setUsername] = useState(''); // login identifier (the email)
+  const [username, setUsername] = useState(''); // login identifier: the username (the email works too)
   const [name, setName] = useState(''); // first-run: display name
   const [email, setEmail] = useState(''); // first-run: admin email (login id + alerts)
   const [password, setPassword] = useState('');
@@ -66,11 +68,11 @@ export function AuthScreen({
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error || t('auth.genericError'));
+        throw new ShownError(body.error || t('auth.genericError'));
       }
       setRestoreOpen(true);
     } catch (err) {
-      setError((err as Error).message || t('auth.genericError'));
+      setError(errorText(err, t('auth.genericError')));
     } finally {
       setRestoreUploading(false);
     }
@@ -113,7 +115,7 @@ export function AuthScreen({
       setCsrf(res.csrf);
       onAuthed();
     } catch (err) {
-      setError((err as Error).message || t('auth.genericError'));
+      setError(errorText(err, t('auth.genericError')));
     }
   }
 
@@ -233,9 +235,12 @@ export function AuthScreen({
                 </div>
               </div>
             )}
+            {/* The length rule stays on screen until it is met. A short password that mixes
+                character types already scores "Fair", and showing that instead let the rule
+                disappear while the password would still be refused. */}
             {setupRequired && (
               <span className="hint">
-                {password.length > 0 && pwScore > 0 ? t(STRENGTH_KEYS[pwScore - 1]) : t('auth.passwordHint')}
+                {password.length >= MIN_PW && pwScore > 0 ? t(STRENGTH_KEYS[pwScore - 1]) : t('auth.passwordHint')}
               </span>
             )}
           </div>
@@ -329,10 +334,11 @@ export function AuthScreen({
  * screen never appears, so a volunteer who left their phone at home is not
  * locked out of the masjid's own dashboard.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: it does not say which factor failed, how
- * many attempts remain, or whether the challenge expired versus never existed.
- * The server answers all of those with one sentence; repeating more than it
- * said would hand a stranger a map.
+ * WHAT IT DELIBERATELY DOES NOT DO: it does not say which factor failed, or
+ * whether the challenge expired versus never existed. It shows the server's own
+ * sentence and nothing more. That sentence does say how many tries are left —
+ * only someone who got the password right ever reaches this screen — but adding
+ * to what it said would hand a stranger a map.
  */
 function SecondFactorScreen({
   challenge,
@@ -376,7 +382,7 @@ function SecondFactorScreen({
       onDone();
     } catch (err) {
       setCode('');
-      setError((err as Error).message || t('auth.genericError'));
+      setError(errorText(err, t('auth.genericError')));
     }
   }
 
@@ -386,7 +392,7 @@ function SecondFactorScreen({
       await sendCode.mutateAsync({ challenge });
       setEmailed(true);
     } catch (err) {
-      setError((err as Error).message || t('auth.genericError'));
+      setError(errorText(err, t('auth.genericError')));
     }
   }
 

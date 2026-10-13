@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * "What's new" — the project changelog, fetched server-side (we're LAN-only, so the
- * browser never reaches GitHub itself).
+ * "What's new" — the project changelog, fetched server-side, so the browser never has
+ * to reach GitHub itself.
  *
  * Lives in a managed traffic-light window rather than a centered modal, matching
  * OpenMasjid Kiosk's panel and the rest of this OS: release notes are something an
@@ -11,7 +11,7 @@
  *
  * Its own component (rather than living inside Settings) because it opens from two
  * places now: Settings → Advanced, and the account menu in the top-right. Both use
- * the same `openChangelogWindow` below, so the shared `dedupeKey` means the second
+ * the same `changelogWindowOptions` below, so the shared `dedupeKey` means the second
  * one focuses the window already open instead of stacking a duplicate.
  */
 import type { ReactNode } from 'react';

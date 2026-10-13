@@ -72,6 +72,17 @@ export function useWindows(): WindowsApi {
   return useContext(WindowsCtx);
 }
 
+/**
+ * Whether the window something is rendered in is showing — true outside a window. A
+ * minimised window stays mounted (a terminal keeps its connection), which also kept
+ * anything inside it polling for a screen nobody could see. WindowManager provides it.
+ */
+const WindowVisibleCtx = createContext(true);
+export const WindowVisibleProvider = WindowVisibleCtx.Provider;
+export function useWindowVisible(): boolean {
+  return useContext(WindowVisibleCtx);
+}
+
 export function WindowsProvider({ children }: { children: ReactNode }) {
   const [windows, setWindows] = useState<WindowState[]>([]);
   // A ref mirror so open()/dedupe can read the current list synchronously.
@@ -89,6 +100,11 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
 
   const focus = useCallback(
     (id: number) => {
+      // Already in front and showing: nothing to change. Every pointerdown inside a
+      // window lands here, and a new list re-rendered the dock, the dashboard and every
+      // app card on each click in a terminal.
+      const win = ref.current.find((w) => w.id === id);
+      if (win && !win.minimized && ref.current.every((w) => w.z <= win.z)) return;
       const z = ++zRef.current;
       setWins((list) => list.map((w) => (w.id === id ? { ...w, z, minimized: false } : w)));
     },
@@ -99,10 +115,15 @@ export function WindowsProvider({ children }: { children: ReactNode }) {
     (opts: OpenWindowOptions) => {
       if (opts.dedupeKey) {
         const existing = ref.current.find((w) => w.dedupeKey === opts.dedupeKey);
-        if (existing) {
+        // A new piece of work (a locked request) replaces a window whose work has
+        // finished (unlocked): pressing Update again only brought the finished window
+        // to the front. Anything else — work still running, a window that just shows
+        // something — is brought to the front as it is.
+        if (existing && !(opts.locked && !existing.locked)) {
           focus(existing.id);
           return existing.id;
         }
+        if (existing) setWins((list) => list.filter((w) => w.id !== existing.id));
       }
       const id = idRef.current++;
       const z = ++zRef.current;

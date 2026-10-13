@@ -17,7 +17,7 @@
  * every place the dashboard shows a number back to the admin, and being React-free is
  * what lets a core test cover them (`packages/ui` has no test runner of its own).
  */
-import { useMemo, type ReactNode } from 'react';
+import { useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, splitPhone } from '../lib/phone';
 
@@ -43,25 +43,35 @@ interface PhoneFieldProps {
 
 export function PhoneField({ value, onChange, label, hint, id, disabled, trailing }: PhoneFieldProps) {
   const { t } = useTranslation();
+  // A label must point at its box; without an id from the caller it pointed at nothing.
+  const autoId = useId();
+  const inputId = id ?? autoId;
   const split = useMemo(() => splitPhone(value), [value]);
+  // "Other" chosen on purpose. It has to be remembered: on an empty field the choice
+  // left nothing in the value to tell it apart from "nothing chosen", so the list
+  // snapped straight back to +1. While it holds, the whole number is typed here, code
+  // and all, even when its first digits happen to match a listed country.
+  const [other, setOther] = useState(false);
   // An empty field starts on +1 rather than "choose a country", so the common case is
   // type-and-go. A number already stored under a dial code that is not in the list falls
   // to "Other", where the whole number is typed — defaulting THAT to +1 would silently
   // rewrite someone's saved number.
-  const dial = split.dial || (digitsOnly(value) ? '' : DEFAULT_DIAL);
-  const national = split.national;
+  const dial = other ? '' : split.dial || (digitsOnly(value) ? '' : DEFAULT_DIAL);
+  const national = other ? digitsOnly(value) : split.national;
 
   function setDial(next: string) {
+    setOther(next === '');
     onChange(next ? `${next}${digitsOnly(national)}` : digitsOnly(national));
   }
 
   function setNational(raw: string) {
     const typed = digitsOnly(raw);
-    // A pasted full international number (with or without +) should just work rather
-    // than being appended to the selected country's code.
+    // A number typed or pasted with its "+" carries its own country code, so it is kept
+    // as it is — listed country or not. Putting the selected code in front of a
+    // +256 number made it a number in another country.
     if (raw.trim().startsWith('+')) {
-      const split = splitPhone(typed);
-      if (split.dial) return onChange(typed);
+      setOther(!splitPhone(typed).dial);
+      return onChange(typed);
     }
     onChange(`${dial}${typed}`);
   }
@@ -70,7 +80,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
     // Wider when it carries an action, so the button is not squeezed against the number.
     <div className="field" style={{ maxWidth: trailing ? '34rem' : '22rem' }}>
       {label && (
-        <label className="label" htmlFor={id}>
+        <label className="label" htmlFor={inputId}>
           {label}
         </label>
       )}
@@ -104,7 +114,7 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
           <option value="">{t('settings.phoneCountryOther')}</option>
         </select>
         <input
-          id={id}
+          id={inputId}
           className="input glass-inset"
           type="tel"
           inputMode="tel"

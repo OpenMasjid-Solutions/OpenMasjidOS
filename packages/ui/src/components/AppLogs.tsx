@@ -8,10 +8,21 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { useWindowVisible } from './Windows';
 
 export function AppLogs({ id }: { id: string }) {
   const { t } = useTranslation();
-  const logs = trpc.apps.logs.useQuery({ id, tail: 400 }, { refetchInterval: 3000 });
+  // Polled only while the window is showing — each fetch runs `docker compose logs` —
+  // and read once straight away when it comes back from the dock.
+  const visible = useWindowVisible();
+  const logs = trpc.apps.logs.useQuery({ id, tail: 400 }, { refetchInterval: visible ? 3000 : false });
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible && !wasVisible.current) void logs.refetch();
+    wasVisible.current = visible;
+    // `logs.refetch` is stable; this is about the visibility changing, nothing else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
   const ref = useRef<HTMLPreElement>(null);
   const prevData = useRef<string | undefined>(undefined);
 

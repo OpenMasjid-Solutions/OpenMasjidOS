@@ -5,13 +5,13 @@
  *
  * THE LOOP this prevents, reported after returning from Development to Stable:
  * every connection to `/api/update` ran a full pull + recreate unconditionally. The
- * recreate restarts the core, which drops every in-memory session (auth/sessions.ts
- * keeps them in a Map), so the dashboard falls back to the sign-in screen. That
- * unmounts AppShell — and the window layer renders inside the Dock — so the migration
+ * recreate restarted the core, which then dropped every session (auth/sessions.ts kept
+ * them in a Map; they are persisted now), so the dashboard fell back to the sign-in
+ * screen. That unmounted AppShell — where the windows render — so the migration
  * window's subtree unmounted while the window itself survived in WindowsProvider, which
- * sits above the router. Signing back in remounted it from scratch, which re-ran every
- * app and then the OS again, which signed you out again. Endless, and escapable only by
- * closing the window in the seconds before the restart landed.
+ * then sat above the router. Signing back in remounted it from scratch, which re-ran
+ * every app and then the OS again, which signed you out again. Endless, and escapable
+ * only by closing the window in the seconds before the restart landed.
  *
  * The rule is the same one `updateCatalogApp` already applies to apps ("is already up to
  * date"); the core's own update never had it.
@@ -112,10 +112,10 @@ test('the guard is wired into runUpdate BEFORE anything is pulled', () => {
 });
 
 test('the migration window reads what is pending instead of trusting a stale prop', () => {
-  // The other half. The window survives the sign-out its own OS update causes, because
-  // WindowsProvider sits above the router while the window LAYER renders inside the
-  // Dock — so the subtree unmounts and remounts with fresh state. Given a captured
-  // prop it replayed the whole migration; reading live state it sees nothing pending.
+  // The other half. The window used to survive the sign-out its own OS update caused,
+  // because WindowsProvider sat above the router while the windows render in AppShell —
+  // so the subtree unmounted and remounted with fresh state. Given a captured prop it
+  // replayed the whole migration; reading live state, a remount sees nothing pending.
   const src = fs.readFileSync(
     path.join(__dirname, '..', '..', 'ui', 'src', 'components', 'ChannelMigrate.tsx'),
     'utf8',
@@ -134,5 +134,7 @@ test('the migration window reads what is pending instead of trusting a stale pro
     path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'),
     'utf8',
   );
+  // Found first, or the check below passes on a file that no longer renders it at all.
+  assert.match(caller, /<ChannelMigrate\b/, 'the Settings shell must still open the migration window');
   assert.doesNotMatch(caller, /<ChannelMigrate[^>]*apps=/, 'the caller must not pass a stale list');
 });

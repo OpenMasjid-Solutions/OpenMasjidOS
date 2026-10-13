@@ -4,16 +4,19 @@
  * Auth gate + routing. auth.me decides: first-run setup, login, or the shell.
  * Because the shell only renders when authenticated, every route is guarded.
  */
-import { lazy, Suspense } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { lazy, Suspense, useEffect } from 'react';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { trpc } from './lib/trpc';
 import { getCsrf } from './lib/session';
+import { errorText } from './lib/errors';
 import { setRemoteOpener, setRemoteSession } from './lib/apps';
 import { useToast } from './components/ToastProvider';
 import { AuthScreen } from './components/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { Splash } from './components/Splash';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { MasjidMark } from './components/Glyphs';
 import { Dashboard } from './routes/Dashboard';
 
 // The dashboard is the landing page, so it stays in the main bundle. The rest
@@ -46,7 +49,10 @@ export function Root() {
    * (with the admin away in their authenticator app) keeps its place.
    */
   const me = trpc.auth.me.useQuery(undefined, {
-    retry: false,
+    // A blip — the core restarting, a 502 through Cloudflare — must not end the first
+    // check: with no answer at all, the screen below took it for "no account yet" and
+    // showed an existing install the create-your-admin-account page.
+    retry: 2,
     refetchOnWindowFocus: 'always',
     refetchInterval: 60_000,
   });
@@ -54,8 +60,12 @@ export function Root() {
   const reload = () => utils.auth.me.invalidate();
   const { toast } = useToast();
   const { t } = useTranslation();
+  const location = useLocation();
 
   if (me.isLoading) return <Splash />;
+  if (!me.data && me.isError) {
+    return <Unreachable retrying={me.isFetching} onRetry={() => void me.refetch()} />;
+  }
 
   const data = me.data;
   // Also require the dashboard key: a valid cookie without it (e.g. storage was
@@ -75,14 +85,16 @@ export function Root() {
     // else is the transport's — "Unable to transform response from server" for a
     // closed door, a JSON parse error for Cloudflare's 502 page while the core
     // restarts — and is no use to an admin.
-    (err) => {
-      const e = err as { message?: string; data?: { code?: string } | null };
-      toast(e?.data?.code && e.message ? e.message : t('errors.openApp'), 'error');
-    },
+    (err) => toast(errorText(err, t('errors.openApp')), 'error'),
   );
 
   return (
     <AppShell onSignedOut={reload}>
+      {/* A page's code is fetched when it is first opened. After an update the old
+          file is gone, and that failure used to blank the whole dashboard; now it is
+          caught here, for that page alone, and says what to do. Keyed on the address,
+          so going to another page tries again. */}
+      <ErrorBoundary key={location.pathname} fallback={<PageLoadFailed />}>
       <Suspense fallback={<Splash />}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -99,6 +111,55 @@ export function Root() {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
+      </ErrorBoundary>
     </AppShell>
+  );
+}
+
+/** A page whose code could not be fetched — usually a dashboard updated since this tab loaded. */
+function PageLoadFailed() {
+  const { t } = useTranslation();
+  return (
+    <div className="glass panel">
+      <div className="empty-state">
+        <p>{t('errors.pageLoad')}</p>
+        <button className="btn btn--primary" style={{ marginBlockStart: '1rem' }} onClick={() => window.location.reload()}>
+          {t('errors.reload')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The first sign-in check got no answer at all. Said as it is, and retried by itself —
+ * never the sign-in or first-run screen, which would be a guess about an install this
+ * page has not heard from.
+ */
+function Unreachable({ retrying, onRetry }: { retrying: boolean; onRetry: () => void }) {
+  const { t } = useTranslation();
+  // Asks again every few seconds, so the page carries on by itself the moment the
+  // server answers — the minute-long check above is for a page that is already up.
+  useEffect(() => {
+    const id = setInterval(onRetry, 5_000);
+    return () => clearInterval(id);
+  }, [onRetry]);
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card glass-raised" role="status">
+        <div className="auth-logo">
+          <MasjidMark size={48} />
+        </div>
+        <h1 className="page-title" style={{ textAlign: 'center', fontSize: '1.5rem' }}>
+          {t('auth.unreachableTitle')}
+        </h1>
+        <p className="page-sub" style={{ textAlign: 'center', marginBlockEnd: '1.25rem' }}>
+          {t('auth.unreachableBody')}
+        </p>
+        <button className="btn btn--primary btn--block" disabled={retrying} onClick={onRetry}>
+          {retrying ? t('auth.working') : t('auth.retryNow')}
+        </button>
+      </div>
+    </div>
   );
 }

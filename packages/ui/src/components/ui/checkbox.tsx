@@ -1,5 +1,5 @@
-"use client"
-
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 OpenMasjid-Solutions
 import * as React from "react"
 import { cn } from "cn"
 import { CheckIcon } from "lucide-react"

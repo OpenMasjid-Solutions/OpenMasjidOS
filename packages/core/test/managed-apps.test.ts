@@ -108,7 +108,7 @@ test('hiding the gateway must not take away its only Start button', () => {
     'the check must come after the start, not before',
   );
 
-  const ui = codeOf('ui/src/routes/Settings.tsx');
+  const ui = codeOf('ui/src/routes/settings/WhatsAppPanel.tsx');
   assert.match(ui, /trpc\.whatsapp\.restartGateway\.useMutation/, 'the panel must expose it');
   assert.match(ui, /whatsappGatewayCrashed/, 'a failed start must show the reason inline');
 });

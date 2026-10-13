@@ -15,6 +15,5 @@ export type AppReview = NonNullable<InstalledApp['review']>;
 export type CatalogApp = RouterOutputs['store']['catalog'][number];
 export type CommunityApp = RouterOutputs['community']['apps'][number];
 export type StatsSnapshot = RouterOutputs['stats']['get'];
-export type SystemInfo = RouterOutputs['system']['info'];
 export type UpdateInfo = RouterOutputs['system']['checkUpdate'];
 export type PlatformSettings = RouterOutputs['settings']['get'];

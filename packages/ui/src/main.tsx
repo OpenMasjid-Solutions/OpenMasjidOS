@@ -12,7 +12,8 @@ import { prefsStore } from './lib/prefs';
 import { installCursorFx } from './lib/cursorFx';
 import { App } from './App';
 
-// Apply saved theme/accent/wallpaper/language before first paint.
+// Apply saved theme/accent/wallpaper/language before React renders. The theme alone is
+// set even earlier, before first paint, by the small script in index.html.
 prefsStore.hydrate();
 // Pointer-reactive light on glass surfaces.
 installCursorFx();

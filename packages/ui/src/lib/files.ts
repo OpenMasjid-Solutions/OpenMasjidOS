@@ -3,6 +3,7 @@
 /** Helpers for the file explorer's streaming endpoints (download/upload). */
 import { getCsrf, withKey } from './session';
 import { isRemoteSession } from './apps';
+import { ShownError } from './errors';
 
 /**
  * The largest request Cloudflare's free plan carries through the tunnel. From outside the
@@ -52,8 +53,10 @@ export async function uploadFile(dir: string, file: File): Promise<void> {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     // Not our answer: Cloudflare's own page, almost always its size limit.
     if (!body && isRemoteSession() && res.status === 413) throw new TooBigFromOutside();
-    // An empty message lets the caller say it in the dashboard's own words.
-    throw new Error(body?.error ?? '');
+    // Our server's own words when it sent some; an empty message lets the caller say it
+    // in the dashboard's own words. A connection that failed outright never gets here —
+    // the caller shows its fallback for that (lib/errors.ts).
+    throw new ShownError(body?.error ?? '');
   }
 }
 

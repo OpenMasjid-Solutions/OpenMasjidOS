@@ -66,11 +66,6 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-.glass .glass-allow-nested-blur,
-.glass-raised .glass-allow-nested-blur {
-  -webkit-backdrop-filter: blur(var(--glass-blur-inset)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(var(--glass-blur-inset)) saturate(var(--glass-saturate));
-}
 
 /* GLINT CAP — a glass pane nested inside a glinting pane (e.g. a card's ⋮ menu
    inside an .fx-glint card) would INHERIT the parent's --mx/--my, which are
@@ -98,7 +93,6 @@
   background: var(--color-success);
   flex-shrink: 0;
 }
-.status-dot--error { background: var(--color-danger); }
 .status-dot--idle { background: var(--color-ink-faint); }
 .status-dot::after {
   content: "";
@@ -108,10 +102,6 @@
   background: radial-gradient(circle,
     color-mix(in srgb, var(--color-success) 55%, transparent), transparent 70%);
   animation: pulseGlow 2.4s ease-in-out infinite;
-}
-.status-dot--error::after {
-  background: radial-gradient(circle,
-    color-mix(in srgb, var(--color-danger) 55%, transparent), transparent 70%);
 }
 .status-dot--idle::after { content: none; }
 @keyframes pulseGlow {
