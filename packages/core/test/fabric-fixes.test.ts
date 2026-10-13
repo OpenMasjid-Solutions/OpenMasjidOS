@@ -246,3 +246,45 @@ test('a failed test email says why in words, never as an internal code', async (
     (e: Error) => /isn't set up yet/.test(e.message) && !/not_configured|\(/.test(e.message),
   );
 });
+
+// ── admin alerts ────────────────────────────────────────────────────────────────
+
+const alerts = req('../src/notify/alerts') as typeof import('../src/notify/alerts');
+
+test("A BURST OF ONE APP'S ALERTS CANNOT SILENCE THE PLATFORM'S OWN", async () => {
+  // App-raised alert emails were rate-limited as 'os', so thirty from one app (the Fabric
+  // lets an app raise 120 a minute) spent the platform's budget, and the next chargeback
+  // or app-offline email was dropped — and the chargeback monitor never retries.
+  const auth = req('../src/auth/store') as typeof import('../src/auth/store');
+  auth.createAdminIfUnset({ username: 'admin', passwordHash: '$argon2id$v=19$m=19456,t=2,p=1$aaaa$bbbb', email: 'admin@masjid.test' });
+  emailStore.saveEmailConfig({ provider: 'resend', fromEmail: 'alerts@masjid.test', resend: { apiKey: 're_test' } });
+  try {
+    await withFetch(
+      () => jsonResponse(200, { id: 'sent' }),
+      async () => {
+        let appEmails = 0;
+        for (let i = 0; i < 35; i++) {
+          const r = await alerts.deliverAlert({ source: 'reader-app', sourceName: 'Reader', alertId: 'reader-offline', text: 'The reader is offline.' });
+          if (r.email) appEmails++;
+        }
+        assert.ok(appEmails < 35, `precondition: the app reached its own mail limit (${appEmails} sent)`);
+        const own = await alerts.deliverAlert({ source: 'os', alertId: 'stripe-chargeback', title: 'A payment has been disputed', text: 'A card payment has been disputed.' });
+        assert.equal(own.email, true, "an app's burst dropped the platform's own alert");
+      },
+    );
+  } finally {
+    emailStore.saveEmailConfig({ provider: 'none' });
+  }
+});
+
+test('a subject made from an alert is shortened even when its text has no early space', () => {
+  // `lastIndexOf` found no space, so the text was "shortened" by one character; a lone
+  // space near the start left just "A…".
+  const unbroken = alerts.firstSentence('x'.repeat(200));
+  assert.ok(unbroken.length <= 78 && unbroken.endsWith('…'), `${unbroken.length} chars`);
+  const early = alerts.firstSentence(`A ${'y'.repeat(200)}`);
+  assert.notEqual(early, 'A…');
+  assert.ok(early.length > 20 && early.length <= 78, early);
+  // A word boundary is still preferred when there is one.
+  assert.equal(alerts.firstSentence(`${'word '.repeat(30)}end`), `${'word '.repeat(15).trim()}…`);
+});
