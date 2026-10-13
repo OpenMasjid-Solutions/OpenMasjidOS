@@ -407,7 +407,7 @@
 body,
 h1, h2, h3, h4, p, a, span, small, label, button, input, select, textarea, pre,
 .glass, .glass-raised, .glass-inset, .glass-dock,
-.btn, .panel, .input, .select, .menu, .menu-item, .icon-btn,
+.btn, .panel, .input, .select, .icon-btn,
 .tag, .toast, .dock-item, .card, .stat-card, .app-card, .app-icon,
 .page-title, .page-sub, .section-title, .panel-title, .hint {
   transition:

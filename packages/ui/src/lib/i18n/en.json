@@ -317,7 +317,6 @@
     "tabCompose": "Docker Compose",
     "search": "Search community apps…",
     "repos": "App stores",
-    "addRepo": "Add app store",
     "addRepoPlaceholder": "https://github.com/.../archive/refs/heads/main.zip",
     "addRepoCta": "Add",
     "adding": "Adding…",

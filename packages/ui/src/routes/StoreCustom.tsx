@@ -20,53 +20,7 @@ import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import type { CommunityApp } from '../lib/types';
 import { CheckboxField } from '../components/CheckboxField';
-
-/**
- * The "share this over the internet" question, asked identically on both
- * third-party paths. Default OFF: unlike a catalog app there is no manifest
- * `tunnel:` request to pre-tick from, and these apps are the least-vetted things
- * the platform installs — so nothing goes public unless the admin says so here
- * (or later, in Settings → Remote access).
- */
-function ShareOnlineChoice({
-  value,
-  onChange,
-  name,
-}: {
-  value: boolean;
-  onChange: (v: boolean) => void;
-  name: string;
-}) {
-  const { t } = useTranslation();
-  const cf = trpc.cloudflare.status.useQuery(undefined, { enabled: value });
-  const remoteReady = cf.data?.enabled === true && Boolean(cf.data?.domain);
-  return (
-    <div className="glass-inset panel" style={{ marginBlock: '1rem' }}>
-      <CheckboxField id="custom-expose" checked={value} onChange={onChange} align="start" flush>
-        <span>
-          <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
-          <span className="setting-row__hint" style={{ display: 'block' }}>
-            {t('custom.shareOnlineHint', { name })}
-          </span>
-        </span>
-      </CheckboxField>
-      {value && !remoteReady && (
-        <p
-          className="setting-row__hint"
-          style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}
-        >
-          {t('store.shareOnlineNoRemote')}{' '}
-          <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>
-            {t('store.shareOnlineSettingsLink')}
-          </Link>
-        </p>
-      )}
-      <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-        {t('store.shareOnlineChangeLater')}
-      </p>
-    </div>
-  );
-}
+import { ShareOnlineChoice } from '../components/ShareOnlineChoice';
 
 function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -313,7 +267,13 @@ function CommunityTab() {
           </div>
         )}
         <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
-        <ShareOnlineChoice value={expose} onChange={setExpose} name={confirmApp?.name ?? ''} />
+        <ShareOnlineChoice
+          id="custom-expose"
+          value={expose}
+          onChange={setExpose}
+          hint={t('custom.shareOnlineHint', { name: confirmApp?.name ?? '' })}
+          style={{ marginBlock: '1rem' }}
+        />
         {install.isPending ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span className="spinner" /> {t('community.installing')}
@@ -345,6 +305,10 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
   const [ack, setAck] = useState(false);
   const [error, setError] = useState('');
   const [portRemap, setPortRemap] = useState<Record<string, number>>({});
+  // Internet sharing starts OFF on both third-party paths: there is no manifest `tunnel:`
+  // request to pre-tick from, and these are the least-vetted things the platform installs,
+  // so nothing goes public unless the admin says so (here, or later in Settings → Remote
+  // access).
   const [expose, setExpose] = useState(false);
 
   // A compose that does not parse is refused with the reason — which used to go nowhere,
@@ -432,7 +396,13 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
 
         <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
 
-        <ShareOnlineChoice value={expose} onChange={setExpose} name={name.trim() || t('custom.thisApp')} />
+        <ShareOnlineChoice
+          id="custom-expose"
+          value={expose}
+          onChange={setExpose}
+          hint={t('custom.shareOnlineHint', { name: name.trim() || t('custom.thisApp') })}
+          style={{ marginBlock: '1rem' }}
+        />
 
         {error && <p className="form-error">{error}</p>}
 
