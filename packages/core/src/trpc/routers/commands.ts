@@ -24,7 +24,7 @@ import {
 } from '../../store/commands';
 import { isGrantable, listGrants } from '../../commands/registry';
 import { inboundStatus, observedEventShapes } from '../../notify/whatsapp-inbound';
-import { gatewayTraffic } from '../../notify/whatsapp';
+import { gatewayTraffic } from '../../notify/whatsapp-gateway';
 import { getAdminName, getAdminPhone } from '../../auth/store';
 
 const phone = z.string().trim().min(6).max(24);

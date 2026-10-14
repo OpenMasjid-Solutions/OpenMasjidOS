@@ -17,7 +17,7 @@
  * both been wrong. The admin would have had a green dot for the whole outage.
  *
  * So the probe has to ask a question that actually goes through to WhatsApp:
- * `notify/whatsapp.ts` `probeLink()` calls `/chats`, whose 503 is OpenWA saying the engine's
+ * `notify/whatsapp-gateway.ts` `probeLink()` calls `/chats`, whose 503 is OpenWA saying the engine's
  * WhatsApp connection is gone. `gatewayStatus()` is still consulted, but only for the bad
  * news it genuinely does catch (`no-session`, `pending`, `bad-key`, `problem`) — its `ready`
  * is never treated as proof of health, and `unreachable` is "could not ask", never a dead
@@ -40,15 +40,8 @@ import { log } from '../logger';
 import { readJson, writeJson } from '../util/json-store';
 import { deliverAlert } from '../notify/alerts';
 import { whatsappLinkLost } from '../notify/alert-copy';
-import {
-  probeLink,
-  gatewayStatus,
-  sendPathSignals,
-  pauseQueue,
-  isQueuePaused,
-  queueDepth,
-  outcomesInWindow,
-} from '../notify/whatsapp';
+import { sendPathSignals, pauseQueue, isQueuePaused, queueDepth, outcomesInWindow } from '../notify/whatsapp';
+import { probeLink, gatewayStatus } from '../notify/whatsapp-gateway';
 import { getWhatsAppConfig, isWhatsAppConfigured } from '../store/whatsapp';
 
 const CHECK_MS = 5 * 60_000;

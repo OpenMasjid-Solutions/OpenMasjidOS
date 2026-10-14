@@ -238,7 +238,8 @@ OpenMasjidOS/
 │   │   │   │                            #   registry → execute, + reply/conversation/os
 │   │   │   ├── fabric/                  # app↔app broker (appLink), proxy, appCommands
 │   │   │   ├── files/                   # File Explorer sandbox (protectedReason)
-│   │   │   ├── notify/                  # email, webhook, alerts, whatsapp, whatsapp-inbound
+│   │   │   ├── notify/                  # email, webhook, alerts, whatsapp (the queue),
+│   │   │   │                            #   whatsapp-gateway (the OpenWA client), whatsapp-inbound
 │   │   │   ├── settings/                # platform settings store (NO masjid data)
 │   │   │   ├── stats/                   # systeminformation host metrics
 │   │   │   ├── store/                   # catalog/casaos/changelog + config stores

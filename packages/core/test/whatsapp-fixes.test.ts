@@ -25,6 +25,7 @@ const CONFIG = path.join(DATA, 'config');
 
 const req = createRequire(__filename);
 const wa = req('../src/notify/whatsapp') as typeof import('../src/notify/whatsapp');
+const waGateway = req('../src/notify/whatsapp-gateway') as typeof import('../src/notify/whatsapp-gateway');
 const store = req('../src/store/whatsapp') as typeof import('../src/store/whatsapp');
 const qstore = req('../src/notify/whatsapp-queue-store') as typeof import('../src/notify/whatsapp-queue-store');
 const phone = req('../src/util/phone') as typeof import('../src/util/phone');
@@ -358,13 +359,13 @@ test('A FAILED PRIVACY-ID LOOKUP IS ASKED AGAIN — only a real answer is rememb
     return undefined;
   });
   try {
-    assert.equal(await wa.resolveLidPhone('111@lid'), null, 'the gateway was restarting');
-    assert.equal(await wa.resolveLidPhone('111@lid'), '15550101234', 'so it is asked again');
-    assert.equal(await wa.resolveLidPhone('111@lid'), '15550101234');
+    assert.equal(await waGateway.resolveLidPhone('111@lid'), null, 'the gateway was restarting');
+    assert.equal(await waGateway.resolveLidPhone('111@lid'), '15550101234', 'so it is asked again');
+    assert.equal(await waGateway.resolveLidPhone('111@lid'), '15550101234');
     assert.equal(gw.calls.filter((c) => c.includes('111%40lid')).length, 2, 'a real answer is remembered');
 
-    assert.equal(await wa.resolveLidPhone('222@lid'), null);
-    assert.equal(await wa.resolveLidPhone('222@lid'), null);
+    assert.equal(await waGateway.resolveLidPhone('222@lid'), null);
+    assert.equal(await waGateway.resolveLidPhone('222@lid'), null);
     assert.equal(gw.calls.filter((c) => c.includes('222%40lid')).length, 1, '"no number" is an answer too');
   } finally {
     await gw.close();
@@ -386,7 +387,7 @@ test('A SEND THAT TIMED OUT IS REPORTED, NOT SENT AGAIN — and a send has time 
   const branch = body.slice(at, body.indexOf('\n    }\n', at));
   assert.match(branch, /retryable: false/, 'and is never retried');
   assert.match(branch, /may or may not have arrived/, 'and the record says what is known, and no more');
-  assert.match(codeOf('notify/whatsapp.ts'), /timedOut: \(err as Error\)\?\.name === 'TimeoutError'/);
+  assert.match(codeOf('notify/whatsapp-gateway.ts'), /timedOut: \(err as Error\)\?\.name === 'TimeoutError'/);
 });
 
 test('A TEST BEFORE A PHONE IS LINKED SAYS SO — no fake typing, no bare gateway error', async () => {
@@ -420,7 +421,7 @@ test('A TEST BEFORE A PHONE IS LINKED SAYS SO — no fake typing, no bare gatewa
 test('an already-linked phone is changed in Settings, never in OpenWA’s own screen', async () => {
   const gw = await stubGateway();
   try {
-    const r = await wa.requestPairingCode(PARENT);
+    const r = await waGateway.requestPairingCode(PARENT);
     assert.equal(r.ok, false);
     assert.match(String(r.error), /Settings → WhatsApp/);
     assert.doesNotMatch(String(r.error), /in OpenWA/);
@@ -449,7 +450,7 @@ test('the cause apps are told comes from the status code, never from the wording
   ] as const) {
     const gw = await stubGateway((_m, url) => (url.endsWith('/chats?limit=1') ? { status } : undefined));
     try {
-      const probe = await wa.probeLink();
+      const probe = await waGateway.probeLink();
       assert.equal(probe.alive, false);
       assert.equal(probe.cause, cause, `a ${status}`);
     } finally {

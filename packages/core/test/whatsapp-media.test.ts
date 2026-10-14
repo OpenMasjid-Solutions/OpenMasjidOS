@@ -179,7 +179,7 @@ test('the image goes to send-image with the field names the gateway uses', () =>
 
 test('neither the caption nor the bytes are ever logged', () => {
   // A caption carries the masjid's words and the bytes are half a megabyte of poster.
-  const code = codeOf('core/src/notify/whatsapp.ts');
+  const code = codeOf('core/src/notify/whatsapp.ts') + codeOf('core/src/notify/whatsapp-gateway.ts');
   for (const line of code.split('\n')) {
     if (!/log\.(info|warn|error)/.test(line)) continue;
     assert.doesNotMatch(line, /item\.text|\.media\.data|item\.media\b(?!\s*\?)/, `logs content: ${line.trim()}`);
