@@ -279,10 +279,12 @@ test('the defaults are far below what OpenWA calls sustainable', () => {
 // ── structural guarantees ────────────────────────────────────────────────────────
 
 test('sending is serialised, and bulk is deliberately unused', () => {
-  const code = codeOf('notify/whatsapp.ts');
+  const queue = codeOf('notify/whatsapp.ts');
+  // The queue and the gateway client it calls: the absences below hold for both.
+  const code = queue + codeOf('notify/whatsapp-gateway.ts');
   // The single in-flight guard is the whole reason this module exists: pacing belongs
   // to the NUMBER, so two callers sending politely at once still burst.
-  assert.match(code, /if \(running\) return;/, 'the pump must never run twice concurrently');
+  assert.match(queue, /if \(running\) return;/, 'the pump must never run twice concurrently');
   // OpenWA's send-bulk paces only within one request, which is useless across callers.
   // Checked against code, so the comment explaining this choice doesn't trip it.
   assert.doesNotMatch(code, /messages\/send-bulk/, 'send-bulk must not be called');
@@ -325,7 +327,7 @@ test('qr_ready is NOT connected — the substring trap', () => {
   // The status test was `/connected|working|open|authenticated|ready/`, and `qr_ready`
   // contains "ready". So a session merely WAITING to be linked reported as connected —
   // exactly backwards, and it is the state a fresh install sits in longest.
-  const code = codeOf('notify/whatsapp.ts');
+  const code = codeOf('notify/whatsapp-gateway.ts');
   assert.doesNotMatch(code, /\/connected\|working\|open/, 'the substring regex must stay gone');
   // Statuses come from OpenWA's own enum, matched exactly.
   assert.match(code, /const READY = 'ready'/, 'ready is matched exactly');
@@ -340,7 +342,7 @@ test('"no session yet" is reported separately from "gateway unreachable"', () =>
   // They have completely different fixes — one is "press link", the other is "is OpenWA
   // running?" — so collapsing them sent the admin hunting a network fault that was not
   // there.
-  const code = codeOf('notify/whatsapp.ts');
+  const code = codeOf('notify/whatsapp-gateway.ts');
   assert.match(code, /'no-session'/, 'the state must exist');
   const fn = code.slice(code.indexOf('export async function gatewayStatus'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
@@ -359,7 +361,7 @@ test('the session id is machine-managed, never typed by an admin', () => {
   assert.doesNotMatch(routerSrc, /sessionId: z\./, 'the API must not accept a session id');
   assert.match(routerSrc, /sessionName: z\./, 'only a human label');
   // Create → start → pair is one action, owned by the sender (see whatsapp-link.test.ts).
-  assert.match(codeOf('notify/whatsapp.ts'), /ensureSession\(\)/, 'linking creates the session itself');
+  assert.match(codeOf('notify/whatsapp-gateway.ts'), /ensureSession\(\)/, 'linking creates the session itself');
 });
 
 test('the Fabric route queues rather than claiming delivery', () => {

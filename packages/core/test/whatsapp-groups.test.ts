@@ -179,9 +179,11 @@ test('one queue still owns everything — groups did not get their own sender', 
   // The single serialised pump is the whole anti-ban defence. Group support changes the
   // BUDGET, never the serialisation.
   const code = codeOf('core/src/notify/whatsapp.ts');
-  assert.equal((code.match(/async function pump\(/g) ?? []).length, 1, 'exactly one pump');
+  // The gateway client the queue calls must not grow a pump, or a bulk send, of its own.
+  const both = code + codeOf('core/src/notify/whatsapp-gateway.ts');
+  assert.equal((both.match(/async function pump\(/g) ?? []).length, 1, 'exactly one pump');
   assert.match(code, /if \(running\) return;/, 'and it still refuses to run twice');
-  assert.doesNotMatch(code, /send-bulk/, 'upstream bulk sending must stay unused');
+  assert.doesNotMatch(both, /send-bulk/, 'upstream bulk sending must stay unused');
 });
 
 test('contacts/check is skipped for groups but still runs for people', () => {
@@ -231,7 +233,10 @@ test('the platform never manages group membership', () => {
   // Bulk-adding people to a group is both a top-tier ban signal and a consent failure: a
   // parent who gave a number for fee reminders did not agree to be placed where two
   // hundred strangers can see it. People join by invite link, which is not ours to send.
-  const code = codeOf('core/src/notify/whatsapp.ts') + codeOf('core/src/store/whatsapp.ts');
+  const code =
+    codeOf('core/src/notify/whatsapp.ts') +
+    codeOf('core/src/notify/whatsapp-gateway.ts') +
+    codeOf('core/src/store/whatsapp.ts');
   for (const forbidden of ['/participants', 'promote', 'demote', '/leave', 'addParticipants']) {
     assert.ok(!code.includes(forbidden), `the platform must never call ${forbidden}`);
   }

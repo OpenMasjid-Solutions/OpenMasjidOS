@@ -1602,6 +1602,8 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
 - "Send test" before a phone is linked says to link one; "a phone is already linked" points at
   Settings → WhatsApp → Unlink.
 - A full SD card no longer stops the health monitor between pausing the queue and telling you.
+- The WhatsApp gateway client is its own file now (`notify/whatsapp-gateway.ts`), apart from
+  the queue, with nothing changed in what it does.
 
 #### Speed
 

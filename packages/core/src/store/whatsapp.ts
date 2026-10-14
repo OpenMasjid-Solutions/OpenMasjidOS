@@ -270,7 +270,8 @@ function persist(): void {
   }
 }
 
-/** Full config incl. the API key — ONLY for the sender (notify/whatsapp.ts). */
+/** Full config incl. the API key — ONLY for the sender (notify/whatsapp.ts) and its
+ *  gateway client (notify/whatsapp-gateway.ts). */
 export function getWhatsAppConfig(): WhatsAppConfig {
   return cache;
 }
@@ -280,7 +281,7 @@ export function getWhatsAppConfig(): WhatsAppConfig {
  *
  * `baseUrl` is deliberately NOT required: the normal path is installing OpenWA from
  * the App Store, and the platform then finds it at its published host port
- * (notify/whatsapp.ts `resolveBaseUrl`). A typed URL is the override for a gateway
+ * (notify/whatsapp-gateway.ts `resolveBaseUrl`). A typed URL is the override for a gateway
  * living elsewhere. The API key IS required — without it there is nothing to authenticate
  * with. The session id is not: the platform creates the session itself when it needs one.
  */

@@ -29,11 +29,11 @@ import { sendEmail } from '../notify/email';
 import {
   enqueue as enqueueWhatsApp,
   whatsappOutcome,
-  gatewayStatus as whatsappStatus,
   mediaProblem,
   MAX_MEDIA_BYTES,
   type OutgoingMedia,
 } from '../notify/whatsapp';
+import { gatewayStatus as whatsappStatus } from '../notify/whatsapp-gateway';
 import { suspectWindowsFor } from '../system/whatsapp-monitor';
 
 /**

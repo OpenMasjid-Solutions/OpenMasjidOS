@@ -43,7 +43,7 @@ import { maskDigits } from '../util/phone';
 import { gate, gateMessage, type GateOutcome } from '../commands/gate';
 import { normaliseInbound } from '../commands/normalise';
 import { resetConversations } from '../commands/conversation';
-import { gatewayStatus, resolveBaseUrl, resolveLidPhone, type GatewayStatus } from './whatsapp';
+import { gatewayStatus, resolveBaseUrl, resolveLidPhone, type GatewayStatus } from './whatsapp-gateway';
 
 const RECONCILE_MS = 30_000;
 const STATUS_PROBE_MS = 60_000;

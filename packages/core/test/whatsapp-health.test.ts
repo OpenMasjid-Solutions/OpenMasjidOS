@@ -114,7 +114,7 @@ test('a pause timestamp is only trusted when the queue is actually paused', () =
 // ── the detector ─────────────────────────────────────────────────────────────────
 
 test('THE PROBE ASKS WHATSAPP, NOT THE CACHED SESSION ROW', () => {
-  const wa = read('notify', 'whatsapp.ts');
+  const wa = read('notify', 'whatsapp-gateway.ts');
   const probe = wa.slice(wa.indexOf('export async function probeLink'));
   // `/chats` is a question that has to reach WhatsApp; `GET /api/sessions/:id` is a field
   // OpenWA can go on reporting as `ready` long after the link is gone.

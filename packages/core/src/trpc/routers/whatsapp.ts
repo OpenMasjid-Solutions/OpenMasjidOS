@@ -27,20 +27,22 @@ import {
   renameGroup,
 } from '../../store/whatsapp';
 import {
-  gatewayStatus,
-  requestPairingCode,
   sendTestMessage,
   sendTestToGroup,
   queueDepth,
   toDigits,
-  listGatewayGroups,
   heldSummary,
   releaseQueue,
   discardHeldMessages,
-  unlinkSession,
-  deleteGatewaySession,
   clearWhatsAppRuntime,
 } from '../../notify/whatsapp';
+import {
+  gatewayStatus,
+  requestPairingCode,
+  listGatewayGroups,
+  unlinkSession,
+  deleteGatewaySession,
+} from '../../notify/whatsapp-gateway';
 import { getAdminPhone } from '../../auth/store';
 import { getInstalled, restartApp, startApp, verifyStayedUp, removeApp } from '../../apps/manager';
 import { clearQueueStore } from '../../notify/whatsapp-queue-store';

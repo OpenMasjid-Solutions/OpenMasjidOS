@@ -24,7 +24,7 @@ import { createRequire } from 'node:module';
 process.env.OPENMASJID_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-walink-'));
 
 const req = createRequire(__filename);
-const wa = req('../src/notify/whatsapp') as typeof import('../src/notify/whatsapp');
+const wa = req('../src/notify/whatsapp-gateway') as typeof import('../src/notify/whatsapp-gateway');
 const store = req('../src/store/whatsapp') as typeof import('../src/store/whatsapp');
 
 const SESSION_ID = '11111111-2222-3333-4444-555555555555';
