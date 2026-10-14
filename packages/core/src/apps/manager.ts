@@ -27,7 +27,7 @@ import {
 import { discoverApps, discoverAppsResult, type DiscoveredApp } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
-import { assertAppFree, withUpdateLock } from '../system/update-lock';
+import { assertAppFree, isUpdating, withUpdateLock } from '../system/update-lock';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
 // Runtime-only import (called inside functions, never at module load) — no cycle
@@ -1270,16 +1270,24 @@ function recordedPath(id: string, meta: AppMeta | null): string {
  */
 function moveOffReservedPath(id: string, meta: AppMeta, recorded: string): string {
   const moved = freeAddress(id);
+  // This runs on reads — the ingress rebuilds every 10 s — so not while a restore runs: the
+  // record is about to be replaced, and a write could land in the tree it puts in place. The
+  // first read after the restore records the move.
+  if (isUpdating('restore')) return moved;
   try {
     saveMeta({ ...meta, path: moved === id ? undefined : moved });
     const url = intendedPublicUrl(id, isExposedMeta(meta), moved);
     if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== url) updateEnvFile(id, { OPENMASJID_PUBLIC_URL: url });
+    unrecordedMoves.delete(id);
     log.warn(`"${id}" was at /${recorded}, which OpenMasjidOS now uses for itself, so it moves to /${moved}. Change it in Settings → Remote access.`);
   } catch (err) {
-    log.warn(`Could not record "${id}"'s move from /${recorded} to /${moved}.`, err);
+    // Retried on every read; said once, not every ten seconds.
+    if (!unrecordedMoves.has(id)) log.warn(`Could not record "${id}"'s move from /${recorded} to /${moved}.`, err);
+    unrecordedMoves.add(id);
   }
   return moved;
 }
+const unrecordedMoves = new Set<string>();
 
 /**
  * Set an app's public path (or reset to the id when blank). Returns the effective path.

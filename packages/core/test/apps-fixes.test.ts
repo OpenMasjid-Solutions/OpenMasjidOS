@@ -325,6 +325,23 @@ test('AN APP LEFT ON AN ADDRESS OPENMASJIDOS NOW USES IS MOVED, ONCE AND FOR GOO
   }
 });
 
+test('…but not while a restore runs: a read writes nothing into the tree being put in place', async () => {
+  const lock = req('../src/system/update-lock') as typeof import('../src/system/update-lock');
+  seed('kiosk', { path: 'settings' });
+  const before = fs.readFileSync(path.join(APPS, 'kiosk', 'meta.json'), 'utf8');
+  let release = () => {};
+  const restoring = lock.withUpdateLock('restore', 'busy', () => new Promise<void>((r) => (release = r)));
+  try {
+    assert.equal(manager.getAppPath('kiosk'), 'kiosk', 'it answers at the new address');
+    assert.equal(fs.readFileSync(path.join(APPS, 'kiosk', 'meta.json'), 'utf8'), before, 'and writes nothing');
+  } finally {
+    release();
+    await restoring;
+  }
+  assert.equal(manager.getAppPath('kiosk'), 'kiosk');
+  assert.equal(metaOf('kiosk').path, undefined, 'the first read after the restore records it');
+});
+
 test('a reinstall keeps its address — unless OpenMasjidOS has since taken it', needsShell, async () => {
   seed('kept', { kind: 'custom', path: 'kept-here' });
   await manager.installCustomApp({ id: 'kept', name: 'Kept', composeText: 'services: {}\n', env: {} });
