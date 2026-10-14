@@ -5,8 +5,8 @@
  *
  * The single seam the transport calls. Everything above it (normalise → gate) decides
  * whether a message may be considered; everything below (parse → registry → reply) is
- * pure. This file is the impure middle: it holds the per-sender state, runs the OS
- * verbs, calls apps, and sends exactly one or two messages back.
+ * pure. This file is the impure middle: it drives the per-sender state, runs the OS
+ * verbs, calls apps, and sends at most two messages back.
  *
  * THE REPLY RULE, which several other safeguards depend on:
  *   `reply()` closes over the digits of whoever just messaged us. No command may take
@@ -367,7 +367,7 @@ function osConfirmWords(id: string, appName: string): [string, string] {
 /*
  * There is deliberately NO sending-allowance check on a mutating command; don't
  * reintroduce one. One used to refuse commands once an hourly or daily cap was spent,
- * but a reply goes out through `sendImmediate`, which never applied those caps, so it
+ * but a reply goes out through `replyTo`, which never applied those caps, so it
  * protected nothing and only locked admins out of the commands they were testing. What
  * bounds commands is the INBOUND rate limit in commands/gate.ts.
  */

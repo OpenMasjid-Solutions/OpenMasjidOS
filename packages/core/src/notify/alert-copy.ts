@@ -29,7 +29,7 @@ export interface AlertFact {
 export interface AlertAction {
   /** Button text, e.g. "Open OpenMasjidOS". */
   label: string;
-  /** What to do once there, in words — never a menu path. */
+  /** What to do once there, in words. */
   note: string;
   /** Dashboard-relative path, e.g. "/" or "/apps/<id>". */
   path: string;
@@ -173,9 +173,9 @@ export function appUpdate(name: string, current: string, latest: string): AlertC
  *
  * Deliberately avoids the word "chargeback" in the lead line — a volunteer treasurer
  * meets "disputed" in their bank's language far more often. The money and the
- * deadline come first because those are the two things that decide what they do next.
+ * deadline are both included because those are the two things that decide what they do next.
  *
- * There is NO action button on this one, unlike every other OS alert. The thing they
+ * There is NO action button on this one (same for the batch variant below). The thing they
  * must do happens in Stripe, not in our dashboard, and the email's button builds a
  * URL relative to the OpenMasjidOS address — so a button here would send them
  * somewhere that cannot help. The instruction goes in words instead. (A deep link

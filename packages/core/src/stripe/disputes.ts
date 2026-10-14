@@ -120,7 +120,7 @@ export function formatAmount(amount: number | null, currency: string | null): st
       maximumFractionDigits: decimals,
     }).format(value);
   } catch {
-    // Unknown/blank currency code — still show the number rather than nothing.
+    // Unknown currency code — still show the number rather than nothing.
     return `${value.toFixed(decimals)}${code ? ` ${code}` : ''}`;
   }
 }
@@ -153,7 +153,7 @@ export function reasonText(reason: string | null): string {
   return REASONS[reason] ?? `The reason given was "${reason.replace(/_/g, ' ')}".`;
 }
 
-/** A deadline in plain words: "by 14 August 2026". Null when there isn't one. */
+/** A deadline in plain words: "14 August 2026". Null when there isn't one. */
 export function formatDueBy(dueBy: number | null): string | null {
   if (dueBy == null) return null;
   const ms = dueBy * 1000;

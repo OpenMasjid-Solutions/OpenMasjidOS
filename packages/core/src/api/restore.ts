@@ -47,7 +47,7 @@ export function registerRestore(server: FastifyInstance): void {
     // First-run (no admin yet) restore is OPEN — same trust model as first-run
     // setup: a fresh, unconfigured box belongs to whoever reaches it first, and
     // restoring is the intended way to migrate onto a new machine. Once an admin
-    // exists, restore requires a session + the dashboard key.
+    // exists, restore requires a session + a CSRF check.
     if (isConfigured()) {
       if (!authed(req)) return reply.code(401).send({ error: 'Please sign in.' });
       if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
@@ -101,7 +101,7 @@ export function registerRestore(server: FastifyInstance): void {
       socket.close(code, why);
     };
     if (!isAllowedWsOrigin(req)) return refuse(4403, 'This request came from an unexpected place.');
-    // First-run restore is open (see the upload route); otherwise require auth + key.
+    // First-run restore is open (see the upload route); otherwise require auth + CSRF.
     if (isConfigured()) {
       if (!wsAuthed(req)) return refuse(4401, 'Please sign in again, then start the restore once more.');
       if (!requestCsrfOk(req)) return refuse(4403, 'This request came from an unexpected place.');

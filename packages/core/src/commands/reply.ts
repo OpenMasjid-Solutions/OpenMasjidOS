@@ -39,7 +39,7 @@ export interface UpdateRow {
    *  "1.4.0 to 1.3.9". The dashboard already learned this. */
   reason: 'version' | 'channel';
   /**
-   * WHICH channel the app would move TO. Required when `reason` is 'channel', because
+   * WHICH channel the app would move TO. Set when `reason` is 'channel', because
    * the move runs in both directions and the wording used to be hardcoded to
    * "Development" — so a masjid switching back to Stable was told its apps were moving
    * to Development, the exact opposite of what pressing update would do. The dashboard
@@ -61,7 +61,7 @@ export interface StatsRow {
 
 // ── helpers ──────────────────────────────────────────────────────────────────────
 
-/** Trim to the cap on a line boundary, so a reply never ends mid-word. */
+/** Trim to the cap, preferring a line boundary so a reply rarely ends mid-word. */
 export function cap(text: string, limit = MAX_REPLY_CHARS): string {
   if (text.length <= limit) return text;
   const cut = text.slice(0, limit);
@@ -237,7 +237,7 @@ export const say = {
 };
 
 /** What the admin sees when an app cannot be asked, or answers badly. Plain language,
- *  always a next step, never a status code. */
+ *  a next step where possible, never a status code. */
 export function appFailureText(appName: string, code: string, appId: string): string {
   switch (code) {
     case 'target_not_installed':

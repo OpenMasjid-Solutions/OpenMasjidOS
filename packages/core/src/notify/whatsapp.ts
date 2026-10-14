@@ -793,8 +793,11 @@ export function enqueue(req: SendRequest): { queued: boolean; error?: string; id
 
   const wantsGroup = Boolean(req.groupId);
   const wantsPerson = Boolean(req.to);
-  if (wantsGroup === wantsPerson) {
+  if (wantsGroup && wantsPerson) {
     return { queued: false, error: 'Send to either a phone number or a group, not both.' };
+  }
+  if (!wantsGroup && !wantsPerson) {
+    return { queued: false, error: 'Say who to send it to: a phone number or a group.' };
   }
 
   let target: Target;

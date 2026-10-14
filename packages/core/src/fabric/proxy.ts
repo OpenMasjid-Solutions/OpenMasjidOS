@@ -12,8 +12,8 @@
  *     must not be able to point the platform at another host.
  *   - The header set is built from scratch. Nothing caller-supplied survives, and
  *     the target's own secret is what proves to it that the platform sent this.
- *   - Both directions are size-capped and the response is aborted mid-stream once
- *     it goes over, so a runaway app cannot exhaust a Pi's memory.
+ *   - The response is size-capped and aborted mid-stream once it goes over, so a
+ *     runaway app cannot exhaust a Pi's memory.
  *   - Bodies are never logged. They routinely carry minors' PII and payment data.
  *
  * If you need a third way to reach an app, add an option here rather than a second
@@ -21,7 +21,7 @@
  */
 import http from 'node:http';
 
-/** 256 KB, each direction — the broker's long-standing cap. */
+/** 256 KB — the broker's long-standing response cap. */
 export const FABRIC_MAX_BODY = 256 * 1024;
 export const FABRIC_DEFAULT_TIMEOUT_MS = 10_000;
 

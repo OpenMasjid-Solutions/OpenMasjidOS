@@ -132,7 +132,7 @@ export async function sendNotification(n: NotifyInput, appId: string, appName = 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildBody(cfg.type, n, cfg.label?.trim() || '', appName, publicLogoUrl())),
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      redirect: 'error', // never follow a redirect to a different host
+      redirect: 'error', // never follow redirects
     });
     if (!res.ok) {
       log.warn(`Notification webhook returned HTTP ${res.status}.`);

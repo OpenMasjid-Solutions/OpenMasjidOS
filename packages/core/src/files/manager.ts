@@ -23,8 +23,8 @@
  *      app's `ssoSecret` and its Fabric capability grants.
  *
  * So the rule is narrower than "inside /data": the explorer is for the masjid's
- * files, never for the platform's own state. `protectedReason()` is the single place
- * that decides, and EVERY entry point below asks it.
+ * files, never for the platform's own state. `classifyProtected()` is the single place
+ * that decides; entry points reach it through `resolve()`.
  *
  * Backup and restore are deliberately unaffected — they archive `config/` and
  * `apps/` directly (`system/backup.ts`, `system/restore.ts`) and import nothing from
@@ -105,7 +105,8 @@ function isInside(root: string, p: string): boolean {
   return p === root || p.startsWith(root + path.sep);
 }
 
-/** Why the explorer must not touch this absolute path, or null if it's fair game. */
+/** Why the explorer must not touch this absolute path, APP_DIR_SENTINEL for app folders
+ *  that stay browsable but not removable, or null if it's fair game. */
 function classifyProtected(full: string): string | null {
   if (isInside(CONFIG_ROOT, full)) {
     return "This folder holds OpenMasjidOS's own settings and keys, so it's kept private. You can change these in Settings.";
@@ -185,7 +186,7 @@ function protectedReason(full: string): string | null {
   return null;
 }
 
-/** Refuse any operation on platform-owned state. Every entry point calls this. */
+/** Refuse any operation on platform-owned state. resolve() calls this; constructed targets call it directly. */
 function assertAllowed(full: string): void {
   const why = protectedReason(full);
   if (why) throw new FileError(why, 'PROTECTED');
@@ -326,7 +327,7 @@ export function removeEntry(rel: string): void {
   fs.rmSync(full, { recursive: true, force: true });
 }
 
-/** Resolve a file for download (must exist and be a regular file). */
+/** Resolve a file for download (must exist and not be a directory). */
 export function resolveFile(rel: string): { full: string; name: string } {
   const full = resolve(rel);
   let stat: fs.Stats;

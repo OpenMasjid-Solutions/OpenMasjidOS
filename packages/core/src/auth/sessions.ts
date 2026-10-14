@@ -316,7 +316,7 @@ function loadAtBoot(): Map<string, Session> {
 const sessions = loadAtBoot();
 let writeFailureLogged = false;
 
-/** Remove a leftover temp file: it would hold tokens, and backups must not carry them. */
+/** Remove a leftover temp file: tokens should not linger on disk. */
 function removeTemp(): void {
   try {
     fs.rmSync(`${SESSIONS_FILE}.tmp`, { force: true });
@@ -530,7 +530,7 @@ const APP_TOKEN_RE = /^a1\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{43})$/;
  * Memoised per token. `appAccessUser` runs on requests from the internet to every app
  * path, and without the memo each token-shaped cookie value cost one SHA-256 per stored
  * session — a review measured ~5 ms of a root daemon's single thread per request with
- * a 16 KB Cookie header. The memo is pruned to the live sessions whenever it outgrows
+ * a 16 KB Cookie header. The memo is pruned to the stored sessions whenever it outgrows
  * them, so it cannot grow without bound either.
  */
 const handleMemo = new Map<string, string>();
@@ -656,7 +656,7 @@ export function sessionKey(token: string | undefined | null): string | null {
 }
 
 export function destroySession(token: string | undefined | null): void {
-  // Nothing to do — and nothing written — for a token that is not a live session.
+  // Nothing to do — and nothing written — for a token that is not a known session.
   // Logout is a public procedure: without this, any cookie value made it rewrite
   // the file, and a batched request could make it do so hundreds of times.
   if (!token || !sessions.has(token)) return;
@@ -675,7 +675,7 @@ export function destroyAllSessions(): void {
   saveRemoval();
 }
 
-/** How many sessions are live in memory — for tests and diagnostics only. */
+/** How many sessions are stored in memory — for tests and diagnostics only. */
 export function sessionCount(): number {
   return sessions.size;
 }

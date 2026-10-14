@@ -19,7 +19,7 @@ function authed(req: FastifyRequest): boolean {
   return Boolean(requestUser(req));
 }
 
-// Cookie-only routes need an Origin check + the dashboard key, so a same-site app
+// Cookie-only routes need an Origin check + a CSRF token, so a same-site app
 // on another port (which shares the cookie) can't upload on the admin's behalf.
 function guard(req: FastifyRequest): { code: number; error: string } | null {
   if (!isAllowedOrigin(req)) return { code: 403, error: 'Bad origin.' };

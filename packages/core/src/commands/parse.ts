@@ -54,7 +54,7 @@ export type ParseResult =
   | { kind: 'unwanted-argument'; ns: CommandNamespace; command: CommandEntry };
 
 /** Words the platform owns at the top level. Matched before any namespace, so an app
- *  whose id is one of them is unreachable by it rather than able to shadow it. */
+ *  whose word is one of them is unreachable by it rather than able to shadow it. */
 const HELP_WORDS = new Set(['help', '?']);
 const YES_WORDS = new Set(['yes', 'y']);
 const NO_WORDS = new Set(['no', 'n', 'cancel']);
@@ -140,9 +140,9 @@ export function parseCommand(raw: string, ctx: ParseContext): ParseResult {
   return { kind: 'run', ns, command, text };
 }
 
-/** Lowercase and strip the smart punctuation phone keyboards insert. Applied to the
- *  KEYWORD only — an argument keeps whatever the sender typed, apostrophes, RTL and
- *  all, because it is the app's text and not ours to tidy. */
+/** Lowercase and strip the smart punctuation phone keyboards insert. Applied to parsed
+ *  tokens only (keyword, selector, code) — an argument keeps whatever the sender typed,
+ *  apostrophes, RTL and all, because it is the app's text and not ours to tidy. */
 function normaliseWord(w: string): string {
   const base = w.toLowerCase().replace(/[‘’“”]/g, '');
   // Trailing punctuation is a slip ("!display."), so drop it — unless that would

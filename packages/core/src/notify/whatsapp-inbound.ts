@@ -104,7 +104,7 @@ export interface InboundStatus {
   /**
    * Why messages were discarded, counted by reason.
    *
-   * The single most useful diagnostic here, because most of the gate's fourteen drops
+   * The single most useful diagnostic here, because some of the gate's fourteen drops
    * are debug-level only — so a message that DID arrive and was thrown away looked
    * exactly like nothing arriving at all. These are reason words and integers; no
    * content of any kind.
@@ -156,7 +156,7 @@ let connectedAt = 0;
 let lastEventAt = 0;
 /** Raw engine traffic, set independently of anything the application layer parses. */
 let lastPacketAt = 0;
-/** True once the gateway has acked our subscribe. Until then we are in no rooms. */
+/** True once the gateway has acked our subscribe. */
 let subscribed = false;
 /** How the subscribe went — three outcomes that a single boolean collapsed into one. */
 export type AckState = 'pending' | 'confirmed' | 'timed-out' | 'refused';
@@ -607,7 +607,7 @@ async function handleInbound(event: string, args: unknown[]): Promise<void> {
   }
 }
 
-/** Called by the executor when a message from an unlisted number LOOKED like a
+/** Called when a message from an unlisted number LOOKED like a
  *  deliberate command. That one is worth telling the admin about; ordinary
  *  conversation from a stranger is not. */
 export function noteStrangerAttempt(digits: string): void {

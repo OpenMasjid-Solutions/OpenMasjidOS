@@ -64,7 +64,7 @@ async function registerStaticFiles(server: FastifyInstance, uiDir: string): Prom
  *
  * Never for a request the front door handed over. From outside, the dashboard's pages
  * come only from registerRemoteDashboardPages, which carries the key rule's headers;
- * a plain index.html there (for `/assets/x` or `/assets/../settings`) could be framed by
+ * a plain index.html there (for `/settings` or any other SPA route) could be framed by
  * an app page and signed into in LAN mode, which stores the key where that app can read it.
  */
 function spaFallback(haveUI: boolean) {

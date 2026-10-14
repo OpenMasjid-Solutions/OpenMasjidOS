@@ -78,12 +78,10 @@ export type ClaimResult =
 
 /**
  * Look a challenge up for a completion attempt, checking everything except the
- * code itself. Does NOT consume it — the caller spends it with `consume` only
+ * code itself. Does NOT consume it — the caller spends it with `consumeChallenge` only
  * once the second factor has actually verified, so a wrong code costs an attempt
  * rather than the whole challenge.
  *
- * An unknown id and an expired one answer identically to the caller. There is
- * nothing to learn from the difference and it is one fewer oracle.
  */
 export function claimChallenge(
   id: string,

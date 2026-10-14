@@ -3,9 +3,9 @@
 /**
  * Admin alerts + a granular per-alert × per-channel matrix (UniFi-style). An alert
  * is a message the ADMIN cares about — an app going offline, an app-declared event
- * (a camera/reader offline, a failed payment). For EACH alert type the admin
- * chooses which channels it goes to: the admin **email**, the **webhook**, the admin's
- * **WhatsApp** number, any combination, or none. Email and webhook default ON; WhatsApp
+ * (a camera/reader offline, a failed payment). For each alert type the admin
+ * chooses from the admin **email**, the **webhook**, and — for most OS alerts —
+ * the admin's **WhatsApp** number. Email and webhook default ON; WhatsApp
  * defaults OFF, because it runs through an unofficial client whose linked number can be
  * restricted — that is a risk an admin takes deliberately, not one that starts the
  * moment a gateway is configured.
@@ -206,8 +206,9 @@ export interface AlertTypeInfo {
   label: string;
   description?: string;
   channels: AlertChannels;
-  /** False for an app's alerts — it sends its own WhatsApp messages, to its own
-   *  people, from its own settings. The UI shows that instead of a dead toggle. */
+  /** False for an app's alerts (it sends its own WhatsApp messages, to its own
+   *  people) and for `whatsapp-link-lost`. The UI shows context instead of a
+   *  dead toggle. */
   whatsappAvailable: boolean;
 }
 
@@ -251,8 +252,8 @@ export interface AlertInput extends NotifyInput {
   /**
    * Optional richer email copy. OS alerts pass these (see notify/alert-copy.ts) so
    * the email can lead with a proper snippet line and offer a button; an app
-   * raising an alert over the Fabric supplies only `title` + `text`, and those are
-   * used to fill these in.
+   * raising an alert over the Fabric supplies only `title` + `text`; `text`
+   * becomes the `summary` fallback, and the rest stay empty.
    */
   summary?: string;
   detail?: string;
@@ -260,7 +261,7 @@ export interface AlertInput extends NotifyInput {
   action?: { label: string; note: string; path: string };
 }
 
-/** First sentence of a blob of text, for deriving a subject an app didn't give us. */
+/** First sentence of a blob of text, for deriving a title an app didn't give us. */
 export function firstSentence(s: string, max = 78): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   const stop = flat.search(/[.!?](\s|$)/);
@@ -273,7 +274,8 @@ export function firstSentence(s: string, max = 78): string {
 
 /**
  * Tidy a subject line. Strips control characters and newlines (a header must be one
- * line), collapses whitespace, and cuts on a word boundary rather than mid-word.
+ * line), collapses whitespace, and prefers a word-boundary cut (but falls back
+ * to a hard cut when no space sits far enough in).
  * 78 is the practical budget — Gmail's web list truncates around 70, and the old
  * 200-char slice guaranteed an ugly mid-word cut.
  */
