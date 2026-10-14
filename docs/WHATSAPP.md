@@ -32,7 +32,7 @@ app is not in the App Store and WhatsApp does not exist anywhere in OpenMasjidOS
 1. **Switch on “Send messages over WhatsApp.”** A warning appears first, explaining that
    this uses an unofficial client and that the number can be restricted. Accepting it
    turns the feature on and makes the gateway installable.
-2. **Install the gateway.** The panel offers **Install the gateway**, which takes you
+2. **Install OpenWA.** The panel offers **Install OpenWA**, which takes you
    straight to OpenWA's install questions. Set an **API key** there and keep it.
 3. **Paste that same API key** back in Settings → WhatsApp (it is the `OPENWA_API_KEY`
    setting, which OpenWA reads as `API_MASTER_KEY`). Leave *Gateway address* empty — an
@@ -534,10 +534,10 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 
 | What you see | What it means |
 |---|---|
-| *Cannot reach the gateway — OpenWA is not installed* | Install it from the App Store |
-| *Cannot reach the gateway — OpenWA is installed but not running* | Press **Start it** in Settings → WhatsApp. The gateway is deliberately kept off your dashboard and out of the dock, so that is the only Start button for it |
-| *Cannot reach the gateway — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
-| *Cannot reach the gateway — the gateway address could not be found* | Only possible with a typed-in *Gateway address*; check the hostname |
+| *Cannot reach OpenWA — OpenWA is not installed* | Install it from the App Store |
+| *Cannot reach OpenWA — OpenWA is installed but not running* | Press **Start it** in Settings → WhatsApp. The gateway is deliberately kept off your dashboard and out of the dock, so that is the only Start button for it |
+| *Cannot reach OpenWA — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
+| *Cannot reach OpenWA — the gateway address could not be found* | Only possible with a typed-in *OpenWA address*; check the hostname |
 | *The gateway rejected the API key* | Re-paste the key you set when installing OpenWA. Remember it is only read on OpenWA's **first** boot — if you changed it in Settings, reinstall OpenWA instead |
 | *No connection created yet* | The gateway is up but nothing exists on it; pressing **Get a code** creates and starts it |
 | *The gateway is still connecting* | The session was just started and its engine is not up yet. Wait a few seconds and press **Get a code** again |

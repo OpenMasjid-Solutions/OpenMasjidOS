@@ -1472,9 +1472,9 @@ complete." while the old core was still about to be replaced. (The update window
 rule, next section.) And only a 1000 or a 4003 (`heard`) is the server saying how the restore
 ended; any other code that reaches the wait — 1006 from a laptop that slept, say — means the
 stream dropped first, and a restart seen afterwards proves the core restarted, not that the
-restore worked. That ends on `restore.lost`: "OpenMasjidOS has restarted, but this window lost
-touch with the restore before it said how it went. Please reload, sign in again and check that
-your apps and settings look right." It used to say "Restore complete."
+restore worked. That ends on `restore.lost`: "OpenMasjidOS has restarted, but this window couldn't
+see how the restore ended. Please reload, sign in again and check that your apps and settings
+look right." It used to say "Restore complete."
 `test/remote-update.test.ts` (*the update window is told whether anything changed — and waits
 only for a restart*) pins the two-failure rule in both windows and this ending.
 

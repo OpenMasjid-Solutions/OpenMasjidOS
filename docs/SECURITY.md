@@ -635,8 +635,8 @@ What a stranger **can** learn:
   restore itself said so before OpenMasjidOS restarted. If the window lost its connection
   before the restore said how it ended — a laptop that slept, the Wi-Fi — a restart seen
   afterwards proves nothing about the restore, so it says instead: "OpenMasjidOS has restarted,
-  but this window lost touch with the restore before it said how it went. Please reload, sign in
-  again and check that your apps and settings look right." It used to say *Restore complete.*
+  but this window couldn't see how the restore ended. Please reload, sign in again and check that
+  your apps and settings look right." It used to say *Restore complete.*
 - **Restoring onto a new box** (a first-run restore) is refused from outside altogether, and so
   is first-run setup.
 - **A backup downloaded from outside starts at once.** Making a backup copies every app's data

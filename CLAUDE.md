@@ -1548,8 +1548,8 @@ Every label and message uses plain, warm, non-technical language. The user is a 
       restart said *"Restore complete."* while the old core was still about to be replaced. And it says it is
       complete only when it HEARD how the restore ended (1000, or 4003): a stream that DROPPED first — any other close,
       a sleeping laptop, the Wi-Fi — ends, once a restart is seen, on *"OpenMasjidOS has restarted, but this window
-      lost touch with the restore before it said how it went. Please reload, sign in again and check that your apps
-      and settings look right."* (`restore.lost`), because a restart proves only that the core restarted; it used to
+      couldn't see how the restore ended. Please reload, sign in again and check that your apps and settings look
+      right."* (`restore.lost`), because a restart proves only that the core restarted; it used to
       say *"Restore complete."* The refusals made before a restore starts (4401 signed out, 4403 a bad origin or a
       first-run restore from outside) also SEND their reason as a line, ending *"Nothing has been changed."*, because
       "the messages above say why" over an empty log was false. **4003 is a restart in which some app's data could
