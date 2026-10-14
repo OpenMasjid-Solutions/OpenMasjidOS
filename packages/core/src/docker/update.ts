@@ -20,6 +20,7 @@ import { getSettings } from '../settings/store';
 import { coreImageTag, coreTargetTag } from '../system/channel';
 import { checkForUpdate } from '../system/system';
 import { isPrerelease } from '../util/version';
+import { writeFileAtomic } from '../util/json-store';
 import { HOLD_UNTIL_REPLACED_MS, withUpdateLock } from '../system/update-lock';
 import { managesFromOutside } from '../system/remote-admin';
 import { backupInProgress } from '../system/backup';
@@ -53,6 +54,11 @@ function retarget(image: string, tag: string): string {
 /** The core's image line in its own compose file: our repo, then `:tag`, `@digest` or nothing. */
 const CORE_IMAGE_LINE = /^(\s*image:\s*)(\S*openmasjid-core)(:[^\s@]+|@\S+)?(\s*)$/m;
 const COMPOSE_FILE = path.join(DATA_DIR, 'docker-compose.yml');
+
+/** Replace the core's compose file atomically, keeping its mode. */
+function writeComposeFile(text: string): void {
+  writeFileAtomic(COMPOSE_FILE, text, fs.statSync(COMPOSE_FILE).mode & 0o777);
+}
 
 /** The image reference the core's compose file names (`repo:tag` or `repo@digest`), or null. */
 export function composeImageRef(): string | null {
@@ -115,7 +121,9 @@ export function alignComposeImage(want: string): boolean {
   if (suffix === `:${want}`) return true; // already correct
   const next = text.replace(re, `$1$2:${want}$4`);
   try {
-    fs.writeFileSync(file, next, 'utf8');
+    // Whole or not at all: a write the disk refused part-way left the file cut short, under
+    // a window that said nothing was changed — and the next restart that read it failed.
+    writeComposeFile(next);
     log.info(`Pointed the core's compose file at :${want}.`);
     return true;
   } catch (err) {
@@ -234,7 +242,7 @@ export async function recreateCore(onLine: (s: string) => void, tag?: string): P
     // next restart that reads it — a restore's, or the installer's — would come back on
     // a build this core never ran.
     try {
-      fs.writeFileSync(COMPOSE_FILE, before, 'utf8');
+      writeComposeFile(before);
     } catch (err) {
       log.error('Could not put the core compose file back after the update could not start.', err);
     }

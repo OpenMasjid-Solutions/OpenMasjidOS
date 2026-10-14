@@ -176,12 +176,43 @@ function stagedVolumeArchives(volDir: string): string[] {
   }
 }
 
-/** What the app-data archives in a backup unpack to, from what tar can list — of one it
- *  cannot read to the end too: its refill fails, but may unpack that much first. */
-async function stagedVolumeBytes(volDir: string): Promise<number> {
-  let total = 0;
-  for (const f of stagedVolumeArchives(volDir)) total += (await listArchive(path.join(volDir, f))).bytes;
-  return total;
+/**
+ * Does the backup's app data fit on the disk as the refills put it back? Each refill unpacks
+ * one volume beside its old data and frees the old copy only once the new is in place, so
+ * what must fit is each volume in turn, on top of what the ones before it added or freed —
+ * not every volume at once, which refused a box its own backup once its app data was larger
+ * than its free space. Sizes from what tar can list — of an archive it cannot read to the
+ * end too: its refill fails, but may unpack that much first.
+ */
+async function appDataFits(volDir: string): Promise<boolean> {
+  const files = stagedVolumeArchives(volDir);
+  const now = await currentVolumeBytes(files.map((f) => f.replace(/\.tar\.gz$/, '')));
+  let room = freeSpaceCap();
+  for (const f of files) {
+    const size = (await listArchive(path.join(volDir, f))).bytes;
+    if (size > room) return false;
+    room -= size - (now.get(f.replace(/\.tar\.gz$/, '')) ?? 0);
+  }
+  return true;
+}
+
+/** What each of these volumes that already exists holds now, in bytes, measured in one helper
+ *  container. One Docker cannot measure counts as empty, which refuses rather than fills. */
+async function currentVolumeBytes(vols: string[]): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>();
+  const ls = await capture('docker', ['volume', 'ls', '--format', '{{.Name}}']);
+  if (ls.code !== 0) return sizes;
+  const existing = new Set(ls.out.split('\n').map((s) => s.trim()));
+  const present = vols.filter((v) => existing.has(v));
+  if (present.length === 0) return sizes;
+  const mounts = present.flatMap((v, i) => ['-v', `${v}:/v/${i}:ro`]);
+  const du = await capture('docker', ['run', '--rm', ...mounts, VOL_IMAGE, 'du', '-sk', ...present.map((_, i) => `/v/${i}`)]);
+  for (const line of du.out.split('\n')) {
+    const m = /^(\d+)\s+\/v\/(\d+)$/.exec(line.trim());
+    const vol = m ? present[Number(m[2])] : undefined;
+    if (m && vol) sizes.set(vol, Number(m[1]) * 1024);
+  }
+  return sizes;
 }
 
 /** The labels compose gives a volume it makes (`omos-donations_data` is project
@@ -538,7 +569,7 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
     // then filled the disk once settings and apps had already been replaced. Against the
     // free space left NOW, after the staging copy — not the 8 GiB ceiling, which is for the
     // upload: a masjid's app data may rightly unpack to more than that.
-    if ((await stagedVolumeBytes(path.join(STAGING_DIR, 'volumes'))) > freeSpaceCap()) {
+    if (!(await appDataFits(path.join(STAGING_DIR, 'volumes')))) {
       onLine(TOO_LARGE);
       return 'unchanged';
     }

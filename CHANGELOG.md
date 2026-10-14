@@ -1529,13 +1529,19 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
   swapped in only once complete; one that fails is left exactly as it was.
 - **A restore whose app data would fill the disk is refused before any app is stopped.** The
   data is measured unpacked, against the space left once the backup itself is unpacked.
+- **A box can restore its own backup when its app data is larger than its free space.** All
+  the app data was counted at once, but a restore puts one app's data back at a time and frees
+  the old copy as it goes: each is counted now beside what it replaces.
 - **An off-site backup can no longer hang everything after it.** When the destination stopped
   reading (a wrong password, a NAS gone offline) the backup waited for ever, and every later
   backup and restore was refused as "already running" until a restart. A run refused because
   another was running is no longer recorded as a failure, and whatever a failed run left on the
-  destination is removed.
+  destination is removed. On a full disk, where its result can't be saved, a failed run is no
+  longer tried again every 15 minutes.
 - **Updating OpenMasjidOS waits for a backup being made**, instead of cutting it off half
   written. A backup cut off by a restart leaves no copy of the apps' data behind.
+- The core's own compose file is written whole or not at all: a full disk left it cut short
+  under a window saying nothing was changed.
 - **File Explorer:** app folders open again (they were drawn as locked); the editor never writes
   through a link (a dangling one created its target wherever it pointed, `config/` included); an
   upload replaces a file only once it has all arrived (a cancelled one used to leave half a
