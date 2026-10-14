@@ -1512,6 +1512,10 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
 - **The image runs on Node 22 LTS** (Node 20 is end-of-life). CI's token is read-only by default
   and the Docker actions are pinned to commits; the lockfile workflow, which committed straight to
   the stable branch, is gone.
+- **A smaller download.** The image carries only the core's own dependencies, not the dashboard's
+  (React and the rest are built into its static files): about 80 MB less on disk and 11 MB less to
+  download. CI now starts each architecture's image and waits for `/api/health` before publishing
+  anything, so a dependency missing from the image fails the build instead of reaching a masjid.
 
 #### Backups, restores and the File Explorer
 
