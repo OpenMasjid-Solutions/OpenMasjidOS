@@ -1605,6 +1605,30 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
 - The WhatsApp gateway client is its own file now (`notify/whatsapp-gateway.ts`), apart from
   the queue, with nothing changed in what it does.
 
+#### Plain words
+
+- **The dashboard says what to do, not how it works inside.** 71 messages and hints were
+  rewritten — about sessions, gateways, routes, tokens and how a backup is checked — keeping
+  every warning. The WhatsApp gateway is called OpenWA everywhere, the name you install.
+- The update, app-update and restore windows show plain progress instead of Docker's own
+  output, with a "still working" line every 30 seconds during a long download. That output
+  goes to the server log, where whoever helps you can still read it.
+- The File Explorer and the off-site backup's Test say what to check instead of showing
+  the system's or rclone's own error text.
+
+#### After the final review
+
+- A phone number pasted with `+44 (0)…` or typed as `0044 …` is stored correctly; both used
+  to give a number WhatsApp does not know.
+- Moving between Settings sections no longer reloads Settings, which could drop a restore
+  upload part-way.
+- Stop and Restart on an app's own page say why when they are refused.
+- The Storage card no longer adds "of disk": inside a container it named the host's disks.
+- Installing a community app waits for its safety check, and a check that fails can be retried.
+- A backup asked for during an OpenMasjidOS update is refused with a reason, rather than cut
+  off when the update restarts the dashboard.
+- Moving an app off an address OpenMasjidOS took for itself writes nothing while a restore runs.
+
 #### Speed
 
 - The dashboard's bundles are compressed when it is built and sent compressed to browsers on
