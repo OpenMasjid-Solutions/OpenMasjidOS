@@ -37,6 +37,7 @@ import { isReservedPathSegment } from './paths';
 import { suppressOfflineAlert } from '../system/offline-suppress';
 import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
+import { STILL_DOWNLOADING, STILL_WORKING, withHeartbeat } from '../util/heartbeat';
 import { getSettings } from '../settings/store';
 import type { Channel } from '../system/channel';
 import type {
@@ -1172,7 +1173,8 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
     try {
       review = reviewCompose(id);
     } catch (err) {
-      review = { kind: 'unreadable', reasons: [(err as Error).message], at: new Date().toISOString() };
+      log.warn(`Could not check ${id}'s compose file.`, err);
+      review = { kind: 'unreadable', reasons: ["we couldn't check what it does"], at: new Date().toISOString() };
     }
     if (review) {
       onLine(`  (not started — needs review: ${review.reasons[0]})`);
@@ -1190,20 +1192,23 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
         const base = resolveBaseUrl(null);
         if (base && base !== env.OPENMASJID_BASE_URL) {
           updateEnvFile(id, { OPENMASJID_BASE_URL: base });
-          onLine(`  (updated platform address → ${base})`);
+          log.info(`${id} now reaches the platform at ${base}.`);
         }
       }
     } catch {
       /* keep going — a failed base-URL refresh shouldn't block the restart */
     }
+    // Docker's own words go to the log; the window says it plainly.
     try {
-      const res = await composeUp(projectOf(id), composePath(id), envPath(id));
+      const res = await withHeartbeat(onLine, STILL_WORKING, () => composeUp(projectOf(id), composePath(id), envPath(id)));
       if (res.code !== 0) {
-        onLine(`  (couldn't start — ${res.stderr.trim().split('\n')[0] || 'error'})`);
+        log.warn(`Could not start ${id} — ${res.stderr.trim() || 'no output'}`);
+        onLine("  (couldn't start it)");
         notStarted.push(name);
       }
     } catch (err) {
-      onLine(`  (couldn't start — ${(err as Error).message})`);
+      log.warn(`Could not start ${id}.`, err);
+      onLine("  (couldn't start it)");
       notStarted.push(name);
     }
   }
@@ -1679,10 +1684,10 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
 export type AppUpdateOutcome = 'updated' | 'unchanged' | 'not-running';
 
 /**
- * Update a catalog app to the store's current version, streaming progress via
- * onLine. The user's existing settings (.env) are kept; only the compose +
- * image change. Re-runs `pull` then `up -d` so the new image is fetched and the
- * container recreated.
+ * Update a catalog app to the store's current version, streaming plain progress via
+ * onLine (Docker's own output goes to the log). The user's existing settings (.env)
+ * are kept; only the compose + image change. Re-runs `pull` then `up -d` so the new
+ * image is fetched and the container recreated.
  */
 export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<AppUpdateOutcome> {
   // One at a time per app. Two of these at once rewrite the same compose.yml while two
@@ -1735,7 +1740,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   try {
     ({ dangers, refusals } = checkCompose(app.compose));
   } catch (err) {
-    onLine(`The update couldn't be checked safely, so nothing was changed. (${(err as Error).message})`);
+    log.warn(`App ${id}: the update's compose file could not be checked.`, err);
+    onLine("The update couldn't be checked safely, so nothing was changed.");
     return 'unchanged';
   }
   const blocking = [...refusals, ...dangers];
@@ -1846,7 +1852,8 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
 
   onLine('');
   onLine('Downloading the new version…');
-  if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
+  // Docker's own output goes to the log (docker/compose.ts `streamSpawn`), not this window.
+  if ((await withHeartbeat(onLine, STILL_DOWNLOADING, () => composePull(projectOf(id), composePath(id), envPath(id)))) !== 0) {
     onLine('');
     onLine('Could not download the update. Please check the connection and try again.');
     // Nothing was applied, so leave nothing new behind for a later Start to pick up.
@@ -1857,7 +1864,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   onLine('');
   onLine('Applying the update…');
   suppressOfflineAlert(id); // recreate briefly stops the container — not an outage
-  if ((await composeUpStream(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
+  if ((await withHeartbeat(onLine, STILL_WORKING, () => composeUpStream(projectOf(id), composePath(id), envPath(id)))) !== 0) {
     onLine('');
     onLine('The update could not start. The previous version may still be running.');
     // The old container is still the running one; put its compose back so a later Start

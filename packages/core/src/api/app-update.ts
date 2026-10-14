@@ -51,8 +51,9 @@ export function registerAppUpdate(server: FastifyInstance): void {
       if ((err as Error).name === 'UpdateBusyError') {
         send((err as Error).message);
       } else {
+        // The detail is for the log; the window gets a sentence.
         log.error('app update failed', err);
-        send(`Update failed: ${(err as Error).message}`);
+        send('The update stopped because something went wrong.');
         outcome = 'failed';
       }
     }
