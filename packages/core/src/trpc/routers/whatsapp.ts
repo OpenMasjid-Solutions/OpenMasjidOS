@@ -117,8 +117,13 @@ export const whatsappRouter = router({
       const code = err instanceof UpdateBusyError ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR';
       throw new TRPCError({ code, message: (err as Error).message });
     }
-    const output = await verifyStayedUp(OPENWA_APP_ID);
-    return { ok: output === null, output: output ?? undefined };
+    const stayed = await verifyStayedUp(OPENWA_APP_ID);
+    // `unchecked`: started, but Docker could not be asked whether it stayed up.
+    return {
+      ok: stayed.result !== 'down',
+      output: stayed.result === 'down' ? stayed.logs : undefined,
+      unchecked: stayed.result === 'unknown',
+    };
   }),
 
   /**

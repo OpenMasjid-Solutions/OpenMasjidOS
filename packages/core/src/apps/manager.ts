@@ -1636,6 +1636,9 @@ const SETTLE_SAMPLES = 3;
 /** Shown where an app's last log lines would be, when it is down and left none to read. */
 const NO_LOGS_TO_SHOW = "(It isn't running, and it left no logs we could read.)";
 
+/** What `verifyStayedUp` found. */
+export type StayedUp = { result: 'up' } | { result: 'down'; logs: string } | { result: 'unknown' };
+
 /**
  * Did the app actually STAY running?
  *
@@ -1650,18 +1653,27 @@ const NO_LOGS_TO_SHOW = "(It isn't running, and it left no logs we could read.)"
  * Sampled a few times rather than once, because a crash-loop spends part of its cycle
  * genuinely `running` and a single check can land in that window.
  *
- * Returns null when it is up, or the last few log lines when it is not (a sentence
- * saying so when there are none to show).
+ * `down` carries the last few log lines (a sentence saying so when there are none to show).
+ * `unknown` means Docker could not be asked on some sample and none it answered was down:
+ * a failure to ask decides nothing (CLAUDE.md §15), so it is neither "up" nor "it stopped".
  */
-export async function verifyStayedUp(id: string): Promise<string | null> {
-  let up = false;
+export async function verifyStayedUp(id: string): Promise<StayedUp> {
+  let unknown = false;
   for (let i = 0; i < SETTLE_SAMPLES; i++) {
     await new Promise((r) => setTimeout(r, SETTLE_MS));
-    up = (await getInstalled(id))?.running === true;
-    if (!up) break; // one bad sample is enough — a healthy app is up on every one
+    const { apps, ok } = await discoverAppsResult();
+    if (!ok) {
+      unknown = true;
+      continue;
+    }
+    // One bad sample is enough — a healthy app is up on every one.
+    if (apps.get(projectOf(id))?.running !== true) return { result: 'down', logs: await lastWords(id) };
   }
-  if (up) return null;
-  // Every caller reads null as "it stayed up", so an app that is down always gets words.
+  return unknown ? { result: 'unknown' } : { result: 'up' };
+}
+
+/** The app's last log lines — words even when there are none, since it is down. */
+async function lastWords(id: string): Promise<string> {
   try {
     return (await composeLogs(projectOf(id), 40)).trim() || NO_LOGS_TO_SHOW;
   } catch {
@@ -1970,19 +1982,21 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   // sends the admin hunting through container logs for a reason we already have.
   onLine('');
   onLine('Checking it stayed running…');
-  const crash = await verifyStayedUp(id);
-  if (crash !== null) {
+  const stayed = await verifyStayedUp(id);
+  if (stayed.result === 'down') {
     onLine('');
     onLine(`${meta.name} was updated to v${app.version}, but it is not staying running.`);
     onLine('This usually means the new version needs a setting the app does not have yet.');
     onLine('');
     onLine('The last thing it printed before stopping:');
-    for (const line of crash.split('\n').slice(-12)) onLine(`  ${line}`);
+    for (const line of stayed.logs.split('\n').slice(-12)) onLine(`  ${line}`);
     return 'not-running';
   }
 
   onLine('');
   onLine(`Done — ${meta.name} is now on v${app.version}.`);
+  // Updated all the same: only the check after it could not be made.
+  if (stayed.result === 'unknown') onLine("We couldn't check that it stayed running. Have a look on the dashboard in a minute.");
   return 'updated';
 }
 
@@ -1994,10 +2008,16 @@ export async function removeApp(id: string, deleteData = false): Promise<void> {
   assertAppFree(id, 'remove');
   // `compose down` stops it for some seconds before its record goes: not an outage.
   suppressOfflineAlert(id);
-  stopProxy(id); // tear down any per-app HTTPS proxy first
   const file = fs.existsSync(composePath(id)) ? composePath(id) : undefined;
   // When deleting data, also drop the app's images so the space is reclaimed.
-  await composeDown(projectOf(id), file, deleteData, deleteData);
+  let res = await composeDown(projectOf(id), file, deleteData, deleteData);
+  // A compose file compose cannot read (damaged, or naming a setting that is gone) must not
+  // make an app impossible to remove: compose finds a project's containers by its label.
+  if (res.code !== 0 && file) res = await composeDown(projectOf(id), undefined, deleteData, deleteData);
+  // Docker refusing is another matter: removing the files under containers that still run
+  // brought the app back as a recovered orphan, with the data the admin asked to delete.
+  throwIfFailed(res, id, "This app couldn't be removed. Please try again.");
+  stopProxy(id); // its per-app HTTPS proxy, once the app is really gone
   try {
     if (deleteData) {
       fs.rmSync(appDir(id), { recursive: true, force: true });

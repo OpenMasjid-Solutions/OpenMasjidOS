@@ -15,10 +15,14 @@ const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-apps-fixes-'));
 process.env.OPENMASJID_DATA_DIR = DATA;
 
 // A stand-in docker: runs nothing, and exits with FAKE_DOCKER_EXIT (0 unless a test says).
+// With FAKE_DOCKER_REFUSE_FILE set, any call naming a compose file (-f) fails, as compose
+// does on a file it cannot read.
 const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-fake-docker-'));
 fs.writeFileSync(
   path.join(BIN, 'docker'),
-  '#!/bin/sh\n[ "${FAKE_DOCKER_EXIT:-0}" = 0 ] || echo "Error response from daemon: refused" >&2\nexit "${FAKE_DOCKER_EXIT:-0}"\n',
+  '#!/bin/sh\n' +
+    'if [ -n "$FAKE_DOCKER_REFUSE_FILE" ]; then case " $* " in *" -f "*) echo "yaml: invalid" >&2; exit 1;; esac; fi\n' +
+    '[ "${FAKE_DOCKER_EXIT:-0}" = 0 ] || echo "Error response from daemon: refused" >&2\nexit "${FAKE_DOCKER_EXIT:-0}"\n',
   { mode: 0o755 },
 );
 process.env.PATH = `${BIN}${path.delimiter}${process.env.PATH}`;
@@ -235,6 +239,31 @@ test('REMOVING AN APP IS NOT AN OUTAGE — no "has stopped" alert while it goes'
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'apps', 'manager.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function removeApp('));
   assert.ok(body.indexOf('suppressOfflineAlert(id)') < body.indexOf('composeDown('));
+});
+
+test('A REMOVAL DOCKER REFUSED LEAVES THE APP AS IT WAS — and a damaged compose file never blocks one', needsShell, async () => {
+  // Its files went while its containers still ran, so it came back as a recovered orphan
+  // with the data the admin had asked to delete.
+  seed('refused-removal');
+  process.env.FAKE_DOCKER_EXIT = '1';
+  try {
+    await assert.rejects(() => manager.removeApp('refused-removal', true), /couldn't be removed/);
+    await assert.rejects(() => manager.removeApp('refused-removal'), /couldn't be removed/);
+  } finally {
+    delete process.env.FAKE_DOCKER_EXIT;
+  }
+  assert.equal(metaOf('refused-removal').id, 'refused-removal', 'its record was removed');
+  assert.ok(fs.existsSync(path.join(APPS, 'refused-removal', 'compose.yml')), 'its files were removed');
+
+  // A compose file compose cannot read: the app goes all the same, found by its project.
+  seed('damaged-compose');
+  process.env.FAKE_DOCKER_REFUSE_FILE = '1';
+  try {
+    await manager.removeApp('damaged-compose', true);
+  } finally {
+    delete process.env.FAKE_DOCKER_REFUSE_FILE;
+  }
+  assert.equal(fs.existsSync(path.join(APPS, 'damaged-compose')), false);
 });
 
 // ── A setting reaches the app as it was typed ─────────────────────────────────
@@ -473,7 +502,29 @@ test('AN APP THAT IS DOWN IS NEVER "STAYED UP" — not even when it left no logs
       managerWith({ compose: { composeLogs: async () => '  \n' } }).verifyStayedUp('silent-app'),
       managerWith({ compose: { composeLogs: () => Promise.reject(new Error('docker went away')) } }).verifyStayedUp('silent-app'),
     ]);
-    for (const words of said) assert.match(words ?? 'null, which reads as "it stayed up"', /isn't running/);
+    for (const stayed of said) {
+      assert.equal(stayed.result, 'down');
+      if (stayed.result === 'down') assert.match(stayed.logs, /isn't running/);
+    }
+  } finally {
+    client.docker.listContainers = original;
+  }
+});
+
+test('DOCKER NOT ANSWERING IS "COULDN\'T TELL" — never "it stopped", never "it stayed up"', async () => {
+  // A Docker hiccup during the settle checks read as "not running": an update closed as
+  // "updated, but it isn't staying running", and WhatsApp said it started and then stopped.
+  seed('steady-app');
+  const original = client.docker.listContainers;
+  let asked = 0;
+  client.docker.listContainers = () =>
+    ++asked === 2
+      ? Promise.reject(new Error('docker is busy'))
+      : Promise.resolve([{ Labels: { 'com.docker.compose.project': 'omos-steady-app' }, State: 'running', Ports: [] }]);
+  try {
+    assert.deepEqual(await manager.verifyStayedUp('steady-app'), { result: 'unknown' });
+    asked = 2; // every later sample answers, and the app is up on each
+    assert.deepEqual(await manager.verifyStayedUp('steady-app'), { result: 'up' });
   } finally {
     client.docker.listContainers = original;
   }

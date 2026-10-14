@@ -1564,6 +1564,11 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
   naming another app had the check's verdict saved into that other app's folder. Both are held
   now, checked from the compose file itself; and moving an app off an address the dashboard
   took no longer writes over a record that can't be read.
+- **Removing an app that Docker refused to remove says so**, and keeps its files: removing them
+  under containers still running brought the app back with the data you asked to delete. A
+  damaged compose file never blocks a removal.
+- **Docker not answering while an update checks the app stayed up is "couldn't check"**, not
+  "it isn't staying running" — on the dashboard and over WhatsApp.
 
 #### The dashboard and Settings
 
