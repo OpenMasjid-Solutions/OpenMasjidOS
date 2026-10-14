@@ -84,7 +84,14 @@ import {
   type WhatsAppLimits,
 } from '../store/whatsapp';
 // The gateway client — everything that only talks to OpenWA — lives in its own module.
-import { call, ensureSession, ensureStarted, gatewayStatus, clearGatewayCaches } from './whatsapp-gateway';
+import {
+  call,
+  sessionPath,
+  ensureSession,
+  ensureStarted,
+  gatewayStatus,
+  clearGatewayCaches,
+} from './whatsapp-gateway';
 
 /** How long to wait on a send, which may be carrying a 2 MB image out to WhatsApp. */
 const SEND_TIMEOUT_MS = 120_000;
@@ -305,7 +312,7 @@ async function checkRegistered(cfg: WhatsAppConfig, digits: string): Promise<boo
   const now = Date.now();
   const cached = cachedRegistration(digits, now);
   if (cached !== undefined) return cached;
-  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/check/${digits}`);
+  const r = await call(cfg, 'GET', sessionPath(cfg, `/contacts/check/${digits}`));
   // A check that could not answer proceeds, and decides nothing: "could not ask" is not a
   // dead link (CLAUDE.md §13.2d), so it is not counted as evidence of one either.
   if (!r.ok) return null;
@@ -1046,7 +1053,7 @@ async function pump(): Promise<void> {
 
 async function setPresence(cfg: WhatsAppConfig, available: boolean): Promise<void> {
   if (presenceOn === available) return;
-  const r = await call(cfg, 'PUT', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/presence`, { available });
+  const r = await call(cfg, 'PUT', sessionPath(cfg, '/presence'), { available });
   // Presence is cosmetic camouflage; failing it must not stop a send.
   if (r.ok) presenceOn = available;
 }
@@ -1070,12 +1077,12 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
   }
 
   // Type, pause, then send — in that order, because that is the order a person does it.
-  await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats/typing`, {
+  await call(cfg, 'POST', sessionPath(cfg, '/chats/typing'), {
     chatId,
     state: 'typing',
   });
   await sleep(composingMs(item));
-  await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats/typing`, {
+  await call(cfg, 'POST', sessionPath(cfg, '/chats/typing'), {
     chatId,
     state: 'paused',
   });
@@ -1087,7 +1094,7 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     ? await call(
         cfg,
         'POST',
-        `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-image`,
+        sessionPath(cfg, '/messages/send-image'),
         {
           chatId,
           base64: item.media.data,
@@ -1102,7 +1109,7 @@ async function sendOne(cfg: WhatsAppConfig, item: QueueItem): Promise<SendOutcom
     : await call(
         cfg,
         'POST',
-        `/api/sessions/${encodeURIComponent(cfg.sessionId)}/messages/send-text`,
+        sessionPath(cfg, '/messages/send-text'),
         {
           chatId,
           text: item.text,

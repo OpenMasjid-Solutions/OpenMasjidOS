@@ -64,6 +64,14 @@ export type GatewayAddress = { url: string; reason?: undefined } | { url: null; 
 let foundGateway: { url: string; at: number } | null = null;
 const GATEWAY_ADDRESS_TTL_MS = 5_000;
 
+/**
+ * A route on this masjid's session at the gateway: `/api/sessions/<id><suffix>`, the id
+ * encoded. Every session route is built here, so none can be written without the encoding.
+ */
+export function sessionPath(cfg: WhatsAppConfig, suffix = ''): string {
+  return `/api/sessions/${encodeURIComponent(cfg.sessionId)}${suffix}`;
+}
+
 export async function resolveBaseUrl(cfg: WhatsAppConfig): Promise<GatewayAddress> {
   if (cfg.baseUrl) return { url: cfg.baseUrl };
   if (foundGateway && Date.now() - foundGateway.at < GATEWAY_ADDRESS_TTL_MS) return { url: foundGateway.url };
@@ -229,7 +237,7 @@ export async function gatewayStatus(): Promise<GatewayStatus> {
     }
     return { state: 'no-session', reachable: true, connected: false, detail: 'no session created yet' };
   }
-  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+  const r = await call(cfg, 'GET', sessionPath(cfg));
   if (!r.ok) {
     if (transportFailed(r)) {
       return { state: 'unreachable', reachable: false, connected: false, detail: r.error ?? 'unreachable' };
@@ -283,7 +291,7 @@ export async function listGatewayGroups(): Promise<{ ok: boolean; groups?: Gatew
   const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.' };
   if (!cfg.sessionId) return { ok: false, error: 'No phone is linked yet.' };
-  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/groups?limit=200`);
+  const r = await call(cfg, 'GET', sessionPath(cfg, '/groups?limit=200'));
   if (!r.ok) return { ok: false, error: r.error };
   const rows = Array.isArray(r.json) ? (r.json as Record<string, unknown>[]) : [];
   const groups = rows
@@ -361,7 +369,7 @@ export async function ensureSession(): Promise<{ ok: boolean; id?: string; error
  *   - `400` from start → "already started", which is the outcome we wanted anyway
  */
 export async function ensureStarted(cfg: WhatsAppConfig): Promise<{ ok: boolean; ready?: boolean; error?: string }> {
-  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+  const r = await call(cfg, 'GET', sessionPath(cfg));
   // The recorded id can outlive the session it names: OpenWA's volume was wiped, the
   // session was deleted in its UI, or the gateway was reinstalled. Every later call then
   // 404s forever with nothing to click, so forget the id and let the caller create
@@ -377,7 +385,7 @@ export async function ensureStarted(cfg: WhatsAppConfig): Promise<{ ok: boolean;
   if (status === READY) return { ok: true, ready: true };
   if (s?.engineLoaded === true) return { ok: true };
 
-  const started = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/start`);
+  const started = await call(cfg, 'POST', sessionPath(cfg, '/start'));
   // 400 here is OpenWA's "session already started" — the state we were aiming for.
   if (started.ok || started.status === 400) return { ok: true };
   if (started.status === 409) {
@@ -426,7 +434,7 @@ export async function requestPairingCode(phone: string): Promise<{ ok: boolean; 
   // and in that window OpenWA answers 409 ("wait for ready and retry"). A few short
   // waits turn a race the admin would see as a failure into a code on screen.
   for (let attempt = 1; ; attempt += 1) {
-    const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/pairing-code`, {
+    const r = await call(cfg, 'POST', sessionPath(cfg, '/pairing-code'), {
       phoneNumber: digits,
     });
     if (r.ok) {
@@ -491,7 +499,7 @@ export async function unlinkSession(): Promise<{ ok: boolean; stillLinked?: bool
     if (started.error === 'stale-session') return { ok: true };
     return { ok: false, error: started.error ?? 'could not start the session to unlink it' };
   }
-  const r = await call(cfg, 'POST', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/logout`);
+  const r = await call(cfg, 'POST', sessionPath(cfg, '/logout'));
   if (r.ok) {
     // The gateway has cleared its own idea of the number; ours must not linger, or the
     // panel keeps saying "sending from …" for a phone that is no longer attached.
@@ -522,7 +530,7 @@ export async function deleteGatewaySession(): Promise<{ ok: boolean; error?: str
   const cfg = getWhatsAppConfig();
   if (!cfg.sessionId) return { ok: true };
   for (let attempt = 1; ; attempt += 1) {
-    const r = await call(cfg, 'DELETE', `/api/sessions/${encodeURIComponent(cfg.sessionId)}`);
+    const r = await call(cfg, 'DELETE', sessionPath(cfg));
     if (r.ok || r.status === 404) return { ok: true };
     if (r.status === 409 && attempt < 5) {
       await sleep(1500);
@@ -556,7 +564,7 @@ export async function probeLink(): Promise<{
   const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured() || !cfg.sessionId) return { alive: null, detail: 'not configured' };
   // limit=1: this is a liveness question, not a data fetch.
-  const r = await call(cfg, 'GET', `/api/sessions/${encodeURIComponent(cfg.sessionId)}/chats?limit=1`);
+  const r = await call(cfg, 'GET', sessionPath(cfg, '/chats?limit=1'));
   if (r.ok) return { alive: true };
   if (r.status === 503) {
     return { alive: false, detail: "the gateway's connection to WhatsApp has died", cause: 'session-expired' };
@@ -600,7 +608,7 @@ export async function resolveLidPhone(jid: string): Promise<string | null> {
   let path: string;
   try {
     // encodeURIComponent throws on a malformed string (a lone surrogate) from the frame.
-    path = `/api/sessions/${encodeURIComponent(cfg.sessionId)}/contacts/${encodeURIComponent(jid)}/phone`;
+    path = sessionPath(cfg, `/contacts/${encodeURIComponent(jid)}/phone`);
   } catch {
     return null;
   }
@@ -677,11 +685,10 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
   const cfg = getWhatsAppConfig();
   if (!isWhatsAppConfigured()) return { ok: false, error: 'WhatsApp is not set up yet.', ...empty };
   if (!cfg.sessionId) return { ok: false, error: 'No phone is linked yet.', ...empty };
-  const sid = encodeURIComponent(cfg.sessionId);
 
   // WhatsApp's own view first. A 503 here means the page died — a transport fault, and
   // explicitly not "no activity".
-  const chats = await call(cfg, 'GET', `/api/sessions/${sid}/chats?limit=50`);
+  const chats = await call(cfg, 'GET', sessionPath(cfg, '/chats?limit=50'));
   let newestChat = 0;
   let chatsOk = false;
   let chatsError: string | undefined;
@@ -702,7 +709,7 @@ export async function gatewayTraffic(limit = 50): Promise<GatewayTraffic> {
           : (chats.error ?? `The gateway answered ${chats.status}.`);
   }
 
-  const r = await call(cfg, 'GET', `/api/sessions/${sid}/messages?limit=${Math.min(100, Math.max(1, limit))}`);
+  const r = await call(cfg, 'GET', sessionPath(cfg, `/messages?limit=${Math.min(100, Math.max(1, limit))}`));
   if (!r.ok) {
     return {
       ok: false,
