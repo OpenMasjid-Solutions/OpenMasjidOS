@@ -14,7 +14,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR, DATA_DIR } from '../config';
-import { streamSpawn, recreateCore } from '../docker/update';
+import { recreateCore } from '../docker/update';
+import { streamSpawn } from '../docker/compose';
+import { STILL_WORKING, withHeartbeat } from '../util/heartbeat';
 import { reupAllApps, reviewEveryApp, stopAllApps, invalidateFabricIndex, listMetaSummaries } from '../apps/manager';
 import { reloadSettings } from '../settings/store';
 import { reloadEmailConfig } from '../store/email';
@@ -217,11 +219,16 @@ async function restoreVolumes(
   onLine('Restoring app data…');
   let restored = 0;
   const failed: string[] = [];
+  // By the app's name, not Docker's for the volume (the "Affected:" line does the same).
+  const apps = listMetaSummaries();
+  const shown = new Set<string>();
   for (const f of files) {
     const vol = f.replace(/\.tar\.gz$/, '');
-    onLine(`• ${vol}`);
+    const name = appOfVolume(vol, apps);
+    if (!shown.has(name)) onLine(`• ${name}`);
+    shown.add(name);
     await capture('docker', ['volume', 'create', ...composeVolumeLabels(vol), vol]);
-    const ok = await new Promise<boolean>((resolve) => {
+    const ok = await withHeartbeat(onLine, STILL_WORKING, () => new Promise<boolean>((resolve) => {
       const child = spawn('docker', ['run', '--rm', '-i', '-v', `${vol}:/to`, VOL_IMAGE, 'sh', '-c', VOLUME_REFILL, 'sh', '/to']);
       child.on('error', () => resolve(false));
       child.on('close', (code) => resolve(code === 0));
@@ -240,12 +247,12 @@ async function restoreVolumes(
         setTimeout(() => child.kill('SIGKILL'), 10_000).unref();
       });
       src.pipe(child.stdin);
-    });
+    }));
     if (ok) {
       restored++;
     } else {
       failed.push(vol);
-      onLine(`  (couldn't restore ${vol})`);
+      onLine(`  (couldn't put back the data for ${name})`);
     }
   }
   return { restored, failed };
@@ -491,10 +498,8 @@ async function restoreOnce(onLine: (s: string) => void, opts: RestoreOptions): P
 
     // Extract into the fresh staging dir. A fresh empty target means there are no
     // pre-existing symlinks to traverse, and GNU tar refuses absolute/`..` paths.
-    const code = await streamSpawn(
-      'tar',
-      ['-xzf', RESTORE_PATH, '-C', STAGING_DIR, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir'],
-      onLine,
+    const code = await withHeartbeat(onLine, STILL_WORKING, () =>
+      streamSpawn('tar', ['-xzf', RESTORE_PATH, '-C', STAGING_DIR, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir']),
     );
     if (code !== 0) {
       onLine('Restore failed while reading the backup.');

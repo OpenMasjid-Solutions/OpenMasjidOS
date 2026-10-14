@@ -2,7 +2,7 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
  * Self-update of the core. A container can't cleanly recreate itself, so we:
- *   1. `docker pull` the latest image (streamed live to the UI), then
+ *   1. `docker pull` the latest image (its output to the log; the window gets plain lines), then
  *   2. launch a DETACHED helper container (the freshly-pulled image already has
  *      docker + compose) that recreates the core via the installer's compose
  *      file. The helper survives the core's restart and finishes the job.
@@ -12,8 +12,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { docker } from './client';
+import { streamSpawn } from './compose';
 import { DATA_DIR } from '../config';
 import { log } from '../logger';
 import { getSettings } from '../settings/store';
@@ -24,6 +24,7 @@ import { HOLD_UNTIL_REPLACED_MS, withUpdateLock } from '../system/update-lock';
 import { managesFromOutside } from '../system/remote-admin';
 import { backupInProgress } from '../system/backup';
 import { VERSION } from '../version';
+import { STILL_DOWNLOADING, STILL_WORKING, withHeartbeat } from '../util/heartbeat';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
 const CORE_PROJECT = process.env.OPENMASJID_PROJECT ?? 'openmasjid';
@@ -156,26 +157,6 @@ async function inspectSelf(tag: string): Promise<{ image: string; hostDataDir: s
   }
 }
 
-export function streamSpawn(cmd: string, args: string[], onLine: (s: string) => void): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args);
-    const handle = (buf: Buffer) => {
-      // docker pull uses \r to redraw progress; split on either so each update
-      // is its own clean line in the log window.
-      for (const line of buf.toString().split(/[\r\n]+/)) {
-        if (line.trim()) onLine(line);
-      }
-    };
-    child.stdout.on('data', handle);
-    child.stderr.on('data', handle);
-    child.on('error', (err) => {
-      onLine(`Error: ${err.message}`);
-      resolve(-1);
-    });
-    child.on('close', (code) => resolve(code ?? -1));
-  });
-}
-
 /**
  * Make the core's compose file name EXACTLY the build that is running — for a restore,
  * which must come back on it.
@@ -203,7 +184,7 @@ async function pinComposeToRunningBuild(): Promise<void> {
   const named = composeImageRef();
   if (!ref || !id || ref.includes('@') || named === null || named.includes('@')) return;
   const tagged = retarget(named, VERSION);
-  if ((await streamSpawn('docker', ['tag', id, tagged], () => undefined)) === 0) alignComposeImage(VERSION);
+  if ((await streamSpawn('docker', ['tag', id, tagged])) === 0) alignComposeImage(VERSION);
 }
 
 /**
@@ -247,7 +228,7 @@ export async function recreateCore(onLine: (s: string) => void, tag?: string): P
     '-c',
     `sleep 2; docker compose -p ${CORE_PROJECT} -f /data/docker-compose.yml up -d --force-recreate`,
   );
-  const code = await streamSpawn('docker', args, onLine);
+  const code = await withHeartbeat(onLine, STILL_WORKING, () => streamSpawn('docker', args));
   if (code !== 0 && tag && before !== null) {
     // Nothing was recreated, so the file must not name the version we were going to: the
     // next restart that reads it — a restore's, or the installer's — would come back on
@@ -371,8 +352,10 @@ async function runUpdateInner(onLine: (s: string) => void, opts: { remote?: bool
   const pinned = tag !== coreImageTag(channel);
   const { image } = await inspectSelf(tag);
 
-  onLine(`Downloading ${image}`);
-  const pullCode = await streamSpawn('docker', ['pull', image], onLine);
+  // The version in words; the image reference is for the log.
+  onLine(pinned ? `Downloading version ${tag}…` : 'Downloading the latest version…');
+  log.info(`Core update: downloading ${image}`);
+  const pullCode = await withHeartbeat(onLine, STILL_DOWNLOADING, () => streamSpawn('docker', ['pull', image]));
   if (pullCode !== 0) {
     onLine('');
     if (pinned) {

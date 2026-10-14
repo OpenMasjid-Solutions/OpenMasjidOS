@@ -53,8 +53,9 @@ export function registerUpdate(server: FastifyInstance): void {
         send((err as Error).message);
         outcome = (err as UpdateBusyError).clash ? 'unchanged' : 'restarting';
       } else {
+        // The detail is for the log; the window gets a sentence.
         log.error('update failed', err);
-        send(`Update failed: ${(err as Error).message}`);
+        send('The update stopped because something went wrong.');
       }
     }
     try {

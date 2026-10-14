@@ -118,8 +118,9 @@ export function registerRestore(server: FastifyInstance): void {
       // remote": a masjid's own reverse proxy is at the masjid.
       outcome = await runRestore(send, { remote: wasHandedOver(req.raw), callerToken: requestSessionToken(req) });
     } catch (err) {
+      // The detail is for the log; the window gets a sentence.
       log.error('restore failed', err);
-      send(`Restore failed: ${(err as Error).message}`);
+      send('The restore stopped because something went wrong.');
     }
     try {
       // The close code tells the window how it ended (RestoreOutcome), so it never
