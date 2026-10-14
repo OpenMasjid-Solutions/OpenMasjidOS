@@ -1717,10 +1717,15 @@ of this file and of `CONTRIBUTING.md` promised "eslint + tsc", which made the do
 definition of done unachievable as written. If a linter is wanted, adding one is a deliberate
 change with its own diff — don't paper over its absence by describing it as present.
 
-The production image is built from the two-stage `Dockerfile`: the `build` stage installs
-workspaces and runs `npm run build` (Vite for the UI, esbuild bundling the core into
-`packages/core/dist`), then prunes dev dependencies; the `runtime` stage copies that output and
-runs the Node daemon, which serves the built UI + API as `openmasjid/core`.
+The production image is built from the three-stage `Dockerfile`: the `deps` stage installs the
+core's production dependencies alone (`npm ci --omit=dev --workspace=@openmasjid/core`); the
+`build` stage installs every workspace and runs `npm run build` (Vite for the UI, esbuild bundling
+the core into `packages/core/dist`); the `runtime` stage copies the built output and `deps`'
+`node_modules` — never the build stage's, which carries every UI dependency — and runs the Node
+daemon, which serves the built UI + API as `openmasjid/core`. The core's bundle leaves every package
+external, so a dependency missing from `deps` builds cleanly and fails only when node starts: CI
+starts each architecture's image and waits for `/api/health` before anything is pushed
+(`docker-build.yml`, *Smoke test*).
 
 ---
 

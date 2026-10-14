@@ -155,17 +155,48 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      # A pull request publishes nothing — it only proves the Dockerfile still builds.
-      - name: Build (pull request — nothing is published)
-        if: github.event_name == 'pull_request'
+      # Built into this runner's Docker and pushed NOWHERE, for every event, so the next
+      # step can start it. A pull request stops after that step: it publishes nothing.
+      - name: Build for the smoke test (nothing is published)
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          push: false
+          load: true
+          tags: openmasjid-core:smoke
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
 
+      # Start the image as built and wait for it to answer, BEFORE anything is pushed.
+      # The core is bundled with every package left external, so a dependency missing
+      # from the runtime image builds cleanly and fails only when node starts; this is
+      # where that must fail, not on a masjid's box. No Docker socket and no data
+      # volume: the core boots without Docker and makes its data dir inside the
+      # container. The version is checked too — a missing VERSION file falls back to
+      # 0.0.0-dev without a word, and the update check depends on it (CLAUDE.md §13.4).
+      - name: Smoke test — start the image and wait for /api/health
+        run: |
+          want="$(tr -d ' \t\r\n' < VERSION)"
+          docker run -d --name omos-smoke -p 127.0.0.1:8080:80 openmasjid-core:smoke
+          for _ in $(seq 1 60); do
+            if body="$(curl -fsS --max-time 2 http://127.0.0.1:8080/api/health 2>/dev/null)"; then
+              echo "$body"
+              if grep -qF "\"version\":\"$want\"" <<< "$body"; then
+                echo "The image answers /api/health as $want."
+                exit 0
+              fi
+              echo "::error::the image reports a version other than $want"
+              break
+            fi
+            [ "$(docker inspect -f '{{.State.Running}}' omos-smoke)" = true ] || { echo "::error::the core exited"; break; }
+            sleep 1
+          done
+          echo "::error::the image did not answer /api/health correctly within 60 s"
+          docker logs omos-smoke
+          exit 1
+
+      # Same builder, same inputs: every layer comes from the build above, so what is
+      # pushed is what was just started.
       - name: Build and push by digest
         id: build
         if: github.event_name != 'pull_request'

@@ -3,9 +3,10 @@
 # Copyright (C) 2026 OpenMasjid-Solutions
 #
 # OpenMasjidOS core — multi-stage build.
-#   1. build:   install the monorepo, build the React UI (Vite) and bundle the
-#               TypeScript daemon (esbuild), then drop dev dependencies.
-#   2. runtime: a slim Node + Docker-CLI image that runs the daemon, which
+#   1. deps:    the core's production dependencies, and nothing else.
+#   2. build:   install the monorepo, build the React UI (Vite) and bundle the
+#               TypeScript daemon (esbuild).
+#   3. runtime: a slim Node + Docker-CLI image that runs the daemon, which
 #               serves the built UI and the tRPC API — HTTPS on 443, an HTTP
 #               front door on 80, and per-app HTTPS proxies on 8443-8452.
 #
@@ -14,6 +15,22 @@
 #
 # Node 22 is the current LTS line; Node 20 stopped receiving security fixes on
 # 2026-04-30, and this daemon runs as root with the Docker socket.
+
+# ---- Runtime dependencies ---------------------------------------------------
+# Only what the core's bundle requires at run time (esbuild leaves every package
+# external). The UI ships as built static files, so React, Radix, Motion and the
+# rest of its dependencies are not needed here; `npm prune --omit=dev` over the
+# whole workspace kept them: about 80 MB on disk and 11 MB of download on every
+# box, for nothing.
+# Same lockfile, same integrity pins; npm picks the musl argon2 binary for the
+# architecture this stage runs on. Both workspace manifests are copied because
+# `npm ci` checks the lockfile against every workspace.
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/core/package.json packages/core/
+COPY packages/ui/package.json packages/ui/
+RUN npm ci --omit=dev --workspace=@openmasjid/core --no-audit --no-fund
 
 # ---- Build stage ------------------------------------------------------------
 FROM node:22-alpine AS build
@@ -32,9 +49,6 @@ COPY tsconfig.base.json VERSION ./
 COPY packages ./packages
 RUN npm run build
 
-# Strip dev dependencies (vite, tsc, tsx…) — the runtime only needs prod deps.
-RUN npm prune --omit=dev --no-audit --no-fund
-
 # ---- Runtime stage ----------------------------------------------------------
 FROM node:22-alpine AS runtime
 WORKDIR /app
@@ -50,9 +64,9 @@ ENV NODE_ENV=production \
     OPENMASJID_PORT=80 \
     OPENMASJID_VERSION_FILE=/app/VERSION
 
-# Built output, installed (prod-only) deps, manifests, and the VERSION file.
+# Built output, the core's production deps, manifests, and the VERSION file.
 # The monorepo layout is preserved so the core resolves the UI at ../ui/dist.
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/package.json /app/VERSION ./
 COPY --from=build /app/packages/core/package.json ./packages/core/package.json
 COPY --from=build /app/packages/core/dist ./packages/core/dist
