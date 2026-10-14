@@ -1558,6 +1558,12 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
 - **After a reboot, apps' HTTPS addresses come back even when Docker answers late.**
 - **An app whose record can't be read is held for review**, instead of a fresh record being
   written over it — which let a crafted backup start a privileged app with no warning.
+- **So is an app whose compose file came with no record at all, or with another app's.** A
+  backup could bring an app's compose file with no record beside it: the restore's check passed
+  it by, the dashboard gave the app a fresh, unheld record, and Start ran it as root. A record
+  naming another app had the check's verdict saved into that other app's folder. Both are held
+  now, checked from the compose file itself; and moving an app off an address the dashboard
+  took no longer writes over a record that can't be read.
 
 #### The dashboard and Settings
 

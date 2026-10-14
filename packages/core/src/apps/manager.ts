@@ -135,13 +135,26 @@ function prettify(id: string): string {
     .join(' ');
 }
 
+/**
+ * An app's record — null when there is none, or when the file there is not this app's
+ * record. One whose `id` names another folder (or none) is not: every write goes to the
+ * folder its `id` names, so a restored apps/X/meta.json saying `"id": "Y"` had X's review
+ * verdict saved into apps/Y/, and X started unheld. Such a file is unreadable, as one that
+ * will not parse is (`startBlockedReason` holds the app).
+ */
 function loadMeta(id: string): AppMeta | null {
   try {
     if (!fs.existsSync(metaPath(id))) return null;
-    return JSON.parse(fs.readFileSync(metaPath(id), 'utf8')) as AppMeta;
+    const meta = JSON.parse(fs.readFileSync(metaPath(id), 'utf8')) as AppMeta | null;
+    return meta?.id === id ? meta : null;
   } catch {
     return null;
   }
+}
+
+/** A record file exists for this app, but it is not one we can read as its own. */
+function recordUnreadable(id: string): boolean {
+  return fs.existsSync(metaPath(id)) && !loadMeta(id);
 }
 
 function saveMeta(meta: AppMeta): void {
@@ -692,17 +705,22 @@ function platformEnv(
   return env;
 }
 
-function listMetaIds(): string[] {
+/** The app folders holding this file. */
+function appIdsWith(file: (id: string) => string): string[] {
   try {
     return fs
       .readdirSync(APPS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
-      .filter((id) => fs.existsSync(metaPath(id)));
+      .filter((id) => fs.existsSync(file(id)));
   } catch {
     return [];
   }
 }
+
+const listMetaIds = () => appIdsWith(metaPath);
+/** Every app folder with a compose.yml, record or not: a restored backup's need not have one. */
+const listComposeIds = () => appIdsWith(composePath);
 
 /**
  * Every app that has a meta.json, with its record (null when the file cannot be read).
@@ -825,14 +843,20 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
     // apps an admin actually installed — a stack we just found running and cannot
     // vet must not be published to the internet on its own say-so. The admin can
     // switch it on in Settings, which is the point at which a person has looked.
+    const createdAt = new Date().toISOString();
+    // Its compose.yml, when the folder has one, is what Start would run — a backup can
+    // bring one in with no record beside it, for an app whose containers are already on
+    // the box — so the fresh record carries the gate's verdict on it, as an install's would.
+    const review = verdictWithoutRecord(disc.id, createdAt);
     const recovered: AppMeta = {
       id: disc.id,
       name: disc.name || prettify(disc.id),
       kind: 'custom',
       exposed: false,
-      createdAt: new Date().toISOString(),
+      createdAt,
+      review: review ?? undefined,
     };
-    // A record that EXISTS but will not parse is not an orphan: it is shown held, as
+    // A record that EXISTS but cannot be read is not an orphan: it is shown held, as
     // startBlockedReason holds it, and left on disk. Recovering it wrote a fresh record
     // with no review over it, so a backup pairing a broken meta.json with a privileged
     // compose, for an app already on the box, became an ordinary Start button.
@@ -859,12 +883,10 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
       path: appPathOf(disc.id, recovered),
-      // A recovered orphan has no compose file of ours to have vetted, and it is
-      // ALREADY running — holding it for a review we never performed would show
-      // the admin a finding that does not exist. It starts un-held, exactly as
-      // before; what keeps it honest is that it can never claim to be "Official".
-      // One whose record exists but will not parse is held instead (above).
-      review: unreadable ? unreadableMeta(recovered.createdAt) : null,
+      // Held only for what its compose asks for (or, when its record cannot be read, for
+      // that) — exactly what startBlockedReason answers. One with no compose of ours is
+      // un-held: it is already running, and there is nothing of ours to have vetted.
+      review,
       ...openTarget(recovered, disc.ports),
     });
   }
@@ -898,7 +920,7 @@ export async function getInstalled(id: string): Promise<InstalledApp | null> {
   if (RESERVED_APP_IDS.has(id)) return null;
   const meta = loadMeta(id);
   // No record of our own (an orphan): only the full listing recovers one.
-  if (!meta || meta.id !== id) return (await listInstalled()).find((a) => a.id === id) ?? null;
+  if (!meta) return (await listInstalled()).find((a) => a.id === id) ?? null;
   return toInstalled(meta, (await discoverApps()).get(projectOf(id)));
 }
 
@@ -1122,12 +1144,13 @@ export async function stopAllApps(onLine: (s: string) => void): Promise<string[]
 /**
  * Record a fresh review verdict for every app with a compose file (`reviewCompose`) — for a
  * restore, straight after it moves the backup's apps/ into place, so the verdict on disk is
- * this platform's own from that moment rather than the backup's. A compose that cannot
- * even be read is logged and left to `reupAllApps`, which holds it.
+ * this platform's own from that moment rather than the backup's. Folders with no record of
+ * their own too: there is nowhere to keep their verdict, so `startBlockedReason` and the
+ * listing's recovery work it out from the same compose. A compose that cannot even be read
+ * is logged and left to `reupAllApps`, which holds it.
  */
 export function reviewEveryApp(): void {
-  for (const id of listMetaIds()) {
-    if (!fs.existsSync(composePath(id))) continue;
+  for (const id of listComposeIds()) {
     try {
       reviewCompose(id);
     } catch (err) {
@@ -1145,6 +1168,8 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<string[]
   // The apps it could NOT start — held for review, or refused by Docker — by name. A
   // restore that left the donations page down must not end on "Restore complete."
   const notStarted: string[] = [];
+  // Only apps with a record: a folder without one is not installed (a removed app keeps its
+  // folder) and is never started here. `reviewEveryApp` checks its compose all the same.
   const ids = listMetaIds().filter((id) => fs.existsSync(composePath(id)));
   if (ids.length === 0) {
     onLine('No apps to restart.');
@@ -1277,8 +1302,10 @@ function moveOffReservedPath(id: string, meta: AppMeta, recorded: string): strin
   const moved = freeAddress(id);
   // This runs on reads — the ingress rebuilds every 10 s — so not while a restore runs: the
   // record is about to be replaced, and a write could land in the tree it puts in place. The
-  // first read after the restore records the move.
-  if (isUpdating('restore')) return moved;
+  // first read after the restore records the move. Nor over a record that cannot be read:
+  // the listing shows such an app held, and writing `meta` there replaced the hold, the
+  // Fabric secret and the exposure setting with a fresh, unheld record.
+  if (isUpdating('restore') || recordUnreadable(id)) return moved;
   try {
     saveMeta({ ...meta, path: moved === id ? undefined : moved });
     const url = intendedPublicUrl(id, isExposedMeta(meta), moved);
@@ -1442,6 +1469,34 @@ const unreadableMeta = (at: string): AppReview => ({
   at,
 });
 
+/** The install-time risk gate's verdict on the compose.yml on disk: null when it passes, held
+ *  when it cannot even be read ("couldn't check it" is not "it is fine"). */
+function composeVerdict(id: string, at: string): AppReview | null {
+  try {
+    const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
+    // A refusal outranks a danger: the app can never be started, so the admin
+    // must not be shown a tickbox. Dangers are still listed, because if the
+    // refusal is ever removed they are what remains to agree to.
+    if (refusals.length > 0) return { kind: 'refusal', reasons: [...refusals, ...dangers], at };
+    if (dangers.length > 0) return { kind: 'danger', reasons: dangers, at };
+    return null;
+  } catch (err) {
+    return { kind: 'unreadable', reasons: [(err as Error).message], at };
+  }
+}
+
+/**
+ * The verdict for an app with no record of its own to keep one in — worked out from its
+ * compose.yml, which is what Start would run. A record that exists but cannot be read holds
+ * the app whatever the compose says; with no record at all, only what the compose asks for
+ * does. A finding in the compose comes first either way, so a refusal is never offered as
+ * the acknowledgeable "couldn't read its record".
+ */
+function verdictWithoutRecord(id: string, at: string): AppReview | null {
+  const fromCompose = fs.existsSync(composePath(id)) ? composeVerdict(id, at) : null;
+  return fs.existsSync(metaPath(id)) ? fromCompose ?? unreadableMeta(at) : fromCompose;
+}
+
 /**
  * Re-run the install-time risk gate over an app's on-disk compose and record the
  * verdict on its meta. Returns the review when it is blocked, else null (having
@@ -1463,24 +1518,16 @@ export function reviewCompose(id: string): AppReview | null {
   // which meant one unparseable byte in an attacker-supplied meta.json produced
   // "no finding" and `reupAllApps` then AUTO-STARTED the unvetted stack — worse
   // than the hole this whole change exists to close.
-  let review: AppReview | null = null;
-  try {
-    const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
-    // A refusal outranks a danger: the app can never be started, so the admin
-    // must not be shown a tickbox. Dangers are still listed, because if the
-    // refusal is ever removed they are what remains to agree to.
-    if (refusals.length > 0) review = { kind: 'refusal', reasons: [...refusals, ...dangers], at };
-    else if (dangers.length > 0) review = { kind: 'danger', reasons: dangers, at };
-  } catch (err) {
-    review = { kind: 'unreadable', reasons: [(err as Error).message], at };
-  }
+  const review = composeVerdict(id, at);
 
   const meta = loadMeta(id);
   if (!meta) {
-    // Nowhere to persist it. Say so instead of implying there was no finding —
-    // an app whose own record is unreadable is held on that ground alone.
-    log.warn(`App ${id}: meta.json is unreadable; holding the app rather than trusting it.`);
-    return review ?? unreadableMeta(at);
+    // Nowhere to persist it (`startBlockedReason` and the listing work it out the same way).
+    // Say so instead of implying there was no finding — an app whose own record is
+    // unreadable is held on that ground alone.
+    if (fs.existsSync(metaPath(id))) log.warn(`App ${id}: meta.json is unreadable; holding the app rather than trusting it.`);
+    else if (review) log.warn(`App ${id} has no record, and its compose file is held: ${review.reasons[0]}`);
+    return verdictWithoutRecord(id, at);
   }
   // The persisted record is what every downstream decision reads (the start
   // guard, the acknowledgement, the tRPC status code) — and it came out of the
@@ -1507,13 +1554,12 @@ export function reviewCompose(id: string): AppReview | null {
 export function startBlockedReason(id: string): AppReview | null {
   const meta = loadMeta(id);
   if (meta) return meta.review ?? null;
-  // FAIL CLOSED when the record exists but will not parse: meta.json is now
-  // security state, it arrives in the backup, and "we couldn't read it" must
-  // never read as "there is nothing to worry about" (§15's rule, applied to a
-  // file rather than to Docker). A record that is absent entirely is a different
-  // thing — the app is not installed — and is left to the caller's own error path.
-  if (fs.existsSync(metaPath(id))) return unreadableMeta(new Date().toISOString());
-  return null;
+  // FAIL CLOSED when the record exists but cannot be read (it will not parse, or it is
+  // another app's): meta.json is security state, it arrives in the backup, and "we
+  // couldn't read it" must never read as "there is nothing to worry about" (§15's rule,
+  // applied to a file rather than to Docker). With no record at all, the compose.yml in
+  // the folder — a backup's, say — is still what Start would run, so it is checked now.
+  return verdictWithoutRecord(id, new Date().toISOString());
 }
 
 /** Record the admin's explicit "I understand the risk" for a held app, freeing

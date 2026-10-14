@@ -88,13 +88,95 @@ test('AN APP WHOSE RECORD WILL NOT PARSE IS HELD, NOT RECOVERED OVER', async () 
   client.docker.listContainers = () =>
     Promise.resolve([{ Labels: { 'com.docker.compose.project': 'omos-broken-app' }, State: 'exited', Ports: [] }]);
   try {
+    // Held for what its compose asks for, ahead of "couldn't read its record": that one can be
+    // agreed to on the dashboard, and a refusal in the compose must never become a tickbox.
     const row = (await manager.listInstalled()).find((a) => a.id === 'broken-app');
-    assert.equal(row?.review?.kind, 'unreadable', 'the row must show the app held');
+    assert.equal(row?.review?.kind, 'danger', 'the row must show the app held');
     assert.equal(fs.readFileSync(path.join(APPS, 'broken-app', 'meta.json'), 'utf8'), '{"id": "broken-app", "review": ');
+    assert.equal(manager.startBlockedReason('broken-app')?.kind, 'danger');
+    // With no finding in its compose, it is held as unreadable.
+    fs.writeFileSync(path.join(APPS, 'broken-app', 'compose.yml'), 'services:\n  app:\n    image: x\n');
     assert.equal(manager.startBlockedReason('broken-app')?.kind, 'unreadable');
   } finally {
     client.docker.listContainers = original;
   }
+});
+
+const PRIVILEGED = 'services:\n  app:\n    image: x\n    privileged: true\n';
+/** Lay down an app folder as a backup could bring it: this compose, and this meta.json text (none if null). */
+function restored(id: string, metaText: string | null): void {
+  fs.mkdirSync(path.join(APPS, id), { recursive: true });
+  fs.writeFileSync(path.join(APPS, id, 'compose.yml'), PRIVILEGED);
+  if (metaText !== null) fs.writeFileSync(path.join(APPS, id, 'meta.json'), metaText);
+}
+/** Docker reports these projects, stopped, for the length of `fn`. */
+async function withProjects(ids: string[], fn: () => Promise<void>): Promise<void> {
+  const original = client.docker.listContainers;
+  client.docker.listContainers = () =>
+    Promise.resolve(ids.map((id) => ({ Labels: { 'com.docker.compose.project': `omos-${id}` }, State: 'exited', Ports: [] })));
+  try {
+    await fn();
+  } finally {
+    client.docker.listContainers = original;
+  }
+}
+const isHold = (err: unknown) => err instanceof manager.AppNeedsReviewError;
+
+test('A COMPOSE THAT CAME WITH NO RECORD IS HELD — not recovered as an app free to start', async () => {
+  // A backup carrying apps/X/compose.yml (privileged) and no meta.json, restored onto a box
+  // whose Docker still has X's containers: the review only visited folders with a record, so
+  // the listing recovered X with a fresh, unheld record, and Start ran the compose as root.
+  restored('no-record', null);
+  manager.reviewEveryApp();
+  assert.equal(fs.existsSync(path.join(APPS, 'no-record', 'meta.json')), false, 'a review writes no record');
+  assert.equal(manager.startBlockedReason('no-record')?.kind, 'danger', 'held before any listing');
+  await assert.rejects(() => manager.startApp('no-record'), isHold);
+  await withProjects(['no-record'], async () => {
+    const row = (await manager.listInstalled()).find((a) => a.id === 'no-record');
+    assert.equal(row?.review?.kind, 'danger', 'the recovered row shows the hold');
+  });
+  assert.equal(metaOf('no-record').review?.kind, 'danger', 'and the record it was given keeps it');
+  assert.equal(manager.startBlockedReason('no-record')?.kind, 'danger');
+  await assert.rejects(() => manager.startApp('no-record'), isHold);
+  await assert.rejects(() => manager.restartApp('no-record'), isHold);
+});
+
+test('…and a record that cannot be read is never written over to move it off a reserved address', async () => {
+  // `settings` is the dashboard's address now: recovering the app moved it off, by saving a
+  // fresh record over the unreadable one — dropping the hold, the secret and the exposure.
+  restored('settings', '{"id": "settings", "review": ');
+  await withProjects(['settings'], async () => {
+    const row = (await manager.listInstalled()).find((a) => a.id === 'settings');
+    assert.equal(row?.review?.kind, 'danger', 'held for what its compose asks for');
+  });
+  assert.equal(fs.readFileSync(path.join(APPS, 'settings', 'meta.json'), 'utf8'), '{"id": "settings", "review": ');
+  await assert.rejects(() => manager.startApp('settings'), isHold);
+});
+
+test("A RECORD NAMING ANOTHER APP IS NOT THIS APP'S RECORD — its verdict lands nowhere else", async () => {
+  // Every write goes to the folder a record's `id` names. apps/X/meta.json saying "Y" had X's
+  // verdict saved into apps/Y/ (over Y's own record), X stayed unheld, and a Remote access
+  // save ended in startApp(X). With no `id` at all, the review threw and X stayed unheld too.
+  seed('real-app', { name: 'Real' });
+  fs.writeFileSync(path.join(APPS, 'real-app', 'compose.yml'), 'services:\n  app:\n    image: nginx:1.27\n'); // passes: its own review writes nothing
+  const realBefore = fs.readFileSync(path.join(APPS, 'real-app', 'meta.json'), 'utf8');
+  const claims = JSON.stringify({ id: 'real-app', name: 'Impostor', kind: 'catalog', createdAt: '2026-01-01T00:00:00.000Z' });
+  restored('impostor', claims);
+  restored('no-id', JSON.stringify({ name: 'No id', kind: 'catalog', createdAt: '2026-01-01T00:00:00.000Z' }));
+  restored('not-a-record', '42');
+  manager.reviewEveryApp();
+  assert.equal(fs.readFileSync(path.join(APPS, 'real-app', 'meta.json'), 'utf8'), realBefore, "another app's record was written");
+  assert.equal(fs.readFileSync(path.join(APPS, 'impostor', 'meta.json'), 'utf8'), claims, 'nothing is written over it');
+  for (const id of ['impostor', 'no-id', 'not-a-record']) {
+    assert.equal(manager.startBlockedReason(id)?.kind, 'danger', id);
+    await assert.rejects(() => manager.startApp(id), isHold, id);
+  }
+  assert.equal(manager.reconcilePublicUrls().includes('impostor'), false);
+  await withProjects(['impostor'], async () => {
+    const rows = (await manager.listInstalled()).filter((a) => a.id === 'impostor' || a.name === 'Impostor');
+    assert.deepEqual(rows.map((a) => [a.id, a.review?.kind]), [['impostor', 'danger']]);
+  });
+  assert.equal(fs.readFileSync(path.join(APPS, 'impostor', 'meta.json'), 'utf8'), claims);
 });
 
 test('the alert check follows the Fabric index, which follows every change to an app', () => {
