@@ -12,6 +12,7 @@
     "clock": "Clock",
     "dialog": "Dialog",
     "continue": "Continue",
+    "tryAgain": "Try again",
     "copy": "Copy",
     "done": "Done",
     "turnOn": "Turn on",
@@ -171,8 +172,7 @@
       "apps": "Apps running",
       "cores_one": "{{count}} core",
       "cores_other": "{{count}} cores",
-      "coresSpeed": "{{cores}} · {{speed}} GHz",
-      "diskOfDrive": "{{total}} · {{drive}} of disk"
+      "coresSpeed": "{{cores}} · {{speed}} GHz"
     },
     "installedApps": "Your apps",
     "noAppsTitle": "No apps installed yet",
@@ -329,6 +329,7 @@
     "casaNote": "Tip: use CasaOS-compatible app stores. Paste the link to the store's repository (a .zip or GitHub repo URL).",
     "installTitle": "Install {{name}}",
     "thirdPartyNotice": "This is a community app from outside the official store — it isn't reviewed by us. Only install apps from sources you trust.",
+    "checkError": "Couldn't check this app before installing it. Please try again.",
     "installing": "Installing… downloading the app, this can take a minute."
   },
   "appDetail": {

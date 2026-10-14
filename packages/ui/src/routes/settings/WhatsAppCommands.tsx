@@ -50,6 +50,8 @@ export function WhatsAppCommands() {
     },
     onError,
   });
+  // A whole number, not just the country code the phone field starts with (as linking asks).
+  const canAdd = !addPerson.isPending && newPhone.length >= 8 && newName.trim() !== '';
   const removePerson = trpc.commands.removePerson.useMutation({
     onSuccess: () => {
       setConfirmRemove(null);
@@ -203,7 +205,7 @@ export function WhatsAppCommands() {
                   disabled={addPerson.isPending}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && newPhone.trim() && newName.trim()) {
+                    if (e.key === 'Enter' && canAdd) {
                       addPerson.mutate({ phone: newPhone, label: newName });
                     }
                   }}
@@ -211,7 +213,7 @@ export function WhatsAppCommands() {
                 <button
                   className="btn btn--primary"
                   style={{ flex: '0 0 auto' }}
-                  disabled={addPerson.isPending || !newPhone.trim() || !newName.trim()}
+                  disabled={!canAdd}
                   onClick={() => addPerson.mutate({ phone: newPhone, label: newName })}
                 >
                   {t('settings.commandsAdd')}

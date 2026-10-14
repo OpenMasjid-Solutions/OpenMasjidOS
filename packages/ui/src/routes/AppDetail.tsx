@@ -49,8 +49,15 @@ export function AppDetail() {
     },
     onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
-  const stop = trpc.apps.stop.useMutation({ onSuccess: onChange });
-  const restart = trpc.apps.restart.useMutation({ onSuccess: onChange });
+  // A refusal — Docker's, a restore or an update in the way, a hold for review — is said.
+  const stop = trpc.apps.stop.useMutation({
+    onSuccess: onChange,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  const restart = trpc.apps.restart.useMutation({
+    onSuccess: onChange,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
 
   // Whether this app is reachable from the internet lives in Settings → Remote
   // access, which an admin who skipped the question at install has no reason to

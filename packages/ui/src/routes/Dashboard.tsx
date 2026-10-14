@@ -178,15 +178,7 @@ export function Dashboard() {
   })();
 
   const diskPct = percent(stats?.diskUsed ?? 0, stats?.diskTotal ?? 0);
-  // Storage counts only the filesystem the data is on, less a reserve for the system, so the
-  // disk can be much bigger (Ubuntu's default LVM uses ~100 GB of it). Saying so keeps a
-  // total smaller than the disk from reading as lost space.
-  const diskTotalText = `/ ${formatBytes(stats?.diskTotal ?? 0)}`;
-  const drive = stats?.diskDeviceBytes ?? null;
-  const diskSub =
-    stats && drive && stats.diskTotal > 0 && drive >= stats.diskTotal * 1.25
-      ? t('dashboard.stats.diskOfDrive', { total: diskTotalText, drive: formatBytes(drive) })
-      : diskTotalText;
+  const diskSub = `/ ${formatBytes(stats?.diskTotal ?? 0)}`;
   const diskLow = (stats?.diskTotal ?? 0) > 0 && diskPct >= 80;
 
   // A random tagline per load (stable across re-renders), switching to the

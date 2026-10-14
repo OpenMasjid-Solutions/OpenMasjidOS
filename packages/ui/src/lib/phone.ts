@@ -116,6 +116,23 @@ export function nationalPart(dial: string, digits: string): string {
   return dial && dial !== '39' ? digits.replace(/^0+/, '') : digits;
 }
 
+/**
+ * What the number box stores for what was typed or pasted into it, with `dial` the country
+ * picked. A number written with its international prefix — `+44 …` or `0044 …` — carries its
+ * own country code: that code is kept (whatever was picked) and `other` says whether it is in
+ * the list; a trunk 0 after it is dropped all the same (`+44 (0)7700 …`). Read as a national
+ * number instead, `0044 7700 …` became 44447700…, and the server accepted it.
+ */
+export function typedNumber(raw: string, dial: string): { value: string; other?: boolean } {
+  const text = raw.trim();
+  if (text.startsWith('+') || text.startsWith('00')) {
+    const whole = digitsOnly(text).replace(/^00/, '');
+    const s = splitPhone(whole);
+    return s.dial ? { value: `${s.dial}${nationalPart(s.dial, s.national)}`, other: false } : { value: whole, other: true };
+  }
+  return { value: `${dial}${nationalPart(dial, digitsOnly(text))}` };
+}
+
 /** The one dial code with a national format worth special-casing. See `group`. */
 const NANP_DIAL = '1';
 

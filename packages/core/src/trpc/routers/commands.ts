@@ -27,8 +27,12 @@ import { inboundStatus, observedEventShapes } from '../../notify/whatsapp-inboun
 import { gatewayTraffic } from '../../notify/whatsapp-gateway';
 import { getAdminName, getAdminPhone } from '../../auth/store';
 
-const phone = z.string().trim().min(6).max(24);
-const label = z.string().trim().min(1).max(60);
+const phone = z
+  .string()
+  .trim()
+  .min(6, 'Enter the whole number, with its country code.')
+  .max(24, 'That number is too long.');
+const label = z.string().trim().min(1, 'Give this person a name.').max(60, 'Keep the name under 60 characters.');
 const scopeKey = z.string().min(1).max(80);
 
 /** Turn a store error ("that needs a country code") into a friendly 400. */

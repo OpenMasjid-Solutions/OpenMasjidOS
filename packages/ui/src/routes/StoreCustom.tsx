@@ -95,7 +95,10 @@ function CommunityTab() {
   // we install, so it never starts public (§15).
   const [expose, setExpose] = useState(false);
 
-  const check = trpc.community.check.useMutation();
+  // Install waits for this: what the admin is asked to accept comes from its answer.
+  const check = trpc.community.check.useMutation({
+    onError: (e) => setInstallError(errorText(e, t('community.checkError'))),
+  });
   const conflicts = check.data?.conflicts ?? [];
   // What the app would be allowed to do that an ordinary one is not — said BEFORE the
   // admin is asked to accept the risk, not left for them to guess.
@@ -283,9 +286,21 @@ function CommunityTab() {
             {installError && <p className="form-error">{installError}</p>}
             <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
               <button className="btn" onClick={() => setConfirmApp(null)}>{t('common.cancel')}</button>
-              <button className="btn btn--primary" onClick={confirmInstall} disabled={refusals.length > 0}>
-                {needsAck ? t('custom.riskAck') : t('actions.install')}
-              </button>
+              {check.isError ? (
+                <button
+                  className="btn btn--primary"
+                  onClick={() => {
+                    setInstallError('');
+                    if (confirmApp) check.mutate({ compose: confirmApp.compose });
+                  }}
+                >
+                  {t('common.tryAgain')}
+                </button>
+              ) : (
+                <button className="btn btn--primary" onClick={confirmInstall} disabled={refusals.length > 0 || !check.data}>
+                  {needsAck ? t('custom.riskAck') : t('actions.install')}
+                </button>
+              )}
             </div>
           </>
         )}

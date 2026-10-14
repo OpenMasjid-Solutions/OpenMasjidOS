@@ -19,7 +19,7 @@
  */
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, nationalPart, splitPhone } from '../lib/phone';
+import { COUNTRIES, DEFAULT_DIAL, digitsOnly, group, nationalPart, splitPhone, typedNumber } from '../lib/phone';
 
 interface PhoneFieldProps {
   /** E.164 digits, no `+`. Empty string when unset. */
@@ -65,15 +65,11 @@ export function PhoneField({ value, onChange, label, hint, id, disabled, trailin
   }
 
   function setNational(raw: string) {
-    const typed = digitsOnly(raw);
-    // A number typed or pasted with its "+" carries its own country code, so it is kept
-    // as it is — listed country or not. Putting the selected code in front of a
-    // +256 number made it a number in another country.
-    if (raw.trim().startsWith('+')) {
-      setOther(!splitPhone(typed).dial);
-      return onChange(typed);
-    }
-    onChange(`${dial}${nationalPart(dial, typed)}`);
+    // A number typed with its "+" or "00" keeps its own country code: putting the selected
+    // code in front of a +256 number made it a number in another country (lib/phone.ts).
+    const { value, other: outside } = typedNumber(raw, dial);
+    if (outside !== undefined) setOther(outside);
+    onChange(value);
   }
 
   return (

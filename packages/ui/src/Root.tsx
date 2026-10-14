@@ -92,25 +92,30 @@ export function Root() {
     <AppShell onSignedOut={reload}>
       {/* A page's code is fetched when it is first opened. After an update the old
           file is gone, and that failure used to blank the whole dashboard; now it is
-          caught here, for that page alone, and says what to do. Keyed on the address,
-          so going to another page tries again. */}
-      <ErrorBoundary key={location.pathname} fallback={<PageLoadFailed />}>
-      <Suspense fallback={<Splash />}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/store" element={<Store />} />
-          <Route path="/store/custom" element={<StoreCustom />} />
-          <Route path="/apps/:id" element={<AppDetail />} />
-          <Route path="/files" element={<Files />} />
-          <Route path="/settings" element={<Settings />} />
-          {/* Each settings section has its own address, so the dashboard, an app's page
-              and an error message can all send someone straight to the right place
-              instead of to the top of a long page. */}
-          <Route path="/settings/:section" element={<Settings />} />
-          <Route path="/design-system" element={<DesignSystem />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </Suspense>
+          caught here, for that page alone, and says what to do. Keyed on the page, so
+          going to another page tries again — and every Settings section is ONE page:
+          keyed on the full address, each section click remounted Settings, and with it
+          the restore upload, a restore's progress and the update dialog (§13.5). */}
+      <ErrorBoundary
+        key={location.pathname.startsWith('/settings') ? '/settings' : location.pathname}
+        fallback={<PageLoadFailed />}
+      >
+        <Suspense fallback={<Splash />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/store" element={<Store />} />
+            <Route path="/store/custom" element={<StoreCustom />} />
+            <Route path="/apps/:id" element={<AppDetail />} />
+            <Route path="/files" element={<Files />} />
+            <Route path="/settings" element={<Settings />} />
+            {/* Each settings section has its own address, so the dashboard, an app's page
+                and an error message can all send someone straight to the right place
+                instead of to the top of a long page. */}
+            <Route path="/settings/:section" element={<Settings />} />
+            <Route path="/design-system" element={<DesignSystem />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
       </ErrorBoundary>
     </AppShell>
   );
