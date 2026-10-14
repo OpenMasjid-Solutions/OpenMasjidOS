@@ -476,3 +476,16 @@ test('A DOWNLOADED FILE KEEPS ITS NAME — not "Jumu%27ah%20notes.pdf"', async (
     await app.close();
   }
 });
+
+test("the destination's own error line is turned into what to check, never shown as it is", () => {
+  const says = (line: string) => offsite.rcloneProblem(`2026/10/13 20:00:00 NOTICE: something\n${line}\n`);
+  assert.match(says('Failed to create file system for "omos:": couldn\'t connect SSH: ssh: handshake failed: ssh: unable to authenticate'), /refused the user name, password or key/);
+  assert.match(says('Failed to lsd: dial tcp: lookup nas.local: no such host'), /Couldn't reach the destination/);
+  assert.match(says('Failed to lsd: dial tcp 192.168.1.9:22: connect: connection refused'), /Couldn't reach the destination/);
+  assert.match(says('Failed to rcat: write: no space left on device'), /out of space/);
+  assert.match(says('Failed to lsd: directory not found'), /folder or share couldn't be used/);
+  assert.match(says('Failed to lsd: some error nobody planned for'), /^Couldn't use the backup destination/);
+  assert.match(offsite.rcloneProblem(''), /^Couldn't use the backup destination/);
+  // Nothing rclone printed reaches the screen.
+  assert.doesNotMatch(says('Failed to lsd: dial tcp: lookup nas.local: no such host'), /nas\.local|dial tcp/);
+});

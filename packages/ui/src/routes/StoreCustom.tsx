@@ -343,14 +343,15 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
 
       <div className="glass-raised panel">
         <div className="field">
-          <label className="label">{t('custom.name')}</label>
-          <input className="input glass-inset" placeholder={t('custom.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
+          <label className="label" htmlFor="custom-name">{t('custom.name')}</label>
+          <input id="custom-name" className="input glass-inset" placeholder={t('custom.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="field">
-          <label className="label">{t('custom.compose')}</label>
+          <label className="label" htmlFor="custom-compose">{t('custom.compose')}</label>
           {/* An edit throws the last check away, and the risk tick with it: kept, it had
               a more dangerous file arrive with its list already ticked. */}
           <textarea
+            id="custom-compose"
             className="textarea glass-inset"
             placeholder={t('custom.composePlaceholder')}
             value={compose}
@@ -362,8 +363,8 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
           />
         </div>
         <div className="field">
-          <label className="label">{t('custom.env')}</label>
-          <textarea className="textarea glass-inset" style={{ minHeight: '5rem' }} placeholder={t('custom.envPlaceholder')} value={env} onChange={(e) => setEnv(e.target.value)} />
+          <label className="label" htmlFor="custom-env">{t('custom.env')}</label>
+          <textarea id="custom-env" className="textarea glass-inset" style={{ minHeight: '5rem' }} placeholder={t('custom.envPlaceholder')} value={env} onChange={(e) => setEnv(e.target.value)} />
         </div>
 
         {check.data && dangers.length === 0 && refusals.length === 0 && (

@@ -25,6 +25,8 @@ import { docker } from '../docker/client';
 import { getSettings } from '../settings/store';
 import { getAppPath } from '../apps/manager';
 import { isRouted } from './ingress';
+// The apps' hostname exactly as the admin entered it, normalised; never a forced subdomain.
+import { appHostname } from './remote-admin';
 import { log } from '../logger';
 
 const CF_DIR = path.join(CONFIG_DIR, 'cloudflare');
@@ -224,16 +226,6 @@ export async function ensureCloudflared(): Promise<void> {
   }
 }
 
-/** The public host the tunnel serves — EXACTLY the hostname the admin entered
- *  (and created as a Cloudflare public hostname), e.g. "app.rifusa.org" or
- *  "omos.example.org". Used verbatim: forcing an `omos.` subdomain broke setups
- *  where the admin chose a different hostname (the tunnel then pointed at a
- *  host that doesn't exist, so every app path 404'd). Empty if no domain. */
-export function publicHost(): string {
-  const cf = getSettings().cloudflare;
-  return (cf.domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '').trim();
-}
-
 /** Each app is served under a path (admin-configurable, default = its id). This is
  *  the Cloudflare public-hostname Path and the base path the app mounts under. */
 export function appBasePath(appId: string): string {
@@ -247,7 +239,7 @@ export function appBasePath(appId: string): string {
  *  authoritative: if it's non-empty, the platform really serves that path to this
  *  app, so the app can advertise it without a fragile hairpin self-probe. */
 export function appPublicUrl(appId: string): string {
-  const host = publicHost();
+  const host = appHostname();
   const cf = getSettings().cloudflare;
   if (!cf.enabled || !host || !isRouted(appId)) return '';
   return `https://${host}${appBasePath(appId)}`;
@@ -260,7 +252,7 @@ export function appPublicUrl(appId: string): string {
  *  no domain, or the app isn't exposed. The LIVE source of truth stays
  *  GET /api/fabric/site (appPublicUrl). */
 export function intendedPublicUrl(appId: string, exposed: boolean, path?: string): string {
-  const host = publicHost();
+  const host = appHostname();
   const cf = getSettings().cloudflare;
   if (!cf.enabled || !host || !exposed) return '';
   // `path`: an install decides its address before its meta.json exists to read it from.

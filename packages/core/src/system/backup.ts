@@ -106,6 +106,13 @@ export function backupRefusal(): string | null {
       ? finishingMessage('restore')
       : 'A backup is being restored right now. Please make a backup once it has finished.';
   }
+  // The backup runs in this core, which a core update replaces: one started now (the
+  // update's hold included) would be cut off part-way.
+  if (isUpdating('core')) {
+    return finishing('core')
+      ? finishingMessage('core')
+      : 'OpenMasjidOS is being updated right now. Please make a backup once it has finished.';
+  }
   return running ? new BackupBusyError().message : null;
 }
 

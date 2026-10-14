@@ -18,7 +18,6 @@ import {
   clearTunnel,
   ensureCloudflared,
   cloudflaredRunning,
-  publicHost,
   appPublicUrl,
 } from '../../system/cloudflared';
 import {
@@ -30,7 +29,7 @@ import {
   startApp,
 } from '../../apps/manager';
 import { PORT } from '../../config';
-import { hostnameOfDomain, remoteAdminEnabled, remoteAdminBlockedReason } from '../../system/remote-admin';
+import { appHostname, hostnameOfDomain, remoteAdminEnabled, remoteAdminBlockedReason } from '../../system/remote-admin';
 import { sweepHandedOverSockets } from '../../system/remote-sockets';
 import { twoFactorActive } from '../../auth/twofactor';
 import { clearAllIpFailures } from '../../auth/ip-lockout';
@@ -91,7 +90,7 @@ export const cloudflareRouter = router({
   routes: protectedProcedure.query(async () => {
     const apps = await listInstalled();
     return {
-      host: publicHost(), // e.g. "omos.example.org" (empty until a domain is set)
+      host: appHostname(), // e.g. "omos.example.org" (empty until a domain is set)
       ingressPort: PORT, // the OS HTTP front door the single tunnel route points at
       apps: apps
         .filter((a) => a.openPort != null)

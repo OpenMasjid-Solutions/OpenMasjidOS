@@ -723,6 +723,17 @@ test('A BACKUP AND A RESTORE NEVER OVERLAP — the backup would copy data half r
   }
   assert.equal(backup.backupRefusal(), null);
 
+  // Nor during a core update: the backup runs in the core the update replaces.
+  const updating = lock.withUpdateLock('core', 'busy', () => new Promise<void>((r) => (release = r)));
+  try {
+    assert.match(backup.backupRefusal() ?? '', /^OpenMasjidOS is being updated right now\./);
+    await assert.rejects(backup.backupStream(), (e: Error) => e.name === 'BackupBusyError' && /being updated/.test(e.message));
+  } finally {
+    release();
+    await updating;
+  }
+  assert.equal(backup.backupRefusal(), null);
+
   // And a restore asked for while a backup is being made is refused, its upload removed.
   const docker = fakeDocker();
   const handle = await backup.backupStream();

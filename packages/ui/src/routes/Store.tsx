@@ -229,10 +229,11 @@ function InstallModal({
       {app.tagline && <p style={{ marginBottom: '1rem' }}>{app.tagline}</p>}
       {fields.map((f) => (
         <div className="field" key={f.key}>
-          <label className="label">{f.label}</label>
+          <label className="label" htmlFor={`setting-${f.key}`}>{f.label}</label>
           {f.type === 'stripe-account' ? (
             (stripeAccounts.data?.length ?? 0) > 0 ? (
               <select
+                id={`setting-${f.key}`}
                 className="select glass-inset"
                 value={values[f.key] ?? ''}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
@@ -249,6 +250,7 @@ function InstallModal({
             )
           ) : f.type === 'select' ? (
             <select
+              id={`setting-${f.key}`}
               className="select glass-inset"
               value={values[f.key] ?? ''}
               onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
@@ -259,6 +261,7 @@ function InstallModal({
             </select>
           ) : (
             <input
+              id={`setting-${f.key}`}
               className="input glass-inset"
               type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}
               value={values[f.key] ?? ''}

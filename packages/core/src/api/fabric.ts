@@ -30,7 +30,6 @@ import {
   enqueue as enqueueWhatsApp,
   whatsappOutcome,
   gatewayStatus as whatsappStatus,
-  outcomesInWindow,
   mediaProblem,
   MAX_MEDIA_BYTES,
   type OutgoingMedia,
