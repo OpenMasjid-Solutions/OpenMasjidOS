@@ -451,14 +451,20 @@ async function runOsVerb(command: CommandEntry, target: { id: string; name: stri
   // again" — and the admin, who cannot see the dashboard, would believe it. An update
   // was already checked inside updateCatalogApp.
   if (command.id !== 'stop' && command.id !== 'update') {
-    const crash = await verifyStayedUp(target.id);
-    if (crash !== null) {
+    const stayed = await verifyStayedUp(target.id);
+    if (stayed.result === 'down') {
       log.warn(`WhatsApp commands: "${command.id}" on ${target.id} did not stay running.`);
       audit(command, target.name, ctx);
       return ctx.reply(
         `${target.name} started and then stopped again. Something is wrong with it — ` +
           'have a look at its logs on the dashboard.',
       );
+    }
+    // Docker could not be asked: it was started, and whether it stayed up is not known.
+    if (stayed.result === 'unknown') {
+      log.warn(`WhatsApp commands: "${command.id}" on ${target.id} — could not check it stayed running.`);
+      audit(command, target.name, ctx);
+      return ctx.reply(`${target.name} was started, but I couldn't check that it stayed running. Have a look on the dashboard.`);
     }
   }
 

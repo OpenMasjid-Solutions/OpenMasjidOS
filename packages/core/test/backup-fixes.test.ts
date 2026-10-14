@@ -237,6 +237,93 @@ test('APP DATA THAT UNPACKS PAST 8 GiB STILL RESTORES WHEN THE DISK HAS ROOM', P
   }
 });
 
+test('A BOX CAN RESTORE ITS OWN BACKUP WHEN ITS APP DATA IS LARGER THAN ITS FREE SPACE', POSIX_ONLY, async () => {
+  // Every volume's unpacked size was added up against the free space, but a refill puts one
+  // volume back at a time and frees its old copy as it goes: on the box the backup came from,
+  // what has to fit is about the largest volume, not all of them.
+  const MiB = 1024 * 1024;
+  const vol = (n: number) => volumeArchive({ 'db.sqlite': Buffer.alloc(n * MiB) });
+  // Both volumes are on the box already, holding 4 MiB each (`du -sk`, in KiB).
+  const docker = standIn(
+    'docker',
+    `case "$1 $2" in "volume ls") echo omos-donations_data; echo omos-donations_files;; esac
+case "$*" in *" du -sk "*) printf '4096\\t/v/0\\n4096\\t/v/1\\n';; esac
+exit 0`,
+  );
+  const realStatfs = fs.statfsSync;
+  const free = (mib: number) => (fs.statfsSync = (() => ({ bsize: 1024, bavail: mib * 1024 })) as unknown as typeof fs.statfsSync);
+  try {
+    // 8 MiB of app data on a disk with 6 MiB free: each volume replaces one the same size.
+    uploadBackup({ 'volumes/omos-donations_data.tar.gz': vol(4), 'volumes/omos-donations_files.tar.gz': vol(4) });
+    free(6);
+    const lines: string[] = [];
+    await restore.runRestore((l) => lines.push(l));
+    assert.ok(!lines.some((l) => /too large to restore safely/.test(l)), lines.join(' | '));
+    assert.match(docker.log(), /volume create .*omos-donations_files/, 'the app data was not put back');
+
+    // But a volume needs room for its new data beside the old until the swap: 5 MiB over 4,
+    // with 4 MiB free (3.6 usable), cannot be put back however small the difference.
+    lock.__releaseHeldLocksForTests(); // the first restore "restarted" the core
+    uploadBackup({ 'volumes/omos-donations_data.tar.gz': vol(5) });
+    free(4);
+    lines.length = 0;
+    assert.equal(await restore.runRestore((l) => lines.push(l)), 'unchanged', lines.join(' | '));
+    assert.ok(lines.some((l) => /too large to restore safely/.test(l)), lines.join(' | '));
+  } finally {
+    fs.statfsSync = realStatfs;
+    fs.rmSync(restore.RESTORE_PATH, { force: true });
+    docker.restore();
+  }
+});
+
+test('A COMPOSE FILE THE DISK REFUSES PART-WAY IS LEFT AS IT WAS — not cut short under "nothing was changed"', POSIX_ONLY, async () => {
+  const compose = path.join(DATA, 'docker-compose.yml');
+  const before = 'services:\n  core:\n    image: ghcr.io/openmasjid-solutions/openmasjid-core:0.51.2-dev.18\n';
+  fs.writeFileSync(compose, before);
+  const docker = standIn('docker');
+  // A full disk: a write truncates what it was given, puts nothing in, and fails.
+  const realWrite = fs.writeFileSync;
+  fs.writeFileSync = ((file: fs.PathOrFileDescriptor) => {
+    realWrite(file, '');
+    throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+  }) as typeof fs.writeFileSync;
+  try {
+    assert.equal(await recreateCore(() => undefined, '0.51.2-dev.99'), false);
+  } finally {
+    fs.writeFileSync = realWrite;
+    docker.restore();
+  }
+  try {
+    assert.equal(fs.readFileSync(compose, 'utf8'), before, 'the core compose file was left cut short');
+    assert.doesNotMatch(docker.log(), /^run -d/m, 'the core was recreated');
+    assert.deepEqual(fs.readdirSync(DATA).filter((f) => f.startsWith('docker-compose.yml.')), [], 'a temp file was left behind');
+  } finally {
+    fs.rmSync(compose, { force: true });
+  }
+});
+
+test('AN OFF-SITE BACKUP WHOSE RESULT CANNOT BE SAVED IS NOT RUN AGAIN AT EVERY TICK', POSIX_ONLY, async () => {
+  // On a full or read-only disk the run's lastRunAt could not be saved, so the scheduler found
+  // a backup due every 15 minutes and staged every app's data onto that disk again.
+  const docker = standIn('docker');
+  const rclone = standIn('rclone', 'exit 1');
+  fs.writeFileSync(path.join(CONFIG, 'rclone.conf'), '[omosbackup]\ntype = sftp\n');
+  const longAgo = '2026-01-01T00:00:00.000Z';
+  settings.updateBackups({ configured: true, enabled: true, schedule: 'daily', remotePath: 'Backups', lastRunAt: longAgo });
+  assert.equal(offsite.backupDue(), true, 'setup: a backup is due');
+  const blocker = path.join(CONFIG, 'settings.json.tmp');
+  fs.mkdirSync(blocker); // every write of settings.json now fails
+  try {
+    assert.equal((await offsite.runBackup()).ok, false);
+    assert.equal(settings.getSettings().backups.lastRunAt, longAgo, 'setup: the result could not be saved');
+    assert.equal(offsite.backupDue(), false, 'the next tick would run it again');
+  } finally {
+    fs.rmSync(blocker, { recursive: true, force: true });
+    rclone.restore();
+    docker.restore();
+  }
+});
+
 test('THE UPLOADED BACKUP IS NOT UNPACKED AGAIN JUST TO MEASURE IT', POSIX_ONLY, async () => {
   const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
   const docker = standIn('docker');

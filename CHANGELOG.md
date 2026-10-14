@@ -1529,13 +1529,19 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
   swapped in only once complete; one that fails is left exactly as it was.
 - **A restore whose app data would fill the disk is refused before any app is stopped.** The
   data is measured unpacked, against the space left once the backup itself is unpacked.
+- **A box can restore its own backup when its app data is larger than its free space.** All
+  the app data was counted at once, but a restore puts one app's data back at a time and frees
+  the old copy as it goes: each is counted now beside what it replaces.
 - **An off-site backup can no longer hang everything after it.** When the destination stopped
   reading (a wrong password, a NAS gone offline) the backup waited for ever, and every later
   backup and restore was refused as "already running" until a restart. A run refused because
   another was running is no longer recorded as a failure, and whatever a failed run left on the
-  destination is removed.
+  destination is removed. On a full disk, where its result can't be saved, a failed run is no
+  longer tried again every 15 minutes.
 - **Updating OpenMasjidOS waits for a backup being made**, instead of cutting it off half
   written. A backup cut off by a restart leaves no copy of the apps' data behind.
+- The core's own compose file is written whole or not at all: a full disk left it cut short
+  under a window saying nothing was changed.
 - **File Explorer:** app folders open again (they were drawn as locked); the editor never writes
   through a link (a dangling one created its target wherever it pointed, `config/` included); an
   upload replaces a file only once it has all arrived (a cancelled one used to leave half a
@@ -1558,6 +1564,17 @@ A sweep of the whole platform, area by area. Every fix came with a test that fai
 - **After a reboot, apps' HTTPS addresses come back even when Docker answers late.**
 - **An app whose record can't be read is held for review**, instead of a fresh record being
   written over it — which let a crafted backup start a privileged app with no warning.
+- **So is an app whose compose file came with no record at all, or with another app's.** A
+  backup could bring an app's compose file with no record beside it: the restore's check passed
+  it by, the dashboard gave the app a fresh, unheld record, and Start ran it as root. A record
+  naming another app had the check's verdict saved into that other app's folder. Both are held
+  now, checked from the compose file itself; and moving an app off an address the dashboard
+  took no longer writes over a record that can't be read.
+- **Removing an app that Docker refused to remove says so**, and keeps its files: removing them
+  under containers still running brought the app back with the data you asked to delete. A
+  damaged compose file never blocks a removal.
+- **Docker not answering while an update checks the app stayed up is "couldn't check"**, not
+  "it isn't staying running" — on the dashboard and over WhatsApp.
 
 #### The dashboard and Settings
 

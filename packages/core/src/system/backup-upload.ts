@@ -213,6 +213,7 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
   const record = (ok: boolean, message: string) => {
     // Logged first, so a status that cannot be saved does not hide the failure as well.
     if (!ok) log.warn(`Scheduled backup failed: ${message}`);
+    lastAttemptAt = Date.now();
     try {
       updateBackups({
         lastRunAt: new Date().toISOString(),
@@ -298,16 +299,25 @@ const INTERVAL_MS: Record<'daily' | 'weekly', number> = {
   weekly: 7 * 24 * 60 * 60 * 1000,
 };
 let ticking = false;
+/** When this process last finished a run, saved or not. On a full or read-only disk the
+ *  run's lastRunAt cannot be saved, and every tick ran it again — re-staging every app's data
+ *  onto the very disk that was full. */
+let lastAttemptAt = 0;
+
+/** Is a scheduled off-site backup due? */
+export function backupDue(): boolean {
+  const cfg = getSettings().backups;
+  if (!cfg.enabled || !cfg.configured) return false;
+  const last = Math.max((cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : 0) || 0, lastAttemptAt);
+  return Date.now() - last >= INTERVAL_MS[cfg.schedule];
+}
 
 async function tick(): Promise<void> {
   if (ticking) return;
   // Not while a restore refills the very data it would copy, nor while an update is about
   // to replace this process mid-backup; the next tick runs it.
   if (isUpdating('restore') || isUpdating('core')) return;
-  const cfg = getSettings().backups;
-  if (!cfg.enabled || !cfg.configured) return;
-  const last = cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : 0;
-  if (Date.now() - last < INTERVAL_MS[cfg.schedule]) return;
+  if (!backupDue()) return;
   ticking = true;
   try {
     log.info('Running scheduled off-site backup…');

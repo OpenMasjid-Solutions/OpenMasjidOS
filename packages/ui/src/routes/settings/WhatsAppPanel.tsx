@@ -216,7 +216,8 @@ export function WhatsAppPanel() {
       // Only clear the previous failure when this attempt actually held — otherwise
       // the panel would flash back to looking healthy while the container restarts.
       setGatewayCrash(r.ok ? null : (r.output ?? null));
-      if (r.ok) toast(t('settings.whatsappGatewayStarted'), 'success');
+      if (r.unchecked) toast(t('settings.whatsappGatewayUnchecked'), 'info');
+      else if (r.ok) toast(t('settings.whatsappGatewayStarted'), 'success');
       utils.whatsapp.get.invalidate();
       utils.whatsapp.status.invalidate();
     },

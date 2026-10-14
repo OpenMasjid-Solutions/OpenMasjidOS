@@ -72,7 +72,7 @@ stub('../src/apps/manager', {
   },
   verifyStayedUp: async (id: string) => {
     world.calls.push(`verify:${id}`);
-    return null;
+    return { result: 'up' };
   },
   startApp: async (id: string) => void world.calls.push(`start:${id}`),
   stopApp: async (id: string) => void world.calls.push(`stop:${id}`),

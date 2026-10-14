@@ -737,6 +737,7 @@
     "whatsappGatewayRestart": "Restart it",
     "whatsappGatewayStarting": "Starting…",
     "whatsappGatewayStarted": "OpenWA is running.",
+    "whatsappGatewayUnchecked": "OpenWA was started, but we couldn't check that it stayed running. Look again in a minute.",
     "whatsappGatewayCrashed": "It started and then stopped again. This is the last thing it printed:",
     "whatsappCodeExpires": "Type it into WhatsApp within a couple of minutes — it expires.",
     "whatsappLinkedTo": "Sending from",

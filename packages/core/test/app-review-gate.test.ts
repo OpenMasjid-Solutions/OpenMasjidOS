@@ -276,16 +276,21 @@ test('reviewCompose reads the compose BEFORE it touches meta.json', () => {
   // meta.json arrives in the same backup as the compose, so letting it decide
   // whether the gate runs is an attacker-controlled off switch.
   const body = fnBody(read('apps', 'manager.ts'), 'export function reviewCompose(');
+  assert.ok(body.includes('composeVerdict('), 'reviewCompose must compute the verdict itself');
   assert.ok(
-    body.indexOf('checkCompose(') < body.indexOf('loadMeta('),
+    body.indexOf('composeVerdict(') < body.indexOf('loadMeta('),
     'the verdict must not depend on a file the attacker supplies',
   );
 });
 
 test('startBlockedReason fails closed on a corrupt record', () => {
   const body = fnBody(read('apps', 'manager.ts'), 'export function startBlockedReason(');
-  assert.match(body, /existsSync\(metaPath\(id\)\)/, 'present-but-unparseable is distinguished');
-  assert.match(body, /unreadableMeta\(/, 'and held rather than waved through');
+  assert.match(body, /verdictWithoutRecord\(id/, 'an app with no readable record is worked out, not waved through');
+  const src = code(read('apps', 'manager.ts'));
+  const rule = src.slice(src.indexOf('function verdictWithoutRecord('));
+  const fn = rule.slice(0, rule.indexOf('\n}\n'));
+  assert.match(fn, /existsSync\(metaPath\(id\)\)/, 'present-but-unreadable is distinguished');
+  assert.match(fn, /unreadableMeta\(/, 'and held rather than waved through');
 });
 
 test('WhatsApp can never acknowledge a held app', () => {
@@ -338,6 +343,7 @@ test('the hold is on the row the dashboard already renders', () => {
   // If it were not in the DTO, the card could not warn before the click.
   const src = code(read('apps', 'manager.ts'));
   assert.match(src, /review: meta\.review \?\? null/, 'installed apps carry their hold');
-  // Un-held — unless the record exists and will not parse (apps-fixes.test.ts drives that).
-  assert.match(src, /review: unreadable \? unreadableMeta\([^)]*\) : null/, 'recovered orphans are explicitly un-held');
+  // A recovered orphan carries the verdict on its compose, as startBlockedReason works it
+  // out (apps-fixes.test.ts drives both).
+  assert.match(src, /const review = verdictWithoutRecord\(disc\.id/, 'recovered orphans carry the hold');
 });
