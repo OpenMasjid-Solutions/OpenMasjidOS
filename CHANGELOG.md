@@ -1262,6 +1262,13 @@ and supersedes it; dev.17 (next) replaced dev.16's second hostname and keeps the
 - **Never run `npm audit fix` in this repo.** At dev.11 its dry-run downgraded dockerode 4.0.12 →
   4.0.2 and tar-fs 2.1.4 → 2.0.1, landing three HIGH tar path-traversal advisories on the
   container-archive path of a daemon that runs as root with the Docker socket.
+- dev.21: `vite` `^6.0.1` → `^6.4.5` (lockfile 6.4.3 → 6.4.5) for three high advisories in the
+  `launch-editor` it bundles (GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw, GHSA-587h-7wmj-h5pm),
+  published after dev.19's audit passed and failing dev.20's. vite builds the dashboard and never
+  reaches the image. A plain `npm install vite@^6.4.5` left the old hoisted 6.4.3 for the two plugins
+  that take vite as a peer (@vitejs/plugin-react, @tailwindcss/vite), and `npm update vite` gave
+  them vite 7 instead; dropping vite's lockfile entries and reinstalling gives one 6.4.5 for all
+  three. The three moderate ones above remain, unchanged.
 
 ### Design system (in progress)
 
