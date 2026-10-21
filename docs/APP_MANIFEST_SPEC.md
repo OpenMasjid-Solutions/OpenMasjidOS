@@ -417,6 +417,20 @@ dashboard's session) and what happens to a `Set-Cookie` for a platform cookie na
   (*Your address*, above) is therefore not optional for any app with a web page. An app that is not
   base-path aware simply breaks there — the WhatsApp gateway (OpenWA) is one, which is why Settings
   offers its screen only at the masjid.
+- **The admin must be able to sign in there, through single sign-on.** Opened from outside, the
+  admin arrives with your access token and nothing else, so the route your page asks "who is
+  signed in?" — and that runs your SSO check (`/api/auth/session`, above) — must be reachable
+  through the tunnel, and so must the admin features it unlocks. An app that keeps its whole admin
+  side LAN-only over the tunnel cannot sign anyone in from outside and falls back to its own
+  password screen, which is what the Kiosk did until 2026-10. Keeping a *password* login, first-run
+  setup or password reset LAN-only is still right — from the internet, remote admin is the
+  platform's two-step sign-in or nothing — but the SSO path and what it signs into must work.
+- **Every page you serve, not just the first one you wrote.** Each HTML page must reach its assets
+  and API under `/<path>/`: built with relative asset URLs or rewritten on the way out, its API base
+  and WebSocket URLs taken from the prefix, its client-side router given it as a base. A page sent
+  with root URLs (`/assets/index.js`) loads its scripts from the dashboard instead, and the admin
+  gets a blank page — the Display's control panel did, while its screen pages, which rewrote their
+  URLs, worked. Check every page by opening it from the remote dashboard.
 - **Nothing outside your path is yours.** On the apps' address it is answered by the platform or
   by another app — a root-relative `/favicon.ico`, for one, gets the masjid's logo (or a 404), never
   your icon; `/api/public/appearance` and `/api/public/logo` are the platform's (*Appearance

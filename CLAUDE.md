@@ -892,9 +892,13 @@ Settings is about the **platform and the dashboard**, never about prayer/masjid 
   - the safety property is two rules together: the session rule in §9 (from the tunnel, only a session that passed
     the second factor, and is still under that factor, counts) and the key rule in §15 (the dashboard shares an origin
     with the apps, and no app page can ever obtain the dashboard key).
-  Honest limits: an app must be **base-path aware** to work under its path (every OpenMasjid app is; a
-  community/custom app may not be) — OpenWA's own screen is not, so its **Open** button is disabled from outside and
-  says so; Cloudflare's free plan refuses request bodies over **100 MB**, so a larger restore or File Explorer upload
+  Honest limits: an app must be **base-path aware** to work under its path, and must let its single sign-on run
+  through the tunnel (`docs/APP_MANIFEST_SPEC.md`, *Opened from outside*). This said "every OpenMasjid app is" until
+  2026-10, when the Display's control panel turned out to load its scripts from the dashboard's `/assets` (a blank
+  page) and the Kiosk to refuse its whole admin side over the tunnel (its own password screen instead of SSO); both
+  were fixed in the apps, and the platform cannot check it for them — open each app from the remote dashboard. A
+  community/custom app may not be base-path aware; OpenWA's own screen is not, so its **Open** button is disabled from
+  outside and says so; Cloudflare's free plan refuses request bodies over **100 MB**, so a larger restore or File Explorer upload
   must be done at the masjid — both say so before sending anything (`ui/src/lib/files.ts` `REMOTE_UPLOAD_LIMIT`) and
   read Cloudflare's own 413 page as the same thing; a backup download from outside answers at once but sends nothing
   until every app's data is copied, and Cloudflare can drop a connection that stays silent for about 100 s, so on a
