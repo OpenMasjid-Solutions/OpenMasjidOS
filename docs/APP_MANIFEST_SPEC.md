@@ -422,9 +422,11 @@ dashboard's session) and what happens to a `Set-Cookie` for a platform cookie na
   signed in?" — and that runs your SSO check (`/api/auth/session`, above) — must be reachable
   through the tunnel, and so must the admin features it unlocks. An app that keeps its whole admin
   side LAN-only over the tunnel cannot sign anyone in from outside and falls back to its own
-  password screen, which is what the Kiosk did until 2026-10. Keeping a *password* login, first-run
-  setup or password reset LAN-only is still right — from the internet, remote admin is the
-  platform's two-step sign-in or nothing — but the SSO path and what it signs into must work.
+  password screen, which is what the Kiosk did until 2026-10. The admin's *password* login,
+  first-run setup and password reset must NOT be reachable through the tunnel (refuse them for a
+  request carrying `cf-ray`, matching the path the way your router resolves it): from the internet,
+  remote admin is the platform's two-step sign-in or nothing, and a shared app's password login
+  would let anyone guess at it. The SSO path, and what it signs into, must work.
 - **Every page you serve, not just the first one you wrote.** Each HTML page must reach its assets
   and API under `/<path>/`: built with relative asset URLs or rewritten on the way out, its API base
   and WebSocket URLs taken from the prefix, its client-side router given it as a base. A page sent
