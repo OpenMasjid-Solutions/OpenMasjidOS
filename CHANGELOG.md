@@ -1377,6 +1377,13 @@ things **worse** than the bug being fixed. Recorded because they are the interes
     and needs a coordinated cross-repo change. An **admin-recorded** binding is purely
     platform-side and changes nothing an app calls; only a manifest-declared one would.
     That framing is what has deferred the gap since 2026-07-30.
+- **What an app needs to open from outside is written down (dev.20).** `docs/APP_MANIFEST_SPEC.md`
+  now says every page an app serves must sit under its path, not just the first one; single
+  sign-on must work through the tunnel; the app's own password sign-in, first-run setup and
+  reset must not; and its session cookies are scoped to its path there. CLAUDE.md §13.2e's
+  honest limits no longer claim every OpenMasjid app already did this: the Display's control
+  panel opened to a blank page from outside and the Kiosk asked for its password. Both were
+  fixed in those apps, and the same gaps in Donations and Companion with them.
 
 ### UI
 
