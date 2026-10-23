@@ -1237,6 +1237,9 @@ and supersedes it; dev.17 (next) replaced dev.16's second hostname and keeps the
 - Updated bundled libraries to pick up security fixes — among them the web server itself, the part
   that sends your email and the part that reads uploaded files. Nothing about how OpenMasjidOS
   works changes.
+- OpenMasjidOS now runs on Node.js 22.23.4, the release that fixes ten security problems published
+  on 21 October, one of them serious. If Stripe emailed you about your Node.js version, this is the
+  update it means — and your apps need their own updates too, which the dashboard offers.
 
 **Technical detail** (for whoever cuts the release):
 
@@ -1269,6 +1272,13 @@ and supersedes it; dev.17 (next) replaced dev.16's second hostname and keeps the
   that take vite as a peer (@vitejs/plugin-react, @tailwindcss/vite), and `npm update vite` gave
   them vite 7 instead; dropping vite's lockfile entries and reinstalling gives one 6.4.5 for all
   three. The three moderate ones above remain, unchanged.
+- dev.22: rebuilt on Node.js 22.23.4 (the 21 October 2026 security release: CVE-2026-111497, an
+  out-of-bounds write in the Brotli decoder rated as remote code execution; CVE-2026-106069, a TLS
+  hostname-check bypass; CVE-2026-105482, `dns.resolve` NUL truncation; and seven more). The
+  Dockerfile follows `node:22-alpine`, which names 22.23.4 since 2026-10-22 02:38 UTC, so this is a
+  rebuild with no code change: every image built before then, Stable 0.51.1 included, carries the
+  old runtime. Stripe began emailing accounts whose servers report an older Node.js (the platform's
+  dispute polling and every app that takes payments call Stripe from Node).
 
 ### Design system (in progress)
 
