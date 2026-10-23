@@ -6,8 +6,8 @@
  * account's keys at runtime via GET /api/fabric/stripe — so the donations page,
  * a kiosk, etc. can all share one account without re-entering keys.
  *
- * Secrets (secret key + webhook signing secret) live ONLY in this file under the
- * data dir (chmod 600) — never in settings.json and never in the admin-facing
+ * Secrets (secret key + webhook signing secret) live ONLY in stripe.json under the
+ * config dir (chmod 600) — never in settings.json and never in the admin-facing
  * API (which returns a sanitized view: label + publishable key + "is set" flags).
  * The full keys leave the platform only over the secret-gated Fabric endpoint to
  * an installed app that holds the capability.
@@ -32,6 +32,11 @@ interface StripeFile {
 
 const STRIPE_PATH = path.join(CONFIG_DIR, 'stripe.json');
 let cache: StripeFile = readJson(STRIPE_PATH, { accounts: [] });
+
+/** Re-read the Stripe accounts from disk — for a restore, which replaces it under this process. */
+export function reloadStripeConfig(): void {
+  cache = readJson(STRIPE_PATH, { accounts: [] });
+}
 
 function persist(): void {
   writeJson(STRIPE_PATH, cache);
@@ -86,8 +91,9 @@ export interface UpsertInput {
   webhookSecret?: string;
 }
 
-/** Add a new account or update an existing one (by id). On update, a blank
- *  secret/webhook means "keep the existing one" so the admin needn't re-paste. */
+/** Add a new account or update an existing one (by id). On update, a blank secret key
+ *  keeps the existing one so the admin needn't re-paste it; an omitted webhook secret
+ *  keeps the existing one too, and an empty one clears it (it is optional). */
 export function upsertAccount(input: UpsertInput): StripeAccountPublic {
   const label = input.label.trim();
   if (!label) throw new Error('Give this Stripe account a name.');

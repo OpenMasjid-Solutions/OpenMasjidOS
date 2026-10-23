@@ -11,7 +11,8 @@
  *
  *   - "nothing is published at that path" (the usual answer: the address is wrong, or
  *     the app is not exposed, or the routing table was momentarily empty),
- *   - "that is a LAN-only route and always will be" (the dashboard, tRPC, the Fabric),
+ *   - "that is a LAN-only route" (the Fabric and health routes always; the dashboard
+ *     and tRPC whenever remote administration is off),
  *   - "that is the app's own LAN-only /fabric space".
  *
  * All three are correct behaviour in their own case, which is exactly why an
@@ -25,23 +26,51 @@
  * platform and which are nothing, which is precisely what the tunnel guard exists to
  * withhold (the same reasoning that withholds the version from `/api/health`).
  *
- * The detail goes HERE instead: in memory, read only over the LAN-only dashboard. The
- * masjid can see exactly why their page was refused; the internet cannot.
+ * The detail goes HERE instead: in memory, read only by a signed-in admin — on the
+ * masjid's network, or from outside behind the second factor (Settings → Remote access).
+ * The masjid can see exactly why their page was refused; the internet cannot.
  *
  * Bounded and in-memory on purpose. This is a diagnostic for "why is my page 404ing right
  * now", not an access log — persisting visitor paths would be a new pile of request data
  * on a masjid's disk for no proportionate benefit.
  */
 import crypto from 'node:crypto';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { log } from '../logger';
 
 export type RefusalReason =
   /** No app is routed at that first path segment. Usually the real answer. */
   | 'no-app-at-path'
-  /** A platform route that is LAN-only by design (dashboard, tRPC, health, Fabric). */
+  /** A platform route refused from outside: the Fabric and health routes always, the
+   *  dashboard and tRPC whenever remote administration is off. */
   | 'lan-only-route'
   /** An exposed app's own `/fabric/*` space, which is LAN-only. */
-  | 'app-fabric-lan-only';
+  | 'app-fabric-lan-only'
+  /**
+   * The dashboard, asked for over plain http:// when it cannot safely be turned into an
+   * https:// address — no apps' address is set, or the request target starts `//` —
+   * and serving the sign-in page in clear is not an option. An ordinary plain-http
+   * visit is upgraded to https on the apps' address instead.
+   */
+  | 'plain-http-no-host'
+  /**
+   * An app that is installed but not shared online, asked for by someone who did
+   * not come from the remote dashboard's Open button (system/app-access.ts). The
+   * public gets the same 404 as for an address with nothing there, so this is the
+   * only place the difference shows.
+   */
+  | 'app-not-shared'
+  /**
+   * Cloudflare traffic that reached the dashboard's own HTTPS port directly instead of
+   * being handed over by the front door: a public hostname pointed at the wrong port.
+   */
+  | 'wrong-port'
+  /**
+   * A browser fetching a service worker's script at an app's BARE address (`/<path>`, no
+   * final slash), where its reach would be every app on the hostname (system/ingress.ts
+   * `isBareAppAddress`). Recorded because an app asking for that is worth knowing about.
+   */
+  | 'worker-at-bare-address';
 
 export interface Refusal {
   at: number;
@@ -174,7 +203,87 @@ export function noteRefusal(rawPath: string, ctx: RefusalContext, reason: Refusa
   return ref;
 }
 
-/** Newest first. For the LAN-only dashboard. */
+/**
+ * Headers that keep a response out of every shared cache — Cloudflare's edge above
+ * all, which by default keeps anything whose path ends in .js, .css, .png, .pdf… for
+ * hours whatever cookie the request carried. On a refusal that matters because a
+ * cached 404 would then be served to the admin; on a private app's page it matters
+ * because a cached copy would be served to everyone.
+ */
+export const NO_STORE_HEADERS: Readonly<Record<string, string>> = {
+  'cache-control': 'private, no-store',
+  'cdn-cache-control': 'no-store',
+  'cloudflare-cdn-cache-control': 'no-store',
+};
+
+/**
+ * Why the front door's not-found handler refused a tunnel request. One function,
+ * called by index.ts AND the tests — the first version of the "private app" record
+ * was checked only against a test's own copy of that handler (CLAUDE.md §15 has the
+ * history of hand-built mirrors drifting).
+ *
+ * `declined` is what the ingress recorded for this very request, if anything.
+ */
+export function notFoundReason(url: string, declined: RefusalReason | null): RefusalReason {
+  if (declined) return declined;
+  const raw = url.split('?')[0]!;
+  return raw === '/api' || raw.startsWith('/api/') ? 'lan-only-route' : 'no-app-at-path';
+}
+
+/** Record a refusal of this request (`noteRefusal`), for a guard that answers it itself. */
+export function recordRefusal(req: FastifyRequest, reason: RefusalReason): string | null {
+  return noteRefusal(
+    req.url,
+    {
+      host: String(req.headers.host ?? ''),
+      method: req.method,
+      cfRay: String(req.headers['cf-ray'] ?? ''),
+      accept: String(req.headers.accept ?? ''),
+      agent: String(req.headers['user-agent'] ?? ''),
+    },
+    reason,
+  );
+}
+
+/**
+ * Refuse a tunnel request: record it, and send THE 404 — the same response whatever
+ * the reason, from every guard.
+ *
+ * One function because there were five copies, and they had drifted: the not-found
+ * handler gave a browser an HTML page while the dashboard gate and the Fabric guard
+ * gave it JSON. So a visitor could tell "a hidden dashboard path" from "nothing here"
+ * by the shape of the answer — the very disclosure this module's rule exists to
+ * prevent. The reason goes into the record and nowhere else.
+ */
+export function refuseOverTunnel(req: FastifyRequest, reply: FastifyReply, reason: RefusalReason): FastifyReply {
+  const ref = recordRefusal(req, reason);
+  for (const [k, v] of Object.entries(NO_STORE_HEADERS)) reply.header(k, v);
+  // A person typing an address deserves a sentence, not a JSON object. Deliberately
+  // says nothing about what IS published here.
+  if (req.method === 'GET' && String(req.headers.accept ?? '').includes('text/html')) {
+    return reply
+      .code(404)
+      .type('text/html')
+      .send(
+        '<!doctype html><meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<title>Page not found</title>' +
+          '<div style="font:16px/1.6 system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1.5rem;color:#1f2937">' +
+          '<h1 style="font-size:1.4rem;margin:0 0 .6rem">There is no page at this address</h1>' +
+          '<p style="margin:0;color:#4b5563">Please check the address and try again. ' +
+          'If someone gave you this link, ask them for the full one \u2014 pages here usually ' +
+          'have something after the website name.</p>' +
+          // The reference is the whole point of showing anything at all: someone who
+          // hits this can read six characters back to the masjid, who can then find
+          // THIS request instead of guessing which of the day's refusals it was.
+          (ref ? `<p style="margin:1.2rem 0 0;color:#9ca3af;font-size:.85rem">Reference: <code>${ref}</code></p>` : '') +
+          '</div>',
+      );
+  }
+  return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+}
+
+/** Newest first. For the signed-in dashboard (Settings → Remote access). */
 export function recentRefusals(): Refusal[] {
   return recent.map((r) => ({ ...r }));
 }

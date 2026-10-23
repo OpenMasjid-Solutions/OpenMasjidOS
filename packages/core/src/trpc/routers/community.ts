@@ -18,6 +18,7 @@ import { checkCompose } from '../../apps/compose-validate';
 import { findPortConflicts, remapPorts } from '../../apps/ports';
 import { installCommunityApp, listInstalled } from '../../apps/manager';
 import { slugify } from '../../util/slug';
+import { UpdateBusyError } from '../../system/update-lock';
 
 const portRemapInput = z.record(z.string(), z.number().int().min(1).max(65535)).optional();
 
@@ -146,7 +147,9 @@ export const communityRouter = router({
           expose: input.expose,
         });
       } catch (err) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+        // A restore or an update in the way is a refusal, not a fault (system/update-lock.ts).
+        const code = err instanceof UpdateBusyError ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR';
+        throw new TRPCError({ code, message: (err as Error).message });
       }
     }),
 });

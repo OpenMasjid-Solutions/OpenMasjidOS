@@ -5,7 +5,7 @@
  * its detail page when stopped). The ⋮ menu holds the controls. Cards are
  * draggable onto the dock to pin them.
  */
-import { memo, useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { memo, useCallback, useState, type DragEvent } from 'react';
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -21,21 +21,33 @@ import {
   Trash2,
   ScrollText,
   SquareTerminal,
+  ShieldAlert,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { usePrefs, prefsStore } from '../lib/prefs';
 import { openApp } from '../lib/apps';
 import { AppIcon } from './AppIcon';
 import { useToast } from './ToastProvider';
 import { Modal } from './Modal';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import { AppReviewDialog } from './AppReviewDialog';
 import { LazyTerminal } from './LazyTerminal';
 import { AppLogs } from './AppLogs';
 import { AppUpdate } from './AppUpdate';
 import { useWindows } from './Windows';
 import { staggerItem } from '../lib/motion';
 import type { InstalledApp } from '../lib/types';
+import { CheckboxField } from './CheckboxField';
 
-const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
+/** Where an app came from, as its tag says it — shared with the app's own page. */
+export const TAG: Record<InstalledApp['kind'], { cls: string; key: string }> = {
   catalog: { cls: 'tag--official', key: 'tags.official' },
   community: { cls: 'tag--community', key: 'tags.community' },
   custom: { cls: 'tag--custom', key: 'tags.custom' },
@@ -50,12 +62,12 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
   const windows = useWindows();
   const pinned = prefs.pinnedApps.includes(app.id);
 
-  const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [riskAck, setRiskAck] = useState(false);
   const [deleteData, setDeleteData] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Catalog apps can be updated from the store. Check on demand, then confirm.
   const checkForUpdate = useCallback(async () => {
@@ -112,31 +124,52 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
   }, [app.id, app.name, t, windows]);
 
   // Warm the detail page + logs caches on hover/focus so opening a card is
-  // instant (the data is usually already there by the time the click lands).
+  // instant (the data is usually already there by the time the click lands) —
+  // but only when a click would open that page. A running app with a web page
+  // opens the app itself, and each logs fetch runs `docker compose logs`.
   const prefetch = useCallback(() => {
+    if (app.running && app.openPort != null) return;
     void utils.apps.get.prefetch({ id: app.id });
     void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-  }, [app.id, utils]);
+  }, [app.id, app.running, app.openPort, utils]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('click', onClick);
-    return () => document.removeEventListener('click', onClick);
-  }, [menuOpen]);
+  // The hand-rolled click-outside listener that used to live here is gone —
+  // Radix dismisses on outside pointerdown, on Escape, and on focus leaving,
+  // which the document-level click listener never did.
 
   const refresh = () => utils.apps.list.invalidate();
-  const start = trpc.apps.start.useMutation({ onSuccess: refresh });
-  const stop = trpc.apps.stop.useMutation({ onSuccess: refresh });
-  const restart = trpc.apps.restart.useMutation({ onSuccess: refresh });
+  const start = trpc.apps.start.useMutation({
+    onSuccess: () => {
+      refresh();
+      setReviewOpen(false);
+      setRiskAck(false);
+    },
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  // Docker can refuse a stop or a restart; say so, as Start does, rather than nothing.
+  const stop = trpc.apps.stop.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  const restart = trpc.apps.restart.useMutation({
+    onSuccess: refresh,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+
+  // An app held for review after a restore never starts from a plain click. Its
+  // compose was written to disk by the restore WITHOUT passing the risk gate, so
+  // this is the point at which a person has to read what it asks for and agree.
+  const held = app.review;
+  const startOrReview = useCallback(() => {
+    if (held) setReviewOpen(true);
+    else start.mutate({ id: app.id });
+  }, [held, start, app.id]);
   const remove = trpc.apps.remove.useMutation({
     onSuccess: () => {
       refresh();
       toast(t('common.saved'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   const tag = TAG[app.kind] ?? TAG.custom;
@@ -149,7 +182,6 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
     }
   }, [app, navigate]);
 
-  const close = useCallback(() => setMenuOpen(false), []);
 
   return (
     <>
@@ -157,11 +189,6 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         className="app-card glass fx-glint"
         variants={staggerItem}
         draggable
-        // While the ⋮ menu is open, lift the card above the dock (it has a Motion
-        // transform = stacking context) AND drop content-visibility's paint
-        // containment, which would otherwise clip the menu where it overflows the
-        // card's box. Closed cards keep content-visibility:auto (offscreen skip).
-        style={menuOpen ? { zIndex: 200, contentVisibility: 'visible' } : undefined}
         // Motion TYPES onDragStart as its own pan-gesture handler, but at runtime
         // filterProps forwards every `onDrag*` straight to the DOM whenever
         // `draggable` is set — so this really does receive a React drag event and
@@ -182,57 +209,83 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
             <div className="app-meta">
               <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
               <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
+              {/* A held app looks exactly like an ordinary stopped one without
+                  this, which is precisely how its Start button became a way to
+                  run an unvetted compose. Say so on the card face. */}
+              {held && (
+                <span className="tag tag--review" title={held.reasons.join('\n')}>
+                  {t(held.kind === 'refusal' ? 'appReview.badgeRefused' : 'appReview.badge')}
+                </span>
+              )}
             </div>
           </div>
 
-          <div className="app-card__menu-wrap" ref={menuRef} onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" aria-label={t('actions.options')} onClick={() => setMenuOpen((o) => !o)}>
-              <MoreVertical size={18} />
-            </button>
-            {menuOpen && (
-              <div className="menu glass-raised app-card__menu">
+          {/* The whole card is clickable (it launches the app), so every event
+              from the menu trigger has to stop short of it. Radix renders the
+              CONTENT in a portal at the document root, which is why the old
+              `contentVisibility: 'visible'` and `zIndex: 200` workarounds on the
+              card are gone: the menu is no longer a descendant that the card's
+              paint containment could clip, or that the dock could cover. */}
+          <div className="app-card__menu-wrap" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="icon-btn" aria-label={t('actions.options')}>
+                  <MoreVertical size={18} />
+                </button>
+              </DropdownMenuTrigger>
+              {/* No `close()` on any item: Radix closes on select and returns
+                  focus to the trigger, which the hand-rolled version never did. */}
+              <DropdownMenuContent align="end" className="glass-raised" sideOffset={6}>
                 {app.running && (
-                  <button className="menu-item" onClick={() => { close(); openApp(app); }}>
+                  <DropdownMenuItem onSelect={() => openApp(app)}>
                     <ExternalLink size={16} /> {t('actions.open')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
                 {app.running ? (
                   <>
-                    <button className="menu-item" onClick={() => { close(); restart.mutate({ id: app.id }); }}>
+                    <DropdownMenuItem onSelect={() => restart.mutate({ id: app.id })}>
                       <RotateCw size={16} /> {t('actions.restart')}
-                    </button>
-                    <button className="menu-item" onClick={() => { close(); stop.mutate({ id: app.id }); }}>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => stop.mutate({ id: app.id })}>
                       <Power size={16} /> {t('actions.shutdown')}
-                    </button>
+                    </DropdownMenuItem>
                   </>
                 ) : (
-                  <button className="menu-item" onClick={() => { close(); start.mutate({ id: app.id }); }}>
-                    <Play size={16} /> {t('actions.start')}
-                  </button>
+                  <DropdownMenuItem onSelect={startOrReview}>
+                    {held ? <ShieldAlert size={16} /> : <Play size={16} />}
+                    {/* A refusal can never be agreed to, so offering "Start
+                        anyway" would promise something the server will refuse.
+                        Offer the explanation instead. */}
+                    {!held
+                      ? t('actions.start')
+                      : held.kind === 'refusal'
+                        ? t('appReview.whyBlocked')
+                        : t('appReview.startAnyway')}
+                  </DropdownMenuItem>
                 )}
                 {webTerminal && app.running && (
-                  <button className="menu-item" onClick={() => { close(); openShell(); }}>
+                  <DropdownMenuItem onSelect={openShell}>
                     <SquareTerminal size={16} /> {t('actions.shell')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
-                <button className="menu-item" onClick={() => { close(); openLogs(); }}>
+                <DropdownMenuItem onSelect={openLogs}>
                   <ScrollText size={16} /> {t('actions.viewLogs')}
-                </button>
+                </DropdownMenuItem>
                 {app.kind === 'catalog' && (
-                  <button className="menu-item" disabled={checkingUpdate} onClick={() => { close(); void checkForUpdate(); }}>
+                  <DropdownMenuItem disabled={checkingUpdate} onSelect={() => void checkForUpdate()}>
                     <RefreshCw size={16} /> {t('appCard.checkUpdate')}
-                  </button>
+                  </DropdownMenuItem>
                 )}
-                <button className="menu-item" onClick={() => { close(); prefsStore.togglePin(app.id); }}>
+                <DropdownMenuItem onSelect={() => prefsStore.togglePin(app.id)}>
                   {pinned ? <PinOff size={16} /> : <Pin size={16} />}
                   {pinned ? t('actions.unpin') : t('actions.pin')}
-                </button>
-                <div className="menu-sep" />
-                <button className="menu-item" style={{ color: 'var(--color-danger)' }} onClick={() => { close(); setConfirmOpen(true); }}>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setConfirmOpen(true)}>
                   <Trash2 size={16} /> {t('actions.uninstall')}
-                </button>
-              </div>
-            )}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </motion.div>
@@ -250,10 +303,9 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
         title={t('appCard.removeTitle', { name: app.name })}
       >
         <p>{t('appCard.removeBody')}</p>
-        <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', margin: '1rem 0' }}>
-          <input type="checkbox" checked={deleteData} onChange={(e) => setDeleteData(e.target.checked)} />
+        <CheckboxField id={`rm-data-${app.id}`} checked={deleteData} onChange={setDeleteData}>
           {t('appCard.removeData')}
-        </label>
+        </CheckboxField>
         {remove.isPending ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span className="spinner" /> {t('appCard.removing')}
@@ -270,6 +322,23 @@ export const AppCard = memo(function AppCard({ app, webTerminal }: { app: Instal
           </div>
         )}
       </Modal>
+
+      {/* Closing must clear the tick, exactly as the removal dialog does — a
+          checkbox left on from a previous app would put an unvetted, root-capable
+          stack one click away in a dialog the admin believes they see fresh. */}
+      <AppReviewDialog
+        open={reviewOpen}
+        appName={app.name}
+        review={held}
+        pending={start.isPending}
+        acknowledged={riskAck}
+        onAcknowledgedChange={setRiskAck}
+        onConfirm={() => start.mutate({ id: app.id, acknowledgeRisk: true })}
+        onClose={() => {
+          setReviewOpen(false);
+          setRiskAck(false);
+        }}
+      />
 
       <Modal open={!!updateInfo} onClose={() => setUpdateInfo(null)} title={t('appCard.updateTitle', { name: app.name })}>
         <p>{t('appCard.updateBody', { current: updateInfo?.current ?? '', latest: updateInfo?.latest ?? '' })}</p>

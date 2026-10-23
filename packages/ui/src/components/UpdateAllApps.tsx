@@ -24,6 +24,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, AlertTriangle } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { appUpdateEnding } from '../lib/update-endings';
 import { LogStream } from './LogStream';
 
 export interface UpdatableApp {
@@ -41,11 +42,15 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
    *
    * `ChannelMigrate` learned this the hard way in the other direction: it took a prop
    * captured at open time and replayed itself for ever. The fix there was to read live
-   * state once and then freeze it, and the freezing half applies here too — each finished
-   * app invalidates `apps.updates`, so a list read live would shrink underneath `index`
+   * state once and then freeze it, and the freezing half applies here too — the list of
+   * updates can be refetched while this runs (the dashboard polls it, and an app updated
+   * from its own card refreshes it), so a list read live could shrink underneath `index`
    * and skip whatever moved up into the slot just vacated.
    */
   const [plan] = useState<UpdatableApp[]>(() => apps);
+  // How many really were updated, by what each stream said (lib/update-endings.ts). This
+  // said "All 4 apps updated." over a run in which one had been refused or put back.
+  const [updated, setUpdated] = useState(0);
   const current = plan[index];
   const done = index >= plan.length;
 
@@ -57,6 +62,11 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
     // `onDone` unlocks the window; running it once on completion is the whole point.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [done]);
+
+  const allUpdated = updated === plan.length;
+  const summary = allUpdated
+    ? t('updateAll.done', { count: plan.length })
+    : t('updateAll.partial', { updated, total: plan.length });
 
   if (plan.length === 0) {
     return (
@@ -71,7 +81,7 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
     <div>
       <p className="setting-row__hint" style={{ marginBlockEnd: '0.7rem' }}>
         {done
-          ? t('updateAll.done', { count: plan.length })
+          ? summary
           : t('updateAll.progress', { current: index + 1, total: plan.length, name: current?.name ?? '' })}
       </p>
 
@@ -81,7 +91,8 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
         <LogStream
           key={current.id}
           wsPath={`/api/apps/update?id=${encodeURIComponent(current.id)}`}
-          onClosed={() => {
+          onClosed={(code, opened) => {
+            if (appUpdateEnding(code, opened) === 'updated') setUpdated((n) => n + 1);
             utils.apps.get.invalidate({ id: current.id });
             setIndex((i) => i + 1);
           }}
@@ -91,8 +102,12 @@ export function UpdateAllApps({ apps, onDone }: { apps: UpdatableApp[]; onDone?:
       {done && (
         <>
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBlockStart: '0.8rem' }}>
-            <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
-            {t('updateAll.done', { count: plan.length })}
+            {allUpdated ? (
+              <CheckCircle2 size={16} style={{ color: 'var(--color-success)' }} />
+            ) : (
+              <AlertTriangle size={16} style={{ color: 'var(--color-warning)' }} />
+            )}
+            {summary}
           </p>
           {/* Said plainly, because "all done" over a stream that reported a failure would
               be the dashboard contradicting what the admin just watched scroll past. An

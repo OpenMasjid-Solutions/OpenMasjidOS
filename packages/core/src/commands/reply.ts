@@ -20,6 +20,7 @@
  */
 import type { CommandEntry, CommandNamespace } from './types';
 import { channelLabel, type Channel } from '../system/channel';
+import { CONFIRM_TTL_MS } from './conversation';
 
 export const MAX_REPLY_CHARS = 900;
 
@@ -27,7 +28,6 @@ export interface AppRow {
   id: string;
   name: string;
   running: boolean;
-  updateAvailable?: boolean;
 }
 
 export interface UpdateRow {
@@ -39,7 +39,7 @@ export interface UpdateRow {
    *  "1.4.0 to 1.3.9". The dashboard already learned this. */
   reason: 'version' | 'channel';
   /**
-   * WHICH channel the app would move TO. Required when `reason` is 'channel', because
+   * WHICH channel the app would move TO. Set when `reason` is 'channel', because
    * the move runs in both directions and the wording used to be hardcoded to
    * "Development" — so a masjid switching back to Stable was told its apps were moving
    * to Development, the exact opposite of what pressing update would do. The dashboard
@@ -61,7 +61,7 @@ export interface StatsRow {
 
 // ── helpers ──────────────────────────────────────────────────────────────────────
 
-/** Trim to the cap on a line boundary, so a reply never ends mid-word. */
+/** Trim to the cap, preferring a line boundary so a reply rarely ends mid-word. */
 export function cap(text: string, limit = MAX_REPLY_CHARS): string {
   if (text.length <= limit) return text;
   const cut = text.slice(0, limit);
@@ -88,11 +88,18 @@ function uptime(sec: number): string {
   return m === 1 ? '1 minute' : `${m} minutes`;
 }
 
+const moreLine = (n: number) => `\n...and ${n} more. The dashboard has the full list.`;
+
 /** Numbered lines that stop before the cap and say how many were left out, rather
- *  than trailing off. Silent truncation reads as "that's all of them". */
+ *  than trailing off. Silent truncation reads as "that's all of them". An empty
+ *  `outro` leaves the closing line off. */
 function numbered(intro: string, lines: string[], outro: string): string {
   const head = `${intro}\n\n`;
-  const budget = MAX_REPLY_CHARS - head.length - outro.length - 40;
+  const end = outro ? `\n\n${outro}` : '';
+  const whole = `${head}${lines.join('\n')}${end}`;
+  if (whole.length <= MAX_REPLY_CHARS) return whole;
+  // Leave room for the "...and N more" line too, or cap() would cut the closing line.
+  const budget = MAX_REPLY_CHARS - head.length - end.length - moreLine(lines.length).length;
   const kept: string[] = [];
   let used = 0;
   for (const line of lines) {
@@ -100,9 +107,7 @@ function numbered(intro: string, lines: string[], outro: string): string {
     kept.push(line);
     used += line.length + 1;
   }
-  const more = lines.length - kept.length;
-  const tail = more > 0 ? `\n...and ${more} more. The dashboard has the full list.` : '';
-  return `${head}${kept.join('\n')}${tail}\n\n${outro}`;
+  return `${head}${kept.join('\n')}${moreLine(lines.length - kept.length)}${end}`;
 }
 
 // ── the replies ──────────────────────────────────────────────────────────────────
@@ -150,13 +155,11 @@ export function statsText(s: StatsRow): string {
   return cap(`${lead}\n\n${lines.join('\n')}`);
 }
 
-export function appListText(apps: AppRow[]): string {
+/** `canControl`: only someone who may start or stop an app is told how. */
+export function appListText(apps: AppRow[], canControl = true): string {
   if (apps.length === 0) return "You don't have any apps installed yet.";
-  const lines = apps.map((a, i) => {
-    const state = a.running ? 'running' : 'stopped';
-    return `${i + 1}. ${a.name} - ${state}${a.updateAvailable ? ', an update is waiting' : ''}`;
-  });
-  return cap(numbered('Your apps:', lines, 'To start or stop one, send !os start 1 or !os stop 1.'));
+  const lines = apps.map((a, i) => `${i + 1}. ${a.name} - ${a.running ? 'running' : 'stopped'}`);
+  return cap(numbered('Your apps:', lines, canControl ? 'To start or stop one, send !os start 1 or !os stop 1.' : ''));
 }
 
 export function pickAppText(command: CommandEntry, apps: AppRow[]): string {
@@ -165,8 +168,12 @@ export function pickAppText(command: CommandEntry, apps: AppRow[]): string {
   return cap(numbered(`Which app should I ${command.id}?`, lines, `Send !os ${command.id} 1.`));
 }
 
-export function updatesText(rows: UpdateRow[]): string {
-  if (rows.length === 0) return 'Everything is up to date.';
+/** `unchecked`: apps whose store version could not be read, which must never be
+ *  called up to date. `canControl`: only someone who may update is told how. */
+export function updatesText(rows: UpdateRow[], opts: { unchecked?: number; canControl?: boolean } = {}): string {
+  const { unchecked = 0, canControl = true } = opts;
+  const unsure = unchecked === 0 ? '' : `I couldn't check ${unchecked === 1 ? 'one app' : `${unchecked} apps`} just now.`;
+  if (rows.length === 0) return unsure ? `${unsure} Try again in a few minutes.` : 'Everything is up to date.';
   const lines = rows.map((r, i) =>
     r.reason === 'channel'
       ? // Name the direction. `channelLabel` is the same "Stable"/"Development" wording
@@ -176,13 +183,14 @@ export function updatesText(rows: UpdateRow[]): string {
       : `${i + 1}. ${r.name} - ${r.from ?? '?'} to ${r.to}`,
   );
   const intro = rows.length === 1 ? 'One app has an update waiting:' : `${rows.length} apps have an update waiting:`;
-  return cap(numbered(intro, lines, 'To update one, send !os update 1.'));
+  const outro = [unsure, canControl ? 'To update one, send !os update 1.' : ''].filter(Boolean).join(' ');
+  return cap(numbered(intro, lines, outro));
 }
 
 export function confirmText(question: string, consequence: string, code: string): string {
   return cap(
     `${question}\n${consequence}\n\nReply  !yes ${code}  to go ahead.\n` +
-      'Ignore this to cancel. It expires in 90 seconds.',
+      `Ignore this to cancel. It expires in ${CONFIRM_TTL_MS / 1000} seconds.`,
   );
 }
 
@@ -205,15 +213,15 @@ export const say = {
   unwantedArgument: (ns: CommandNamespace, c: CommandEntry) =>
     `"${c.label}" doesn't take anything after it, so I've not run it. Send !${ns.word} ${c.id} on its own.`,
   unknownApp: (word: string) => `I can't find an app called "${word}". Send !os apps to see the list.`,
-  tooLong: () => "That's longer than I can read. Send just the command.",
   throttled: () => 'Too many commands at once. Try again in a minute.',
   expiredConfirm: () => 'That has expired. Send the command again if you still want to.',
-  expiredMenu: (word: string) => `That list has expired. Send !${word} for a fresh one.`,
+  needCode: () => 'Send !yes with the code from my last message, or just reply yes.',
   cancelled: () => "Alright, I've left it alone.",
   sessionEnded: () => "Alright, we're done. Send a command starting with ! whenever you need me.",
   answerYesOrNo: () => "Just reply yes or no — or send exit to leave it.",
   sessionLost: (appName: string) =>
     `${appName} can't carry on with that. Start again when you're ready.`,
+  finishOnDashboard: () => "I can't take any more answers for this here, so please finish it on the dashboard.",
   nothingToCancel: () => "There's nothing waiting for an answer.",
   // Deliberately NOT "Update failed": a refusal is information, and calling it a
   // failure is what pushes an admin into retrying the thing that is already running.
@@ -229,7 +237,7 @@ export const say = {
 };
 
 /** What the admin sees when an app cannot be asked, or answers badly. Plain language,
- *  always a next step, never a status code. */
+ *  a next step where possible, never a status code. */
 export function appFailureText(appName: string, code: string, appId: string): string {
   switch (code) {
     case 'target_not_installed':

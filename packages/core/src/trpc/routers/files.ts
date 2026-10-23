@@ -16,10 +16,11 @@ import {
   writeTextFile,
   FileError,
 } from '../../files/manager';
+import { log } from '../../logger';
 
-function wrap<T>(fn: () => T): T {
+async function wrap<T>(fn: () => T | Promise<T>): Promise<T> {
   try {
-    return fn();
+    return await fn();
   } catch (err) {
     if (err instanceof FileError) {
       // PROTECTED is a refusal, not a malformed request — say so, so the UI can
@@ -28,7 +29,17 @@ function wrap<T>(fn: () => T): T {
         err.code === 'NOT_FOUND' ? 'NOT_FOUND' : err.code === 'PROTECTED' ? 'FORBIDDEN' : 'BAD_REQUEST';
       throw new TRPCError({ code, message: err.message });
     }
-    throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+    // Anything else is the system's own error text (ENOSPC, EACCES, a path): log it, and
+    // tell the admin in words (CLAUDE.md §14).
+    const code = (err as NodeJS.ErrnoException).code;
+    log.warn(`File Explorer: ${(err as Error).message}`);
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message:
+        code === 'ENOSPC'
+          ? "There isn't enough free space on the server for that."
+          : "That didn't work. Please try again.",
+    });
   }
 }
 

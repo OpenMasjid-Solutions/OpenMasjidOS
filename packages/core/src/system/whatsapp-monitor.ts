@@ -17,10 +17,11 @@
  * both been wrong. The admin would have had a green dot for the whole outage.
  *
  * So the probe has to ask a question that actually goes through to WhatsApp:
- * `notify/whatsapp.ts` `probeLink()` calls `/chats`, whose 503 is OpenWA saying the engine's
- * WhatsApp connection is gone. `gatewayStatus()` is still consulted, but only for the states
- * it genuinely does catch (`no-session`, `pending`, `problem`, `unreachable`) — its `ready`
- * is never treated as proof of health.
+ * `notify/whatsapp-gateway.ts` `probeLink()` calls `/chats`, whose 503 is OpenWA saying the engine's
+ * WhatsApp connection is gone. `gatewayStatus()` is still consulted, but only for the bad
+ * news it genuinely does catch (`no-session`, `pending`, `bad-key`, `problem`) — its `ready`
+ * is never treated as proof of health, and `unreachable` is "could not ask", never a dead
+ * link.
  *
  * ── RULES THAT MUST NOT REGRESS ─────────────────────────────────────────────────
  *
@@ -39,15 +40,8 @@ import { log } from '../logger';
 import { readJson, writeJson } from '../util/json-store';
 import { deliverAlert } from '../notify/alerts';
 import { whatsappLinkLost } from '../notify/alert-copy';
-import {
-  probeLink,
-  gatewayStatus,
-  sendPathSignals,
-  pauseQueue,
-  isQueuePaused,
-  queueDepth,
-  outcomesInWindow,
-} from '../notify/whatsapp';
+import { sendPathSignals, pauseQueue, isQueuePaused, queueDepth, outcomesInWindow } from '../notify/whatsapp';
+import { probeLink, gatewayStatus } from '../notify/whatsapp-gateway';
 import { getWhatsAppConfig, isWhatsAppConfigured } from '../store/whatsapp';
 
 const CHECK_MS = 5 * 60_000;
@@ -152,9 +146,18 @@ function load(): HealthState {
   return cached;
 }
 
+/**
+ * Never throws. The in-memory copy is what everything reads; a throw here (a full or
+ * read-only SD card) stopped the tick between pausing the queue and telling the admin, and
+ * every later tick then saw `down` and returned — paused, with nobody told.
+ */
 function save(state: HealthState): void {
   cached = state;
-  writeJson(STATE_PATH, state);
+  try {
+    writeJson(STATE_PATH, state);
+  } catch (err) {
+    log.warn('WhatsApp health: could not save the link state; it will not survive a restart.', err);
+  }
 }
 
 /** The previous tick's verdict, for the two-agreeing-ticks rule. In memory on purpose: a
@@ -179,11 +182,7 @@ async function assess(): Promise<{ alive: boolean | null; reason: string; cause:
   // 2. The real probe — a question that has to reach WhatsApp.
   const probe = await probeLink();
   if (probe.alive === false) {
-    return {
-      alive: false,
-      reason: probe.detail ?? 'the link is down',
-      cause: probe.detail?.includes('key') ? 'key-rejected' : 'session-expired',
-    };
+    return { alive: false, reason: probe.detail ?? 'the link is down', cause: probe.cause ?? 'session-expired' };
   }
 
   // 3. The session row, for the states it genuinely detects. Its `ready` proves nothing,

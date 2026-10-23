@@ -63,7 +63,7 @@ test("THE CORE'S OWN COMPOSE IS PROTECTED — it sits at the sandbox root, not u
   assert.throws(() => m.renameEntry('/notes.txt', 'docker-compose.yml'), /PROTECTED|private/i);
 });
 
-test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => {
+test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", async () => {
   // Refusing compose.yml, .env and meta.json one at a time while allowing their
   // parent to be removed wholesale is not a sandbox.
   const { m } = freshManager();
@@ -71,8 +71,8 @@ test("AN APP'S FOLDER CANNOT BE DELETED OR RENAMED, but stays browsable", () => 
   assert.throws(() => m.renameEntry('/apps/donations', 'elsewhere'), /removed or renamed/i);
 
   // Still a file explorer: listing the folder and using the app's own data works.
-  assert.doesNotThrow(() => m.listDir('/apps/donations'));
-  assert.doesNotThrow(() => m.listDir('/apps/donations/data'));
+  await assert.doesNotReject(m.listDir('/apps/donations'));
+  await assert.doesNotReject(m.listDir('/apps/donations/data'));
   assert.equal(m.readTextFile('/apps/donations/data/receipt.txt').content, 'a masjid file');
   assert.doesNotThrow(() => m.removeEntry('/apps/donations/data/receipt.txt'));
 });
@@ -85,18 +85,20 @@ test('A WEBSOCKET UPGRADE TO A NON-APP PATH IS CLOSED, never abandoned', () => {
   // unauthenticated file-descriptor exhaustion lever against a root daemon.
   const src = read('system', 'ingress.ts');
   const handler = src.slice(src.indexOf("front.server.on('upgrade'"));
-  // Scoped to the NOT-AN-APP branch alone. A slice reaching as far as the fabric
-  // refusal below it would pass on that branch's own (legitimate) socket.destroy()
-  // and never notice this one had gone back to a bare return.
+  // Scoped to the NOT-AN-APP branch alone — from where a request turns out not to be
+  // an app socket THIS request may open, to where the proxying starts. A slice
+  // reaching as far as the fabric refusal would pass on that branch's own
+  // (legitimate) socket.destroy() and never notice this one had gone back to a bare
+  // return.
   const notAnApp = handler.slice(
-    handler.indexOf('if (port == null)'),
-    handler.indexOf('isFabricSubpath'),
+    handler.indexOf('if (!route) {'),
+    handler.indexOf('const port = route.port'),
   );
   assert.ok(notAnApp.length > 0, 'located the non-app branch');
   assert.match(notAnApp, /socket\.destroy\(\)/, 'the non-app branch must destroy the socket');
   assert.doesNotMatch(
     notAnApp,
-    /if \(port == null\) return;/,
+    /if \(!route\) return;/,
     'a bare return here leaks the connection',
   );
 });
@@ -108,7 +110,7 @@ test('spoofable client-IP headers are stripped on EVERY proxy path', () => {
     ['ingress', read('system', 'ingress.ts')],
     ['app-proxy', read('system', 'app-proxy.ts')],
   ] as const) {
-    for (const header of ['x-real-ip', 'true-client-ip', 'cf-connecting-ip']) {
+    for (const header of ['x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'x-forwarded-prefix']) {
       const count = [...src.matchAll(new RegExp(`'${header}'`, 'g'))].length;
       assert.ok(count >= 2, `${label}: '${header}' must appear in BOTH the HTTP and WebSocket lists`);
     }
@@ -148,13 +150,18 @@ test('a reserved id that gets its directory deleted is also refused at install',
 
 test('the app-to-app broker bounds UNAUTHENTICATED work', () => {
   // The per-caller limiter keys on caller.id, which only exists after a secret is
-  // accepted — so it bounded a misbehaving app and nothing else. Every wrong secret
-  // still costs a constant-time compare against every registered app.
+  // accepted — so it bounded a misbehaving app and nothing else. The per-source tier
+  // covers the rest, but ONLY for a caller that presented no valid secret: it used to run
+  // before authentication and charge every app, and every app shares one source address,
+  // so apps inside their own budgets emptied it for all of them. (broker.test.ts drives
+  // both halves for real.)
   const src = read('fabric', 'appLink.ts');
-  const ipGate = src.indexOf('ipRateOk(');
   const auth = src.indexOf('deps.resolveCaller(');
-  assert.ok(ipGate > 0, 'a per-source limiter must exist');
-  assert.ok(ipGate < auth, 'and must run BEFORE authentication, or it bounds nothing');
+  const unidentified = src.indexOf('if (!caller) {', auth);
+  const ipGate = src.indexOf('ipRateOk(', auth);
+  assert.ok(auth > 0 && ipGate > 0, 'a per-source limiter must exist');
+  assert.ok(unidentified > auth && ipGate > unidentified, 'it is charged only to a caller that was not identified');
+  assert.ok(ipGate < src.indexOf("'unauthorized'", auth), 'and before that caller is told no');
 });
 
 // ── "could not ask" is never an answer ──────────────────────────────────────
@@ -241,6 +248,70 @@ test('one Escape closes one thing', () => {
   const counter = modal.slice(start, modal.indexOf('}, [open]);', start));
   assert.ok(counter.includes('openModals += 1'), 'located the counting effect');
   assert.doesNotMatch(counter, /locked/, 'the counter must not skip locked modals');
+
+  // BOTH DIRECTIONS. This test asserted only the increment for a long time, which
+  // left the quieter half of the invariant unguarded: an implementation that
+  // increments and never decrements passes it green, and an over-count means
+  // `anyModalOpen()` stays true for the life of the page, so Escape silently
+  // stops closing windows — permanently, with no console output, on a dashboard
+  // that may be wall-mounted for weeks. Losing or relocating the cleanup is the
+  // single most likely accident when this effect is moved, so it is pinned here.
+  assert.ok(counter.includes('return () =>'), 'the counting effect must return a cleanup');
+  assert.ok(counter.includes('openModals -= 1'), 'and that cleanup must decrement');
+});
+
+test('the dialog captures the element to refocus DURING RENDER, not in an effect', () => {
+  // Radix restores focus to its Trigger on close; none of our 25 dialogs use a
+  // Trigger (they are all controlled by an `open` prop), so Modal captures and
+  // restores the previously-focused element itself.
+  //
+  // The capture must not live in an effect. React flushes effects bottom-up and
+  // Radix's FocusScope is a DESCENDANT of Modal, so an effect here runs AFTER
+  // the focus trap has already moved focus into the dialog — capturing an
+  // element inside it. Restoring that on close is `.focus()` on a detached
+  // node: silently nothing, with code that reads exactly right. It shipped that
+  // way in the first cut and no test noticed, which is why this one exists.
+  const modal = readUi('components', 'Modal.tsx');
+
+  // Every useEffect body in the file, matched by brace depth so a nested block
+  // cannot end the slice early.
+  const bodies: string[] = [];
+  for (const m of modal.matchAll(/useEffect\(\(\) => \{/g)) {
+    let depth = 1;
+    let i = m.index! + m[0].length;
+    for (; i < modal.length && depth > 0; i++) {
+      if (modal[i] === '{') depth++;
+      else if (modal[i] === '}') depth--;
+    }
+    bodies.push(modal.slice(m.index!, i));
+  }
+  assert.ok(bodies.length > 0, 'Modal must still have at least the counting effect');
+  for (const body of bodies) {
+    assert.doesNotMatch(
+      body,
+      /document\.activeElement/,
+      'reading document.activeElement in an effect captures the dialog, not the opener',
+    );
+  }
+  // And it really is done on the false -> true transition during render.
+  assert.match(
+    modal,
+    /if \(open && !wasOpen\.current\)/,
+    'the capture must key off the open transition, during render',
+  );
+  assert.match(modal, /onCloseAutoFocus/, 'and be put back when the dialog closes');
+});
+
+test('a checkbox field gets a unique id unless one is given', () => {
+  // AppReviewDialog is rendered once PER APP CARD, so a literal id there put the
+  // same id/htmlFor pair on screen as many times as the masjid has apps. Only
+  // one is mounted at a time today, so it was latent — but a duplicate id makes
+  // `htmlFor` resolve to whichever came first in the DOM, and that is not a
+  // thing to leave in a consent dialog.
+  const field = readUi('components', 'CheckboxField.tsx');
+  assert.match(field, /useId\(\)/, 'CheckboxField must be able to generate its own id');
+  assert.match(field, /id \?\? auto/, 'an explicit id still wins');
+  assert.match(field, /htmlFor=\{fieldId\}/, 'and the label must point at the one actually used');
 });
 
 test('the file rename editor is not nested inside a button', () => {

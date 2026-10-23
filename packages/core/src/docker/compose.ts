@@ -90,50 +90,44 @@ export async function pruneUnusedImages(): Promise<RunResult> {
   return run(['image', 'prune', '-a', '-f']);
 }
 
-/** Like run(), but streams each output line to onLine (for live progress in the
- *  UI). Splits on \r and \n so `docker` progress redraws become clean lines. */
-function runStream(args: string[], onLine: (s: string) => void): Promise<number> {
+/**
+ * Run a command and resolve with its exit code. Its output goes to the server log as it
+ * comes, line by line, labelled with what produced it — never to a progress window: a
+ * volunteer reads that, and gets the plain lines the caller writes (CLAUDE.md §14). Splits
+ * on \r and \n so `docker` progress redraws become clean lines.
+ */
+export function streamSpawn(cmd: string, args: string[], label = `${cmd} ${args[0]}`): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn('docker', args);
+    const child = spawn(cmd, args);
     const handle = (buf: Buffer) => {
       for (const line of buf.toString().split(/[\r\n]+/)) {
-        if (line.trim()) onLine(line);
+        if (line.trim()) log.info(`${label}: ${line}`);
       }
     };
     child.stdout.on('data', handle);
     child.stderr.on('data', handle);
     child.on('error', (err) => {
-      onLine(`Error: ${err.message}`);
+      log.warn(`${label}: could not run.`, err);
       resolve(-1);
     });
     child.on('close', (code) => resolve(code ?? -1));
   });
 }
 
-/** `docker compose -p <project> [-f file] [--env-file] pull` — streamed. */
-export async function composePull(
-  project: string,
-  composeFile: string,
-  envFile: string | undefined,
-  onLine: (s: string) => void,
-): Promise<number> {
+/** `docker compose -p <project> [-f file] [--env-file] pull` — its output to the log. */
+export async function composePull(project: string, composeFile: string, envFile: string | undefined): Promise<number> {
   const args = ['compose', '-p', project, ...fileArgs(composeFile)];
   if (envFile && fs.existsSync(envFile)) args.push('--env-file', envFile);
   args.push('pull');
-  return runStream(args, onLine);
+  return streamSpawn('docker', args, `compose pull ${project}`);
 }
 
-/** `docker compose -p <project> [-f file] [--env-file] up -d --remove-orphans` — streamed. */
-export async function composeUpStream(
-  project: string,
-  composeFile: string,
-  envFile: string | undefined,
-  onLine: (s: string) => void,
-): Promise<number> {
+/** `docker compose -p <project> [-f file] [--env-file] up -d --remove-orphans` — its output to the log. */
+export async function composeUpStream(project: string, composeFile: string, envFile: string | undefined): Promise<number> {
   const args = ['compose', '-p', project, ...fileArgs(composeFile)];
   if (envFile && fs.existsSync(envFile)) args.push('--env-file', envFile);
   args.push('up', '-d', '--remove-orphans');
-  return runStream(args, onLine);
+  return streamSpawn('docker', args, `compose up ${project}`);
 }
 
 export async function composeLogs(project: string, tail = 200): Promise<string> {

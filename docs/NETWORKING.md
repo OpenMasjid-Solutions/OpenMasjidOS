@@ -74,7 +74,7 @@ Write down your current IP, gateway and interface first, so you can put them bac
 | Port | What it is |
 |------|-----------|
 | **443** | The dashboard, over HTTPS. This is what you open in a browser. |
-| **80** | Redirects browsers to HTTPS, and serves the LAN-only app↔platform routes. |
+| **80** | The front door: redirects browsers to HTTPS, serves the LAN-only app↔platform routes, and serves the apps you share online at their paths. It is also where the Cloudflare tunnel lands (below). |
 
 Both are set at the top of `install.sh` (`TLS_PORT` and `PORT`). Changing them means
 editing the port mapping in `/opt/openmasjid/docker-compose.yml` and re-running the
@@ -84,7 +84,25 @@ need one, it needs adding to the installer properly.
 
 ## Remote access
 
-Reaching the dashboard from outside the masjid is deliberately **not** something these
-ports do. If you need remote access, use **Settings → Remote access**, which sets up a
-Cloudflare Tunnel that publishes **only the apps you choose**, per app, off by default.
-The admin dashboard itself is never exposed through it — see [`SECURITY.md`](SECURITY.md).
+Reaching OpenMasjidOS from outside the masjid is deliberately **not** something these ports
+do: do not forward 80 or 443 on your router, and on a VPS allow them only from your own
+network. A box the internet can reach directly treats every request as if it came from the
+masjid's network — see *What "LAN-only" means, exactly* in [`SECURITY.md`](SECURITY.md).
+
+Remote access goes through a **Cloudflare Tunnel** instead (**Settings → Remote access**),
+which connects outwards from the box, so nothing needs opening. The tunnel lands on the front
+door, port 80, and carries one public hostname that you create in Cloudflare, Type HTTP
+pointing at `localhost:80` — never at 443 — called **your apps' address** in Settings (for
+example `omos.example.org`):
+
+- the apps you choose to share online, one by one, each at its own path
+  (`https://omos.example.org/donate/`);
+- and, only if you switch on *Manage OpenMasjidOS from outside* — off by default, and needing
+  two-step sign-in — the dashboard itself, at the address with nothing after it
+  (`https://omos.example.org/`), plus the apps you have not shared, for you alone, opened from
+  the dashboard. Signing in there takes your password and a two-step sign-in code.
+
+A browser keeps one site's data apart from another's by hostname and port, never by path, so
+there every app page is on the dashboard's own site. What keeps them out of the dashboard is
+its key, which no app page can get hold of. The steps are in [`REMOTE_ADMIN.md`](REMOTE_ADMIN.md),
+and the security model in [`SECURITY.md`](SECURITY.md).

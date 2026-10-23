@@ -12,8 +12,8 @@
  *     must not be able to point the platform at another host.
  *   - The header set is built from scratch. Nothing caller-supplied survives, and
  *     the target's own secret is what proves to it that the platform sent this.
- *   - Both directions are size-capped and the response is aborted mid-stream once
- *     it goes over, so a runaway app cannot exhaust a Pi's memory.
+ *   - The response is size-capped and aborted mid-stream once it goes over, so a
+ *     runaway app cannot exhaust a Pi's memory.
  *   - Bodies are never logged. They routinely carry minors' PII and payment data.
  *
  * If you need a third way to reach an app, add an option here rather than a second
@@ -21,7 +21,7 @@
  */
 import http from 'node:http';
 
-/** 256 KB, each direction — the broker's long-standing cap. */
+/** 256 KB — the broker's long-standing response cap. */
 export const FABRIC_MAX_BODY = 256 * 1024;
 export const FABRIC_DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -80,7 +80,17 @@ export function proxyToTarget(opts: {
   maxResponseBytes?: number;
 }): Promise<ProxyResult> {
   const maxResponse = opts.maxResponseBytes ?? FABRIC_MAX_BODY;
-  return new Promise((resolve, reject) => {
+  return new Promise<ProxyResult>((settleOk, settleErr) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Every way out stops the clock, so a settled call leaves no timer behind.
+    const resolve = (r: ProxyResult) => {
+      clearTimeout(timer);
+      settleOk(r);
+    };
+    const reject = (e: CodedError) => {
+      clearTimeout(timer);
+      settleErr(e);
+    };
     const upstream = http.request(
       {
         host: opts.host,
@@ -103,16 +113,20 @@ export function proxyToTarget(opts: {
         let size = 0;
         let tooBig = false;
         res.on('data', (c: Buffer) => {
+          if (tooBig) return;
           size += c.length;
           if (size > maxResponse) {
             tooBig = true;
+            // Settle BEFORE destroying: a response destroyed mid-body emits neither
+            // 'end' nor 'error', so nothing later would.
+            reject(new CodedError('response_too_large'));
             res.destroy();
             return;
           }
           chunks.push(c);
         });
         res.on('end', () => {
-          if (tooBig) return reject(new CodedError('response_too_large'));
+          if (tooBig) return;
           resolve({
             status: res.statusCode ?? 502,
             contentType: typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined,
@@ -123,10 +137,12 @@ export function proxyToTarget(opts: {
       },
     );
     upstream.on('error', () => reject(new CodedError('target_unreachable')));
-    upstream.setTimeout(opts.timeoutMs, () => {
-      upstream.destroy();
+    // A wall-clock limit on the whole call. The request's own `setTimeout` is an IDLE
+    // timer, which an app trickling bytes never trips.
+    timer = setTimeout(() => {
       reject(new CodedError('timeout'));
-    });
+      upstream.destroy();
+    }, opts.timeoutMs);
     upstream.end(opts.body);
   });
 }

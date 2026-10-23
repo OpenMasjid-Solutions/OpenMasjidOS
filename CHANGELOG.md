@@ -7,6 +7,70 @@ Newest first. The dashboard reads this file (Settings → Advanced → **What's 
 so keep the wording plain and friendly — a masjid volunteer is the reader, not a
 sysadmin. One `## <version>` heading per release, then short bullets.
 
+## 0.51.2
+
+A big release. The headline is something masjids asked for: you can now look after OpenMasjidOS
+from home, safely. It also brings two-step sign-in, a security update to the software everything
+runs on, and a long list of fixes to backups, restores and updates.
+
+**Manage OpenMasjidOS from outside the masjid** (off until you turn it on)
+
+- If you already share apps through remote access, your dashboard can now open at that same
+  address — for example `omos.example.org` — from anywhere. There is nothing extra to set up in
+  Cloudflare. Turn it on in **Settings → Remote access**.
+- It only switches on once two-step sign-in is set up, and from outside every sign-in asks for your
+  password *and* a code from your phone. At the masjid you sign in exactly as before.
+- From outside, almost everything works as it does at the masjid: your apps (press **Open** and you
+  are signed in), files, updates, backups and restores. A few things still need someone at the
+  masjid — replacing the tunnel token, and uploads larger than 100 MB.
+- Anything that would cut you off from outside asks first, and a restore or an update that would
+  lock you out is refused rather than carried out.
+- Your apps need their own updates for this: Display 0.71.0, Kiosk 0.13.0, Donations 0.45.0,
+  Companion 0.3.0 and Students 0.52.0 all open properly from outside, and none of them accepts its
+  own password from the internet any more.
+
+**Two-step sign-in**
+
+- Set it up in **Settings → Account**: scan the code with an authenticator app, and keep the ten
+  backup codes somewhere safe. A code emailed to you can also be allowed, alongside the app.
+- It is only asked for when you sign in from outside the masjid.
+- Lost your phone and the backup codes? Run the install command again on the server and choose
+  **Reset sign-in** — it can turn two-step sign-in off.
+
+**Things you may have run into**
+
+- **"It keeps asking for the control panel password."** Every restart or update used to sign you out
+  without saying so, and your apps then asked for their own passwords. Signing in now survives
+  restarts and updates.
+- **Updates and restores now say how they really ended.** The windows used to announce "Update
+  applied" or "Restore complete" even when nothing had changed. Now they say what happened, and
+  after a restore the dashboard reminds you of any app that needs a look.
+- **Backups.** Every backup now includes every app's data (an app restored earlier could be left out
+  without a word), a backup that fails shows as a failed download, a restore that would fill the
+  disk is refused before any app is stopped, and an off-site backup that loses its destination no
+  longer blocks every backup after it.
+- **App settings arrive exactly as you typed them.** A password containing `$` or `#` used to reach
+  the app changed.
+- **Phone numbers.** A 0 typed after the country code is dropped for you, and a number starting with
+  0 is refused instead of being accepted and never delivered.
+- **The disk and memory figures on the dashboard now match** what the machine itself reports.
+- **Settings is split into sections**, so you can go straight to the one you need.
+- **Messages say what to do**, not how things work inside.
+- **The installer** now works on Fedora 41 and newer, Rocky, Alma and RHEL; Repair no longer moves
+  you to a newer build; and Remove also turns off the remote-access tunnel.
+
+**Keeping your server safe**
+
+- **OpenMasjidOS now runs on Node.js 22.23.4,** which fixes ten security problems published on
+  21 October, one of them serious. If Stripe emailed you about your Node.js version, this is the
+  update it means — and please update your apps too.
+- **An app restored from a backup can no longer be started without someone agreeing to it**, so a
+  tampered backup cannot quietly run something dangerous.
+- **Nothing can be changed while a backup is being restored**, so a change can't be silently undone
+  when the restore finishes.
+- The libraries OpenMasjidOS is built on were updated past published security problems — among them
+  the web server itself and the part that sends your email.
+
 ## 0.51.1
 
 A maintenance release. Most of it is work you will not see — a full review of the

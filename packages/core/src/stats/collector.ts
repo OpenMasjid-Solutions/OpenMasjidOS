@@ -6,10 +6,14 @@
  *
  * Memory is the tricky one: inside Docker (even inside an LXC), /proc/meminfo
  * reports the bare host's RAM. We therefore prefer, in order:
- *   1. the host/LXC's own /proc (bind-mounted read-only at HOST_PROC by the
- *      installer) — accurate for an LXC via lxcfs and for bare-metal alike;
- *   2. the cgroup memory limit (accurate when a container memory limit is set);
- *   3. systeminformation's host figures as a last resort.
+ *   1. the host cgroup (bind-mounted read-only at HOST_CGROUP by the installer), but
+ *      only when it carries a real memory limit — an LXC, where it matches Proxmox.
+ *      Without one it is a bare-metal machine's root cgroup, which counts active page
+ *      cache as used and so disagrees with `free`;
+ *   2. the host/LXC's own /proc/meminfo (bind-mounted at HOST_PROC), with `free`'s
+ *      arithmetic;
+ *   3. the core's own cgroup limit (accurate when a container memory limit is set);
+ *   4. systeminformation's host figures as a last resort.
  *
  * CPU temperature is reported "where available" (null otherwise).
  */
@@ -28,8 +32,13 @@ export interface StatsSnapshot {
   cpuSpeedGHz: number;
   memUsed: number;
   memTotal: number;
+  /** The filesystem the masjid's data lives on. Every storage percentage and warning
+   *  divides these two, and nothing else (`pickDisk`). */
   diskUsed: number;
   diskTotal: number;
+  /** The machine's physical disks added together (sysfs), or null when unknown.
+   *  Display only: never part of a percentage or a warning. */
+  diskDeviceBytes: number | null;
   cpuTempC: number | null;
   uptimeSec: number;
   appsRunning: number;
@@ -99,7 +108,8 @@ let lastCpuPercent: number | null = null;
  */
 const MIN_CPU_SAMPLE_MS = 900;
 
-function readHostCpuPercent(now = Date.now()): number | null {
+// A monotonic clock: NTP stepping a fast wall clock back froze the CPU card for the step.
+function readHostCpuPercent(now = performance.now()): number | null {
   // Too soon to measure again — reuse the last real answer rather than computing a
   // meaningless one and, crucially, WITHOUT moving the baseline.
   if (prevCpu && now - prevCpu.at < MIN_CPU_SAMPLE_MS) return lastCpuPercent;
@@ -130,7 +140,7 @@ export function __resetCpuSamplerForTests(): void {
   prevCpu = null;
   lastCpuPercent = null;
 }
-export function __readHostCpuPercentForTests(now: number): number | null {
+export function __readHostCpuPercentForTests(now?: number): number | null {
   return readHostCpuPercent(now);
 }
 
@@ -202,44 +212,51 @@ function readCgroupKv(file: string): Record<string, number> {
   return out;
 }
 
+/** A cgroup's memory limit in bytes, or null when it has none: v2 writes `max`, and v1
+ *  reports an unset limit as ~2^63 (a machine's root cgroup always reads that way). */
+function realLimit(raw: string): number | null {
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n > 0 && n < 2 ** 62 ? n : null;
+}
+
 /**
- * Read the machine/LXC memory from the host cgroup the SAME way Proxmox does:
+ * Read the LXC's memory from the host cgroup the SAME way Proxmox does:
  * used = memory.current − inactive_file (the reclaimable page cache). This is the
- * authoritative source; lxcfs's /proc/meminfo can badly disagree (reporting most
- * memory as free). Requires the host cgroup mounted at HOST_CGROUP (installer).
- * Total comes from /proc/meminfo (the LXC limit), falling back to the cgroup max.
+ * authoritative source for an LXC; lxcfs's /proc/meminfo can badly disagree (reporting
+ * most memory as free). Requires the host cgroup mounted at HOST_CGROUP (installer).
+ * Total comes from /proc/meminfo (the LXC limit), falling back to the cgroup limit.
+ *
+ * Only a cgroup with a real limit is an LXC. Without one it is a bare-metal machine's
+ * root cgroup (cgroup v1/hybrid: Ubuntu 20.04, Debian 10, RHEL 8), where this arithmetic
+ * still counts active page cache as used, so that case is left to /proc/meminfo.
  */
-function readHostCgroupMemory(): { used: number; total: number } | null {
-  const meminfoTotal = readHostMeminfo()?.total ?? 0;
+function readHostCgroupMemory(meminfoTotal: number): { used: number; total: number } | null {
   // cgroup v2
   try {
+    const limit = realLimit(fs.readFileSync(`${HOST_CGROUP}/memory.max`, 'utf8'));
     const current = Number.parseInt(fs.readFileSync(`${HOST_CGROUP}/memory.current`, 'utf8').trim(), 10);
-    if (Number.isFinite(current)) {
+    if (limit != null && Number.isFinite(current)) {
       const inactiveFile = readCgroupKv(`${HOST_CGROUP}/memory.stat`)['inactive_file'] ?? 0;
       const used = Math.max(0, current - inactiveFile);
-      const maxRaw = fs.readFileSync(`${HOST_CGROUP}/memory.max`, 'utf8').trim();
-      const total = meminfoTotal > 0 ? meminfoTotal : maxRaw === 'max' ? 0 : Number.parseInt(maxRaw, 10);
-      if (total > 0) return { used: Math.min(used, total), total };
+      const total = meminfoTotal > 0 ? meminfoTotal : limit;
+      return { used: Math.min(used, total), total };
     }
   } catch {
     /* not cgroup v2 / not mounted */
   }
   // cgroup v1
   try {
+    const limit = realLimit(fs.readFileSync(`${HOST_CGROUP}/memory/memory.limit_in_bytes`, 'utf8'));
     const usage = Number.parseInt(
       fs.readFileSync(`${HOST_CGROUP}/memory/memory.usage_in_bytes`, 'utf8').trim(),
       10,
     );
-    if (Number.isFinite(usage)) {
+    if (limit != null && Number.isFinite(usage)) {
       const stat = readCgroupKv(`${HOST_CGROUP}/memory/memory.stat`);
       const cache = stat['total_inactive_file'] ?? stat['inactive_file'] ?? 0;
       const used = Math.max(0, usage - cache);
-      const limit = Number.parseInt(
-        fs.readFileSync(`${HOST_CGROUP}/memory/memory.limit_in_bytes`, 'utf8').trim(),
-        10,
-      );
       const total = meminfoTotal > 0 ? meminfoTotal : limit;
-      if (total > 0) return { used: Math.min(used, total), total };
+      return { used: Math.min(used, total), total };
     }
   } catch {
     /* not cgroup v1 / not mounted */
@@ -247,14 +264,19 @@ function readHostCgroupMemory(): { used: number; total: number } | null {
   return null;
 }
 
-function resolveMemory(mem: Systeminformation.MemData | null): { used: number; total: number } {
-  // The LXC/host cgroup is authoritative and matches Proxmox; prefer it.
-  const hostCg = readHostCgroupMemory();
-  if (hostCg && hostCg.total > 0) return hostCg;
+/** The machine's (or LXC's) memory from the host mounts, or null when they say nothing. */
+function readHostMemory(): { used: number; total: number } | null {
+  const meminfo = readHostMeminfo();
+  return readHostCgroupMemory(meminfo?.total ?? 0) ?? meminfo;
+}
 
-  const host = readHostMeminfo();
-  if (host && host.total > 0) return host;
+async function resolveMemory(): Promise<{ used: number; total: number }> {
+  const host = readHostMemory();
+  if (host) return host;
 
+  // systeminformation only when the host mounts said nothing (it was asked every tick
+  // and its answer thrown away).
+  const mem = await si.mem().catch(() => null);
   const hostTotal = mem?.total ?? 0;
   const selfCg = readCgroupMemory();
   if (selfCg && Number.isFinite(selfCg.limit) && selfCg.limit > 0 && (hostTotal === 0 || selfCg.limit < hostTotal)) {
@@ -289,19 +311,23 @@ async function getCpuInfo(): Promise<{ cores: number; speedGHz: number }> {
  * ours: the Storage card counts down to "full" 16 GB early, and the low-storage warning
  * fires while there is still room to fix things.
  *
+ * Under 64 GB of room the reserve is a quarter of it instead: a whole 16 GB left a
+ * "16 GB" SD card (14.8 GiB) — the platform's main hardware — with a total of 0, so its
+ * card read "6 GB / 0 B" and the low-storage warning could never fire.
+ *
  * This is a floor for the OS, not a quota on apps — nothing prevents an app writing into
  * the reserve; the platform simply stops telling the masjid that space is theirs.
  */
 const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
 
 /**
- * Total capacity of the machine's real disks, read from sysfs.
+ * Total capacity of the machine's real disks, read from sysfs: shown beside the Storage
+ * figures (`diskDeviceBytes`), and never part of a percentage.
  *
- * WHY NOT THE FILESYSTEM: the card was reporting a figure far smaller than the machine's
- * actual disk. Inside the core container `si.fsSize()` sees the container's mounts, and
- * which of them best represents "this masjid's storage" is a guess that goes wrong on
- * partitioned disks, on overlay filesystems, and wherever the data directory sits on
- * something small. The device is the thing an admin can actually look up on an invoice.
+ * It was the Storage total for a while, divided into the data filesystem's usage — two
+ * different disks' numbers. On Ubuntu Server's default LVM (a ~100 GB volume on a 256 GB
+ * disk) a full volume read ~40%, so no warning ever fired; a second disk did the same, a
+ * NAS-backed /data read 100%, and in a Proxmox LXC /sys/block is the node's disks.
  *
  * `/sys/block` is readable from inside the container (Docker mounts /sys, and block
  * devices are not namespaced), and `size` is in 512-byte sectors regardless of the
@@ -313,8 +339,7 @@ const HOST_OS_RESERVE_BYTES = 16 * 1024 ** 3;
  *                         them as well would double the total
  *   removable           : a USB stick plugged in today is not the masjid's storage
  *
- * Returns null when sysfs tells us nothing, so the caller can fall back rather than
- * reporting zero — a Storage card reading "0" is worse than one reading conservatively.
+ * Returns null when sysfs tells us nothing (a non-Linux dev box), rather than zero.
  */
 const VIRTUAL_BLOCK = /^(loop|ram|zram|fd|sr|dm-|md|nbd)/;
 const SECTOR_BYTES = 512;
@@ -324,7 +349,7 @@ export function physicalDiskBytes(sysBlock = '/sys/block'): number | null {
   try {
     names = fs.readdirSync(sysBlock);
   } catch {
-    return null; // no sysfs (a non-Linux dev box) — the caller falls back
+    return null; // no sysfs (a non-Linux dev box)
   }
   let total = 0;
   let found = 0;
@@ -351,15 +376,20 @@ function mountContains(mount: string, p: string): boolean {
   return p === mount || p.startsWith(mount.endsWith('/') ? mount : `${mount}/`);
 }
 
+/**
+ * The Storage figures. `used` and `total` both come from ONE filesystem, the one the
+ * masjid's data lives on, so the card's gauge, the low-storage warning and `!os stats`
+ * all agree with `df` there. The drive's size travels alongside, for display only.
+ */
 function pickDisk(
   list: Systeminformation.FsSizeData[],
   // A parameter rather than reading DATA_DIR directly, so the choice can be tested on any
   // platform: DATA_DIR is path-resolved, and on Windows `/data` becomes `C:\data`.
   dataDir: string = DATA_DIR,
-  // Injectable so the device-vs-filesystem precedence is testable without a real /sys.
+  // Injectable so each case can be tested without a real /sys.
   deviceBytes: number | null = physicalDiskBytes(),
-): { used: number; total: number } {
-  if (!list || list.length === 0) return { used: 0, total: 0 };
+): { used: number; total: number; device: number | null } {
+  if (!list || list.length === 0) return { used: 0, total: 0, device: deviceBytes };
   // Prefer the filesystem the masjid's data actually lives on, and among candidates the
   // most specific mount — `/` contains everything, so a plain "contains" test would pick
   // it over the dedicated volume that /data is really on.
@@ -368,44 +398,77 @@ function pickDisk(
   const root = list.find((d) => d.mount === '/' && d.size > 0);
   const largest = [...list].sort((a, b) => (b.size || 0) - (a.size || 0))[0];
   const chosen = byData ?? root ?? largest;
-  // The DEVICE's capacity is the headline figure: it is what an admin can look up, and
-  // it does not depend on guessing which of a container's mounts represents the masjid's
-  // storage. The filesystem is the fallback when sysfs tells us nothing.
-  //
-  // Known limit, stated rather than hidden: in a Proxmox LXC, /sys/block shows the HOST
-  // NODE's disks, which can be far larger than the container's allotted storage. That
-  // over-reports, and over-reporting means the low-storage warning arrives too late. If a
-  // masjid sees a total that matches their Proxmox host rather than their container,
-  // that is this, and the fix is to prefer the filesystem there.
-  const size = deviceBytes ?? chosen?.size ?? 0;
+  if (!chosen) return { used: 0, total: 0, device: deviceBytes };
+  // What `df` divides by: used + available, so the filesystem's own root reserve (5% on
+  // ext4) is not counted as room. The size, where `available` is unknown.
+  const capacity = Number.isFinite(chosen.available) ? chosen.used + chosen.available : chosen.size;
   return {
-    used: chosen?.used ?? 0,
-    // Less the host OS's reserve. Never negative: on a disk smaller than the reserve
-    // there is simply nothing spare, and a negative total renders as a nonsense
-    // percentage.
-    total: Math.max(0, size - HOST_OS_RESERVE_BYTES),
+    used: chosen.used,
+    // Less the host OS's reserve, at most a quarter — so never negative, and never zero
+    // for a filesystem that has room.
+    total: capacity - Math.min(HOST_OS_RESERVE_BYTES, capacity / 4),
+    device: deviceBytes,
   };
 }
 
-export async function collectStats(): Promise<StatsSnapshot> {
-  const [load, mem, disks, temp, appsRunning, cpu] = await Promise.all([
-    si.currentLoad().catch(() => null),
-    si.mem().catch(() => null),
-    si.fsSize().catch(() => [] as Systeminformation.FsSizeData[]),
-    si.cpuTemperature().catch(() => null),
-    runningProjectCount().catch(() => 0),
+/** Prefer the host /proc/stat delta; systeminformation only when that has no answer. */
+async function cpuPercentNow(): Promise<number> {
+  const host = readHostCpuPercent();
+  if (host != null) return host;
+  const load = await si.currentLoad().catch(() => null);
+  return load ? Math.max(0, Math.min(100, Math.round(load.currentLoad))) : 0;
+}
+
+/** How long a card waits on a slow source before showing that source's last answer. */
+const SLOW_SOURCE_MS = 1500;
+
+/**
+ * A slow source (Docker, `df`, the temperature probes), asked once at a time and
+ * waited on for at most `ms`.
+ *
+ * Nothing bounded them: a wedged Docker daemon or a `df` stuck on a dead NFS mount
+ * froze every card and parked each closed tab's stream. Now a caller gets the last
+ * answer after `ms`, and the request already out is left to finish rather than joined
+ * by another stuck one on every tick.
+ */
+export function boundedSource<T>(ask: () => Promise<T>, initial: T, ms = SLOW_SOURCE_MS): () => Promise<T> {
+  let last = initial;
+  let pending: Promise<T> | null = null;
+  return () => {
+    pending ??= ask()
+      .then(
+        (value) => (last = value),
+        () => last,
+      )
+      .finally(() => {
+        pending = null;
+      });
+    const stale = last;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(stale), ms);
+    });
+    return Promise.race([pending, late]).finally(() => clearTimeout(timer));
+  };
+}
+
+const diskSizes = boundedSource(() => si.fsSize().catch(() => [] as Systeminformation.FsSizeData[]), []);
+const cpuTemperature = boundedSource(() => si.cpuTemperature().catch(() => null), null);
+const appsRunningNow = boundedSource(() => runningProjectCount().catch(() => 0), 0);
+
+async function collectOnce(): Promise<StatsSnapshot> {
+  const [cpuPercent, memory, disks, temp, appsRunning, cpu] = await Promise.all([
+    cpuPercentNow(),
+    resolveMemory(),
+    diskSizes(),
+    cpuTemperature(),
+    appsRunningNow(),
     getCpuInfo(),
   ]);
 
   const disk = pickDisk(disks);
-  const memory = resolveMemory(mem);
   const tempMain = temp?.main;
   const cpuTempC = typeof tempMain === 'number' && tempMain > 0 ? Math.round(tempMain) : null;
-
-  // Prefer the host /proc/stat delta; fall back to systeminformation's figure.
-  const hostCpu = readHostCpuPercent();
-  const cpuPercent =
-    hostCpu ?? (load ? Math.max(0, Math.min(100, Math.round(load.currentLoad))) : 0);
 
   return {
     cpuPercent,
@@ -415,19 +478,48 @@ export async function collectStats(): Promise<StatsSnapshot> {
     memTotal: memory.total,
     diskUsed: disk.used,
     diskTotal: disk.total,
+    diskDeviceBytes: disk.device,
     cpuTempC,
     uptimeSec: readHostUptime() ?? Math.round(si.time().uptime ?? 0),
     appsRunning,
   };
 }
 
+/** How long one collection is shared: never longer than the CPU sampler's own minimum,
+ *  so each tab (polling every 2 s) still gets a newer snapshot every tick. */
+const SHARE_MS = MIN_CPU_SAMPLE_MS;
+let latest: { at: number; settled: boolean; snapshot: Promise<StatsSnapshot> } | null = null;
+
+/**
+ * Live stats, shared between callers. Every open tab's stream, `stats.get` and
+ * `!os stats` used to run a full collection each — shells, a Docker call, a sysfs walk —
+ * so a caller now gets the collection that is running, or one started within SHARE_MS.
+ */
+export function collectStats(now = performance.now()): Promise<StatsSnapshot> {
+  if (latest && (!latest.settled || now - latest.at < SHARE_MS)) return latest.snapshot;
+  const entry = { at: now, settled: false, snapshot: collectOnce() };
+  latest = entry;
+  entry.snapshot.then(
+    () => {
+      entry.settled = true;
+    },
+    () => {
+      if (latest === entry) latest = null; // a failure is not shared: the next caller asks again
+    },
+  );
+  return entry.snapshot;
+}
+
 export function __readHostMeminfoForTests(): { total: number; used: number } | null {
   return readHostMeminfo();
 }
+export function __readHostMemoryForTests(): { total: number; used: number } | null {
+  return readHostMemory();
+}
 export function __pickDiskForTests(
-  list: { mount: string; size: number; used: number }[],
+  list: { mount: string; size: number; used: number; available?: number }[],
   dataDir = '/data',
   deviceBytes: number | null = null,
-): { used: number; total: number } {
+): { used: number; total: number; device: number | null } {
   return pickDisk(list as unknown as Systeminformation.FsSizeData[], dataDir, deviceBytes);
 }

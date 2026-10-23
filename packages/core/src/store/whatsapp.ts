@@ -182,10 +182,9 @@ const DEFAULT_CONFIG: WhatsAppConfig = {
 };
 
 /**
- * Keep an admin's edits inside safe bounds. The limits are configurable so a masjid
- * can be MORE careful; they are clamped so a stray edit (or a copied config from a
- * bulk-sending tutorial) cannot turn the platform into a blaster. A UI can't be the
- * only guard — the Fabric writes here too.
+ * Keep stored limits inside safe bounds, so a hand-edited file (or a config copied from a
+ * bulk-sending tutorial) cannot turn the platform into a blaster if they are ever
+ * enforced again. Nothing in the dashboard edits them today.
  */
 export function clampLimits(l: Partial<WhatsAppLimits> | undefined): WhatsAppLimits {
   const n = (v: unknown, def: number) => (typeof v === 'number' && Number.isFinite(v) ? v : def);
@@ -257,6 +256,11 @@ let cache: WhatsAppConfig = withDefaults(
   readJson<WhatsAppFile>(WHATSAPP_PATH, { whatsapp: DEFAULT_CONFIG }).whatsapp,
 );
 
+/** Re-read the WhatsApp configuration from disk — for a restore, which replaces it under this process. */
+export function reloadWhatsAppConfig(): void {
+  cache = withDefaults(readJson<WhatsAppFile>(WHATSAPP_PATH, { whatsapp: DEFAULT_CONFIG }).whatsapp);
+}
+
 function persist(): void {
   writeJson(WHATSAPP_PATH, { whatsapp: cache });
   try {
@@ -266,7 +270,8 @@ function persist(): void {
   }
 }
 
-/** Full config incl. the API key — ONLY for the sender (notify/whatsapp.ts). */
+/** Full config incl. the API key — ONLY for the sender (notify/whatsapp.ts) and its
+ *  gateway client (notify/whatsapp-gateway.ts). */
 export function getWhatsAppConfig(): WhatsAppConfig {
   return cache;
 }
@@ -276,9 +281,9 @@ export function getWhatsAppConfig(): WhatsAppConfig {
  *
  * `baseUrl` is deliberately NOT required: the normal path is installing OpenWA from
  * the App Store, and the platform then finds it at its published host port
- * (notify/whatsapp.ts `resolveBaseUrl`). A typed URL is the override for a gateway
- * living elsewhere. The API key and session id ARE required — without them there is
- * nothing to authenticate with and no session to send from.
+ * (notify/whatsapp-gateway.ts `resolveBaseUrl`). A typed URL is the override for a gateway
+ * living elsewhere. The API key IS required — without it there is nothing to authenticate
+ * with. The session id is not: the platform creates the session itself when it needs one.
  */
 export function isWhatsAppConfigured(): boolean {
   return cache.provider === 'openwa' && Boolean(cache.apiKey);
@@ -382,11 +387,6 @@ export function deleteWhatsAppConfig(): void {
 }
 
 /**
- * Record that the session was (re)linked, which restarts the warm-up ramp. Called
- * when a pairing code is issued: a freshly linked number is exactly the one WhatsApp
- * watches hardest, so it must not inherit an old number's earned allowance.
- */
-/**
  * Record the session UUID OpenWA minted for us. Separate from `saveWhatsAppConfig`
  * because it is not an admin edit — it is the platform remembering what the gateway
  * told it, and it must not be reachable from the settings input.
@@ -404,6 +404,8 @@ export function recordLinkedPhone(raw: string): void {
   persist();
 }
 
+/** Record when a phone was (re)linked — when a pairing code is issued. Nothing is limited
+ *  by it any more (the warm-up ramp it started is gone); see `linkedAt`. */
 export function markLinked(when: string): void {
   cache = { ...cache, linkedAt: when };
   persist();

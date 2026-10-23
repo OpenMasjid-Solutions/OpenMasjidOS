@@ -23,7 +23,9 @@ import { createRequire } from 'node:module';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 const req = createRequire(__filename);
-process.env.OPENMASJID_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-logo-'));
+const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-logo-'));
+process.env.OPENMASJID_DATA_DIR = DATA_DIR;
+const BRANDING_DIR = path.join(DATA_DIR, 'config', 'branding');
 
 // Loaded after DATA_DIR is set (config.ts reads it at import time).
 const branding = req('../src/store/branding') as typeof import('../src/store/branding');
@@ -126,4 +128,60 @@ test('replacing the logo serves the new bytes, not a stale file', async () => {
   // And the old PNG must not linger as a second file the route could pick up.
   branding.removeLogo();
   assert.equal((await app.inject({ method: 'GET', url: '/api/public/logo' })).statusCode, 404);
+});
+
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(16, 7)]);
+
+test('a new logo that cannot be written leaves the previous one in place', () => {
+  // saveLogo deleted the existing files first, so a write that then failed (a full SD
+  // card) left no logo at all, and a record naming a file that was gone.
+  branding.saveLogo(PNG, 'image/png');
+  const blocker = path.join(BRANDING_DIR, 'logo.jpg');
+  fs.mkdirSync(blocker); // the new file cannot take its place
+  try {
+    assert.throws(() => branding.saveLogo(JPEG, 'image/jpeg'));
+    const logo = branding.getLogo();
+    assert.ok(logo?.buf.equals(PNG), 'the previous logo must still be served');
+    assert.equal(logo?.mime, 'image/png');
+  } finally {
+    fs.rmSync(blocker, { recursive: true, force: true });
+  }
+  // Once it can be written, the old file goes — after the new one is in place.
+  branding.saveLogo(JPEG, 'image/jpeg');
+  assert.ok(branding.getLogo()?.buf.equals(JPEG));
+  assert.equal(fs.existsSync(path.join(BRANDING_DIR, 'logo.png')), false, 'the old logo lingers');
+});
+
+test('serving the logo costs a stat, not a read, until it changes', () => {
+  // Every /api/public/logo request and root icon read branding.json and the whole logo
+  // (up to 1 MB) synchronously, on the daemon's only thread.
+  branding.saveLogo(PNG, 'image/png');
+  const realRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    if (String(file).startsWith(BRANDING_DIR)) reads += 1;
+    return (realRead as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync;
+  try {
+    for (let i = 0; i < 5; i++) assert.ok(branding.getLogo()?.buf.equals(PNG));
+    assert.equal(branding.hasLogo(), true);
+    assert.ok(reads <= 2, `the logo was read ${reads} times for six asks`);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+});
+
+test('a restore that brings back a different logo is served without being told', () => {
+  // A restore swaps config/ whole, behind the store's back. What the store remembers is
+  // keyed on branding.json as it is on disk, which that replaces.
+  branding.saveLogo(PNG, 'image/png');
+  assert.ok(branding.getLogo()?.buf.equals(PNG));
+  const restored = Buffer.concat([PNG, Buffer.from('restored')]);
+  const staging = path.join(DATA_DIR, 'restore-staging-branding');
+  fs.mkdirSync(staging);
+  fs.writeFileSync(path.join(staging, 'logo.png'), restored);
+  fs.writeFileSync(path.join(staging, 'branding.json'), JSON.stringify({ logo: { ext: 'png', mime: 'image/png' } }));
+  fs.rmSync(BRANDING_DIR, { recursive: true });
+  fs.renameSync(staging, BRANDING_DIR);
+  assert.ok(branding.getLogo()?.buf.equals(restored), 'the logo from before the restore is still served');
 });

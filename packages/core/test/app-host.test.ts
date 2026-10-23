@@ -28,7 +28,7 @@ process.env.OPENMASJID_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'omos-ap
 
 const req = createRequire(__filename);
 const host = req('../src/system/app-host') as typeof import('../src/system/app-host');
-const wa = req('../src/notify/whatsapp') as typeof import('../src/notify/whatsapp');
+const wa = req('../src/notify/whatsapp-gateway') as typeof import('../src/notify/whatsapp-gateway');
 const store = req('../src/store/whatsapp') as typeof import('../src/store/whatsapp');
 
 /** Source with comments stripped — assertions must be about code, not prose. */
@@ -74,7 +74,7 @@ test('nothing else derives an app address from a loopback literal', () => {
 });
 
 test('every caller that reaches an app port goes through the helper', () => {
-  for (const rel of ['fabric/appLink.ts', 'system/app-proxy.ts', 'system/ingress.ts', 'notify/whatsapp.ts']) {
+  for (const rel of ['fabric/appLink.ts', 'system/app-proxy.ts', 'system/ingress.ts', 'notify/whatsapp-gateway.ts']) {
     assert.match(codeOf(rel), /appHost\(\)|appOrigin\(/, `${rel} must resolve the host via system/app-host`);
   }
 });

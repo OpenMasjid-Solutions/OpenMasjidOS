@@ -18,6 +18,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranch, Beaker, ShieldCheck } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useToast } from './ToastProvider';
 import { cn } from '../lib/cn';
@@ -59,7 +60,7 @@ export function UpdateChannel({ onUpdateAll }: { onUpdateAll?: () => void }) {
     // useful thing to show — it already says the masjid stayed where it was.
     onError: (e) => {
       setPendingTarget(null);
-      toast(e.message || t('errors.generic'), 'error');
+      toast(errorText(e, t('errors.generic')), 'error');
     },
   });
 

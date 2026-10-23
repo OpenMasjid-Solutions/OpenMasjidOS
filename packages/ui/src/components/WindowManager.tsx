@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Minus, Maximize2 } from 'lucide-react';
-import { useWindows, type WindowState } from './Windows';
+import { useWindows, WindowVisibleProvider, type WindowState } from './Windows';
 import { anyModalOpen } from './Modal';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -22,7 +22,14 @@ export function WindowManager() {
   // listener here, not one per frame (which would close them all at once).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      // Already handled by whatever it was meant for — a menu closing (Radix marks the
+      // event handled but lets it travel on). Closing the window too took a live
+      // terminal with it.
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // Escape typed into a box belongs to the box: in the file editor it threw away
+      // unsaved text with the window, and in a rename box it closed the file manager.
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || target.closest('input, textarea, select'))) return;
       // A dialog on top owns the keypress. Without this, one Escape closed the
       // dialog and the window behind it at the same time.
       if (anyModalOpen()) return;
@@ -70,14 +77,18 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
       const y = Math.max(0, Math.min(window.innerHeight - 60, ev.clientY - offY));
       setPos({ x, y });
     };
+    // A touch the browser takes over ends in pointercancel, never pointerup — so both end
+    // the drag, or the move listener stays attached for good.
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       dragCleanup.current = null;
     };
     dragCleanup.current = onUp;
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     e.preventDefault();
   }
 
@@ -119,7 +130,9 @@ function WindowFrame({ win, zIndex }: { win: WindowState; zIndex: number }) {
           </h2>
         </header>
         <div className="win-body">
-          <ErrorBoundary>{win.node}</ErrorBoundary>
+          <ErrorBoundary>
+            <WindowVisibleProvider value={!win.minimized}>{win.node}</WindowVisibleProvider>
+          </ErrorBoundary>
         </div>
       </div>
     </div>

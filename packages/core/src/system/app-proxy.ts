@@ -19,6 +19,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { loadCert } from './tls';
 import { appHost } from './app-host';
+import { closeTogether } from './socket-relay';
 import { log } from '../logger';
 
 function envInt(name: string, fallback: number): number {
@@ -39,6 +40,9 @@ const STRIP_HEADERS = [
   'x-forwarded-proto',
   'x-forwarded-host',
   'x-forwarded-port',
+  // The base path some app frameworks trust (Spring, ASP.NET, Next.js behind a proxy):
+  // the platform never sends one, so one arriving was typed by the visitor.
+  'x-forwarded-prefix',
   'forwarded',
   // Client-IP headers of exactly the class this list exists to remove. Any proxy
   // in front of us would set these; a caller reaching us directly can type them,
@@ -125,6 +129,11 @@ export function ensureProxy(id: string, httpsPort: number, targetPort: number): 
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
       res.end('This app is not reachable right now.');
     });
+    // A browser that leaves part-way ends the request to the app too (system/ingress.ts
+    // `proxyHttp` says why).
+    res.once('close', () => {
+      if (!res.writableFinished) upstream.destroy();
+    });
     req.pipe(upstream);
   });
 
@@ -144,6 +153,7 @@ export function ensureProxy(id: string, httpsPort: number, targetPort: number): 
         'x-forwarded-proto',
         'x-forwarded-host',
         'x-forwarded-port',
+        'x-forwarded-prefix',
         'forwarded',
         'cf-connecting-ip',
         'x-real-ip',
@@ -161,8 +171,7 @@ export function ensureProxy(id: string, httpsPort: number, targetPort: number): 
       upstream.pipe(socket);
       socket.pipe(upstream);
     });
-    upstream.on('error', () => socket.destroy());
-    socket.on('error', () => upstream.destroy());
+    closeTogether(socket, upstream);
   });
 
   server.on('error', (err) => log.error(`App HTTPS proxy for "${id}" (:${httpsPort}) failed`, err));

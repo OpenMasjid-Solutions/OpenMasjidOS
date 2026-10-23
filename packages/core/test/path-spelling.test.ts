@@ -75,6 +75,16 @@ test('no security check in src compares a raw request URL with startsWith', () =
   // Structural, in the shape of test/app-host.test.ts: the mistake is easy to reintroduce
   // and invisible in review, so it is pinned rather than commented.
   const SRC = path.join(__dirname, '..', 'src');
+  // Raw comparisons that ARE the point, matched by exact text so that changing one
+  // fails here and gets looked at again. Each must still exist, or the allowance is
+  // stale and is reported too.
+  const RAW_ON_PURPOSE = [
+    // The request-target guard asks whether the RAW target is a path at all. Every
+    // decoded comparison below it depends on that being answered first, so decoding
+    // here would be asking the wrong question.
+    { file: 'system/via-tunnel.ts', text: "if (req.url.startsWith('/')) return done();" },
+  ];
+  const allowanceSeen = new Set<string>();
   const offenders: string[] = [];
   const walk = (dir: string): void => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -89,7 +99,10 @@ test('no security check in src compares a raw request URL with startsWith', () =
             // bypassed both guards. Comparing a DECODED path is fine, hence the narrow
             // pattern.
             if (/\breq(uest)?\.url\.startsWith\(/.test(line)) {
-              offenders.push(`${path.relative(SRC, p).replace(/\\/g, '/')}:${i + 1}`);
+              const rel = path.relative(SRC, p).replace(/\\/g, '/');
+              const allowed = RAW_ON_PURPOSE.find((a) => a.file === rel && a.text === line.trim());
+              if (allowed) allowanceSeen.add(allowed.file + allowed.text);
+              else offenders.push(`${rel}:${i + 1}`);
             }
           });
       }
@@ -102,4 +115,7 @@ test('no security check in src compares a raw request URL with startsWith', () =
     'compare the decoded path too (system/via-tunnel.ts: urlHasPrefix / decodedPath) — ' +
       `raw-text URL comparison found at: ${offenders.join(', ')}`,
   );
+  for (const a of RAW_ON_PURPOSE) {
+    assert.ok(allowanceSeen.has(a.file + a.text), `stale allowance — ${a.file} no longer contains: ${a.text}`);
+  }
 });

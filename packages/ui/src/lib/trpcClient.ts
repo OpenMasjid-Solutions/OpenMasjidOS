@@ -25,7 +25,12 @@ export function makeTrpcClient() {
   // start (App.tsx), before the user has logged in and therefore before a key
   // exists. A string would freeze the empty-key URL and every reconnect after
   // login would fail auth. The callback is re-read on each (re)connect.
-  const wsClient = createWSClient({ url: () => wsUrl() });
+  // LAZY: the socket opens only while something is subscribed (the dashboard's live
+  // stats), and closes a little after the last subscription ends. So the sign-in screen
+  // holds none — and from outside, the front door hands a socket over only to a signed-in
+  // session (core system/remote-admin.ts `claimsDashboardSocket`), which an eager socket
+  // opened before signing in could never have been.
+  const wsClient = createWSClient({ url: () => wsUrl(), lazy: { enabled: true, closeMs: 10_000 } });
   return trpc.createClient({
     links: [
       splitLink({
@@ -36,6 +41,9 @@ export function makeTrpcClient() {
         // session cookie by an installed app on another port.
         false: httpBatchLink({
           url: '/trpc',
+          // Under the server's own cap (core index.ts maxBatchSize), so a busy page splits
+          // its batch rather than being refused.
+          maxItems: 20,
           headers: () => {
             const key = getCsrf();
             return key ? { 'x-omos-csrf': key } : {};

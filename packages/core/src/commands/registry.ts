@@ -10,13 +10,14 @@
  * nothing, whatever the config file still says.
  */
 import { listAppCommands, listMetaSummaries } from '../apps/manager';
-import { authoriseSender, OS_CONTROL, OS_READ } from '../store/commands';
+import { authoriseSender, OS_CONTROL, OS_READ, type CommandPerson } from '../store/commands';
 import { isPlatformManaged } from '../apps/managed';
 import { OS_COMMANDS, OS_LABEL, OS_SCOPE_WORD } from './os';
+import type { DeclaredCommand } from '../apps/types';
 import type { CommandEntry, CommandGrantInfo, CommandNamespace } from './types';
 
 /** Turn one app's declarations into entries. The app id IS the scope key. */
-function appEntries(appId: string, commands: { id: string; label: string; description?: string; argument?: { label: string; required?: boolean }; confirm?: boolean }[]): CommandEntry[] {
+function appEntries(appId: string, commands: DeclaredCommand[]): CommandEntry[] {
   return commands.map((c) => ({
     ...c,
     scope: appId,
@@ -26,8 +27,8 @@ function appEntries(appId: string, commands: { id: string; label: string; descri
   }));
 }
 
-/** Every namespace that exists right now, with all of its commands. Unfiltered — for
- *  the Settings matrix and the admin preview, never for dispatch. */
+/** Every namespace that exists right now, with all of its commands. Unfiltered — never
+ *  dispatched from directly; narrow it with `grantedNamespaces` first. */
 export function listNamespaces(): CommandNamespace[] {
   const out: CommandNamespace[] = [{ word: OS_SCOPE_WORD, label: OS_LABEL, commands: OS_COMMANDS }];
   for (const app of listAppCommands()) {
@@ -47,10 +48,15 @@ export function listNamespaces(): CommandNamespace[] {
  */
 export function namespacesFor(rawFrom: string | null | undefined): CommandNamespace[] {
   const person = authoriseSender(rawFrom);
-  if (!person) return [];
+  return person ? grantedNamespaces(person) : [];
+}
+
+/** `all` narrowed to what this already-authorised person may run. Takes `all` so a
+ *  caller holding the full list for the same message does not read every app again. */
+export function grantedNamespaces(person: CommandPerson, all = listNamespaces()): CommandNamespace[] {
   const granted = new Set(person.scopes);
   const out: CommandNamespace[] = [];
-  for (const ns of listNamespaces()) {
+  for (const ns of all) {
     const commands = ns.commands.filter((c) => granted.has(c.scope));
     if (commands.length) out.push({ ...ns, commands });
   }

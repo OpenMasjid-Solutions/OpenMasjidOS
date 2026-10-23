@@ -121,6 +121,37 @@ function accents(): Array<{ id: string; primary: string; onPrimary: string }> {
   });
 }
 
+test('A FILLED DANGER BUTTON CARRIES READABLE INK IN BOTH THEMES', () => {
+  // Exactly the accent bug below, on a different button. `.btn--danger` painted
+  // a literal #fff on --color-danger; in dark that is white on #F87171 = 2.77:1,
+  // against AA's 4.5:1 — and this is the Remove-app button and the "Start
+  // anyway" consent button, the two clicks in the product that most need to be
+  // read before they are pressed. Fixed with a --color-on-danger token per theme.
+  const themes: Array<[string, RegExp]> = [
+    ['dark', /:root,\s*\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/],
+    ['light', /\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/],
+  ];
+  for (const [name, re] of themes) {
+    const block = re.exec(tokens);
+    assert.ok(block, `${name} token block must exist`);
+    const danger = /--color-danger:\s*(#[0-9A-Fa-f]{6})/.exec(block[1]!);
+    const ink = /--color-on-danger:\s*(#[0-9A-Fa-f]{6})/.exec(block[1]!);
+    assert.ok(danger, `${name} must define --color-danger`);
+    assert.ok(ink, `${name} must define --color-on-danger`);
+    const ratio = contrast(ink[1]!, danger[1]!);
+    assert.ok(
+      ratio >= 4.5,
+      `${name}: ink ${ink[1]} on danger ${danger[1]} is ${ratio.toFixed(2)}:1, below AA's 4.5:1`,
+    );
+  }
+  // And the button must actually use the token rather than a literal again.
+  assert.match(
+    appCss,
+    /\.btn--danger\s*\{[^}]*color:\s*var\(--color-on-danger\)/,
+    '.btn--danger must take its ink from the token',
+  );
+});
+
 test('EVERY ACCENT CARRIES INK DARK ENOUGH TO READ ON ITSELF', () => {
   // `applyAccent` writes `--color-btn` as an inline custom property on the root, and
   // an inline property beats the stylesheet's own [data-theme="light"] block. So

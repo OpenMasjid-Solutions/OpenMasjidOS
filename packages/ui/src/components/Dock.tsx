@@ -100,14 +100,6 @@ export function Dock() {
             className={cn('dock-item', dragId === app.id && 'dock-item--dragging')}
             aria-label={app.name}
             draggable
-            onMouseEnter={() => {
-              void utils.apps.get.prefetch({ id: app.id });
-              void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-            }}
-            onFocus={() => {
-              void utils.apps.get.prefetch({ id: app.id });
-              void utils.apps.logs.prefetch({ id: app.id, tail: 300 });
-            }}
             onDragStart={(e) => {
               setDragId(app.id);
               e.dataTransfer.effectAllowed = 'move';
@@ -121,7 +113,9 @@ export function Dock() {
               if (!dragId || dragId === app.id) return;
               e.preventDefault();
               const r = e.currentTarget.getBoundingClientRect();
-              reorderPins(dragId, app.id, e.clientX > r.left + r.width / 2);
+              // "After" is the right half left to right, and the left half right to left.
+              const pastMiddle = e.clientX > r.left + r.width / 2;
+              reorderPins(dragId, app.id, document.documentElement.dir === 'rtl' ? !pastMiddle : pastMiddle);
             }}
             onDragEnd={() => setDragId(null)}
             onDrop={(e) => {

@@ -27,7 +27,19 @@ function trimBuffer(s: string): string {
   return out;
 }
 
-export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () => void }) {
+export function LogStream({
+  wsPath,
+  onClosed,
+}: {
+  wsPath: string;
+  /**
+   * The stream ended. `code` is the WebSocket close code, which a stream uses to say HOW
+   * it ended (UpdateModal, RestoreModal, AppUpdate); 1006 means it just dropped.
+   * `opened` is false when it never connected at all — then the work never began, which
+   * a window must not read as "it dropped while working".
+   */
+  onClosed?: (code: number, opened: boolean) => void;
+}) {
   const { t } = useTranslation();
   const ref = useRef<HTMLPreElement>(null);
   const [text, setText] = useState('');
@@ -51,9 +63,16 @@ export function LogStream({ wsPath, onClosed }: { wsPath: string; onClosed?: () 
       pending += String(e.data);
       if (!raf) raf = requestAnimationFrame(flush);
     };
-    ws.onclose = () => onClosed?.();
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+    };
+    ws.onclose = (e) => onClosed?.(e.code, opened);
     return () => {
       if (raf) cancelAnimationFrame(raf);
+      // Leaving is not the stream ending: closing our end must not report it as if the
+      // server had finished.
+      ws.onclose = null;
       try {
         ws.close();
       } catch {

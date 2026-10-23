@@ -1,0 +1,25 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright (C) 2026 OpenMasjid-Solutions */
+/*
+ * The whole design system in one import — this is what another OpenMasjid app
+ * pulls in (`@openmasjid/ui/styles.css`).
+ *
+ * ORDER IS LOAD-BEARING and is the reason this file exists rather than a list in
+ * each app's entry point:
+ *   1. the two self-hosted families, before anything sets font-family;
+ *   2. index.css — Tailwind itself plus the `@theme inline` bridge;
+ *   3. tokens.css — the token values, which must come AFTER Tailwind so its
+ *      `:root` output cannot win over ours;
+ *   4. glass.css, then app.css — component styling built on the tokens.
+ *
+ * Getting that order wrong does not error; it silently renders the wrong theme.
+ * OpenMasjidOS imports this same file (see main.tsx) rather than keeping its own
+ * copy of the list, so the path every other app uses is the one that is actually
+ * exercised on every build. An export nobody dogfoods is an export nobody tests.
+ */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/space-grotesk";
+@import "../index.css";
+@import "./tokens.css";
+@import "./glass.css";
+@import "./app.css";

@@ -46,6 +46,9 @@ button {
   white-space: nowrap;
   border: 0;
 }
+/* An icon that points along the reading direction — Back, a breadcrumb's "next" —
+   turns round when the page reads right to left. */
+[dir="rtl"] .flip-rtl { transform: scaleX(-1); }
 
 /* ── Ambient scene ──────────────────────────────────────────────────────── */
 .scene {
@@ -227,31 +230,6 @@ button {
   transition: transform var(--dur-micro) var(--ease-settle);
 }
 .profile-btn:hover { transform: scale(1.06); }
-.menu {
-  position: absolute;
-  inset-inline-end: 1.25rem;
-  inset-block-start: 3.6rem;
-  min-width: 14rem;
-  padding: 0.4rem;
-  border-radius: var(--radius-card);
-  z-index: 60;
-}
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  width: 100%;
-  padding: 0.45rem 0.6rem;
-  border: 0;
-  background: transparent;
-  border-radius: 0.55rem;
-  color: var(--color-ink);
-  text-align: start;
-  font-size: 0.9rem;
-}
-.menu-item svg { flex-shrink: 0; }
-.menu-item:hover { background: var(--color-surface-hover); }
-.menu-sep { height: 1px; background: var(--color-border); margin: 0.3rem 0; }
 .menu-version {
   padding: 0.4rem 0.6rem 0.2rem;
   font-size: 0.72rem;
@@ -385,12 +363,6 @@ button {
 .app-card__menu-wrap {
   position: relative;
 }
-.app-card__menu {
-  position: absolute;
-  inset-inline-end: 0;
-  inset-block-start: 2.4rem;
-  min-width: 10.5rem;
-}
 
 /* ── Tags / badges ──────────────────────────────────────────────────────── */
 .tag {
@@ -403,6 +375,40 @@ button {
 }
 .tag--official { background: var(--color-primary-subtle); color: var(--color-primary); }
 .tag--custom { background: var(--color-gold-subtle); color: var(--color-gold); }
+.tag--review { background: var(--color-danger-subtle); color: var(--color-danger-ink); }
+
+/* ── Held-for-review app ────────────────────────────────────────────────── */
+/* An app whose compose arrived via a restore and did not pass the risk gate.
+   The findings are quoted from the gate, so they are set apart from our own
+   prose — an admin is being asked to agree to them and needs to see where they
+   end. Not monospaced: they are sentences ("Volume "x" attaches to another
+   OpenMasjid app's data"), not code, and a mono face made them read as an error
+   dump rather than as something to weigh. */
+.app-review__panel {
+  border-inline-start: 3px solid var(--color-danger);
+}
+.app-review__reasons {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.8rem;
+  /* --radius-button, not --radius-sm. Originally because Tailwind's default
+     theme defines --radius-sm (0.25rem), so a `var(--radius-sm, 0.5rem)`
+     fallback never rendered and the corner silently came out at a quarter rem.
+     Since Slice 2 we define --radius-sm ourselves as calc(--radius - 4px) = 6px,
+     so the hazard is gone — but --radius-button stays the honest name for
+     "the radius a control uses". */
+  border-radius: var(--radius-button);
+  background: var(--color-danger-subtle);
+  color: var(--color-ink);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  /* Logical, so the bullets sit on the correct side in RTL. */
+  padding-inline-start: 1.75rem;
+  list-style: disc;
+}
+.app-review__reasons li + li { margin-block-start: 0.35rem; }
+/* A gate finding can name a long volume or host path; wrap rather than
+   overflow the dialog. */
+.app-review__reasons li { overflow-wrap: anywhere; }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 .btn {
@@ -442,9 +448,22 @@ button {
   pointer-events: none;
 }
 .btn--primary:hover::after { transform: translateX(130%); }
+/* The sweep travels with the reading direction, so in RTL it runs right-to-left
+   and the gradient is mirrored about the vertical (115deg -> 245deg) to keep the
+   bright leading edge at the front of the travel. Purely cosmetic — a sheen is
+   not an affordance — but a highlight moving against the text reads as wrong,
+   and it costs two rules. */
+[dir="rtl"] .btn--primary::after {
+  background: linear-gradient(245deg, transparent 35%, rgba(255, 255, 255, 0.45) 50%, transparent 65%);
+  transform: translateX(130%);
+}
+[dir="rtl"] .btn--primary:hover::after { transform: translateX(-130%); }
 .btn--ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--color-border); }
 .btn--ghost:hover { background: var(--color-surface-hover); }
-.btn--danger { background: var(--color-danger); color: #fff; }
+/* Ink comes from a token, not a literal #fff: on dark's --color-danger
+   (#F87171) white measures 2.77:1, well under AA — on the Remove-app and
+   "Start anyway" buttons. See --color-on-danger in tokens.css. */
+.btn--danger { background: var(--color-danger); color: var(--color-on-danger); }
 .btn--danger:hover { filter: brightness(1.08); }
 .btn--sm { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
 .btn--block { width: 100%; }
@@ -509,6 +528,13 @@ button {
   background: #fff;
   transition: transform var(--dur-settle) var(--ease-settle);
 }
+/* The thumb is positioned with `inset-inline-start` (logical, correct) but was
+   moved with `transform: translateX(+1.2rem)`, which is PHYSICAL. In RTL the
+   thumb starts at the inline end — the right edge — and translating right again
+   walked it straight out of the track. Exactly the bug shadcn's own Switch
+   shipped with, in our own component, across 17 toggles in Settings and on the
+   app page. Kept as a transform rather than animating `inset` so it stays on
+   the compositor; only the sign follows the writing direction. */
 .toggle.is-on::after { transform: translateX(1.2rem); }
 [dir="rtl"] .toggle.is-on::after { transform: translateX(-1.2rem); }
 
@@ -638,6 +664,9 @@ button {
   padding: 0.7rem 1rem;
   cursor: grab;
   user-select: none;
+  /* A finger on the title bar drags the window instead of scrolling the page, which is
+     what turned every touch drag into a pointercancel. */
+  touch-action: none;
   border-block-end: 1px solid var(--color-border);
   flex-shrink: 0;
 }
@@ -1125,3 +1154,102 @@ button {
     background: var(--glass-bg-inset);
   }
 }
+
+/* ── shadcn primitives: direction corrections ───────────────────────────── */
+/* Upstream shadcn moves the Switch thumb with a PHYSICAL `translate-x`. In RTL
+   the track mirrors (flex follows `dir`), so the thumb starts at the inline
+   end and a positive translateX walks it out of the track entirely. The two
+   utilities are removed from components/ui/switch.tsx and the travel happens
+   here instead — still a transform, so still compositor-cheap, but with a sign
+   that follows the writing direction. `translate` (not `transform`) so it
+   composes with anything Radix sets. */
+[data-slot='switch-thumb'] { translate: 0 0; }
+[data-slot='switch'][data-state='checked'] [data-slot='switch-thumb'] {
+  translate: calc(100% - 2px) 0;
+}
+[dir='rtl'] [data-slot='switch'][data-state='checked'] [data-slot='switch-thumb'] {
+  translate: calc(-100% + 2px) 0;
+}
+
+/* ── Design-system gallery (/design-system) ─────────────────────────────── */
+.ds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+.ds-pane {
+  /* Each pane carries its own data-theme, so it must paint its own background
+     rather than letting the page's theme show through. */
+  background: var(--color-surface);
+  color: var(--color-ink);
+  padding: 1rem 1.1rem;
+}
+.ds-pane__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-block-end: 0.9rem;
+  padding-block-end: 0.5rem;
+  border-block-end: 1px solid var(--color-border);
+  font-family: var(--font-display);
+  text-transform: capitalize;
+}
+.ds-pane__dir {
+  font-size: 0.75rem;
+  color: var(--color-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ds-row { margin-block-end: 1rem; }
+.ds-row__meta { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: baseline; }
+.ds-row__name { font-size: 0.85rem; color: var(--color-primary); }
+.ds-row__note { font-size: 0.75rem; color: var(--color-ink-muted); }
+.ds-row__demo { margin-block-start: 0.5rem; display: grid; gap: 0.5rem; }
+.ds-demo-line { display: flex; align-items: center; gap: 0.6rem; }
+
+/* Radix portals every dropdown to the document root, where shadcn gives it
+   `z-50`. That is the same layer as the dock and BELOW the modal (250) and the
+   window manager (260), so a menu opened from inside either would be painted
+   behind it. Lift the portalled content above all of them — a menu belongs to
+   whatever opened it, and a menu on the page behind a modal is dismissed by the
+   modal anyway. */
+[data-slot='dropdown-menu-content'] { z-index: 300; }
+.ds-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-block-end: 1rem; }
+
+/* A checkbox and its label. `align=start` for labels long enough to wrap, so
+   the box sits with the first line instead of the paragraph's middle. */
+/* 1rem block margin is the default because three of the six call sites had it
+   inline; the two that sit inside an already-spaced panel pass `flush`. */
+.check-field { display: flex; gap: 0.5rem; align-items: center; margin-block: 1rem; }
+.check-field[data-flush] { margin-block: 0; }
+.check-field[data-align='start'] { align-items: flex-start; }
+.check-field[data-align='start'] [data-slot='checkbox'] { margin-block-start: 0.2rem; }
+
+/* ── shadcn DropdownMenu, wearing this product's clothes ─────────────────── */
+/* The primitive ships its own design system: `border` + `rounded-md` + `p-1`
+   for the panel and `px-2 py-1.5 text-sm` for the items. Ours is `.menu` /
+   `.menu-item` — 0.4rem panel padding, a --radius-card corner, roomier rows.
+   When the two hand-rolled menus moved onto Radix they kept `.glass-raised`
+   (so the glass and the corner survived) but LOST `.menu` and `.menu-item`,
+   which is why the rows tightened and a second 1px edge appeared inside
+   `.glass-raised::after`'s ring.
+   Restyled here, against the data-slot attributes, rather than by editing
+   components/ui/dropdown-menu.tsx — so `shadcn add dropdown-menu` stays
+   re-runnable and the fix cannot be clobbered by a regeneration. */
+[data-slot='dropdown-menu-content'] {
+  min-width: 14rem;
+  padding: 0.4rem;
+  /* .glass-raised::after already draws the edge; shadcn's `border` put a
+     second one just inside it. */
+  border-style: none;
+}
+[data-slot='dropdown-menu-item'] {
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.55rem;
+  font-size: 0.9rem;
+  color: var(--color-ink);
+}
+[data-slot='dropdown-menu-item'][data-variant='destructive'] { color: var(--color-danger); }
+[data-slot='dropdown-menu-separator'] { margin-block: 0.3rem; background: var(--color-border); }
+[data-slot='dropdown-menu-label'] { padding: 0.45rem 0.6rem; color: var(--color-ink-muted); }

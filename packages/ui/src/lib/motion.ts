@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Shared Motion presets so transitions feel consistent (CLAUDE.md §14). Motion
- * automatically honors prefers-reduced-motion when the user's OS asks for it,
- * and our global CSS collapses transitions too.
+ * Shared Motion presets so transitions feel consistent (CLAUDE.md §14). Motion does
+ * NOT honour prefers-reduced-motion by itself — App.tsx's `MotionConfig
+ * reducedMotion="user"` is what makes these presets respect it — and our global CSS
+ * collapses CSS transitions too.
  */
 import type { Variants, Transition } from 'motion/react';
 

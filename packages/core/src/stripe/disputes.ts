@@ -10,8 +10,9 @@
  * would either double-fire or, if that app happened to be stopped, never fire at all
  * — and chargebacks arrive days or weeks after the payment, when the app may well be
  * off. A webhook would also need a publicly reachable platform route, and
- * `CLAUDE.md §15` allows exactly two public routes over the tunnel
- * (`/api/public/appearance`, `/api/public/logo`); adding a third would breach that,
+ * `CLAUDE.md §15` keeps those to presentation assets that carry nothing and the one
+ * address that does nothing without a ticket the platform itself minted
+ * (`/_omos/open`); a route accepting Stripe's POSTs from anyone would breach that,
  * and would still leave every LAN-only masjid with no alerts at all. Polling is
  * outbound-only, needs no new attack surface, works on a box with no remote access,
  * and requires no change to any app. The cost is latency — up to one poll interval —
@@ -119,7 +120,7 @@ export function formatAmount(amount: number | null, currency: string | null): st
       maximumFractionDigits: decimals,
     }).format(value);
   } catch {
-    // Unknown/blank currency code — still show the number rather than nothing.
+    // Unknown currency code — still show the number rather than nothing.
     return `${value.toFixed(decimals)}${code ? ` ${code}` : ''}`;
   }
 }
@@ -152,7 +153,7 @@ export function reasonText(reason: string | null): string {
   return REASONS[reason] ?? `The reason given was "${reason.replace(/_/g, ' ')}".`;
 }
 
-/** A deadline in plain words: "by 14 August 2026". Null when there isn't one. */
+/** A deadline in plain words: "14 August 2026". Null when there isn't one. */
 export function formatDueBy(dueBy: number | null): string | null {
   if (dueBy == null) return null;
   const ms = dueBy * 1000;
@@ -205,7 +206,13 @@ export async function fetchDisputes(secretKey: string): Promise<FetchResult> {
       }
       return { ok: false, disputes: [], error: detail };
     }
-    return { ok: true, disputes: parseDisputeList(await res.json()) };
+    const body: unknown = await res.json();
+    // A 200 with no list is not "no disputes": recorded as that, a first check would mark
+    // the account checked with nothing seen, and the next real answer would alert its history.
+    if (!Array.isArray((body as { data?: unknown } | null)?.data)) {
+      return { ok: false, disputes: [], error: 'Stripe answered without a list of disputes' };
+    }
+    return { ok: true, disputes: parseDisputeList(body) };
   } catch (err) {
     const aborted = (err as Error).name === 'AbortError';
     return { ok: false, disputes: [], error: aborted ? 'Stripe did not respond in time' : (err as Error).message };

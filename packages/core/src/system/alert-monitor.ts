@@ -7,6 +7,7 @@
  * only records state (no boot-time noise). deliverAlert() gates on the admin's
  * granular on/off + sends to the admin email + webhook.
  */
+import { isUpdating } from './update-lock';
 import { listInstalledWithHealth } from '../apps/manager';
 import { deliverAlert } from '../notify/alerts';
 import { appOffline } from '../notify/alert-copy';
@@ -18,6 +19,12 @@ const wasRunning = new Map<string, boolean>();
 let primed = false;
 
 async function tick(): Promise<void> {
+  // A restore pauses every app on purpose and starts them again at its end; each looked
+  // like an outage, and the alert told the admin to press Start — over data still being
+  // put back. An app that does not come back is named by the restore itself — its window
+  // and the report the dashboard shows after the restart (system/restore.ts) — since the
+  // first check after a restart only records what it finds.
+  if (isUpdating('restore')) return;
   let apps;
   try {
     const r = await listInstalledWithHealth();

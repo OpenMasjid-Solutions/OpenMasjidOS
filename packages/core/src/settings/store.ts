@@ -73,6 +73,16 @@ export interface CloudflareConfig {
   enabled: boolean;
   /** The public domain the tunnel serves, e.g. "omos.example.org" (no scheme). */
   domain: string;
+  /**
+   * Serve the DASHBOARD over the tunnel, not just app paths (system/remote-admin.ts).
+   *
+   * Off by default, and absent in every settings.json written before this existed
+   * — so an upgrade can never switch it on. Turning it on requires two-step
+   * sign-in to be enrolled, and it stops taking effect the moment that is removed,
+   * because `remoteAdminEnabled()` re-reads both on every request rather than
+   * trusting what was true when the switch was flipped.
+   */
+  remoteAdmin: boolean;
 }
 
 export interface PlatformSettings {
@@ -119,7 +129,7 @@ const DEFAULTS: PlatformSettings = {
     lastMessage: '',
     lastBackupName: '',
   },
-  cloudflare: { enabled: false, domain: '' },
+  cloudflare: { enabled: false, domain: '', remoteAdmin: false },
 };
 
 /** Merge persisted settings over defaults so a settings.json written by an older
@@ -143,13 +153,21 @@ function withDefaults(s: Partial<PlatformSettings>): PlatformSettings {
 
 let cache: PlatformSettings = withDefaults(readJson(SETTINGS_PATH, {} as Partial<PlatformSettings>));
 
+/** Re-read the settings from disk — for a restore, which replaces it under this process. */
+export function reloadSettings(): void {
+  cache = withDefaults(readJson(SETTINGS_PATH, {} as Partial<PlatformSettings>));
+}
+
 export function getSettings(): PlatformSettings {
   return cache;
 }
 
 export function updateSettings(patch: Partial<PlatformSettings>): PlatformSettings {
-  cache = { ...cache, ...patch };
-  writeJson(SETTINGS_PATH, cache);
+  const next = { ...cache, ...patch };
+  writeJson(SETTINGS_PATH, next);
+  // Believed only once it is on disk: a write the disk refused must not stay in
+  // effect until the next restart and then silently revert.
+  cache = next;
   return cache;
 }
 

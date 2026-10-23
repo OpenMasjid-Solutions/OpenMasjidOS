@@ -3,13 +3,17 @@
 /**
  * App detail: status, lifecycle controls, and logs for one installed app.
  */
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ExternalLink, Play, Square, RotateCw, RefreshCw, Globe } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Play, Square, RotateCw, RefreshCw, Globe, ShieldAlert } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { openApp, appInitial } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Toggle } from '../components/Toggle';
+import { AppReviewDialog } from '../components/AppReviewDialog';
+import { TAG } from '../components/AppCard';
 import { useToast } from '../components/ToastProvider';
 
 export function AppDetail() {
@@ -18,6 +22,8 @@ export function AppDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const utils = trpc.useUtils();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [riskAck, setRiskAck] = useState(false);
 
   // Seed from the warm apps.list cache (getInstalled returns the same row shape)
   // so the header paints instantly while the fresh fetch lands.
@@ -35,9 +41,23 @@ export function AppDetail() {
     utils.apps.get.invalidate({ id });
     utils.apps.list.invalidate();
   };
-  const start = trpc.apps.start.useMutation({ onSuccess: onChange });
-  const stop = trpc.apps.stop.useMutation({ onSuccess: onChange });
-  const restart = trpc.apps.restart.useMutation({ onSuccess: onChange });
+  const start = trpc.apps.start.useMutation({
+    onSuccess: () => {
+      onChange();
+      setReviewOpen(false);
+      setRiskAck(false);
+    },
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  // A refusal — Docker's, a restore or an update in the way, a hold for review — is said.
+  const stop = trpc.apps.stop.useMutation({
+    onSuccess: onChange,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
+  const restart = trpc.apps.restart.useMutation({
+    onSuccess: onChange,
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
+  });
 
   // Whether this app is reachable from the internet lives in Settings → Remote
   // access, which an admin who skipped the question at install has no reason to
@@ -52,7 +72,7 @@ export function AppDetail() {
       onChange();
       toast(r.exposed ? t('settings.cfExposedOn') : t('settings.cfExposedOff'), 'success');
     },
-    onError: (e) => toast(e.message || t('errors.generic'), 'error'),
+    onError: (e) => toast(errorText(e, t('errors.generic')), 'error'),
   });
 
   if (appQuery.isLoading) {
@@ -79,10 +99,12 @@ export function AppDetail() {
     );
   }
 
+  const tag = TAG[app.kind] ?? TAG.custom;
+
   return (
     <Page>
       <button className="btn btn--ghost btn--sm" onClick={() => navigate('/')} style={{ marginBottom: '1rem' }}>
-        <ArrowLeft size={15} /> {t('appDetail.back')}
+        <ArrowLeft size={15} className="flip-rtl" /> {t('appDetail.back')}
       </button>
 
       <div className="glass-raised panel" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -94,12 +116,35 @@ export function AppDetail() {
           <div className="app-meta">
             <span className={`status-dot ${app.running ? '' : 'status-dot--idle'}`} />
             {app.running ? t('appDetail.running') : t('appDetail.stopped')}
-            <span className={`tag ${app.kind === 'custom' ? 'tag--custom' : 'tag--official'}`}>
-              {app.kind === 'custom' ? t('tags.custom') : t('tags.official')}
-            </span>
+            {/* The card's own tags, so a community app is not called "Official" here. */}
+            <span className={`tag ${tag.cls}`}>{t(tag.key)}</span>
           </div>
         </div>
       </div>
+
+      {app.review && (
+        <div className="glass panel app-review__panel">
+          <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <ShieldAlert size={18} />{' '}
+            {t(app.review.kind === 'refusal' ? 'appReview.panelTitleRefused' : 'appReview.panelTitle')}
+          </h2>
+          <p>
+            {t(
+              app.review.kind === 'refusal'
+                ? 'appReview.bodyRefusal'
+                : app.review.kind === 'unreadable'
+                  ? 'appReview.bodyUnreadable'
+                  : 'appReview.bodyDanger',
+            )}
+          </p>
+          <ul className="app-review__reasons">
+            {app.review.reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+          <p>{t(app.review.kind === 'refusal' ? 'appReview.refusedNext' : 'appReview.provenance')}</p>
+        </div>
+      )}
 
       <div className="glass panel">
         <h2 className="panel-title">{t('appDetail.controls')}</h2>
@@ -112,11 +157,33 @@ export function AppDetail() {
               <button className="btn" onClick={() => stop.mutate({ id })}><Square size={16} /> {t('actions.stop')}</button>
               <button className="btn" onClick={() => restart.mutate({ id })}><RotateCw size={16} /> {t('actions.restart')}</button>
             </>
+          ) : app.review ? (
+            // Held for review: the same consent step the card offers, never a
+            // plain Start. This is the page an admin lands on to investigate,
+            // so the reason is spelled out above rather than only in a tooltip.
+            <button className="btn btn--danger" onClick={() => setReviewOpen(true)}>
+              <ShieldAlert size={16} />{' '}
+              {app.review.kind === 'refusal' ? t('appReview.whyBlocked') : t('appReview.startAnyway')}
+            </button>
           ) : (
             <button className="btn" onClick={() => start.mutate({ id })}><Play size={16} /> {t('actions.start')}</button>
           )}
         </div>
       </div>
+
+      <AppReviewDialog
+        open={reviewOpen}
+        appName={app.name}
+        review={app.review}
+        pending={start.isPending}
+        acknowledged={riskAck}
+        onAcknowledgedChange={setRiskAck}
+        onConfirm={() => start.mutate({ id, acknowledgeRisk: true })}
+        onClose={() => {
+          setReviewOpen(false);
+          setRiskAck(false);
+        }}
+      />
 
       {route && (
         <div className="glass panel">

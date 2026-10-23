@@ -123,6 +123,18 @@ test('arm64 is built natively, never under emulation', () => {
   }
 });
 
+test('each image is started, and answers /api/health, before anything is published', () => {
+  // The core's bundle leaves every package external, so a dependency missing from the
+  // runtime image builds cleanly and fails only when node starts — on a masjid's box.
+  const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'docker-build.yml'), 'utf8');
+  const smoke = /curl [^\n]*\/api\/health/.exec(wf);
+  assert.ok(smoke, 'the build job must start the image and wait for /api/health');
+  assert.ok(smoke.index < wf.indexOf('push-by-digest=true'), 'and before the image is pushed');
+  // The runtime image takes the core's own production dependencies, not the workspace's.
+  const df = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'Dockerfile'), 'utf8');
+  assert.match(df, /COPY --from=deps \/app\/node_modules /);
+});
+
 test(':latest is published from exactly one place — a non-prerelease release tag', () => {
   // `is_default_branch` reads like "only master pushes", but it is ALSO true on a tag
   // push, so `:latest` was written twice per release from two independent builds of the
@@ -414,7 +426,7 @@ test('the Development channel reports updates exactly like Stable', () => {
   assert.match(src, /channelMismatch && latest != null/, 'a channel move still needs a version to move to');
   // A prerelease must survive the VERSION-file sanity check, or dev reads its own
   // version file as junk and goes quiet — silently, since the check fails soft.
-  const re = /if \(\/(\^.*?)\/\.test\(raw\)\) latest = raw;/.exec(src);
+  const re = /if \(\/(\^.*?)\/\.test\(raw\)\) return raw;/.exec(src);
   assert.ok(re, 'the VERSION sanity regex must still be there');
   assert.match('0.50.0-dev.12', new RegExp(re[1]!), 'a prerelease must be accepted');
   assert.match('0.50.0', new RegExp(re[1]!), 'and so must a plain release');

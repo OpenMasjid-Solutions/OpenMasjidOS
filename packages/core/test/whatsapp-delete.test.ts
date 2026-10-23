@@ -152,7 +152,7 @@ test('COMMANDS: delete empties the authorised-sender list', () => {
 // ── ordering and completeness, pinned structurally ───────────────────────────────
 
 test('THE GATEWAY IS UNLINKED VIA /logout — the only route that frees the phone', () => {
-  const src = read('notify', 'whatsapp.ts');
+  const src = read('notify', 'whatsapp-gateway.ts');
   assert.match(src, /\/logout/, 'unlinkSession must call the logout route');
   // stop and delete only release things LOCALLY: the device stays listed under Linked
   // Devices on the handset, and once the container is gone nothing here can revoke it.
@@ -205,7 +205,11 @@ test('the runtime clear is SEPARATE from the test-only pacing reset', () => {
   assert.match(src, /export function __resetPacingForTests/);
   const clear = src.slice(src.indexOf('export function clearWhatsAppRuntime'));
   assert.match(clear, /outcomes\.length = 0/, 'the delete path must clear outcomes');
-  assert.match(clear, /lidPhones\.clear\(\)/, 'and the privacy-id cache');
+  // The privacy-id cache lives with the gateway client, which clears it for this path.
+  assert.match(clear, /clearGatewayCaches\(\)/, 'and the gateway client caches');
+  const gateway = read('notify', 'whatsapp-gateway.ts');
+  const gatewayClear = gateway.slice(gateway.indexOf('export function clearGatewayCaches'));
+  assert.match(gatewayClear, /lidPhones\.clear\(\)/, 'which include the privacy-id cache');
 });
 
 test('the inbound socket is reconciled, never hard-stopped', () => {

@@ -2,6 +2,18 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /** Helpers for the file explorer's streaming endpoints (download/upload). */
 import { getCsrf, withKey } from './session';
+import { isRemoteSession } from './apps';
+import { ShownError } from './errors';
+
+/**
+ * The largest request Cloudflare's free plan carries through the tunnel. From outside the
+ * masjid nothing larger can be uploaded at all — Cloudflare answers with its own error
+ * page — so the dashboard says so up front instead of "Something went wrong".
+ */
+export const REMOTE_UPLOAD_LIMIT = 100 * 1024 * 1024;
+
+/** Thrown for a file that cannot be sent from outside the masjid. */
+export class TooBigFromOutside extends Error {}
 
 export function filesDownloadUrl(p: string): string {
   return withKey(`/api/files/download?path=${encodeURIComponent(p)}`);
@@ -28,6 +40,7 @@ export function fileKind(name: string): FileKind {
 }
 
 export async function uploadFile(dir: string, file: File): Promise<void> {
+  if (isRemoteSession() && file.size > REMOTE_UPLOAD_LIMIT) throw new TooBigFromOutside();
   const fd = new FormData();
   fd.append('file', file);
   const res = await fetch(`/api/files/upload?path=${encodeURIComponent(dir)}`, {
@@ -37,8 +50,13 @@ export async function uploadFile(dir: string, file: File): Promise<void> {
     body: fd,
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({ error: 'Upload failed' }))) as { error?: string };
-    throw new Error(body.error ?? 'Upload failed');
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    // Not our answer: Cloudflare's own page, almost always its size limit.
+    if (!body && isRemoteSession() && res.status === 413) throw new TooBigFromOutside();
+    // Our server's own words when it sent some; an empty message lets the caller say it
+    // in the dashboard's own words. A connection that failed outright never gets here —
+    // the caller shows its fallback for that (lib/errors.ts).
+    throw new ShownError(body?.error ?? '');
   }
 }
 

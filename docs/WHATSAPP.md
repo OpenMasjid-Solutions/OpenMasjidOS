@@ -32,7 +32,7 @@ app is not in the App Store and WhatsApp does not exist anywhere in OpenMasjidOS
 1. **Switch on “Send messages over WhatsApp.”** A warning appears first, explaining that
    this uses an unofficial client and that the number can be restricted. Accepting it
    turns the feature on and makes the gateway installable.
-2. **Install the gateway.** The panel offers **Install the gateway**, which takes you
+2. **Install OpenWA.** The panel offers **Install OpenWA**, which takes you
    straight to OpenWA's install questions. Set an **API key** there and keep it.
 3. **Paste that same API key** back in Settings → WhatsApp (it is the `OPENWA_API_KEY`
    setting, which OpenWA reads as `API_MASTER_KEY`). Leave *Gateway address* empty — an
@@ -236,7 +236,13 @@ something is waiting, a plain `yes` or `no` is enough to confirm.
   every member of an announcement group would have the restart button.
 - **A number that is not on the list gets no reply whatsoever.** Not even "you're not allowed".
   Answering would tell a stranger this number runs your server, and would spend the sending
-  allowance your fee reminders need.
+  allowance your fee reminders need. Someone on the list with **nothing ticked yet** gets the
+  same silence until you tick something for them; they stay on the list meanwhile.
+- **A question you were asked only answers itself.** If a confirmation is waiting and you send a
+  different command, the confirmation is dropped, so a stray "ok" later cannot run it.
+- **`!os updates` says when it could not check an app**, rather than calling it up to date, and
+  `!os update 1` means the first app in the list it just showed you. If an app updates but then
+  will not stay running, `!os update` tells you so.
 - **Anything that changes something is also emailed to you** (Settings → Alerts → "Something was
   changed from WhatsApp"). There is one admin account, so this is your record of who did what.
 - Replies are in English, whatever your dashboard language — the same limitation the alert
@@ -266,6 +272,7 @@ request*, which does nothing about two requests overlapping.
 | Presence | online while working, offline when idle | A permanently-online number that never reads anything looks like what it is |
 | Number validation | before first contact | Messaging numbers not on WhatsApp is a documented ban signal |
 | Retry on a transient failure | up to 5 attempts, widening backoff | A 429 or a restarting gateway is a "not yet", not a "no" |
+| A send that times out | **not** retried; `failed`, "may have arrived" | Sends get 120 s; one still unanswered has usually been delivered, and a retry put up to five copies into a group |
 | Rate caps | **none** | Removed — see below |
 | Cooldowns | **none** | Removed — see below |
 | Gap between messages | **none** | Removed — see below |
@@ -480,6 +487,11 @@ Rules that are not negotiable:
   can now **ask what became of it**: the `202` carries an `id`, and
   `GET /api/fabric/whatsapp/status/<id>` answers `queued` / `sent` / `failed` / `expired`
   with a reason. Scoped to your own app’s messages.
+  - **`failed` does not always mean "not delivered".** A send the gateway did not answer within
+    two minutes is reported `failed` with a reason saying it may have arrived, and it is never sent
+    again — a second copy in a parents' group is the worse mistake. Don't resend it automatically.
+  - **A number must carry its country code and must not start with 0** (`07700 900123`,
+    `0044 7700 900123`); such a number is refused with `400` when you send, never queued.
   - **The history is bounded per app, not globally: the most recent 500 of *your* messages,
     for up to 24 hours.** Another app's traffic cannot evict your records — a shared 200-record
     ring did allow exactly that until v0.51.1-dev.8, so one app messaging a large roster wiped
@@ -522,10 +534,10 @@ docker logs --tail 200 openmasjid-core | grep -i whatsapp
 
 | What you see | What it means |
 |---|---|
-| *Cannot reach the gateway — OpenWA is not installed* | Install it from the App Store |
-| *Cannot reach the gateway — OpenWA is installed but not running* | Press **Start it** in Settings → WhatsApp. The gateway is deliberately kept off your dashboard and out of the dock, so that is the only Start button for it |
-| *Cannot reach the gateway — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
-| *Cannot reach the gateway — the gateway address could not be found* | Only possible with a typed-in *Gateway address*; check the hostname |
+| *Cannot reach OpenWA — OpenWA is not installed* | Install it from the App Store |
+| *Cannot reach OpenWA — OpenWA is installed but not running* | Press **Start it** in Settings → WhatsApp. The gateway is deliberately kept off your dashboard and out of the dock, so that is the only Start button for it |
+| *Cannot reach OpenWA — nothing is listening at the gateway address* | OpenWA is up but not answering on the port it publishes; check its own log |
+| *Cannot reach OpenWA — the gateway address could not be found* | Only possible with a typed-in *OpenWA address*; check the hostname |
 | *The gateway rejected the API key* | Re-paste the key you set when installing OpenWA. Remember it is only read on OpenWA's **first** boot — if you changed it in Settings, reinstall OpenWA instead |
 | *No connection created yet* | The gateway is up but nothing exists on it; pressing **Get a code** creates and starts it |
 | *The gateway is still connecting* | The session was just started and its engine is not up yet. Wait a few seconds and press **Get a code** again |

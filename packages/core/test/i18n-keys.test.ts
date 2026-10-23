@@ -83,6 +83,17 @@ test('every static t() key the UI uses exists in en.json', () => {
   );
 });
 
+test('the accent and wallpaper names in prefs.ts are keys that exist', () => {
+  // Each `label` there is an en.json key, translated where it is shown (`t(a.label)`),
+  // which the scan above cannot follow — so the table itself is checked.
+  const defined = leafKeys(en);
+  const prefs = fs.readFileSync(path.join(UI, 'lib', 'prefs.ts'), 'utf8');
+  const labels = [...prefs.matchAll(/\blabel: '([^']+)'/g)].map((m) => m[1]!);
+  assert.ok(labels.length >= 14, `expected the accent and wallpaper tables, found ${labels.length}`);
+  const missing = labels.filter((k) => !defined.has(k));
+  assert.deepEqual(missing, [], 'these names would be shown as the raw key');
+});
+
 test('dynamically-built translation keys stay rare enough to review by hand', () => {
   // A key assembled at runtime cannot be checked by the test above, so each one is a hole.
   // This is not a ban — there are legitimate uses — but the count is pinned so adding one

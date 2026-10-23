@@ -6,8 +6,8 @@
  *
  *   - SSRF defence: calling a private address "public" lets a community app-store URL reach
  *     127.0.0.1 or a cloud metadata endpoint.
- *   - The LAN-only guard: calling a public address "private" hands an internet client the
- *     Fabric routes.
+ *   - The address apps are told to use (system/platform-address.ts): calling a public address
+ *     "private" lets a browser's Host header point every installed app at it.
  *
  * The predecessor got IPv4-mapped IPv6 wrong by knowing only ONE of its spellings — the
  * dotted `::ffff:127.0.0.1` — so `::ffff:7f00:1` was classified as public. Same shape as the

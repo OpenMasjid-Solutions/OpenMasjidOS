@@ -9,6 +9,16 @@
     <meta name="theme-color" content="#020912" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>OpenMasjidOS</title>
+    <script>
+      // The saved theme, before first paint, so a light dashboard does not flash dark
+      // while the app loads (lib/prefs.ts applies the rest). Only the two theme words
+      // are ever written; missing or unreadable storage leaves the dark default.
+      try {
+        var theme = (JSON.parse(localStorage.getItem('omos-prefs') || '{}') || {}).theme;
+        if (theme === 'system') theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

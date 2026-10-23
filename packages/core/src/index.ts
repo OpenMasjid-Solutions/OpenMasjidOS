@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Daemon entry point. One Fastify server hosts everything on one port:
- *   - tRPC over HTTP at /trpc (queries + mutations)
- *   - tRPC over WebSocket at /trpc (live subscriptions, e.g. system stats)
- *   - a couple of plain /api routes (health for the installer, backup download)
- *   - the built React UI as static files, with SPA fallback to index.html
+ * Daemon entry point. Two listeners:
+ *   - the DASHBOARD, over HTTPS on TLS_PORT: tRPC over HTTP and WebSocket at /trpc, the
+ *     dashboard's own /api routes (updates, files, terminals, backup, restore, logo) and
+ *     the built React UI, with SPA fallback to index.html;
+ *   - the FRONT DOOR, plain HTTP on PORT: health and readiness, the LAN-only Fabric routes
+ *     apps call, a redirect to the dashboard for browsers, apps served by path (the
+ *     ingress) — and, when remote administration is on, the gate that hands the remote
+ *     dashboard's requests to the dashboard listener (system/remote-admin.ts).
+ * With no usable certificate the dashboard falls back to plain HTTP on PORT alone.
  */
 import fs from 'node:fs';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyMultipart from '@fastify/multipart';
@@ -23,13 +27,33 @@ import { ensureDir } from './util/json-store';
 import { appRouter, type AppRouter } from './trpc/router';
 import { createContext } from './trpc/context';
 import { dockerReachable } from './docker/client';
-import { backupStream, backupFilename, BackupBusyError } from './system/backup';
+import { backupStream, backupFilename, BackupBusyError, removeBackupLeftovers } from './system/backup';
+import { remoteBackupDownload, sendBackup } from './api/backup-download';
+import { removeRestoreLeftovers } from './system/restore';
 import { startBackupScheduler } from './system/backup-upload';
 import { ensureCloudflared } from './system/cloudflared';
-import { attachIngress } from './system/ingress';
-import { noteRefusal } from './system/tunnel-refusals';
-import { registerFabricTunnelGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
+import { answerBareWorkerFetch, attachIngress, declinedReason, isBareAppAddress, isWorkerScriptFetch } from './system/ingress';
+import { notFoundReason, refuseOverTunnel } from './system/tunnel-refusals';
+import { registerFabricTunnelGuard, registerOriginFormGuard, isViaTunnel, urlHasPrefix } from './system/via-tunnel';
 import { registerStaticUI } from './api/static-ui';
+import {
+  anonymousBodyRefusal,
+  appHostname,
+  claimsDashboardSocket,
+  DASHBOARD_WS_MAX_PAYLOAD,
+  startDashboardHeartbeat,
+  frontDoorDecision,
+  hasRemoteSession,
+  markHandedOver,
+  registerDashboardRequestLimits,
+  registerHandoffOnlyGuard,
+  remoteAdminEnabled,
+  touchesDashboardPath,
+  wasHandedOver,
+} from './system/remote-admin';
+import { trackHandedOverSocket } from './system/remote-sockets';
+import { registerAppOpen } from './system/app-access';
+import { adoptLegacyEmailBinding } from './auth/twofactor';
 import { startAlertMonitor } from './system/alert-monitor';
 import { startUpdateMonitor } from './system/update-monitor';
 import { startAddressMonitor } from './system/address-monitor';
@@ -45,8 +69,7 @@ import { registerRestore } from './api/restore';
 import { registerBranding } from './api/branding';
 import { registerAppUpdate } from './api/app-update';
 import { registerFabric } from './api/fabric';
-import { COOKIE_NAME, getSessionUser } from './auth/sessions';
-import { requestCsrfOk } from './api/ws-auth';
+import { requestCsrfOk, requestUser } from './api/ws-auth';
 import { isAllowedOrigin, isWebSocketUpgrade } from './util/origin';
 
 /** The dashboard server, with TLS when we have a usable cert and plain HTTP when we
@@ -62,6 +85,10 @@ function buildServer(tls: { key: Buffer; cert: Buffer } | null) {
 async function main() {
   ensureDir(CONFIG_DIR);
   ensureDir(APPS_DIR);
+  // An archive and a staging copy a restore never got to remove (system/restore.ts), and the
+  // staging copy of a backup cut off by a restart (system/backup.ts): every app's data, unencrypted.
+  removeRestoreLeftovers();
+  removeBackupLeftovers();
   // Config holds every platform secret (admin password hash, Stripe keys, the
   // Cloudflare tunnel token, the notification webhook). Lock the directory to
   // root-only, so even if an individual secret file is briefly created with the
@@ -77,6 +104,14 @@ async function main() {
   // a stray async error (e.g. a hijacked terminal stream) must never crash it.
   process.on('uncaughtException', (err) => log.error('Uncaught exception (continuing).', err));
   process.on('unhandledRejection', (err) => log.error('Unhandled rejection (continuing).', err));
+
+  // Emailed sign-in codes switched on before they were bound to an address get bound
+  // to where they go now (auth/twofactor.ts says why the binding exists).
+  try {
+    adoptLegacyEmailBinding();
+  } catch (err) {
+    log.warn('Could not record where emailed sign-in codes go.', err);
+  }
 
   // Forced HTTPS: serve the dashboard over TLS. Self-signed by default (a LAN box
   // can't get a public cert), regenerable / replaceable from Settings. `ensureCert`
@@ -102,18 +137,33 @@ async function main() {
     // only covers reading it. That killed the process, and under
     // `restart: unless-stopped` a dead process is a crash-loop with no dashboard
     // left to repair it from. Degrading to plain HTTP keeps the box reachable, and
-    // clearing `tls` also keeps the tunnel refused (it must never carry the
-    // dashboard) and routes us down the HTTP branch below.
+    // clearing `tls` also keeps the tunnel refused (in this fallback the whole dashboard
+    // sits on the tunnel-facing port, unguarded) and routes us down the HTTP branch below.
     log.error(
-      'Could not start the HTTPS listener — falling back to plain HTTP so the dashboard stays reachable. Regenerate the certificate in Settings → Security.',
+      'Could not start the HTTPS listener — falling back to plain HTTP so the dashboard stays reachable. Regenerate the certificate in Settings → Advanced.',
       err,
     );
     tls = null;
     server = buildServer(null);
   }
 
+  // First hook of all: every guard below reads the request target as a path.
+  registerOriginFormGuard(server);
+  // Cloudflare traffic is answered here ONLY when the front door handed it over —
+  // a tunnel pointed at this port by mistake must not walk round the gate.
+  registerHandoffOnlyGuard(server);
+  // tRPC takes JSON only, and a remote stranger's body is counted as it arrives —
+  // both close ways for anyone who can reach the sign-in page to make this process
+  // read an unbounded body into memory (system/remote-admin.ts says how).
+  registerDashboardRequestLimits(server);
   await server.register(fastifyCookie);
-  await server.register(fastifyWebsocket);
+  // Small frames only: the dashboard never sends a big message over a socket, and the
+  // library default (100 MB) let any socket make the daemon buffer and parse that much
+  // per message (system/remote-admin.ts DASHBOARD_WS_MAX_PAYLOAD).
+  await server.register(fastifyWebsocket, { options: { maxPayload: DASHBOARD_WS_MAX_PAYLOAD } });
+  // And a ping on every one of them, or Cloudflare closes a quiet remote terminal
+  // (system/remote-admin.ts DASHBOARD_WS_HEARTBEAT_MS).
+  startDashboardHeartbeat(server.websocketServer);
   await server.register(fastifyMultipart, { limits: { fileSize: 2 * 1024 * 1024 * 1024 } });
 
   // tRPC — HTTP and WebSocket on the same /trpc prefix.
@@ -122,6 +172,9 @@ async function main() {
     useWSS: true,
     trpcOptions: {
       router: appRouter,
+      // One request, at most this many calls. Unlimited, a single batched request could
+      // carry hundreds of sign-in attempts. The dashboard's client splits at 20.
+      maxBatchSize: 40,
       createContext,
       onError({ path, error }) {
         log.error(`tRPC error${path ? ` on "${path}"` : ''}: ${error.message}`);
@@ -132,14 +185,23 @@ async function main() {
 
   // Security headers on every response. frame-ancestors/X-Frame-Options stop the
   // dashboard from being framed by a malicious app on another port (same host =
-  // same-site, so the cookie would ride along) — clickjacking defence. We don't
-  // overwrite a route's own CSP (the file raw-viewer sets a strict sandbox CSP).
-  server.addHook('onSend', async (_req, reply, payload) => {
-    reply.header('X-Frame-Options', 'SAMEORIGIN');
+  // same-site, so the cookie would ride along) — clickjacking defence. A route's own
+  // framing headers win: the raw file viewer's sandbox CSP, and the remote dashboard
+  // page's DENY (api/static-ui.ts), which this used to overwrite with SAMEORIGIN.
+  server.addHook('onSend', async (req, reply, payload) => {
+    if (!reply.getHeader('x-frame-options')) reply.header('X-Frame-Options', 'SAMEORIGIN');
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
     if (!reply.getHeader('content-security-policy')) {
       reply.header('Content-Security-Policy', "frame-ancestors 'self'");
+    }
+    // Nothing the remote dashboard sends is for Cloudflare to keep. Its edge caches
+    // by address alone, and some of these addresses end in .pdf or .png — a file
+    // downloaded from the File Explorer would otherwise be served to the next person
+    // to ask for the same address. The admin's own browser may still cache as usual.
+    if (wasHandedOver(req.raw)) {
+      reply.header('cdn-cache-control', 'no-store');
+      reply.header('cloudflare-cdn-cache-control', 'no-store');
     }
     return payload;
   });
@@ -169,30 +231,12 @@ async function main() {
   // reachable there is no header to detect and this still answers — mitigating THAT is a
   // firewall and a bind address, not a route guard (see docs/SECURITY.md).
   server.get('/api/health', async (req, reply) => {
-    if (isViaTunnel(req)) {
-      const ref = noteRefusal(req.url, {
-      host: String(req.headers.host ?? ''),
-      method: req.method,
-      cfRay: String(req.headers['cf-ray'] ?? ''),
-      accept: String(req.headers.accept ?? ''),
-      agent: String(req.headers['user-agent'] ?? ''),
-    }, 'lan-only-route');
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-    }
+    if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
     return { status: 'ok', version: VERSION };
   });
 
   server.get('/api/ready', async (req, reply) => {
-    if (isViaTunnel(req)) {
-      const ref = noteRefusal(req.url, {
-      host: String(req.headers.host ?? ''),
-      method: req.method,
-      cfRay: String(req.headers['cf-ray'] ?? ''),
-      accept: String(req.headers.accept ?? ''),
-      agent: String(req.headers['user-agent'] ?? ''),
-    }, 'lan-only-route');
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-    }
+    if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
     return { ready: await dockerReachable() };
   });
 
@@ -200,13 +244,20 @@ async function main() {
   // by the session cookie directly (it's a browser download, not a tRPC call).
   server.get('/api/backup', async (req, reply) => {
     if (!isAllowedOrigin(req)) return reply.code(403).send({ error: 'Bad origin.' });
-    const token = req.cookies?.[COOKIE_NAME];
-    if (!getSessionUser(token)) {
+    if (!requestUser(req)) {
       return reply.code(401).send({ error: 'Please sign in.' });
     }
     // The download URL is a plain <a href> (no header), so the dashboard key
     // rides in ?k= — an app that captured the cookie can't forge it.
     if (!requestCsrfOk(req)) return reply.code(403).send({ error: 'This request came from an unexpected place.' });
+    if (wasHandedOver(req.raw)) return remoteBackupDownload(reply);
+    // Listen for the browser leaving BEFORE the backup is made: copying the app data can
+    // take minutes, and a 'close' that fires during them does not fire again
+    // (api/backup-download.ts `sendBackup` says what a missed one costs).
+    let gone = false;
+    reply.raw.once('close', () => {
+      gone = true;
+    });
     // A backup that can't capture everything is refused rather than served as a
     // silently-incomplete file (system/backup.ts). Say so plainly instead of
     // handing the admin an archive they'd trust and later find gaps in.
@@ -217,10 +268,22 @@ async function main() {
       const busy = err instanceof BackupBusyError;
       return reply.code(busy ? 409 : 500).send({ error: (err as Error).message });
     }
-    reply
-      .header('content-type', 'application/gzip')
-      .header('content-disposition', `attachment; filename="${backupFilename()}"`);
-    return reply.send(backup.stream);
+    if (gone) {
+      backup.stream.destroy(); // nobody to send it to: end tar, which clears the flag
+      reply.hijack();
+      return;
+    }
+    // Ended only once tar has said it succeeded (api/backup-download.ts `sendBackup`):
+    // `reply.send(stream)` ended with tar's output, which comes BEFORE tar's verdict, so a
+    // failed backup arrived as a clean, complete-looking file.
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'content-type': 'application/gzip',
+      'content-disposition': `attachment; filename="${backupFilename()}"`,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'private, no-store',
+    });
+    sendBackup(reply.raw, backup);
   });
 
   // WebSocket terminals (root shell + per-app shell), gated by settings + auth.
@@ -235,7 +298,8 @@ async function main() {
   // Backup restore: upload (HTTP) + streamed restore (WebSocket).
   registerRestore(server);
 
-  // Masjid logo upload/clear (admin, LAN-only; the public read is in the Fabric).
+  // Masjid logo upload/clear (admin only — from outside, only through remote
+  // administration's hand-over; the public read is in the Fabric).
   registerBranding(server);
 
   // Catalog app updates streamed over a WebSocket (pull + recreate).
@@ -266,11 +330,50 @@ async function main() {
   // request to the HTTPS dashboard. So browsers are forced to HTTPS while apps and
   // the healthcheck keep working — and a bare URL still leads somewhere.
   async function startHttpFront(): Promise<void> {
+    // NOTE ON `bodyLimit`: Fastify's 1 MB default here applies only to this
+    // listener's OWN routes — the Fabric API, which carries JSON from app backends
+    // (the WhatsApp image route sets its own). Remote dashboard traffic never reaches
+    // this listener's body parser: the gate below hands it, unread, to the dashboard
+    // listener, whose limits apply exactly as they do on the LAN.
     const front = Fastify({ maxParamLength: 5000 });
+    // First hook of all, before the ingress and every guard: each reads the request
+    // target as a path, and a target that is not one walked past them.
+    registerOriginFormGuard(front);
     await front.register(fastifyCookie);
     // Path-based app ingress: omos.<domain>/donate → the Donations container, etc.
     // (one Cloudflare route → here, the OS routes each app by path). Hooks first.
-    attachIngress(front);
+    //
+    // `claimUpgrade` is the ONLY way a non-app WebSocket survives this listener,
+    // and it is deliberately narrow: the dashboard's own sockets, over the tunnel,
+    // while remote administration is on, for a signed-in remote session only
+    // (system/remote-admin.ts DASHBOARD_SOCKETS, `claimsDashboardSocket`).
+    // Anything wider abandons sockets that nothing will answer (system/ingress.ts
+    // says why that matters).
+    //
+    // A claimed socket is HANDED to the dashboard listener — its own upgrade event,
+    // where @fastify/websocket and every route's own checks deal with it exactly as
+    // on the LAN. @fastify/websocket is never registered HERE: it claims every
+    // upgrade on its server, which broke every app's WebSocket over the tunnel
+    // (dev.13–14; system/ingress.ts `claimUpgrade` says how).
+    attachIngress(front, {
+      claimUpgrade: (req, socket, head) => {
+        // The SAME decision the HTTP gate makes (system/remote-admin.ts says why).
+        // Declining is not "leave it": the ingress destroys anything not claimed.
+        const ok = claimsDashboardSocket(req.url ?? '', req.headers, {
+          remoteAdminEnabled: remoteAdminEnabled(),
+          appsHost: appHostname(),
+        });
+        if (!ok) return false;
+        // Recorded, so it is closed the moment the door shuts or its session ends
+        // (system/remote-sockets.ts — a socket outlives the check made at its start); a
+        // full table refuses it like any other. Then marked, so every route behind it
+        // re-checks the door on every use.
+        if (!trackHandedOverSocket(req, socket)) return false;
+        markHandedOver(req);
+        server.server.emit('upgrade', req, socket, head);
+        return true;
+      },
+    });
     // LAN-only guard for the SECRET-GATED Fabric routes (incl. the app-to-app
     // broker at /api/fabric/app/*). App backends always call these server-to-server
     // over the LAN base URL, never through the public tunnel. The not-found handler
@@ -287,36 +390,122 @@ async function main() {
     // treatment as the secret routes. Nothing real breaks: the Docker healthcheck
     // and `install.sh` both call loopback and send no `cf-ray`.
     front.get('/api/health', async (req, reply) => {
-      if (isViaTunnel(req)) {
-        const ref = noteRefusal(req.url, {
-        host: String(req.headers.host ?? ''),
-        method: req.method,
-        cfRay: String(req.headers['cf-ray'] ?? ''),
-        accept: String(req.headers.accept ?? ''),
-        agent: String(req.headers['user-agent'] ?? ''),
-      }, 'lan-only-route');
-        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-      }
+      if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
       return { status: 'ok', version: VERSION };
     });
     front.get('/api/ready', async (req, reply) => {
-      if (isViaTunnel(req)) {
-        const ref = noteRefusal(req.url, {
-        host: String(req.headers.host ?? ''),
-        method: req.method,
-        cfRay: String(req.headers['cf-ray'] ?? ''),
-        accept: String(req.headers.accept ?? ''),
-        agent: String(req.headers['user-agent'] ?? ''),
-      }, 'lan-only-route');
-        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-      }
+      if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
       return { ready: await dockerReachable() };
     });
     registerFabric(front);
+    // Opening an app from the remote dashboard: spends a one-use ticket on the apps'
+    // hostname and hands the browser that app's access token (system/app-access.ts).
+    registerAppOpen(front);
+
+    // ── Remote administration: the dashboard over the tunnel ─────────────────
+    //
+    // THIS LISTENER DOES NOT SERVE THE DASHBOARD. It decides, and hands over.
+    // A permitted remote request goes, unread, to the DASHBOARD listener — the one
+    // the LAN uses — as its own request event. So every part of the dashboard works
+    // remotely the moment it works on the LAN: the File Explorer, terminals,
+    // backups, restore, updates, the logo upload, with the same routes, the same
+    // limits and the same checks, and no second copy of any of them to drift.
+    //
+    // The first version registered tRPC and the built UI on THIS listener instead.
+    // That was a second copy of the dashboard, and only part of one: everything
+    // under /api stayed behind on the LAN listener, which is why "remote access"
+    // could look at the dashboard but not update an app or open a file.
+    //
+    // The gate is an onRequest hook, added AFTER the Fabric guard so that guard
+    // still wins, and it answers every case itself rather than hoping something
+    // downstream does.
+    //
+    // Both no-change cases are preserved exactly:
+    //   - LAN traffic on this plain-HTTP port still 308s to the HTTPS dashboard,
+    //     so nothing starts serving the admin UI over unencrypted HTTP on the
+    //     masjid's own network;
+    //   - tunnel traffic with the feature off still 404s AND still records a
+    //     refusal, so "Recently turned away" keeps working.
+    /** 308 a browser to the HTTPS dashboard. Shared, because two places need it
+     *  and they must not drift. */
+    const toHttps = (req: FastifyRequest, reply: FastifyReply) => {
+      const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
+      if (!host) return reply.code(400).send({ error: 'Bad request.' });
+      const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
+      return reply.code(308).redirect(`https://${target}${req.url}`);
+    };
+
+    front.addHook('onRequest', (req, reply, done) => {
+      // ONE pure decision, shared with the tests (system/remote-admin.ts says why the
+      // first version's hand-built test copy could not be trusted). The door is read
+      // only when the decision can use it — a tunnel request for a dashboard path — so
+      // every app's LAN Fabric call and every public app page skips that work.
+      const viaTunnel = isViaTunnel(req);
+      const d = frontDoorDecision(req.url, req.headers, {
+        viaTunnel,
+        remoteAdminEnabled: viaTunnel && touchesDashboardPath(req.url) && remoteAdminEnabled(),
+        appsHost: appHostname(),
+      });
+      switch (d.kind) {
+        case 'pass':
+          return done();
+        case 'serve': {
+          // A stranger may send a sign-in and a code, and nothing larger: refused here,
+          // unread, when the body says up front that it is bigger than that.
+          const tooBig = hasRemoteSession(req.headers) ? null : anonymousBodyRefusal(req.headers);
+          if (tooBig) return reply.code(tooBig).send({ error: 'That request is too large.' });
+          // Hand the request to the dashboard listener, body unread. Its own hooks run
+          // on it exactly as on the LAN — the request-target guard, the Fabric guard,
+          // the origin check — and every route behind them accepts only a session that
+          // passed the second factor, because the request still carries Cloudflare's
+          // headers (auth/sessions.ts getSessionUserFor). Marked first, because that
+          // mark is how the dashboard listener knows the gate let it in.
+          markHandedOver(req.raw);
+          reply.hijack();
+          server.server.emit('request', req.raw, reply.raw);
+          return;
+        }
+        case 'lan-https':
+          // LAN, on the plain-HTTP front door. REDIRECT HERE, do not fall through.
+          //
+          // This used to fall through, on the reasoning that the not-found handler
+          // below would redirect it — true until this listener started registering
+          // the dashboard's own routes. A REGISTERED route skips the not-found
+          // handler, so `GET /` matched @fastify/static and was served index.html
+          // over plain HTTP on the masjid's LAN. A smoke test against the real
+          // daemon found it; the unit tests' copy of this gate had no static route.
+          return toHttps(req, reply);
+        case 'upgrade':
+          // A tunnel visitor on plain http:// is upgraded, never served in clear.
+          return reply.code(308).redirect(d.to);
+        case 'refuse':
+          return refuseOverTunnel(req, reply, d.reason);
+      }
+    });
+
+    // The security headers the TLS listener sets, on this listener's own answers —
+    // its refusals and redirects. The dashboard's responses come from the dashboard
+    // listener, which sets them itself.
+    front.addHook('onSend', async (_req, reply, payload) => {
+      reply.header('X-Frame-Options', 'SAMEORIGIN');
+      reply.header('X-Content-Type-Options', 'nosniff');
+      reply.header('Referrer-Policy', 'no-referrer');
+      if (!reply.getHeader('content-security-policy')) {
+        reply.header('Content-Security-Policy', "frame-ancestors 'self'");
+      }
+      return payload;
+    });
+
     front.setNotFoundHandler((req, reply) => {
-      // Traffic that arrived through the Cloudflare tunnel for a non-app path: don't
-      // 308-redirect (it would loop the tunnel) and don't expose the dashboard —
-      // just 404. The admin UI stays LAN-only; only app paths are public.
+      // A service worker's script asked for at a bare address gets the worker that removes
+      // itself — here as at a shared app's (system/ingress.ts SELF_REMOVING_WORKER), so a
+      // private app's address, or one with nothing at it, answers exactly the same.
+      if (isBareAppAddress(req.url) && isWorkerScriptFetch(req.headers)) {
+        return answerBareWorkerFetch(req, reply, { record: isViaTunnel(req) });
+      }
+      // Traffic that arrived through the Cloudflare tunnel for something nothing here
+      // serves: don't 308-redirect (it would loop the tunnel) — refuse, with the one
+      // response every refusal sends (system/tunnel-refusals.ts).
       //
       // Uses the SHARED detector, not a hand-rolled one. This line used to be its own
       // `x-forwarded-proto === 'https'` comparison, so the same listener classified
@@ -324,53 +513,13 @@ async function main() {
       // naively, missing `"HTTPS"`, `"https,http"` and a duplicated header (the exact
       // spellings `forwardedProtoIsHttps` exists to catch).
       if (isViaTunnel(req)) {
-        const asked = String(req.headers.host ?? '');
-        // An /api path here is a platform route being probed from outside; anything else
-        // is a visitor at an address where no app is published. Both 404 identically to
-        // the caller — only the record distinguishes them (see system/tunnel-refusals.ts).
-        const raw = req.url.split('?')[0]!;
-        const ref = noteRefusal(
-          req.url,
-          {
-            host: asked,
-            method: req.method,
-            cfRay: String(req.headers['cf-ray'] ?? ''),
-            accept: String(req.headers.accept ?? ''),
-            agent: String(req.headers['user-agent'] ?? ''),
-          },
-          raw.startsWith('/api') ? 'lan-only-route' : 'no-app-at-path',
-        );
-        // A person typing an address deserves a sentence, not a JSON object. Deliberately
-        // says nothing about what IS published here — the whole point of this guard is that
-        // the internet learns nothing about this masjid's platform from a wrong address.
-        if (req.method === 'GET' && String(req.headers.accept ?? '').includes('text/html')) {
-          return reply
-            .code(404)
-            .type('text/html')
-            .send(
-              '<!doctype html><meta charset="utf-8">' +
-                '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-                '<title>Page not found</title>' +
-                '<div style="font:16px/1.6 system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1.5rem;color:#1f2937">' +
-                '<h1 style="font-size:1.4rem;margin:0 0 .6rem">There is no page at this address</h1>' +
-                '<p style="margin:0;color:#4b5563">Please check the address and try again. ' +
-                'If someone gave you this link, ask them for the full one \u2014 pages here usually ' +
-                'have something after the website name.</p>' +
-                // The reference is the whole point of showing anything at all: someone who
-                // hits this can read six characters back to the masjid, who can then find
-                // THIS request instead of guessing which of the day's refusals it was.
-                (ref
-                  ? `<p style="margin:1.2rem 0 0;color:#9ca3af;font-size:.85rem">Reference: <code>${ref}</code></p>`
-                  : '') +
-                '</div>',
-            );
-        }
-        return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
+        // Only the record tells these apart: an app that is installed but not shared
+        // online, a platform route probed from outside, or an address with nothing at
+        // it. The caller gets the same answer
+        // for all of them.
+        return refuseOverTunnel(req, reply, notFoundReason(req.url, declinedReason(req.raw)));
       }
-      const host = String(req.headers.host ?? '').replace(/:\d+$/, '');
-      if (!host) return reply.code(400).send({ error: 'Bad request.' });
-      const target = TLS_PORT === 443 ? host : `${host}:${TLS_PORT}`;
-      return reply.code(308).redirect(`https://${target}${req.url}`);
+      return toHttps(req, reply);
     });
     await front.listen({ host: HOST, port: PORT });
   }
@@ -419,23 +568,24 @@ async function main() {
 
   // Listen for admin commands sent to the masjid's WhatsApp number. No-op — it does
   // not even open a socket — until the feature is switched on AND someone is on the
-  // authorised list AND a phone is linked. Outbound is untouched: replies go through
-  // the one queue in notify/whatsapp.ts.
+  // authorised list AND a phone is linked. A reply answers the person who asked
+  // straight away (notify/whatsapp.ts sendImmediate); it does not wait in the queue.
   setInboundHandler(handleInboundCommand);
   startWhatsAppInbound();
 
   // Bring back anything the send queue was holding when we last stopped. Without this a
-  // message held by a cap or the warm-up ramp is destroyed by a restart, silently: the
-  // caller was told 202 and there is nothing anywhere to contradict it. That was a real
-  // masjid, accepted-and-never-delivered for over 24 hours.
+  // queued message is destroyed by a restart, silently: the caller was told 202 and there
+  // is nothing anywhere to contradict it. That was a real masjid, accepted-and-never-
+  // delivered for over 24 hours.
   restoreWhatsAppQueue();
 
   // Cloudflare tunnel (remote access) — bring it up if the admin enabled it.
   // No-op until a token is set + enabled. Never blocks boot.
-  // Only in the TLS topology: there the dashboard is on TLS_PORT and only app
-  // paths are exposed on the tunnel-facing PORT. In the plain-HTTP fallback the
-  // full dashboard sits on PORT, so starting the tunnel would expose the admin UI
-  // to the internet — refuse and tell the admin instead.
+  // Only in the TLS topology: there the dashboard is on TLS_PORT, and the tunnel-facing
+  // PORT serves app paths and — only through remote administration's gate — hands the
+  // dashboard over. In the plain-HTTP fallback the full dashboard sits on PORT itself,
+  // so starting the tunnel would expose the admin UI with no gate at all — refuse and
+  // tell the admin instead.
   if (tls) {
     ensureCloudflared().catch((err) => log.error('Could not start the Cloudflare tunnel.', err));
   } else {

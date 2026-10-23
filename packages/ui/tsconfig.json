@@ -20,7 +20,15 @@
       // bogus errors across every file that touches `trpc.*`. Pointing at the
       // file directly makes the typecheck reproducible everywhere.
       // Still TYPES ONLY (CLAUDE.md §7) — Vite bundles nothing from here.
-      "@openmasjid/core": ["../core/src/trpc/router.ts"]
+      "@openmasjid/core": ["../core/src/trpc/router.ts"],
+      // The shadcn CLI writes `@/lib/cn` and `@/components/ui/...` imports into
+      // every component it adds, and those paths are baked into the generated
+      // source rather than configurable per import. The alias must therefore
+      // exist in BOTH tsconfig (for the typecheck, which is our only lint) and
+      // vite.config.ts (for the bundle) or added components fail to resolve in
+      // one of the two and the mismatch shows up as a green build with a blank
+      // page. Keep the two in step.
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src", "vite.config.ts"],

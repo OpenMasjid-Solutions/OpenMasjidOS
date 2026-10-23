@@ -8,7 +8,8 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { VERSION } from '../../version';
-import { networkInfo, checkForUpdate, SOURCE_URL, rebootHost } from '../../system/system';
+import { networkInfo, checkForUpdate, publishedVersion, SOURCE_URL, rebootHost } from '../../system/system';
+import { managesFromOutside } from '../../system/remote-admin';
 import { certInfo, regenerateSelfSignedLive, setCustomCertLive } from '../../system/tls';
 import { reloadProxyCerts } from '../../system/app-proxy';
 import { isValidSshKey, addRootSshKey } from '../../system/ssh';
@@ -16,7 +17,7 @@ import { pruneUnusedImages } from '../../docker/compose';
 import { fetchChangelog } from '../../store/changelog';
 import { reconcileNow } from '../../system/address-monitor';
 import { getSettings, updateSettings } from '../../settings/store';
-import { channelSchema, channelLabel, osBranch, coreImageTag } from '../../system/channel';
+import { channelSchema, channelLabel } from '../../system/channel';
 import { requireCatalog, clearCatalogCache } from '../../store/catalog';
 import { clearChangelogCache } from '../../store/changelog';
 import { appsPendingChannel } from '../../apps/manager';
@@ -71,10 +72,6 @@ export const systemRouter = router({
     return {
       channel,
       label: channelLabel(channel),
-      /** The branch of THIS repo the channel tracks — 'main' maps to master. */
-      branch: osBranch(channel),
-      /** The channel's alias image tag. An update pulls the exact version instead. */
-      imageTag: coreImageTag(channel),
       version: VERSION,
       /** Catalog apps still on the other channel, awaiting the switch. */
       pending: appsPendingChannel(),
@@ -93,10 +90,34 @@ export const systemRouter = router({
    */
   setUpdateChannel: protectedProcedure
     .input(z.object({ channel: channelSchema }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const current = getSettings().updateChannel;
       if (input.channel === current) {
         return { channel: current, changed: false, pending: appsPendingChannel() };
+      }
+      // From OUTSIDE, never to a channel whose OpenMasjidOS cannot be managed from
+      // outside. The switch ends with the dashboard offering to move the box onto that
+      // channel's version, which would come back with no remote dashboard — and refusing
+      // only that last step (docker/update.ts) would leave the apps on one channel and
+      // the platform on the other, the mixed state a channel switch exists to prevent.
+      if (ctx.handedOver) {
+        const target = await publishedVersion(input.channel);
+        if (target === null) {
+          throw new TRPCError({
+            code: 'SERVICE_UNAVAILABLE',
+            message:
+              `Couldn't check which version ${channelLabel(input.channel)} would install, so this can't be ` +
+              'changed from outside right now. Please try again in a little while. Nothing was changed.',
+          });
+        }
+        if (!managesFromOutside(target)) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message:
+              `${channelLabel(input.channel)} (version ${target}) can't be managed from outside the masjid, so ` +
+              'switching to it from here would cut you off. Please make this change at the masjid. Nothing was changed.',
+          });
+        }
       }
       try {
         // Prove the channel is usable before committing to it.

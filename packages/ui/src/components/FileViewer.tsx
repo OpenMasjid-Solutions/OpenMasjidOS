@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { filesRawUrl, filesDownloadUrl, type FileKind } from '../lib/files';
 import { useToast } from './ToastProvider';
 
@@ -41,12 +42,19 @@ export function FileViewer({ path, name, kind }: { path: string; name: string; k
 function TextEditor({ path }: { path: string }) {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const utils = trpc.useUtils();
   const read = trpc.files.read.useQuery({ path }, { retry: false });
   const [text, setText] = useState<string | null>(null);
 
   const write = trpc.files.write.useMutation({
-    onSuccess: () => toast(t('files.saved'), 'success'),
-    onError: (e) => toast(e.message || t('files.genericError'), 'error'),
+    onSuccess: (_r, vars) => {
+      // The cached copy is what this editor opens with next time: left alone, reopening
+      // the file showed the old text, and saving again put it back over this save.
+      utils.files.read.setData({ path: vars.path }, (old) => (old ? { ...old, content: vars.content } : old));
+      void utils.files.list.invalidate();
+      toast(t('files.saved'), 'success');
+    },
+    onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
 
   useEffect(() => {
@@ -57,7 +65,7 @@ function TextEditor({ path }: { path: string }) {
   if (read.error) {
     return (
       <div>
-        <p className="form-error">{read.error.message}</p>
+        <p className="form-error">{errorText(read.error, t('files.genericError'))}</p>
         <a className="btn" href={filesDownloadUrl(path)}>{t('files.download')}</a>
       </div>
     );

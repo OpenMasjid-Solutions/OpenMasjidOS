@@ -46,6 +46,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { DATA_DIR } from '../config';
 import { log } from '../logger';
+import { finishing, finishingMessage, isUpdating } from './update-lock';
 
 const STAGING = path.join(DATA_DIR, '.backup-staging');
 // A tiny image with `tar` to copy volume contents in/out. Pulled once; override
@@ -65,8 +66,8 @@ function sh(cmd: string, args: string[]): Promise<{ code: number; stdout: string
 /** Raised when a second backup starts while one is already running. The two would
  *  share the single fixed staging path and corrupt each other's archive. */
 export class BackupBusyError extends Error {
-  constructor() {
-    super('A backup is already running. Please wait for it to finish and try again.');
+  constructor(message = 'A backup is already running. Please wait for it to finish and try again.') {
+    super(message);
     this.name = 'BackupBusyError';
   }
 }
@@ -89,6 +90,32 @@ export interface BackupHandle {
 /** Only one backup at a time: manual download and the scheduler share STAGING. */
 let running = false;
 
+/** Is a backup being made right now? Lets a caller refuse before committing to a response. */
+export function backupInProgress(): boolean {
+  return running;
+}
+
+/**
+ * Why a backup cannot be made right now, or null. Not while a restore runs: it stops the
+ * apps and refills their data, so a backup taken then copies data half replaced — and
+ * reports success, which the admin would trust (the off-site scheduler skips the same).
+ */
+export function backupRefusal(): string | null {
+  if (isUpdating('restore')) {
+    return finishing('restore')
+      ? finishingMessage('restore')
+      : 'A backup is being restored right now. Please make a backup once it has finished.';
+  }
+  // The backup runs in this core, which a core update replaces: one started now (the
+  // update's hold included) would be cut off part-way.
+  if (isUpdating('core')) {
+    return finishing('core')
+      ? finishingMessage('core')
+      : 'OpenMasjidOS is being updated right now. Please make a backup once it has finished.';
+  }
+  return running ? new BackupBusyError().message : null;
+}
+
 function cleanupStaging(): void {
   try {
     fs.rmSync(STAGING, { recursive: true, force: true });
@@ -97,12 +124,22 @@ function cleanupStaging(): void {
   }
 }
 
+/** Remove the staging copy — every app's data — of a backup cut off by a restart or a crash.
+ *  For boot, when no backup can be running. */
+export function removeBackupLeftovers(): void {
+  if (!fs.existsSync(STAGING)) return;
+  cleanupStaging();
+  log.warn('Removed .backup-staging left behind by a backup that did not finish.');
+}
+
 /** Named Docker volumes that belong to installed apps (compose project omos-*),
  *  excluding OpenMasjidOS's own infra (e.g. the Cloudflare tunnel). `ok: false`
  *  means we could not ASK Docker — very different from "there are none", since
- *  treating it as "none" would quietly produce a backup with no app data. */
+ *  treating it as "none" would quietly produce a backup with no app data.
+ *  By NAME, not compose's project label: a volume an older restore created has no label,
+ *  and every backup after it left that app's data out while saying it had worked. */
 async function appVolumeNames(): Promise<{ ok: boolean; names: string[] }> {
-  const res = await sh('docker', ['volume', 'ls', '--filter', 'label=com.docker.compose.project', '--format', '{{.Name}}']);
+  const res = await sh('docker', ['volume', 'ls', '--format', '{{.Name}}']);
   if (res.code !== 0) return { ok: false, names: [] };
   return {
     ok: true,
@@ -118,7 +155,11 @@ async function appVolumeNames(): Promise<{ ok: boolean; names: string[] }> {
  *  archive can never be folded into the backup and restored over good data). */
 function tarVolume(vol: string, outFile: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn('docker', ['run', '--rm', '-v', `${vol}:/from:ro`, VOL_IMAGE, 'tar', '-czf', '-', '-C', '/from', '.']);
+    // No log driver: the archive goes to stdout, which Docker would otherwise also write,
+    // escaped and several times over, into the container's log until --rm removed it.
+    const child = spawn('docker', [
+      'run', '--rm', '--log-driver', 'none', '-v', `${vol}:/from:ro`, VOL_IMAGE, 'tar', '-czf', '-', '-C', '/from', '.',
+    ]);
     const out = fs.createWriteStream(outFile);
     let err = '';
     let settled = false;
@@ -158,6 +199,9 @@ function tarVolume(vol: string, outFile: string): Promise<string | null> {
       closed = true;
       writeFailed = true;
       code ??= -1;
+      // Nothing reads its output any more: the client would block on a full pipe for ever,
+      // and its container with it, the volume still mounted. Every retry leaked another.
+      child.kill('SIGKILL');
       finish();
     });
     child.on('error', (e) => {
@@ -196,13 +240,60 @@ async function stageVolumes(): Promise<{ any: boolean }> {
 }
 
 /**
+ * The `tar` arguments for a backup. Exported so a test can run them through the
+ * real `tar` binary rather than checking the order by reading this file.
+ *
+ * Sign-in sessions are left OUT of every backup (auth/sessions.ts says why: a bearer
+ * credential, an unencrypted archive, and a restore that would otherwise sign the
+ * admin out at some unpredictable later moment).
+ *
+ * The `--exclude` MUST come before the paths. In GNU tar ≥1.29 — which is the `tar`
+ * the runtime image installs (`apk add … tar` in the Dockerfile) — exclusion options
+ * are POSITIONAL and affect only the operands that follow them, so the natural-looking
+ * spot at the end of this array would exclude nothing and print a warning nobody
+ * reads. `test/session-persistence.test.ts` archives a real directory with these
+ * exact arguments and lists what came out.
+ */
+export function backupTarArgs(haveVolumes: boolean): string[] {
+  const targets: string[] = [];
+  for (const dir of ['config', 'apps']) {
+    if (fs.existsSync(`${DATA_DIR}/${dir}`)) targets.push(dir);
+  }
+  const args = [
+    '-cf',
+    '-',
+    // Still gzip, which a restore reads with -xzf, but fast: the app data in it is gzipped
+    // already, so the default level only spent minutes of a Pi's CPU for next to nothing.
+    '-I',
+    'gzip -1',
+    // ANCHORED, and switched back off straight after. GNU tar matches exclusion
+    // patterns ANYWHERE in a member name by default, so a bare
+    // `--exclude=config/sessions.json` also silently dropped any app's own
+    // `apps/<id>/config/sessions.json` — app data, missing from a backup that
+    // reported success. The anchoring options are positional too.
+    '--anchored',
+    '--exclude=config/sessions.json',
+    // The atomic-write temp file holds the same tokens and lingers after a failed
+    // write (auth/sessions.ts removes it, best-effort — this is the backstop).
+    '--exclude=config/sessions.json.tmp',
+    '--no-anchored',
+    '-C',
+    DATA_DIR,
+    ...targets,
+  ];
+  if (haveVolumes) args.push('-C', STAGING, 'volumes');
+  return args;
+}
+
+/**
  * Produce a tar.gz stream of config/ + apps/ + each app's volume data. Stages
  * volumes first (async), then streams; the staging dir is removed when the stream
  * ends. Throws BackupBusyError if one is already running, or a friendly Error if
  * the app data couldn't be staged in full (nothing is streamed in that case).
  */
 export async function backupStream(): Promise<BackupHandle> {
-  if (running) throw new BackupBusyError();
+  const refused = backupRefusal();
+  if (refused) throw new BackupBusyError(refused);
   running = true;
 
   let haveVolumes = false;
@@ -214,12 +305,7 @@ export async function backupStream(): Promise<BackupHandle> {
     throw err;
   }
 
-  const targets: string[] = [];
-  for (const dir of ['config', 'apps']) {
-    if (fs.existsSync(`${DATA_DIR}/${dir}`)) targets.push(dir);
-  }
-  const args = ['-czf', '-', '-C', DATA_DIR, ...(targets.length > 0 ? targets : ['.'])];
-  if (haveVolumes) args.push('-C', STAGING, 'volumes');
+  const args = backupTarArgs(haveVolumes);
 
   const child = spawn('tar', args);
   const stream = child.stdout as Readable;

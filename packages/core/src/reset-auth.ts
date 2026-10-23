@@ -7,17 +7,23 @@
  *   docker exec -it openmasjid-core node packages/core/dist/reset-auth.js
  *
  * It (1) sets a NEW admin password, (2) signs out every session (drops all
- * cookies), and (3) rotates EVERY app's Fabric sign-in key so apps re-link
- * cleanly under fresh credentials. **App data is never wiped** — only the admin
- * password, sessions, and per-app keys change. The reset-password CLI is the
- * lighter "just my password" tool; this is the full "auth is broken, start the
- * sign-in layer fresh" tool.
+ * cookies), (3) if asked, turns two-step sign-in off, and (4) rotates EVERY app's
+ * Fabric sign-in key so apps re-link cleanly under fresh credentials. **App data is
+ * never wiped** — only the admin password, sessions, the second factor if chosen, and
+ * per-app keys change. The reset-password CLI is the lighter "just my password" tool;
+ * this is the full "auth is broken, start the sign-in layer fresh" tool.
+ *
+ * (3) is the ONLY way to remove two-step sign-in without a current code. The dashboard
+ * asks for one to change it — on the masjid's network too — so an admin who lost the
+ * phone with their authenticator AND the backup codes could never remove or replace
+ * it. Whoever runs this has the server itself, so it gives nothing away.
  */
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { isConfigured, getUsername, setCredentials } from './auth/store';
 import { hashPassword, MIN_PASSWORD_LENGTH } from './auth/passwords';
 import { destroyAllSessions } from './auth/sessions';
+import { disableTwoFactor, twoFactorActive } from './auth/twofactor';
 import { rotateAllFabricSecrets, reupAllApps } from './apps/manager';
 import { docker } from './docker/client';
 
@@ -57,9 +63,26 @@ async function main() {
     break;
   }
 
+  // Asked only when it is on, and off unless the admin says otherwise.
+  const offTwoStep =
+    twoFactorActive() &&
+    /^y(es)?$/i.test(
+      (
+        await rl.question(
+          '\n  Turn off two-step sign-in as well? Choose this if the phone with your\n' +
+            '  authenticator app is lost and you have no backup codes. [y/N]: ',
+        )
+      ).trim(),
+    );
+
   // 1. New admin credentials + drop every session (all cookies become invalid).
   setCredentials(username, await hashPassword(password));
   destroyAllSessions();
+  if (offTwoStep) {
+    disableTwoFactor();
+    stdout.write('\n  Two-step sign-in is off. Set it up again in Settings → Account — managing\n');
+    stdout.write('  OpenMasjidOS from outside the masjid stays off until you do.\n');
+  }
 
   // 2. Rotate every app's Fabric sign-in key (data untouched).
   stdout.write('\n  Rotating app sign-in keys…\n');

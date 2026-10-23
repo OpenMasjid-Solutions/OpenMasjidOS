@@ -21,7 +21,8 @@ import {
   Lock,
 } from 'lucide-react';
 import { trpc } from '../lib/trpc';
-import { filesDownloadUrl, uploadFile, joinPath, fileKind } from '../lib/files';
+import { errorText } from '../lib/errors';
+import { filesDownloadUrl, uploadFile, joinPath, fileKind, TooBigFromOutside } from '../lib/files';
 import { formatBytes } from '../lib/format';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -50,15 +51,15 @@ export function Files() {
 
   const mkdir = trpc.files.mkdir.useMutation({
     onSuccess: () => { setNewFolderOpen(false); setNewFolderName(''); refresh(); },
-    onError: (e) => toast(e.message || t('files.genericError'), 'error'),
+    onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
   const rename = trpc.files.rename.useMutation({
     onSuccess: () => { setRenaming(null); refresh(); },
-    onError: (e) => toast(e.message || t('files.genericError'), 'error'),
+    onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
   const remove = trpc.files.remove.useMutation({
     onSuccess: () => { setConfirmDelete(null); refresh(); },
-    onError: (e) => toast(e.message || t('files.genericError'), 'error'),
+    onError: (e) => toast(errorText(e, t('files.genericError')), 'error'),
   });
 
   async function onUpload(files: FileList | null) {
@@ -68,7 +69,7 @@ export function Files() {
       for (const f of Array.from(files)) await uploadFile(path, f);
       refresh();
     } catch (e) {
-      toast((e as Error).message || t('files.uploadError'), 'error');
+      toast(e instanceof TooBigFromOutside ? t('files.tooBigRemote') : errorText(e, t('files.uploadError')), 'error');
     } finally {
       setBusy(false);
       if (fileInput.current) fileInput.current.value = '';
@@ -108,7 +109,7 @@ export function Files() {
         </button>
         {segments.map((seg, i) => (
           <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <ChevronRight size={14} className="crumb-sep" />
+            <ChevronRight size={14} className="crumb-sep flip-rtl" />
             <button className="crumb" onClick={() => setPath(crumbPath(i))}>{seg}</button>
           </span>
         ))}

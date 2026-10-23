@@ -3,9 +3,9 @@
 /**
  * Admin alerts + a granular per-alert × per-channel matrix (UniFi-style). An alert
  * is a message the ADMIN cares about — an app going offline, an app-declared event
- * (a camera/reader offline, a failed payment). For EACH alert type the admin
- * chooses which channels it goes to: the admin **email**, the **webhook**, the admin's
- * **WhatsApp** number, any combination, or none. Email and webhook default ON; WhatsApp
+ * (a camera/reader offline, a failed payment). For each alert type the admin
+ * chooses from the admin **email**, the **webhook**, and — for most OS alerts —
+ * the admin's **WhatsApp** number. Email and webhook default ON; WhatsApp
  * defaults OFF, because it runs through an unofficial client whose linked number can be
  * restricted — that is a risk an admin takes deliberately, not one that starts the
  * moment a gateway is configured.
@@ -16,7 +16,7 @@
  *
  * Alert types come from OS built-ins (below) + each installed app's manifest
  * `alerts:` list (via apps/manager). We persist only NON-default channel choices, so
- * a newly-installed app's alerts (and new OS alerts) default to both-channels-on
+ * a newly-installed app's alerts (and new OS alerts) default to email and webhook on
  * without migration.
  */
 import path from 'node:path';
@@ -109,7 +109,12 @@ function load(): Map<string, AlertChannels> {
   return map;
 }
 
-const channels = load();
+let channels = load();
+
+/** Re-read the routing from disk — for a restore, which replaces it under this process. */
+export function reloadAlertChannels(): void {
+  channels = load();
+}
 
 function persist(): void {
   writeJson(ALERTS_PATH, { channels: Object.fromEntries(channels) });
@@ -201,8 +206,9 @@ export interface AlertTypeInfo {
   label: string;
   description?: string;
   channels: AlertChannels;
-  /** False for an app's alerts — it sends its own WhatsApp messages, to its own
-   *  people, from its own settings. The UI shows that instead of a dead toggle. */
+  /** False for an app's alerts (it sends its own WhatsApp messages, to its own
+   *  people) and for `whatsapp-link-lost`. The UI shows context instead of a
+   *  dead toggle. */
   whatsappAvailable: boolean;
 }
 
@@ -246,8 +252,8 @@ export interface AlertInput extends NotifyInput {
   /**
    * Optional richer email copy. OS alerts pass these (see notify/alert-copy.ts) so
    * the email can lead with a proper snippet line and offer a button; an app
-   * raising an alert over the Fabric supplies only `title` + `text`, and those are
-   * used to fill these in.
+   * raising an alert over the Fabric supplies only `title` + `text`; `text`
+   * becomes the `summary` fallback, and the rest stay empty.
    */
   summary?: string;
   detail?: string;
@@ -255,17 +261,21 @@ export interface AlertInput extends NotifyInput {
   action?: { label: string; note: string; path: string };
 }
 
-/** First sentence of a blob of text, for deriving a subject an app didn't give us. */
-function firstSentence(s: string, max = 78): string {
+/** First sentence of a blob of text, for deriving a title an app didn't give us. */
+export function firstSentence(s: string, max = 78): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   const stop = flat.search(/[.!?](\s|$)/);
   const one = stop > 0 ? flat.slice(0, stop + 1) : flat;
-  return one.length <= max ? one : `${one.slice(0, one.lastIndexOf(' ', max - 1)).trim()}…`;
+  if (one.length <= max) return one;
+  // A word boundary when there is one far enough in; otherwise a hard cut (cleanSubject's rule).
+  const cut = one.lastIndexOf(' ', max - 1);
+  return `${one.slice(0, cut > 20 ? cut : max - 1).trim()}…`;
 }
 
 /**
  * Tidy a subject line. Strips control characters and newlines (a header must be one
- * line), collapses whitespace, and cuts on a word boundary rather than mid-word.
+ * line), collapses whitespace, and prefers a word-boundary cut (but falls back
+ * to a hard cut when no space sits far enough in).
  * 78 is the practical budget — Gmail's web list truncates around 70, and the old
  * 200-char slice guaranteed an ugly mid-word cut.
  */
@@ -287,9 +297,9 @@ export type AlertResult = {
 };
 
 /**
- * Deliver an admin alert to the channels the admin routed it to (email and/or
- * webhook), each fail-soft. Returns which channels succeeded. If the admin turned
- * both channels off, nothing is sent.
+ * Deliver an admin alert to the channels the admin routed it to (any of email, webhook
+ * and — for the platform's own alerts — WhatsApp), each fail-soft. Returns which
+ * channels succeeded. If the admin turned every channel off, nothing is sent.
  */
 export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
   const ch = getAlertChannels(input.source, input.alertId);
@@ -323,7 +333,9 @@ export async function deliverAlert(input: AlertInput): Promise<AlertResult> {
           facts: input.facts,
           action: input.action,
         },
-        'os',
+        // Each source on its own mail budget, as on the other two channels: under 'os', a
+        // burst of one app's alerts dropped the platform's own (a chargeback is never retried).
+        input.source === 'os' ? 'os' : `alert:${input.source}`,
       );
       email = r.sent;
     }

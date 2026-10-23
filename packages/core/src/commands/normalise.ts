@@ -14,12 +14,13 @@
  *   fromMe   unknown => TRUE   (drop). Some engines omit it for messages typed on the
  *                              linked phone. Absent-means-false would let our own
  *                              replies loop back in as commands.
- *   isDirect unknown => FALSE  (drop). Requires a POSITIVE `<digits>@c.us` match; a
- *                              negative "not @g.us" test admits @lid, @newsletter,
- *                              @broadcast and status@broadcast. And if the payload
- *                              carries a separate author, it must be the same person
- *                              as the chat — a differing author is a group shape,
- *                              whatever the chat id looks like.
+ *   isDirect unknown => FALSE  (drop). Needs positive proof of a one-to-one chat. With
+ *                              the gateway's own `isGroup` flag: not a group AND a
+ *                              personal address space (`@c.us` or `@lid`). Without it:
+ *                              a `<digits>@c.us` chat whose author, if any, is the
+ *                              same person — a differing author is a group shape. A
+ *                              negative "not @g.us" test would admit @newsletter,
+ *                              @broadcast and status@broadcast.
  *   hasMedia any hint => TRUE  (drop). Note the asymmetry: a plain text message
  *                              legitimately carries no media field at all, so
  *                              "no hint" cannot mean media or nothing would ever get

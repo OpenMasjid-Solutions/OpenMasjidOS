@@ -2,6 +2,8 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /** The fixed ambient backdrop: a looping ambient scene if enabled, else a custom
  *  wallpaper image if set, else the static aurora + khatam pattern + vignette. */
+import { useEffect, useRef } from 'react';
+import { useReducedMotion } from 'motion/react';
 import { usePrefs } from '../lib/prefs';
 import { useAmbient } from '../lib/ambient';
 
@@ -15,6 +17,17 @@ function safeImageUrl(value: string): string | null {
 export function SceneBackground() {
   const prefs = usePrefs();
   const ambientOn = useAmbient();
+  // Someone who asked their device for less motion gets the scene standing still, as
+  // the aurora it replaces already does (app.css): its first frame, not a loop. Played
+  // and paused here as well as at load, so changing the setting takes effect at once.
+  const reduceMotion = useReducedMotion();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (reduceMotion) video.pause();
+    else void video.play().catch(() => {});
+  }, [reduceMotion, ambientOn]);
 
   // A looping, muted, hardware-decoded video backdrop. Fixed + behind everything,
   // never interactive; `object-fit: cover` fills the screen at any aspect. The
@@ -22,9 +35,10 @@ export function SceneBackground() {
   if (ambientOn) {
     return (
       <video
+        ref={videoRef}
         className="scene"
         aria-hidden="true"
-        autoPlay
+        autoPlay={!reduceMotion}
         loop
         muted
         playsInline

@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 OpenMasjid-Solutions
 /**
- * Streams a catalog app's update (download → apply) into a window, then marks it
- * done and refreshes the app list. Opened from the app card's "Check for update"
+ * Streams a catalog app's update (download → apply) into a window, then says how it
+ * ended and refreshes the app list. Opened from the app card's "Check for update"
  * once the user confirms.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { trpc } from '../lib/trpc';
+import { appUpdateEnding, type AppUpdateEnding } from '../lib/update-endings';
 import { LogStream } from './LogStream';
+
+type Ending = AppUpdateEnding;
 
 export function AppUpdate({
   id,
@@ -22,27 +25,38 @@ export function AppUpdate({
 }) {
   const { t } = useTranslation();
   const utils = trpc.useUtils();
-  const [done, setDone] = useState(false);
+  const [ending, setEnding] = useState<Ending | null>(null);
+
+  const words: Record<Ending, string> = {
+    updated: t('appUpdate.done', { name }),
+    unchanged: t('appUpdate.unchanged'),
+    notRunning: t('appUpdate.notRunning', { name }),
+    stopped: t('appUpdate.stopped', { name }),
+    lost: t('appUpdate.lost', { name }),
+    unreachable: t('appUpdate.unreachable'),
+  };
 
   return (
     <>
       <LogStream
         wsPath={`/api/apps/update?id=${encodeURIComponent(id)}`}
-        onClosed={() => {
-          setDone(true);
+        onClosed={(code, opened) => {
+          setEnding(appUpdateEnding(code, opened));
           utils.apps.list.invalidate();
           utils.apps.get.invalidate({ id });
+          // Or the dashboard goes on offering this update until its next check, hours away.
+          utils.apps.updates.invalidate();
           onDone?.();
         }}
       />
-      {!done && (
+      {ending === null && (
         <p className="hint" style={{ marginTop: '0.6rem' }}>
           {t('update.dontClose')}
         </p>
       )}
-      {done && (
+      {ending !== null && (
         <p style={{ marginTop: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span className="status-dot" /> {t('appUpdate.done', { name })}
+          {ending === 'updated' && <span className="status-dot" />} {words[ending]}
         </p>
       )}
     </>

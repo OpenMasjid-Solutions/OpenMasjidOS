@@ -2,15 +2,40 @@
 // Copyright (C) 2026 OpenMasjid-Solutions
 /** Helpers for installed-app cards/dock. */
 import { prefsStore } from './prefs';
+import { appBaseUrl, appOpenUrl, type OpenableApp, type Viewpoint } from './app-url';
 
-/** The LAN URL an app is reachable at, or null. The server decides the scheme +
- *  port per app: a flagged (Stripe) app is `https://…:<proxy port>`, every other
- *  app is plain `http://…:<published port>`. We must NOT derive the scheme from
- *  the dashboard's own protocol — the dashboard is HTTPS, but most apps are HTTP. */
-function appUrl(app: { https?: boolean; openPort?: number | null }): string | null {
-  if (app.openPort == null) return null;
-  const scheme = app.https ? 'https' : 'http';
-  return `${scheme}://${window.location.hostname}:${app.openPort}`;
+/**
+ * Is this dashboard being used from outside the masjid, and where are the apps from
+ * there? Set by Root from `auth.me` whenever it is read, so it is right before
+ * anything can be clicked. It changes HOW an app opens (below, and lib/app-url.ts),
+ * and nothing else — what a remote request may do is decided by the server, from the
+ * session it carries.
+ */
+let remoteSession = false;
+let remoteAppOrigin: string | null = null;
+export function setRemoteSession(remote: boolean, appOrigin: string | null = null): void {
+  remoteSession = remote;
+  remoteAppOrigin = appOrigin;
+}
+
+/** Is this dashboard being used from outside the masjid? */
+export function isRemoteSession(): boolean {
+  return remoteSession;
+}
+
+/**
+ * How the dashboard asks the platform for a one-use address that opens an app from
+ * outside (`apps.openRemote`). Set by Root, which has the tRPC client and the toast —
+ * this file has neither and should not grow them. `onFail` says so to the admin.
+ */
+type RemoteOpener = (id: string) => Promise<string>;
+let remoteOpener: { open: RemoteOpener; onFail: (err: unknown) => void } | null = null;
+export function setRemoteOpener(open: RemoteOpener, onFail: (err: unknown) => void): void {
+  remoteOpener = { open, onFail };
+}
+
+function viewpoint(): Viewpoint {
+  return { remote: remoteSession, appOrigin: remoteAppOrigin, hostname: window.location.hostname };
 }
 
 /**
@@ -36,8 +61,8 @@ function appearanceHash(): string {
 }
 
 /** Best-effort favicon URL for an app (used as its icon when none is set). */
-export function appFaviconUrl(app: { https?: boolean; openPort?: number | null }): string | null {
-  const base = appUrl(app);
+export function appFaviconUrl(app: OpenableApp): string | null {
+  const base = appBaseUrl(app, viewpoint());
   return base ? `${base}/favicon.ico` : null;
 }
 
@@ -53,13 +78,51 @@ export function appColor(id: string): string {
   return `linear-gradient(150deg, hsl(${h} 70% 55%), hsl(${h2} 75% 45%))`;
 }
 
-export function openApp(app: { https?: boolean; openPort?: number | null; fabric?: boolean }): boolean {
-  const url = appUrl(app);
-  if (!url) return false;
+/**
+ * Open an app in a new tab. Returns false when there is nothing to open from here (no
+ * web port — or, from outside, a pop-up blocker said no), so a caller can offer
+ * something else. On the masjid's network the tab opens with `noopener`, which hides
+ * whether it was blocked, so there a blocked tab still returns true.
+ */
+export function openApp(app: OpenableApp & { id: string; fabric?: boolean }): boolean {
   // Only hand the appearance prefs (the OpenMasjidOS Fabric `#omos=` fragment) to
   // apps that opted into the Fabric. A community/custom 3rd-party app (e.g. Homarr)
   // never declared support and must NOT receive the platform's prefs in its URL.
-  const target = app.fabric ? url + appearanceHash() : url;
-  window.open(target, '_blank', 'noopener,noreferrer');
+  const withPrefs = (url: string) => (app.fabric ? url + appearanceHash() : url);
+  if (remoteSession) return openFromOutside(app, withPrefs);
+  const url = appOpenUrl(app, viewpoint());
+  if (!url) return false;
+  window.open(withPrefs(url), '_blank', 'noopener,noreferrer');
+  return true;
+}
+
+/**
+ * From outside: ask the platform for the app's one-use address, then send a new tab
+ * there. It signs that tab in to that one app, with a token for that app alone — never
+ * the dashboard's own session (core system/app-access.ts).
+ *
+ * The tab is opened FIRST, empty, while the click is still a click: a pop-up blocker
+ * allows a new tab only in direct response to one, and the address takes a round trip
+ * to get. Its link back to this page is cut before it goes anywhere, so the app it
+ * ends up showing cannot reach back into the dashboard. The `#omos=` fragment survives
+ * the platform's redirect, as a fragment does.
+ */
+function openFromOutside(app: OpenableApp & { id: string }, withPrefs: (url: string) => string): boolean {
+  if (app.openPort == null || !remoteOpener) return false;
+  const tab = window.open('', '_blank');
+  if (!tab) return false;
+  try {
+    tab.opener = null;
+  } catch {
+    /* some browsers make it read-only once set; it is null already then */
+  }
+  const { open, onFail } = remoteOpener;
+  open(app.id).then(
+    (url) => tab.location.replace(withPrefs(url)),
+    (err: unknown) => {
+      tab.close();
+      onFail(err);
+    },
+  );
   return true;
 }

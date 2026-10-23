@@ -36,7 +36,7 @@ test('the update path verifies before it says Done', () => {
 
   // And the failure path must return rather than falling through to "Done".
   const failure = body.slice(check, done);
-  assert.match(failure, /return;/, 'a crash-looping app must not also get the success line');
+  assert.match(failure, /return 'not-running';/, 'a crash-looping app must not also get the success line');
   assert.match(failure, /not staying running/, 'it must say what actually happened');
 });
 
@@ -55,8 +55,8 @@ test('verifyStayedUp samples more than once', () => {
   const fn = code.slice(code.indexOf('export async function verifyStayedUp'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.match(body, /SETTLE_SAMPLES/, 'it must sample repeatedly');
-  assert.match(body, /if \(!up\) break;/, 'one bad sample is enough to fail');
-  assert.ok(!/return null;\s*\}\s*$/.test(body.split('if (up) return null;')[0] ?? ''), 'sanity');
+  // Inside the loop: one bad sample is enough to fail.
+  assert.match(body, /for \([^)]*SETTLE_SAMPLES[^)]*\) \{[\s\S]*return \{ result: 'down'[\s\S]*\n {2}\}\n/);
 });
 
 test('the WhatsApp reply does not claim an app is running until it is', () => {

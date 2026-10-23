@@ -11,11 +11,12 @@
  * settings.json and never in any API response. settings.backups holds only
  * non-secret metadata (kind, label, remote path, schedule, last-run status).
  */
+import { isUpdating } from './update-lock';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { CONFIG_DIR } from '../config';
-import { backupStream } from './backup';
+import { BackupBusyError, backupStream } from './backup';
 import { getSettings, updateBackups } from '../settings/store';
 import { log } from '../logger';
 
@@ -151,11 +152,28 @@ export async function testRemote(): Promise<{ ok: boolean; message: string }> {
   if (!fs.existsSync(RCLONE_CONF)) return { ok: false, message: 'No backup destination is configured yet.' };
   const r = await capture(['--config', RCLONE_CONF, 'lsd', `${REMOTE}:`], 20_000);
   if (r.code === 0) return { ok: true, message: 'Connected successfully.' };
-  return { ok: false, message: lastLine(r.stderr) || 'Could not connect to the destination.' };
+  return { ok: false, message: rcloneProblem(r.stderr) };
 }
 
-function lastLine(s: string): string {
-  return s.trim().split('\n').filter(Boolean).pop() ?? '';
+/** What rclone's failure means, in words that say what to check (CLAUDE.md §14). Its own
+ *  line ("Failed to create file system for "omos:": couldn't connect SSH: …") goes to
+ *  the log, where whoever is helping the masjid can read it. */
+export function rcloneProblem(stderr: string): string {
+  const raw = stderr.trim().split('\n').filter(Boolean).pop() ?? '';
+  if (raw) log.warn(`Backup destination: ${raw}`);
+  if (/unable to authenticate|authentication fail|logon[_ ]failure|invalid_grant|token (has been )?expired|\b401\b|unauthori[sz]ed/i.test(raw)) {
+    return 'The destination refused the user name, password or key. Check them and try again.';
+  }
+  if (/no such host|connection refused|timed? ?out|deadline exceeded|network is unreachable|no route to host/i.test(raw)) {
+    return "Couldn't reach the destination. Check its address, and that it is switched on and connected.";
+  }
+  if (/no space left|quota|insufficient storage|\b507\b/i.test(raw)) {
+    return 'The destination is out of space.';
+  }
+  if (/not found|bad_network_name|permission denied|access denied|\b40[34]\b/i.test(raw)) {
+    return "Connected, but the folder or share couldn't be used. Check its name, and that this user may write to it.";
+  }
+  return "Couldn't use the backup destination. Check its settings and try again.";
 }
 
 function backupName(now = new Date()): string {
@@ -193,13 +211,19 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
   const dest = `${REMOTE}:${cfg.remotePath}/${name}`;
 
   const record = (ok: boolean, message: string) => {
-    updateBackups({
-      lastRunAt: new Date().toISOString(),
-      lastResult: ok ? 'ok' : 'error',
-      lastMessage: message,
-      ...(ok ? { lastBackupName: name } : {}),
-    });
+    // Logged first, so a status that cannot be saved does not hide the failure as well.
     if (!ok) log.warn(`Scheduled backup failed: ${message}`);
+    lastAttemptAt = Date.now();
+    try {
+      updateBackups({
+        lastRunAt: new Date().toISOString(),
+        lastResult: ok ? 'ok' : 'error',
+        lastMessage: message,
+        ...(ok ? { lastBackupName: name } : {}),
+      });
+    } catch (err) {
+      log.warn('Could not save how the off-site backup went.', err);
+    }
     return { ok, name, message };
   };
 
@@ -209,15 +233,32 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
   try {
     backup = await backupStream();
   } catch (err) {
+    // Another backup or a restore is under way: not a failed run. Recorded, it put the next
+    // scheduled try a whole interval away; unrecorded, the next tick tries again.
+    if (err instanceof BackupBusyError) {
+      log.info(`Off-site backup not started: ${err.message}`);
+      return { ok: false, name: '', message: err.message };
+    }
     return record(false, (err as Error).message);
   }
 
   const upload = await new Promise<{ ok: boolean; message: string }>((resolve) => {
     const rc = spawn('rclone', ['--config', RCLONE_CONF, 'rcat', dest], { stdio: ['pipe', 'ignore', 'pipe'] });
     let err = '';
+    // Once rclone has stopped — done, or given up (a wrong password, an unreachable NAS) —
+    // nothing reads the backup: end it, or tar blocks on a full pipe and never finishes.
+    const stopReading = () => backup.stream.destroy();
+    rc.stdin.on('error', () => undefined); // EPIPE when rclone has gone; its close says why
     rc.stderr.on('data', (d) => (err += d.toString()));
-    rc.on('error', (e) => resolve({ ok: false, message: `rclone unavailable: ${e.message}` }));
-    rc.on('close', (code) => resolve(code === 0 ? { ok: true, message: '' } : { ok: false, message: lastLine(err) || `rclone exited ${code}` }));
+    rc.on('error', (e) => {
+      stopReading();
+      log.warn(`Off-site backup: rclone could not start: ${e.message}`);
+      resolve({ ok: false, message: "This build can't send backups off-site (rclone isn't available)." });
+    });
+    rc.on('close', (code) => {
+      stopReading();
+      resolve(code === 0 ? { ok: true, message: '' } : { ok: false, message: rcloneProblem(err) });
+    });
     backup.stream.on('error', (e) => {
       try {
         rc.kill();
@@ -240,9 +281,10 @@ export async function runBackup(): Promise<{ ok: boolean; name: string; message:
     // Prune ONLY after a verified-complete upload. Pruning on an unverified run
     // is how N silently-torn backups evict every good archive on the remote.
     await pruneOld(cfg.remotePath, cfg.retention).catch(() => undefined);
-  } else if (upload.ok) {
-    // We uploaded a file, but the archive behind it is incomplete — remove it so
-    // it can't be restored, and so it doesn't occupy a retention slot.
+  } else {
+    // Whatever is under this name is incomplete — an archive that failed, or part of an upload
+    // a NAS wrote straight to it. Removed so it can't be restored, and doesn't take a
+    // retention slot from a good archive at the next prune.
     await deleteRemote(cfg.remotePath, name).catch(() => undefined);
   }
   return record(ok, message);
@@ -257,13 +299,25 @@ const INTERVAL_MS: Record<'daily' | 'weekly', number> = {
   weekly: 7 * 24 * 60 * 60 * 1000,
 };
 let ticking = false;
+/** When this process last finished a run, saved or not. On a full or read-only disk the
+ *  run's lastRunAt cannot be saved, and every tick ran it again — re-staging every app's data
+ *  onto the very disk that was full. */
+let lastAttemptAt = 0;
+
+/** Is a scheduled off-site backup due? */
+export function backupDue(): boolean {
+  const cfg = getSettings().backups;
+  if (!cfg.enabled || !cfg.configured) return false;
+  const last = Math.max((cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : 0) || 0, lastAttemptAt);
+  return Date.now() - last >= INTERVAL_MS[cfg.schedule];
+}
 
 async function tick(): Promise<void> {
   if (ticking) return;
-  const cfg = getSettings().backups;
-  if (!cfg.enabled || !cfg.configured) return;
-  const last = cfg.lastRunAt ? Date.parse(cfg.lastRunAt) : 0;
-  if (Date.now() - last < INTERVAL_MS[cfg.schedule]) return;
+  // Not while a restore refills the very data it would copy, nor while an update is about
+  // to replace this process mid-backup; the next tick runs it.
+  if (isUpdating('restore') || isUpdating('core')) return;
+  if (!backupDue()) return;
   ticking = true;
   try {
     log.info('Running scheduled off-site backup…');

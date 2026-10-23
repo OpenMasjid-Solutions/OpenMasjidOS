@@ -8,7 +8,7 @@
  * to die the moment a person's access is removed, and three separate stores would
  * eventually forget one.
  *
- * Swept on every inbound message rather than on a timer. The list is at most ten
+ * Swept on every inbound message rather than on a timer. The list is at most 64
  * people, so the sweep is free, and there is no interval to leak or forget to unref.
  */
 import crypto from 'node:crypto';
@@ -43,9 +43,10 @@ export interface PendingConfirm {
 /**
  * An app is mid-question with this sender.
  *
- * The ONLY thing that relaxes the `!` prefix rule, and deliberately the narrowest
- * relaxation that works: the platform has just asked something on the app's behalf,
- * so the next message is unambiguously an answer. A prefix is only needed where a
+ * One of two things that relax the `!` prefix rule — the other is a live pending
+ * confirmation — and deliberately the narrowest relaxation that works: the platform
+ * has just asked something on the app's behalf, so the next message is unambiguously
+ * an answer. A prefix is only needed where a
  * message could be either a command or ordinary conversation, and here it cannot.
  *
  * Bounded three ways, because a session that outlives the exchange is exactly how
@@ -137,7 +138,8 @@ export function takeToken(digits: string, now: number): boolean {
   const refill = Math.floor((now - e.tokensAt) / BUCKET_REFILL_MS);
   if (refill > 0) {
     e.tokens = Math.min(BUCKET_CAP, e.tokens + refill);
-    e.tokensAt = now;
+    // Keep the part of an interval already waited, or every refill would lose it.
+    e.tokensAt = e.tokens === BUCKET_CAP ? now : e.tokensAt + refill * BUCKET_REFILL_MS;
   }
   if (e.tokens <= 0) return false;
   e.tokens -= 1;
@@ -203,8 +205,8 @@ export type TakePending =
   | { ok: true; action: PendingAction }
   | { ok: false; why: 'none' | 'expired' | 'wrong-code' };
 
-/** Consume a pending confirmation. Single-use: matched or not, a correct code is
- *  spent, so a re-sent message cannot run the action twice. */
+/** Consume a pending confirmation. Single-use: a correct code is spent, so a
+ *  re-sent message cannot run the action twice. */
 export function takePending(digits: string, code: string, now: number): TakePending {
   const e = state.get(digits);
   const p = e?.pending;

@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { getSettings, updateBackups } from '../../settings/store';
+import { dismissRestoreReport, readRestoreReport } from '../../system/restore';
 import {
   setDestination,
   clearDestination,
@@ -18,6 +19,17 @@ import {
 } from '../../system/backup-upload';
 
 export const backupsRouter = router({
+  /**
+   * What went wrong in the last restore, if anything. Its own window is gone soon after
+   * the core restarts — every session ends then — so the dashboard shows this once the
+   * admin has signed in again, until they dismiss it (system/restore.ts RestoreReport).
+   */
+  restoreReport: protectedProcedure.query(() => readRestoreReport()),
+  dismissRestoreReport: protectedProcedure.mutation(() => {
+    dismissRestoreReport();
+    return { ok: true as const };
+  }),
+
   /** Non-secret backup config + last-run status. */
   status: protectedProcedure.query(() => getSettings().backups),
 

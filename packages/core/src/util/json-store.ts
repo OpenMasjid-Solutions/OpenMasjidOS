@@ -17,23 +17,40 @@ export function readJson<T>(file: string, fallback: T): T {
 }
 
 export function writeJson(file: string, value: unknown): void {
-  const dir = path.dirname(file);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, JSON.stringify(value, null, 2));
+}
+
+/**
+ * Replace `file` with `data` whole or not at all: written to a temp file beside it, then
+ * renamed over it. A write the disk refuses part-way (ENOSPC, EIO) leaves the old file as
+ * it was — a plain writeFileSync truncates first and leaves it cut short.
+ */
+export function writeFileAtomic(file: string, data: string, mode = 0o600): void {
   const tmp = `${file}.tmp`;
-  // Create the temp file 0o600 from the first byte so secrets (auth.json's
-  // password hash, settings.json's notification webhook, stripe.json) are never
-  // world-readable — not even briefly. openSync's mode is masked by umask, and is
-  // ignored entirely if the tmp survived a prior crashed write, so also chmod
-  // explicitly before the atomic rename (rename preserves the inode's mode).
-  const fd = fs.openSync(tmp, 'w', 0o600);
   try {
-    fs.writeFileSync(fd, JSON.stringify(value, null, 2));
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    // Create the temp file with its mode from the first byte so secrets (auth.json's
+    // password hash, settings.json's notification webhook, stripe.json) are never
+    // world-readable — not even briefly. openSync's mode is masked by umask, and is
+    // ignored entirely if the tmp survived a prior crashed write, so also chmod
+    // explicitly before the atomic rename (rename preserves the inode's mode).
+    const fd = fs.openSync(tmp, 'w', mode);
+    try {
+      fs.writeFileSync(fd, data);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true }); // it holds what failed to land
+    } catch {
+      /* the write's own error is the one to report */
+    }
+    throw err;
   }
-  fs.chmodSync(tmp, 0o600);
-  fs.renameSync(tmp, file);
 }
 
 export function ensureDir(dir: string): void {

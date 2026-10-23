@@ -9,9 +9,9 @@
  * WhatsApp, rather than photographing a QR off a headless server.
  *
  * `test` sends one real message to the admin's own number and WAITS for the answer,
- * because a test the admin is watching needs a result on screen — so it bypasses the
- * paced queue (see notify/whatsapp.ts `sendTestMessage`). Every other send goes
- * through the queue.
+ * because a test the admin is watching needs a result on screen — so it skips the queue
+ * (see notify/whatsapp.ts `sendTestMessage`). Every other send goes through the queue,
+ * except replies to admin commands.
  */
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
@@ -25,24 +25,24 @@ import {
   approveGroup,
   unapproveGroup,
   renameGroup,
-  DEFAULT_LIMITS,
 } from '../../store/whatsapp';
 import {
-  gatewayStatus,
-  requestPairingCode,
   sendTestMessage,
   sendTestToGroup,
   queueDepth,
   toDigits,
-  listGatewayGroups,
   heldSummary,
   releaseQueue,
   discardHeldMessages,
-  outcomesInWindow,
-  unlinkSession,
-  deleteGatewaySession,
   clearWhatsAppRuntime,
 } from '../../notify/whatsapp';
+import {
+  gatewayStatus,
+  requestPairingCode,
+  listGatewayGroups,
+  unlinkSession,
+  deleteGatewaySession,
+} from '../../notify/whatsapp-gateway';
 import { getAdminPhone } from '../../auth/store';
 import { getInstalled, restartApp, startApp, verifyStayedUp, removeApp } from '../../apps/manager';
 import { clearQueueStore } from '../../notify/whatsapp-queue-store';
@@ -50,21 +50,8 @@ import { clearWhatsAppChannels } from '../../notify/alerts';
 import { setCommandsEnabled, clearCommandPeople } from '../../store/commands';
 import { reconcileWhatsAppInbound } from '../../notify/whatsapp-inbound';
 import { OPENWA_APP_ID } from '../../apps/managed';
-import { whatsAppHealth, clearWhatsAppIncident, checkWhatsAppHealthNow } from '../../system/whatsapp-monitor';
-
-/** Bounds mirror `clampLimits` in the store, which is the real enforcement — this is
- *  only so the UI gets a friendly error instead of a silent clamp. */
-const limitsInput = z
-  .object({
-    minGapSeconds: z.number().int().min(3).max(600),
-    jitterSeconds: z.number().int().min(1).max(600),
-    perRecipientCooldownSeconds: z.number().int().min(0).max(86_400),
-    warmupDays: z.number().int().min(0).max(90),
-    groupPerHour: z.number().int().min(1).max(20),
-    groupPerDay: z.number().int().min(1).max(50),
-    perGroupCooldownSeconds: z.number().int().min(0).max(86_400),
-  })
-  .partial();
+import { whatsAppHealth, clearWhatsAppIncident } from '../../system/whatsapp-monitor';
+import { UpdateBusyError } from '../../system/update-lock';
 
 /**
  * The gateway app's own state, for the Settings panel.
@@ -94,8 +81,6 @@ async function gatewayApp(): Promise<{
 export const whatsappRouter = router({
   get: protectedProcedure.query(async () => ({
     ...getWhatsAppConfigPublic(),
-    /** The conservative starting point, so the UI can offer "restore defaults". */
-    defaults: DEFAULT_LIMITS,
     queued: queueDepth(),
     /**
      * The gateway app itself, so Settings can offer "install it" or "open it" without
@@ -128,10 +113,17 @@ export const whatsappRouter = router({
       if (app.running) await restartApp(OPENWA_APP_ID);
       else await startApp(OPENWA_APP_ID);
     } catch (err) {
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
+      // The gateway's own update in the way is a refusal, not a fault (system/update-lock.ts).
+      const code = err instanceof UpdateBusyError ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR';
+      throw new TRPCError({ code, message: (err as Error).message });
     }
-    const output = await verifyStayedUp(OPENWA_APP_ID);
-    return { ok: output === null, output: output ?? undefined };
+    const stayed = await verifyStayedUp(OPENWA_APP_ID);
+    // `unchecked`: started, but Docker could not be asked whether it stayed up.
+    return {
+      ok: stayed.result !== 'down',
+      output: stayed.result === 'down' ? stayed.logs : undefined,
+      unchecked: stayed.result === 'unknown',
+    };
   }),
 
   /**
@@ -155,7 +147,6 @@ export const whatsappRouter = router({
         apiKey: z.string().max(300).optional(),
         /** Only the NAME. OpenWA mints the id and the platform records it. */
         sessionName: z.string().trim().max(60).optional(),
-        limits: limitsInput.optional(),
       }),
     )
     .mutation(({ input }) => {
@@ -168,11 +159,10 @@ export const whatsappRouter = router({
     }),
 
   /**
-   * Ask the gateway for a pairing code, and restart the warm-up ramp.
+   * Ask the gateway for a pairing code, and record when the number was linked.
    *
-   * The ramp restart is the important part: a freshly linked number is the one
-   * WhatsApp watches hardest, so it must not inherit the allowance an older number
-   * earned. Linking is exactly when that happens.
+   * Nothing is limited by that date any more (the warm-up ramp it started is gone), but
+   * "how long has this number been in use?" is still worth knowing.
    */
   link: protectedProcedure
     .input(z.object({ phone: z.string().trim().min(6).max(24) }))
@@ -252,6 +242,9 @@ export const whatsappRouter = router({
     .mutation(async ({ input }) => {
       if (!input.deleteEverything) {
         saveWhatsAppConfig({ provider: 'none' });
+        // The health monitor stops looking once WhatsApp is off, so an open incident would
+        // keep the dashboard's "WhatsApp is down" banner up for ever. Its history is kept.
+        clearWhatsAppIncident();
         // The inbound socket checks `isWhatsAppConfigured()`; poke it so it drops now
         // rather than up to 30s later on the next supervisor tick.
         reconcileWhatsAppInbound();
@@ -284,9 +277,11 @@ export const whatsappRouter = router({
       saveWhatsAppConfig({ provider: 'none' });
       // 4. Erase the config file itself — the API key cannot be blanked through `save`.
       deleteWhatsAppConfig();
-      // 5. The queued messages and their bodies, on disk and in memory.
+      // 5. The queued messages and their bodies, on disk and in memory — and the pause, and
+      //    the open incident, which would otherwise outlive the setup they were about.
       clearQueueStore();
       clearWhatsAppRuntime();
+      clearWhatsAppIncident();
       // 6. The alerts matrix keeps its own copy of "route this to WhatsApp", and it would
       //    otherwise re-arm silently if WhatsApp were ever set up again.
       clearWhatsAppChannels();
@@ -330,18 +325,11 @@ export const whatsappRouter = router({
     const summary = heldSummary();
     // Messages reported sent between the last known-good moment and detection. These went
     // out into a dead link and cannot be resent from here — their contents are gone by the
-    // time an outcome is written — so they are reported, not offered.
-    const suspect =
-      health.down && health.lastKnownGood && health.detectedAt
-        ? outcomesInWindow(health.lastKnownGood, health.detectedAt)
-        : [];
+    // time an outcome is written — so they are reported, not offered. Read from the
+    // incident's snapshot: the outcome history only keeps a day, so recounting it read 0
+    // after a weekend outage, exactly when the admin came to look.
+    const suspect = health.down ? (health.incidents.at(-1)?.perSource ?? []) : [];
     return { ...summary, health, suspect };
-  }),
-
-  /** Run a health check right now, for the "check again" button. */
-  recheck: protectedProcedure.mutation(async () => {
-    await checkWhatsAppHealthNow();
-    return whatsAppHealth();
   }),
 
   /**

@@ -16,6 +16,7 @@
  * event, so in-memory tracking would re-alert about every open dispute on each
  * restart. The file lives in `config/`, which the File Explorer refuses to touch.
  */
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config';
 import { readJson, writeJson } from '../util/json-store';
@@ -46,7 +47,12 @@ interface AccountState {
   seen: string[];
   /** True once this account has completed one poll, so we know history is absorbed. */
   initialised: boolean;
+  /** SHA-256 of the secret key the state was built with. Absent in a file written before
+   *  it was recorded, which is then adopted as the current key's. */
+  keyHash?: string;
 }
+
+const keyHashOf = (secretKey: string) => crypto.createHash('sha256').update(secretKey).digest('hex');
 interface StateFile {
   accounts?: Record<string, AccountState>;
 }
@@ -145,13 +151,20 @@ async function checkAccount(
     return;
   }
 
-  const before = state.accounts?.[account.id];
+  // A different key behind the same entry may be a different Stripe account (test keys
+  // swapped for live ones, or an entry removed and re-added under the same name), whose
+  // whole history would otherwise alert as new. So it is a first check again; the ids
+  // already seen stay seen, so nothing is alerted twice.
+  const keyHash = keyHashOf(account.secretKey);
+  const stored = state.accounts?.[account.id];
+  const keyChanged = stored?.keyHash !== undefined && stored.keyHash !== keyHash;
+  const before = stored && keyChanged ? { ...stored, initialised: false } : stored;
   const { toAlert, seen, firstRun } = selectNewDisputes(res.disputes, before);
 
   // Persist BEFORE alerting: a crash mid-send should not re-alert the whole batch on
   // the next boot. Losing one notification is recoverable (Stripe still shows the
   // dispute); emailing a volunteer the same chargeback repeatedly is not.
-  state.accounts = { ...(state.accounts ?? {}), [account.id]: { seen, initialised: true } };
+  state.accounts = { ...(state.accounts ?? {}), [account.id]: { seen, initialised: true, keyHash } };
   writeJson(STATE_PATH, state);
 
   if (firstRun) {

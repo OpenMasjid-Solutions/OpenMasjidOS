@@ -11,6 +11,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ShieldCheck, Plus, Trash2, Store as StoreIcon, Search } from 'lucide-react';
 import { trpc } from '../lib/trpc';
+import { errorText } from '../lib/errors';
 import { appInitial, appColor } from '../lib/apps';
 import { Page } from '../components/Page';
 import { Modal } from '../components/Modal';
@@ -18,59 +19,8 @@ import { PortConflicts, initialRemap } from '../components/PortConflicts';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import type { CommunityApp } from '../lib/types';
-
-/**
- * The "share this over the internet" question, asked identically on both
- * third-party paths. Default OFF: unlike a catalog app there is no manifest
- * `tunnel:` request to pre-tick from, and these apps are the least-vetted things
- * the platform installs — so nothing goes public unless the admin says so here
- * (or later, in Settings → Remote access).
- */
-function ShareOnlineChoice({
-  value,
-  onChange,
-  name,
-}: {
-  value: boolean;
-  onChange: (v: boolean) => void;
-  name: string;
-}) {
-  const { t } = useTranslation();
-  const cf = trpc.cloudflare.status.useQuery(undefined, { enabled: value });
-  const remoteReady = cf.data?.enabled === true && Boolean(cf.data?.domain);
-  return (
-    <div className="glass-inset panel" style={{ marginBlock: '1rem' }}>
-      <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
-        <input
-          type="checkbox"
-          checked={value}
-          onChange={(e) => onChange(e.target.checked)}
-          style={{ marginBlockStart: '0.25rem' }}
-        />
-        <span>
-          <span style={{ fontWeight: 600 }}>{t('store.shareOnline')}</span>
-          <span className="setting-row__hint" style={{ display: 'block' }}>
-            {t('custom.shareOnlineHint', { name })}
-          </span>
-        </span>
-      </label>
-      {value && !remoteReady && (
-        <p
-          className="setting-row__hint"
-          style={{ marginBlockStart: '0.6rem', color: 'var(--color-gold, #F59E0B)' }}
-        >
-          {t('store.shareOnlineNoRemote')}{' '}
-          <Link to="/settings/remote" style={{ color: 'var(--color-primary)' }}>
-            {t('store.shareOnlineSettingsLink')}
-          </Link>
-        </p>
-      )}
-      <p className="setting-row__hint" style={{ marginBlockStart: '0.5rem' }}>
-        {t('store.shareOnlineChangeLater')}
-      </p>
-    </div>
-  );
-}
+import { CheckboxField } from '../components/CheckboxField';
+import { ShareOnlineChoice } from '../components/ShareOnlineChoice';
 
 function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -145,8 +95,14 @@ function CommunityTab() {
   // we install, so it never starts public (§15).
   const [expose, setExpose] = useState(false);
 
-  const check = trpc.community.check.useMutation();
+  // Install waits for this: what the admin is asked to accept comes from its answer.
+  const check = trpc.community.check.useMutation({
+    onError: (e) => setInstallError(errorText(e, t('community.checkError'))),
+  });
   const conflicts = check.data?.conflicts ?? [];
+  // What the app would be allowed to do that an ordinary one is not — said BEFORE the
+  // admin is asked to accept the risk, not left for them to guess.
+  const dangers = check.data?.dangers ?? [];
   // Never acknowledgeable — the server blocks these outright (cross-app data access).
   const refusals = check.data?.refusals ?? [];
 
@@ -167,7 +123,7 @@ function CommunityTab() {
       utils.community.repos.invalidate();
       utils.community.apps.invalidate();
     },
-    onError: (e) => setRepoError(e.message || t('community.addRepoError')),
+    onError: (e) => setRepoError(errorText(e, t('community.addRepoError'))),
   });
   const removeRepo = trpc.community.removeRepo.useMutation({
     onSuccess: () => {
@@ -183,9 +139,11 @@ function CommunityTab() {
       toast(t('common.saved'), 'success');
     },
     onError: (e) => {
-      // The server asks for an explicit risk ack when the compose is dangerous.
-      if (e.message.includes('powerful permissions')) setNeedsAck(true);
-      else setInstallError(e.message || t('custom.error'));
+      // The server asks for an explicit risk ack when the compose is dangerous. It uses
+      // the same code for a port clash, so the dangers the check found decide which this
+      // is — never the wording of the message, which is free to change.
+      if (e.data?.code === 'PRECONDITION_FAILED' && dangers.length > 0 && !needsAck) setNeedsAck(true);
+      else setInstallError(errorText(e, t('custom.error')));
     },
   });
 
@@ -302,14 +260,23 @@ function CommunityTab() {
             <p className="hint" style={{ marginBlock: '0.5rem 0' }}>{t('custom.refusalsBody')}</p>
           </div>
         )}
-        {needsAck && (
+        {dangers.length > 0 && (
           <div className="glass-inset panel" style={{ marginBottom: '1rem' }}>
             <strong style={{ color: 'var(--color-warning)' }}>{t('custom.dangersTitle')}</strong>
-            <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>
+            <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
+              {dangers.map((d, i) => <li key={i}>{d}</li>)}
+            </ul>
+            {needsAck && <p style={{ marginBlock: '0.4rem 0' }}>{t('custom.warning')}</p>}
           </div>
         )}
         <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
-        <ShareOnlineChoice value={expose} onChange={setExpose} name={confirmApp?.name ?? ''} />
+        <ShareOnlineChoice
+          id="custom-expose"
+          value={expose}
+          onChange={setExpose}
+          hint={t('custom.shareOnlineHint', { name: confirmApp?.name ?? '' })}
+          style={{ marginBlock: '1rem' }}
+        />
         {install.isPending ? (
           <p style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <span className="spinner" /> {t('community.installing')}
@@ -319,9 +286,21 @@ function CommunityTab() {
             {installError && <p className="form-error">{installError}</p>}
             <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
               <button className="btn" onClick={() => setConfirmApp(null)}>{t('common.cancel')}</button>
-              <button className="btn btn--primary" onClick={confirmInstall} disabled={refusals.length > 0}>
-                {needsAck ? t('custom.riskAck') : t('actions.install')}
-              </button>
+              {check.isError ? (
+                <button
+                  className="btn btn--primary"
+                  onClick={() => {
+                    setInstallError('');
+                    if (confirmApp) check.mutate({ compose: confirmApp.compose });
+                  }}
+                >
+                  {t('common.tryAgain')}
+                </button>
+              ) : (
+                <button className="btn btn--primary" onClick={confirmInstall} disabled={refusals.length > 0 || !check.data}>
+                  {needsAck ? t('custom.riskAck') : t('actions.install')}
+                </button>
+              )}
             </div>
           </>
         )}
@@ -341,15 +320,23 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
   const [ack, setAck] = useState(false);
   const [error, setError] = useState('');
   const [portRemap, setPortRemap] = useState<Record<string, number>>({});
+  // Internet sharing starts OFF on both third-party paths: there is no manifest `tunnel:`
+  // request to pre-tick from, and these are the least-vetted things the platform installs,
+  // so nothing goes public unless the admin says so (here, or later in Settings → Remote
+  // access).
   const [expose, setExpose] = useState(false);
 
-  const check = trpc.custom.check.useMutation();
+  // A compose that does not parse is refused with the reason — which used to go nowhere,
+  // so pressing Check on a broken file did nothing visible at all.
+  const check = trpc.custom.check.useMutation({
+    onError: (e) => setError(errorText(e, t('custom.error'))),
+  });
   const install = trpc.custom.install.useMutation({
     onSuccess: () => {
       toast(t('common.saved'), 'success');
       navigate('/');
     },
-    onError: (e) => setError(e.message || t('custom.error')),
+    onError: (e) => setError(errorText(e, t('custom.error'))),
   });
   const dangers = check.data?.dangers ?? [];
   // Refusals are NOT acknowledgeable — a stack that reaches into another app's
@@ -371,16 +358,28 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
 
       <div className="glass-raised panel">
         <div className="field">
-          <label className="label">{t('custom.name')}</label>
-          <input className="input glass-inset" placeholder={t('custom.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
+          <label className="label" htmlFor="custom-name">{t('custom.name')}</label>
+          <input id="custom-name" className="input glass-inset" placeholder={t('custom.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="field">
-          <label className="label">{t('custom.compose')}</label>
-          <textarea className="textarea glass-inset" placeholder={t('custom.composePlaceholder')} value={compose} onChange={(e) => { setCompose(e.target.value); check.reset(); }} />
+          <label className="label" htmlFor="custom-compose">{t('custom.compose')}</label>
+          {/* An edit throws the last check away, and the risk tick with it: kept, it had
+              a more dangerous file arrive with its list already ticked. */}
+          <textarea
+            id="custom-compose"
+            className="textarea glass-inset"
+            placeholder={t('custom.composePlaceholder')}
+            value={compose}
+            onChange={(e) => {
+              setCompose(e.target.value);
+              check.reset();
+              setAck(false);
+            }}
+          />
         </div>
         <div className="field">
-          <label className="label">{t('custom.env')}</label>
-          <textarea className="textarea glass-inset" style={{ minHeight: '5rem' }} placeholder={t('custom.envPlaceholder')} value={env} onChange={(e) => setEnv(e.target.value)} />
+          <label className="label" htmlFor="custom-env">{t('custom.env')}</label>
+          <textarea id="custom-env" className="textarea glass-inset" style={{ minHeight: '5rem' }} placeholder={t('custom.envPlaceholder')} value={env} onChange={(e) => setEnv(e.target.value)} />
         </div>
 
         {check.data && dangers.length === 0 && refusals.length === 0 && (
@@ -405,16 +404,21 @@ function ComposeTab({ parseEnv }: { parseEnv: (t: string) => Record<string, stri
             <ul style={{ margin: '0.5rem 0 0', paddingInlineStart: '1.2rem' }}>
               {dangers.map((d, i) => <li key={i}>{d}</li>)}
             </ul>
-            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}>
-              <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            <CheckboxField id="custom-risk-ack" checked={ack} onChange={setAck}>
               {t('custom.riskAck')}
-            </label>
+            </CheckboxField>
           </div>
         )}
 
         <PortConflicts conflicts={conflicts} remap={portRemap} onChange={setPortRemap} />
 
-        <ShareOnlineChoice value={expose} onChange={setExpose} name={name.trim() || t('custom.thisApp')} />
+        <ShareOnlineChoice
+          id="custom-expose"
+          value={expose}
+          onChange={setExpose}
+          hint={t('custom.shareOnlineHint', { name: name.trim() || t('custom.thisApp') })}
+          style={{ marginBlock: '1rem' }}
+        />
 
         {error && <p className="form-error">{error}</p>}
 

@@ -6,7 +6,7 @@
  *   POST http://<appHost()>:<published port>/fabric/commands/run
  *     X-OpenMasjid-App-Secret: <the app's OWN secret>
  *     X-OpenMasjid-Caller-App: omos:platform
- *     { command, text?, requestId, locale }
+ *     { command, text?, requestId, locale, followUpToken? }
  *
  * This is the app-to-app broker's sibling, and it deliberately shares the broker's
  * HTTP client (fabric/proxy.ts) rather than growing a second one — the no-redirect
@@ -79,7 +79,7 @@ export interface AppCommandRequest {
  * Strip control characters, collapse runs of blank lines, and clamp.
  *
  * An app must not be able to make its answer look like three separate messages, nor
- * blast a 4000-character wall at a volunteer's phone.
+ * blast a 1000-character wall at a volunteer's phone.
  */
 function tidy(raw: unknown): string {
   if (typeof raw !== 'string') return '';
@@ -142,9 +142,7 @@ export async function runAppCommand(reqInput: AppCommandRequest): Promise<AppCom
 
     const declared = typeof obj.code === 'string' ? obj.code : '';
     if (res.status === 404 || declared === 'unknown_command') return { ok: false, code: 'unknown_command' };
-    if (res.status === 503 || declared === 'not_ready') {
-      return { ok: false, code: 'not_ready', text: tidy(obj.error) || undefined };
-    }
+    if (res.status === 503 || declared === 'not_ready') return { ok: false, code: 'not_ready' };
 
     if (obj.ok === true) {
       const said = tidy(obj.text);

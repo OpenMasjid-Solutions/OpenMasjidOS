@@ -6,14 +6,15 @@
  *
  * Cloudflare injects a `cf-ray` header and terminates TLS at its edge (so the
  * origin sees `x-forwarded-proto: https`); either signal marks tunnel-origin
- * traffic. The dashboard, tRPC, and the secret-gated Fabric routes must stay
- * LAN-only — only app paths are served publicly (see CLAUDE.md §15). Registered
- * routes skip the front door's notFoundHandler, so the secret routes are kept
- * LAN-only by an explicit onRequest guard, applied here so index.ts, the app-to-
- * app broker, and the ingress /fabric refusal all use ONE implementation.
+ * traffic. The secret-gated Fabric routes stay LAN-only whatever else is published
+ * (CLAUDE.md §15); the dashboard is served from outside only through remote
+ * administration's gate (system/remote-admin.ts).
+ * Registered routes skip the front door's notFoundHandler, so the secret routes are
+ * kept LAN-only by an explicit onRequest guard, applied here so index.ts, the
+ * app-to-app broker, and the ingress /fabric refusal all use ONE implementation.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { noteRefusal } from './tunnel-refusals';
+import { refuseOverTunnel } from './tunnel-refusals';
 
 /**
  * `x-forwarded-proto` is attacker-influenced and arrives in more shapes than one
@@ -25,6 +26,47 @@ function forwardedProtoIsHttps(value: string | string[] | undefined): boolean {
   if (value == null) return false;
   const first = Array.isArray(value) ? value[0] : value;
   return first.split(',')[0]!.trim().toLowerCase() === 'https';
+}
+
+/**
+ * Which scheme the VISITOR used to reach Cloudflare — or null if nothing says.
+ *
+ * NOT the same question as `isViaTunnel`, and conflating them shipped a bug.
+ * `isViaTunnel` is true whenever Cloudflare's `cf-ray` is present, which it is on
+ * a plain `http://` visit too: Cloudflare terminating TLS at its edge says nothing
+ * about the visitor→edge leg. A session cookie was marked `Secure` on that signal,
+ * and a browser REJECTS a `Secure` cookie delivered over plain HTTP — so a remote
+ * sign-in over `http://` completed its second factor and landed back on the sign-in
+ * screen, every time.
+ *
+ * `cf-visitor` FIRST, `x-forwarded-proto` only as a fallback. `cf-visitor` is
+ * Cloudflare's dedicated statement of the visitor's scheme, and nothing between
+ * cloudflared and the core has a reason to touch it. `x-forwarded-proto` is the
+ * header every reverse proxy rewrites with ITS OWN incoming scheme — nginx's
+ * `proxy_set_header X-Forwarded-Proto $scheme` turns Cloudflare's `https` into
+ * `http` for anyone who puts a proxy behind the tunnel. Trusting it first made
+ * every HTTPS visit look like plain HTTP there, and the upgrade redirect then
+ * pointed the browser at the very URL it was already on, for ever.
+ *
+ * Null when neither speaks, and callers must treat null as "do not know" — never
+ * as either answer, because both answers lead to an action (a redirect, a Secure
+ * flag).
+ */
+export function visitorScheme(headers: NodeJS.Dict<string | string[]>): 'https' | 'http' | null {
+  const cv = headers['cf-visitor'];
+  const raw = Array.isArray(cv) ? cv[0] : cv;
+  if (typeof raw === 'string') {
+    try {
+      const scheme = (JSON.parse(raw) as { scheme?: unknown }).scheme;
+      if (scheme === 'https' || scheme === 'http') return scheme;
+    } catch {
+      /* a malformed header says nothing; fall through to x-forwarded-proto */
+    }
+  }
+  const fp = headers['x-forwarded-proto'];
+  const first = (Array.isArray(fp) ? fp[0] : fp)?.split(',')[0]?.trim().toLowerCase();
+  if (first === 'https' || first === 'http') return first;
+  return null;
 }
 
 /** True when the request reached us through the Cloudflare tunnel (not the LAN). */
@@ -86,13 +128,16 @@ export function resolveDotSegments(path: string): string {
 }
 
 /**
- * Block the SECRET-GATED Fabric routes when a request arrived via the tunnel.
- * Covers `/api/auth/session` (exact) and everything under `/api/fabric` (prefix)
- * — which includes the app-to-app broker at `/api/fabric/app/*`. App backends
- * always call these over the LAN base URL, so this never breaks a real flow; it
- * only removes the unintended public exposure. `/api/public/appearance` is
- * intentionally NOT matched and stays reachable over the tunnel.
+ * Every spelling of a request's path that the router or the far end might act on: raw,
+ * percent-decoded, and each with its dot segments resolved. A guard that must trigger
+ * on any of them asks `.some(…)`; an allow that holds only if all agree asks `.every(…)`.
  */
+export function pathSpellings(url: string): string[] {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  const decoded = decodedPath(url);
+  return [raw, decoded, resolveDotSegments(raw), resolveDotSegments(decoded)];
+}
+
 /** Does this URL address a secret-gated route, under ANY spelling the router
  *  would accept? Checked against the raw and the decoded path, so the guard
  *  fails CLOSED for both `/api/fabric/...` and `/api/%66abric/...`. */
@@ -121,23 +166,54 @@ export function urlHasPrefix(url: string, prefix: string): boolean {
   return [raw, decodedPath(url)].some((p) => p.startsWith(prefix));
 }
 
+/**
+ * Refuse any request whose target is not a path — the FIRST hook on both listeners.
+ *
+ * HTTP allows other request-target forms: absolute (`GET http://host/trpc/x`) and
+ * asterisk (`GET *`). The router accepts them — find-my-way rewrites an absolute
+ * target to its path — but every guard here reads `req.url` and asks what its first
+ * segment is. For `http://host/trpc/x` that segment is `http:`, so the front-door
+ * gate, the LAN-only Fabric guard and the CSRF check all saw "not mine" and let it
+ * through to a route that was very much theirs. A review found it with a crafted
+ * request straight to port 80.
+ *
+ * Not reachable through the tunnel — Cloudflare and cloudflared always send a path —
+ * and a client that can reach port 80 directly can also reach 443, where it gets
+ * more than this would have given it. So this is closing a spelling, not a door. It
+ * is closed anyway because every guard in this codebase assumes a path, and "the
+ * guard is right for every spelling it was written for" is how three of them were
+ * walked past before (CLAUDE.md §15). Browsers, proxies and cloudflared only ever
+ * send a path to an origin, so nothing real is refused.
+ */
+export function registerOriginFormGuard(server: FastifyInstance): void {
+  server.addHook('onRequest', (req, reply, done) => {
+    if (req.url.startsWith('/')) return done();
+    // A WebSocket upgrade is CLOSED, never answered. On the dashboard listener
+    // @fastify/websocket routes upgrades through these hooks, and only destroys the
+    // socket from its own hook — which a reply from here runs before. So a 400 left
+    // the socket open for good, even after the client hung up: every refused upgrade
+    // an unauthenticated descriptor, on a daemon running as root. A review found it.
+    if (req.raw.headers.upgrade) {
+      reply.hijack();
+      req.raw.socket.destroy();
+      return;
+    }
+    return reply.code(400).send({ error: 'Bad request.' });
+  });
+}
+
+/**
+ * Block the SECRET-GATED Fabric routes when a request arrived via the tunnel.
+ * Covers `/api/auth/session` (exact) and everything under `/api/fabric` (prefix)
+ * — which includes the app-to-app broker at `/api/fabric/app/*`. App backends
+ * always call these over the LAN base URL, so this never breaks a real flow; it
+ * only removes the unintended public exposure. `/api/public/appearance` is
+ * intentionally NOT matched and stays reachable over the tunnel.
+ */
 export function registerFabricTunnelGuard(server: FastifyInstance): void {
   server.addHook('onRequest', (req, reply, done) => {
     if (!matchesSecretRoute(req.url)) return done();
-    if (isViaTunnel(req)) {
-      const ref = noteRefusal(
-        req.url,
-        {
-          host: String(req.headers.host ?? ''),
-          method: req.method,
-          cfRay: String(req.headers['cf-ray'] ?? ''),
-          accept: String(req.headers.accept ?? ''),
-          agent: String(req.headers['user-agent'] ?? ''),
-        },
-        'lan-only-route',
-      );
-      return reply.code(404).send(ref ? { error: 'Not found.', ref } : { error: 'Not found.' });
-    }
+    if (isViaTunnel(req)) return refuseOverTunnel(req, reply, 'lan-only-route');
     done();
   });
 }

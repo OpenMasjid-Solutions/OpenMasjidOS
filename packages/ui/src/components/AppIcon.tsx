@@ -14,6 +14,10 @@ interface IconApp {
   https?: boolean;
   openPort?: number | null;
   running: boolean;
+  /** Its path through the tunnel, and whether it is shared online — from outside,
+   *  only a shared app's icon can be loaded (lib/app-url.ts). */
+  path?: string;
+  exposed?: boolean;
 }
 
 export function AppIcon({ app, size = 48 }: { app: IconApp; size?: number }) {

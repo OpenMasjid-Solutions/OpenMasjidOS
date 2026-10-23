@@ -5,13 +5,13 @@
  *
  * THE LOOP this prevents, reported after returning from Development to Stable:
  * every connection to `/api/update` ran a full pull + recreate unconditionally. The
- * recreate restarts the core, which drops every in-memory session (auth/sessions.ts
- * keeps them in a Map), so the dashboard falls back to the sign-in screen. That
- * unmounts AppShell — and the window layer renders inside the Dock — so the migration
+ * recreate restarted the core, which then dropped every session (auth/sessions.ts kept
+ * them in a Map; they are persisted now), so the dashboard fell back to the sign-in
+ * screen. That unmounted AppShell — where the windows render — so the migration
  * window's subtree unmounted while the window itself survived in WindowsProvider, which
- * sits above the router. Signing back in remounted it from scratch, which re-ran every
- * app and then the OS again, which signed you out again. Endless, and escapable only by
- * closing the window in the seconds before the restart landed.
+ * then sat above the router. Signing back in remounted it from scratch, which re-ran
+ * every app and then the OS again, which signed you out again. Endless, and escapable
+ * only by closing the window in the seconds before the restart landed.
  *
  * The rule is the same one `updateCatalogApp` already applies to apps ("is already up to
  * date"); the core's own update never had it.
@@ -34,12 +34,19 @@ import { createRequire } from 'node:module';
 const req = createRequire(__filename);
 const { isPrerelease } = req('../src/util/version') as typeof import('../src/util/version');
 
-/** The decision runUpdate makes, extracted so every combination can be checked. */
+/**
+ * The decision runUpdate makes, extracted so every combination can be checked. This copy
+ * once drifted from the code — it said an unreadable version still "tries" while the code
+ * stopped with "already up to date" — so the case is also driven through the real
+ * runUpdate in remote-update.test.ts.
+ */
 function proceeds(running: string, latest: string | null, channel: 'main' | 'dev'): boolean {
-  if (latest === null) return true; // offline: can't tell, so let a manual attempt try
+  const wrongChannel = isPrerelease(running) !== (channel === 'dev');
+  // Unreadable: a channel move still goes (to the channel's alias); otherwise nothing is
+  // pulled, and the window says it could not check rather than "up to date".
+  if (latest === null) return wrongChannel;
   const { isNewerVersion } = req('../src/util/version') as typeof import('../src/util/version');
   const updateAvailable = isNewerVersion(running, latest);
-  const wrongChannel = isPrerelease(running) !== (channel === 'dev');
   return updateAvailable || wrongChannel;
 }
 
@@ -75,11 +82,19 @@ test('an ordinary update is unaffected', () => {
   assert.equal(proceeds('0.50.3', '0.50.2', 'main'), false, 'never downgrade on its own');
 });
 
-test('offline still tries, rather than claiming to be up to date', () => {
-  // `checkForUpdate` fails soft. Treating "I could not ask" as "nothing to do" would
-  // silently disable updating for anyone behind a flaky uplink.
-  assert.equal(proceeds('0.50.3', null, 'main'), true);
+test('a version that cannot be read pulls nothing on the same channel — and is never called "up to date"', () => {
+  // `checkForUpdate` fails soft. On the same channel there is nothing known to move to,
+  // so nothing is pulled — that is the loop guard — and the window says it could not
+  // check. A channel move still goes, to the channel's alias.
+  assert.equal(proceeds('0.50.3', null, 'main'), false);
+  assert.equal(proceeds('0.50.3-dev.1', null, 'dev'), false);
   assert.equal(proceeds('0.50.3', null, 'dev'), true);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'docker', 'update.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('async function runUpdateInner'));
+  const couldNot = fn.indexOf("onLine(\"Couldn't check for the latest version just now");
+  const upToDate = fn.indexOf('is already up to date (v');
+  assert.ok(couldNot > 0 && upToDate > 0, 'setup');
+  assert.ok(couldNot < upToDate, 'an unreadable version must not reach "already up to date"');
 });
 
 test('the guard is wired into runUpdate BEFORE anything is pulled', () => {
@@ -97,10 +112,10 @@ test('the guard is wired into runUpdate BEFORE anything is pulled', () => {
 });
 
 test('the migration window reads what is pending instead of trusting a stale prop', () => {
-  // The other half. The window survives the sign-out its own OS update causes, because
-  // WindowsProvider sits above the router while the window LAYER renders inside the
-  // Dock — so the subtree unmounts and remounts with fresh state. Given a captured
-  // prop it replayed the whole migration; reading live state it sees nothing pending.
+  // The other half. The window used to survive the sign-out its own OS update caused,
+  // because WindowsProvider sat above the router while the windows render in AppShell —
+  // so the subtree unmounted and remounted with fresh state. Given a captured prop it
+  // replayed the whole migration; reading live state, a remount sees nothing pending.
   const src = fs.readFileSync(
     path.join(__dirname, '..', '..', 'ui', 'src', 'components', 'ChannelMigrate.tsx'),
     'utf8',
@@ -119,5 +134,7 @@ test('the migration window reads what is pending instead of trusting a stale pro
     path.join(__dirname, '..', '..', 'ui', 'src', 'routes', 'Settings.tsx'),
     'utf8',
   );
+  // Found first, or the check below passes on a file that no longer renders it at all.
+  assert.match(caller, /<ChannelMigrate\b/, 'the Settings shell must still open the migration window');
   assert.doesNotMatch(caller, /<ChannelMigrate[^>]*apps=/, 'the caller must not pass a stale list');
 });

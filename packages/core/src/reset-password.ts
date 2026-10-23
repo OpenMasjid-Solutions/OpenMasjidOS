@@ -10,6 +10,7 @@ import { stdin, stdout } from 'node:process';
 import { isConfigured, getUsername, setCredentials } from './auth/store';
 import { hashPassword, MIN_PASSWORD_LENGTH } from './auth/passwords';
 import { destroyAllSessions } from './auth/sessions';
+import { twoFactorActive } from './auth/twofactor';
 import { docker } from './docker/client';
 
 const CORE_CONTAINER = process.env.OPENMASJID_CONTAINER_NAME ?? 'openmasjid-core';
@@ -47,12 +48,18 @@ async function main() {
   destroyAllSessions();
   rl.close();
 
-  // The running daemon loaded the old hash into memory at startup and won't
-  // re-read auth.json, so the new password won't work until it restarts. Restart
-  // the core container automatically (this exec session ends as it does — that's
-  // expected). Apps are separate compose projects and are untouched.
-  stdout.write('\n✅ Password updated. Restarting OpenMasjidOS so it takes effect…\n');
+  // The running daemon notices the new auth.json by itself, within a second
+  // (auth/store.ts): the old password and every older session stop working without
+  // waiting for this restart. It used to need it — the daemon read the file once at
+  // boot — and the restart is kept as a clean finish. This exec session ends as the
+  // core restarts; that's expected. Apps are separate compose projects, untouched.
+  stdout.write('\n✅ Password updated. Restarting OpenMasjidOS to finish up…\n');
   stdout.write('   Give it a few seconds, then sign in with your new password.\n\n');
+  if (twoFactorActive()) {
+    // This tool leaves the second factor alone; say where the way to remove it is.
+    stdout.write('   Lost the phone for two-step sign-in too? Run the full sign-in reset (the\n');
+    stdout.write('   installer’s “Reset sign-in”) and choose to turn it off.\n\n');
+  }
   try {
     await docker.getContainer(CORE_CONTAINER).restart({ t: 3 });
   } catch (err) {

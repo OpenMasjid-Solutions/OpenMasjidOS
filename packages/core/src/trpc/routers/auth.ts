@@ -25,8 +25,41 @@ import {
   createSession,
   destroySession,
   destroyAllSessions,
+  credentialFingerprint,
+  freshCredential,
+  remoteGrantOf,
+  verifyCsrf,
 } from '../../auth/sessions';
 import { toDigits } from '../../notify/whatsapp';
+import { sendEmail } from '../../notify/email';
+import { log } from '../../logger';
+import {
+  availableFactors,
+  issueEmailCode,
+  twoFactorActive,
+  verifySecondFactor,
+  withdrawEmailCode,
+  type SecondFactorKind,
+} from '../../auth/twofactor';
+import {
+  CHALLENGE_MAX_ATTEMPTS,
+  claimChallenge,
+  consumeChallenge,
+  createChallenge,
+  noteFailedAttempt,
+  attemptsLeft,
+  clearChallenges,
+} from '../../auth/login-challenge';
+import { twoFactorRouter } from './twofactor';
+import {
+  clearIpFailures,
+  ipLockedOut,
+  ipLockoutRemaining,
+  noteIpFailure,
+} from '../../auth/ip-lockout';
+import { sweepHandedOverSockets } from '../../system/remote-sockets';
+import { appHostname } from '../../system/remote-admin';
+import { VERSION } from '../../version';
 
 // Login throttle. Brute-force is bounded three ways:
 //   1. argon2id's per-verify cost;
@@ -52,12 +85,62 @@ let verifyGate: Promise<void> = Promise.resolve();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function verifyCredentials(username: string, password: string): Promise<boolean> {
+/** Where a sign-in attempt came from, as far as the lockout is concerned. */
+type LoginOrigin = { viaTunnel: boolean; remoteIp: string | null };
+
+/**
+ * Refuse an address that has failed too often. Tunnel traffic only: Cloudflare sets
+ * CF-Connecting-IP at its edge and a tunnel client cannot forge it, whereas on the LAN
+ * every client is SNATed to the bridge gateway (auth/ip-lockout.ts, util/net.ts).
+ */
+function refuseIfIpLocked(origin: LoginOrigin): void {
+  if (!origin.viaTunnel || !ipLockedOut(origin.remoteIp)) return;
+  const mins = Math.ceil(ipLockoutRemaining(origin.remoteIp) / 60_000);
+  throw new TRPCError({
+    code: 'TOO_MANY_REQUESTS',
+    message: `Too many attempts from this connection. Please try again in ${mins} minute${mins === 1 ? '' : 's'}.`,
+  });
+}
+
+/** `refuseIfIpLocked`, and the opt-in hard cooldown (exposed instances). */
+function refuseIfLockedOut(origin: LoginOrigin): void {
+  refuseIfIpLocked(origin);
+  if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Please wait a minute and try again.' });
+  }
+}
+
+function noteLoginFailure(origin: LoginOrigin): void {
+  noteIpFailure(origin.remoteIp);
+  consecutiveFailures += 1;
+  if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) cooldownUntil = Date.now() + LOCKOUT_MS;
+}
+
+/**
+ * Check a username + password, one attempt at a time, and report WHICH password hash it
+ * was checked against: the one a resulting session must be bound to (auth/sessions.ts
+ * `createSession`).
+ *
+ * `ok` only while that hash is still the current one. argon2 is awaited, and a password
+ * change landing meanwhile would otherwise mint a session bound to the NEW password for
+ * someone who only knew the old one. Read FRESH: the throttled copy can still be the old
+ * hash for a second after the installer's Reset sign-in replaced it from another process.
+ *
+ * The lockout is asked again when it is this attempt's turn, and a failure is counted
+ * before the next attempt is let in: a batch of attempts all pass the check on arrival,
+ * before any of them has failed. A refused attempt runs no argon2 and counts nothing.
+ */
+async function verifyCredentials(
+  username: string,
+  password: string,
+  origin: LoginOrigin,
+): Promise<{ ok: boolean; cred: string }> {
   let release!: () => void;
   const prev = verifyGate;
   verifyGate = new Promise<void>((r) => (release = r));
   await prev;
   try {
+    refuseIfLockedOut(origin);
     // The login identifier matches EITHER the stored username (older installs used a
     // plain username; new installs set it = the email) OR the admin email (so once an
     // older install sets an email in Settings → Account, they can use that too).
@@ -68,11 +151,27 @@ async function verifyCredentials(username: string, password: string): Promise<bo
       (adminEmail != null && adminEmail !== '' && id.toLowerCase() === adminEmail.toLowerCase());
     // Always run argon2 verify (even for a wrong identifier) so response timing
     // doesn't reveal whether it was correct.
-    const okPass = await verifyPassword(getPasswordHash() ?? '', password);
-    return okUser && okPass;
+    // Read FRESH, and captured before the await: this is the hash the password is
+    // being checked against, and the one the resulting session must be bound to.
+    const hash = getPasswordHash({ fresh: true });
+    const okPass = await verifyPassword(hash ?? '', password);
+    const cred = credentialFingerprint(hash);
+    const ok = okUser && okPass && cred === freshCredential();
+    if (ok) {
+      consecutiveFailures = 0;
+      cooldownUntil = 0;
+    } else {
+      noteLoginFailure(origin);
+    }
+    return { ok, cred };
   } finally {
     release();
   }
+}
+
+/** Send the admin back to the password step, saying why: a state change, not an error. */
+function startAgain(message: string) {
+  return { authenticated: false as const, restart: true as const, username: null, csrf: null, triesLeft: 0, message };
 }
 
 const emailField = z.string().trim().max(254).email('Please enter a valid email address.');
@@ -85,18 +184,59 @@ const setupInput = z.object({
 
 export const authRouter = router({
   /** Drives first-run vs login, and reports who is signed in. */
-  me: publicProcedure.query(({ ctx }) => ({
-    setupRequired: !isConfigured(),
-    authenticated: Boolean(ctx.username),
-    username: ctx.username,
-    // Only surface the admin's profile to an authenticated session (never leak the
-    // admin email to an unauthenticated visitor).
-    name: ctx.username ? getAdminName() : null,
-    email: ctx.username ? getAdminEmail() : null,
-    // Same rule as the email: a phone number is personal data, so it is surfaced only
-    // to a signed-in session, never to a visitor sitting on the login screen.
-    phone: ctx.username ? getAdminPhone() : null,
-  })),
+  me: publicProcedure.query(({ ctx: asked }) => {
+    // FROM OUTSIDE, ONLY TO A CALLER HOLDING THE KEY. There the dashboard shares its
+    // address with every app page, and a script on one can call this with the admin's
+    // cookie — it would have read the admin's name, email and phone. On the masjid's
+    // network an app is on another port, and the browser keeps the answer from it.
+    const ctx = asked.handedOver && !verifyCsrf(asked.sessionToken, asked.csrf) ? { ...asked, username: null } : asked;
+    return {
+      setupRequired: !isConfigured(),
+      authenticated: Boolean(ctx.username),
+      username: ctx.username,
+      // Only surface the admin's profile to an authenticated session (never leak the
+      // admin email to an unauthenticated visitor).
+      name: ctx.username ? getAdminName() : null,
+      email: ctx.username ? getAdminEmail() : null,
+      // Same rule as the email: a phone number is personal data, so it is surfaced only
+      // to a signed-in session, never to a visitor sitting on the login screen.
+      phone: ctx.username ? getAdminPhone() : null,
+      /**
+       * Is this session being used from OUTSIDE the masjid?
+       *
+       * The UI needs it to OPEN APPS: on the masjid's network an app is reached at
+       * its own port, which does not exist through the tunnel, so remotely an app is
+       * opened through `apps.openRemote` instead, on the apps' hostname
+       * (system/app-access.ts).
+       *
+       * Presentation only. Nothing is authorised on the strength of it — what a
+       * remote request may do is decided server-side, by the session it carries
+       * (auth/sessions.ts `getSessionUserFor`).
+       *
+       * The front door's HAND-OVER decides it, never a header. `viaTunnel` is also true
+       * behind a reverse proxy the masjid runs on its own network (it sends
+       * `X-Forwarded-Proto: https`), and answering "remote" there sent every Open button
+       * down the from-outside path, where it was refused — at the masjid, every app.
+       */
+      remote: ctx.handedOver,
+      /**
+       * Where the apps are, from outside: `https://<the apps' hostname>`. Only to a
+       * signed-in remote session — the dashboard uses it for app icons.
+       *
+       * Never the dashboard KEY. From outside the dashboard shares its address with app
+       * pages, and any of them can call this with the admin's cookie; the key is handed
+       * back only inside the dashboard's own page (api/static-ui.ts).
+       */
+      appOrigin: ctx.username && ctx.handedOver && appHostname() ? `https://${appHostname()}` : null,
+      /**
+       * The running version, to a signed-in session only. The update dialog watches it
+       * change to know the new build is up: `/api/health` reports it too, but health is
+       * refused from outside (it would tell the internet which build this is), and the
+       * dialog has to work the same in both places.
+       */
+      version: ctx.username ? VERSION : null,
+    };
+  }),
 
   /**
    * First-run only: create the admin account (name + email + password) and start a
@@ -108,6 +248,16 @@ export const authRouter = router({
    * comment eighteen lines below in the same procedure.
    */
   setup: publicProcedure.input(setupInput).mutation(async ({ input, ctx }) => {
+    // Never from outside. First-run setup hands the box to whoever reaches it first,
+    // which is fine for someone in the building and nobody else; remote
+    // administration already requires an admin to exist (system/remote-admin.ts),
+    // and this is the backstop for any path that does not come through there.
+    if (ctx.viaTunnel) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'OpenMasjidOS has to be set up at the masjid, on its own network.',
+      });
+    }
     if (isAuthStoreDamaged()) {
       // Fail closed, but say something a volunteer can act on rather than the
       // misleading "an account already exists". Recovery needs host access on
@@ -129,7 +279,7 @@ export const authRouter = router({
     if (!createAdminIfUnset({ username: input.name, email: input.email, name: input.name, passwordHash: hash })) {
       throw new TRPCError({ code: 'CONFLICT', message: 'An account already exists. Please sign in.' });
     }
-    const { token, csrf } = createSession(input.name);
+    const { token, csrf } = createSession(input.name, credentialFingerprint(hash));
     ctx.setSessionCookie?.(token);
     return { authenticated: true, username: input.name, csrf };
   }),
@@ -138,39 +288,267 @@ export const authRouter = router({
   login: publicProcedure
     .input(z.object({ username: z.string().trim().min(1), password: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      if (isAuthStoreDamaged()) {
+        // Unreadable at start-up, so no password can match it: say so, rather than
+        // "incorrect" to an admin retyping the right one.
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message:
+            "This server's admin account file can't be read, so nobody can sign in. Ask whoever set this up to run the OpenMasjidOS password reset on the machine itself.",
+        });
+      }
       if (!isConfigured()) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'No account yet — please set one up.' });
       }
-      // Opt-in hard cooldown (exposed instances): reject fast without occupying
-      // the verify mutex or spending an argon2 hash.
-      if (LOCKOUT_ENABLED && Date.now() < cooldownUntil) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many attempts. Please wait a minute and try again.',
-        });
-      }
-      const ok = await verifyCredentials(input.username, input.password);
-      if (!ok) {
-        consecutiveFailures += 1;
-        if (LOCKOUT_ENABLED && consecutiveFailures >= LOCKOUT_THRESHOLD) {
-          cooldownUntil = Date.now() + LOCKOUT_MS;
-        }
+      // Checked on arrival, so a locked-out guesser does not queue for the verify or
+      // spend an argon2 hash — and again when its turn comes (verifyCredentials).
+      refuseIfLockedOut(ctx);
+      const verified = await verifyCredentials(input.username, input.password, ctx);
+      if (!verified.ok) {
         // Slow the failing response (outside the mutex, so a correct attempt is
         // never queued behind these delays).
         await wait(Math.min(consecutiveFailures * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That username or password is incorrect.' });
       }
-      consecutiveFailures = 0;
-      cooldownUntil = 0;
-      const { token, csrf } = createSession(input.username);
+      // The address's failures are NOT cleared here: over the tunnel a code is still to
+      // come, and clearing them let anyone with the password guess codes without limit.
+      // completeLogin clears them once the code is right.
+
+      /**
+       * THE SECOND FACTOR IS REQUIRED ON TUNNEL TRAFFIC ONLY, at Hasan's
+       * direction: a volunteer on the masjid's own network should not be locked
+       * out of the dashboard by a phone they left at home.
+       *
+       * Be clear about what that does and does not buy, because the honest
+       * statement is weaker than it sounds. `viaTunnel` is a deny-list on a
+       * header Cloudflare sets at its edge; it is sound for traffic that really
+       * came through the tunnel. It cannot tell the LAN from the internet on a
+       * box whose ports 80/443 are directly reachable — a public-IP VPS, or a
+       * router forwarding them — because such a request carries no Cloudflare
+       * headers and looks exactly like the office laptop. CLAUDE.md §15 already
+       * says this about the LAN-only guard, and `util/net.ts` records why a
+       * source-address check cannot fix it (Docker SNATs everything to the
+       * bridge gateway).
+       *
+       * So: this protects the tunnel, which is the door being deliberately
+       * opened. It is not a substitute for a firewall on a directly-reachable
+       * host, and docs/SECURITY.md must keep saying so.
+       */
+      if (ctx.viaTunnel) {
+        // Fail CLOSED. If a tunnel request reaches the login at all and no second
+        // factor is enrolled, refuse — rather than handing out a session because
+        // the feature that was supposed to gate this is half-configured. Remote
+        // administration already requires a second factor (system/remote-admin.ts);
+        // this is the backstop for every path that does not go through it.
+        if (!twoFactorActive()) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Signing in from outside the masjid needs two-step sign-in set up first.',
+          });
+        }
+        // The challenge carries the credential the password was verified against,
+        // so completing it after a password change cannot mint a session bound to
+        // the NEW password (completeLogin checks it).
+        const challenge = createChallenge(input.username, { cred: verified.cred, viaTunnel: true });
+        // No session, no cookie. The caller holds an opaque id, not credentials.
+        return {
+          authenticated: false as const,
+          username: input.username,
+          csrf: null,
+          needsSecondFactor: true as const,
+          challenge,
+          factors: availableFactors(),
+        };
+      }
+
+      // Bound to the hash that was VERIFIED, not re-read: see createSession.
+      const { token, csrf } = createSession(input.username, verified.cred);
       ctx.setSessionCookie?.(token);
-      return { authenticated: true, username: input.username, csrf };
+      return {
+        authenticated: true as const,
+        username: input.username,
+        csrf,
+        needsSecondFactor: false as const,
+        challenge: null,
+        factors: [] as SecondFactorKind[],
+      };
+    }),
+
+  /**
+   * Finish a sign-in that was held for a second factor.
+   *
+   * Deliberately a `publicProcedure`: there is no session yet, that is the whole
+   * point. What stands in for one is the challenge — single-use, ten minutes,
+   * five attempts, and bound to the origin it was issued to so a sign-in cannot
+   * be started on one side of the boundary and finished on the other.
+   */
+  completeLogin: publicProcedure
+    .input(z.object({ challenge: z.string().min(1), code: z.string().trim().min(1).max(32) }))
+    .mutation(async ({ input, ctx }) => {
+      // The second factor is six digits, so it is the CHEAPER target of the two
+      // and must not be the one left uncounted. Same per-IP bound as the
+      // password step, checked before the challenge is even looked up.
+      refuseIfIpLocked(ctx);
+      const claim = claimChallenge(input.challenge, ctx);
+      if (!claim.ok) {
+        /**
+         * THE CHALLENGE IS GONE, SO SAY SO AS A STATE CHANGE RATHER THAN AN ERROR.
+         *
+         * This used to throw "That sign-in attempt has expired. Please start
+         * again." for all four reasons, and it produced a genuine dead end that
+         * reached a masjid. Five wrong codes destroyed the challenge; every
+         * attempt afterwards said "expired" — seconds after starting, which the
+         * admin knew was untrue — while the primary button on screen stayed
+         * "Sign in", an action that could never again succeed. They pressed it
+         * repeatedly, which is exactly what the screen invited.
+         *
+         * So `restart` is returned rather than thrown: the UI can act on it and
+         * take them back to the password step, instead of parsing a sentence.
+         * "Too many tries" is told apart from the rest because it is the one the
+         * admin can do something about, and it discloses nothing — reaching here
+         * at all required holding a challenge, which required the password. The
+         * other three stay merged on the original reasoning: an unknown id, a
+         * genuinely expired one and one being moved between origins have nothing
+         * useful to tell them apart for whoever is asking.
+         */
+        log.warn(`Two-step sign-in could not be completed: ${claim.reason}.`);
+        return startAgain(
+          claim.reason === 'too-many-attempts'
+            ? 'Too many wrong codes. Start again and sign in from the beginning.'
+            : 'That sign-in attempt is no longer valid. Please start again.',
+        );
+      }
+
+      // The password changed while this sign-in waited for its second factor (up to ten
+      // minutes): the password it proved is no longer the password. Asked before the code
+      // is checked, so a backup code is not spent on a sign-in that cannot finish.
+      if (claim.cred !== freshCredential()) {
+        consumeChallenge(input.challenge);
+        log.warn('Two-step sign-in could not be completed: the password changed while it was waiting.');
+        return startAgain('Your password was changed while you were signing in. Please start again.');
+      }
+
+      const result = verifySecondFactor(input.code);
+      if (!result.ok) {
+        noteFailedAttempt(input.challenge);
+        noteIpFailure(ctx.remoteIp);
+        // A replay is logged distinctly — an operator reading this can tell
+        // "they typed it twice" from "someone is working through codes" — but
+        // the admin sees one message either way.
+        if (result.reason === 'replayed') {
+          log.warn('Two-step sign-in: a code was re-used. Refused.');
+        }
+        const left = attemptsLeft(input.challenge);
+        /**
+         * A DRIFTED SERVER CLOCK AND A MISTYPED CODE LOOK IDENTICAL, and they
+         * have opposite fixes. `clockSkewSteps` searches a far wider window than
+         * we accept and reports what it finds — the code is still refused — so
+         * an admin whose box drifted is told the one thing that explains it
+         * rather than watching five correct codes be rejected. The HTTP Date
+         * header already states this server's clock, so this discloses nothing.
+         */
+        let skewNote = '';
+        if (result.skewSteps != null && Math.abs(result.skewSteps) >= 2) {
+          const mins = Math.round((Math.abs(result.skewSteps) * 30) / 60);
+          const dir = result.skewSteps < 0 ? 'fast' : 'slow';
+          skewNote = ` That code would have been right if this server's clock were correct — it looks about ${mins} minute${mins === 1 ? '' : 's'} ${dir}.`;
+          log.warn(
+            `Two-step sign-in: a code was refused, but it matches ${result.skewSteps} step(s) away. This server's clock is probably wrong.`,
+          );
+        }
+        await wait(Math.min(CHALLENGE_MAX_ATTEMPTS * FAIL_DELAY_STEP_MS, FAIL_DELAY_MAX_MS));
+        if (left <= 0) {
+          // The attempt that used up the last try. Send them back now rather
+          // than letting the NEXT press discover it — that press is the one
+          // that used to report "expired" and strand them.
+          return startAgain(`That code is not right, and that was the last try.${skewNote} Start again and sign in from the beginning.`);
+        }
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: `That code is not right — ${left} ${left === 1 ? 'try' : 'tries'} left.${skewNote}`,
+        });
+      }
+
+      consumeChallenge(input.challenge);
+      clearIpFailures(ctx.remoteIp);
+      // REMOTE: this is the second factor passing over the tunnel, and the only way a
+      // tunnel sign-in ever becomes a session — so it is exactly the session that may
+      // be used from outside (auth/sessions.ts getSessionUserFor). Bound to the factor
+      // configuration the code was checked against, so replacing the factor later
+      // signs this session out. And marked with whether the remote dashboard made it:
+      // only then is it usable from the internet (auth/sessions.ts Session.handedOver).
+      const { token, csrf } = createSession(
+        claim.username,
+        claim.cred,
+        ctx.viaTunnel ? { remote: true, tf: result.epoch, handedOver: ctx.handedOver } : {},
+      );
+      ctx.setSessionCookie?.(token);
+      log.info(`Two-step sign-in completed using ${result.used}.`);
+      return {
+        authenticated: true as const,
+        restart: false as const,
+        username: claim.username,
+        csrf,
+        triesLeft: CHALLENGE_MAX_ATTEMPTS,
+        message: null,
+      };
+    }),
+
+  /**
+   * Send the emailed code for a held sign-in.
+   *
+   * The challenge must already exist, so this cannot be used to make the server
+   * send mail to the admin without first knowing the password. The per-minute
+   * limit lives in `auth/twofactor.ts` and is an email-bomb guard as much as a
+   * brute-force one.
+   */
+  sendLoginEmailCode: publicProcedure
+    .input(z.object({ challenge: z.string().min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const claim = claimChallenge(input.challenge, ctx);
+      if (!claim.ok) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'That sign-in attempt has expired. Please start again.',
+        });
+      }
+      if (!availableFactors().includes('email')) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Emailed codes are not switched on.' });
+      }
+      const to = getAdminEmail();
+      if (!to) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'There is no email address on the account.' });
+      }
+      const issued = issueEmailCode();
+      if ('retryAfterMs' in issued) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'A code was just sent. Please check your email, or wait a moment before asking for another.',
+        });
+      }
+      const sent = await sendEmail(
+        {
+          to,
+          subject: 'Your OpenMasjidOS sign-in code',
+          text: `Your sign-in code is ${issued.code}. It expires in 10 minutes.\n\nIf you did not try to sign in, someone has your password — change it as soon as you can.`,
+        },
+        'omos:platform',
+      );
+      if (!sent.sent) {
+        // Nothing went out, so asking again must not be refused as "a code was just sent".
+        withdrawEmailCode(issued.code);
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: "We couldn't send that code. Please try the authenticator app instead." });
+      }
+      return { sent: true as const };
     }),
 
   /** Sign out: drop this session and clear the cookie. */
   logout: publicProcedure.mutation(({ ctx }) => {
     destroySession(ctx.sessionToken);
     ctx.clearSessionCookie?.();
+    // Anything still open from outside on that session — a terminal, a live socket —
+    // closes now rather than at the next sweep (system/remote-sockets.ts).
+    sweepHandedOverSockets();
     return { authenticated: false };
   }),
 
@@ -192,15 +570,20 @@ export const authRouter = router({
          * toggles. A country code is required — `toDigits` refuses fewer than 8
          * digits rather than guessing one, because guessing sends a masjid's message
          * to a stranger.
+         *
+         * Three digits or fewer is a cleared field too: the phone field clears to the
+         * country's dial code alone. Anything longer that is not a whole number is
+         * refused, never stored as "no number".
          */
         phone: z
           .string()
           .trim()
           .max(24)
-          .transform((v) => (v === '' ? '' : (toDigits(v) ?? '')))
-          .refine((v) => v === '' || v.length >= 8, {
+          .transform((v) => (v.replace(/\D/g, '').length <= 3 ? '' : v))
+          .refine((v) => v === '' || toDigits(v) !== null, {
             message: 'That phone number needs a country code, e.g. +1 555 010 1234.',
           })
+          .transform((v) => toDigits(v) ?? '')
           .optional(),
       }),
     )
@@ -218,14 +601,47 @@ export const authRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const ok = await verifyPassword(getPasswordHash() ?? '', input.currentPassword);
+      // The second factor the CURRENT session proved, if it is a remote one, and whether
+      // the remote dashboard made it: the replacement made below carries exactly that,
+      // never whatever is current then.
+      const remoteGrant = ctx.viaTunnel ? remoteGrantOf(ctx.sessionToken) : null;
+      // Captured before the await, and compared again after it: two changes racing
+      // (or a reset made by the installer meanwhile) must not both go through.
+      const hash = getPasswordHash({ fresh: true });
+      const ok = await verifyPassword(hash ?? '', input.currentPassword);
       if (!ok) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Your current password is incorrect.' });
       }
-      updatePasswordHash(await hashPassword(input.newPassword));
+      const nextHash = await hashPassword(input.newPassword);
+      if (getPasswordHash({ fresh: true }) !== hash) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Your password was changed somewhere else a moment ago. Please sign in again.',
+        });
+      }
+      updatePasswordHash(nextHash);
       destroyAllSessions();
-      const { token, csrf } = createSession(ctx.username);
+      sweepHandedOverSockets();
+      // A remote sign-in waiting for its second factor proved the OLD password.
+      // completeLogin would refuse it anyway (the credential no longer matches);
+      // clearing it here means it is gone rather than merely refused.
+      clearChallenges();
+      // Remote if this request came over the tunnel — which, for a signed-in caller,
+      // means its session already passed the second factor. Changing the password
+      // must not quietly turn a remote session into one that cannot be used remotely.
+      const { token, csrf } = createSession(
+        ctx.username,
+        credentialFingerprint(nextHash),
+        remoteGrant !== null ? { remote: true, tf: remoteGrant.tf, handedOver: remoteGrant.handedOver } : {},
+      );
       ctx.setSessionCookie?.(token);
       return { ok: true, csrf };
     }),
+
+  /**
+   * Managing the second factor (Settings → Account). Nested here because it is
+   * part of signing in; its own file because every mutation in it re-proves the
+   * admin, and that argument is long enough to want room to state.
+   */
+  twoFactor: twoFactorRouter,
 });

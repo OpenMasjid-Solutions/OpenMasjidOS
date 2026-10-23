@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { APPS_DIR, PORT } from '../config';
 import { log } from '../logger';
-import { readJson, writeJson, ensureDir } from '../util/json-store';
+import { writeJson, ensureDir } from '../util/json-store';
 import {
   composeUp,
   composeDown,
@@ -22,24 +22,27 @@ import {
   composeLogs,
   composePull,
   composeUpStream,
+  type RunResult,
 } from '../docker/compose';
-import { discoverApps, discoverAppsResult } from '../docker/discovery';
-import { docker } from '../docker/client';
+import { discoverApps, discoverAppsResult, type DiscoveredApp } from '../docker/discovery';
 import { checkCompose } from './compose-validate';
 import { isPlatformManaged } from './managed';
-import { withUpdateLock } from '../system/update-lock';
+import { assertAppFree, isUpdating, withUpdateLock } from '../system/update-lock';
 import { findCatalogApp } from '../store/catalog';
 import { ensureProxy, stopProxy, allocateHttpsPort, activeProxyPorts } from '../system/app-proxy';
 // Runtime-only import (called inside functions, never at module load) — no cycle
 // hazard with cloudflared.ts, which imports getAppPath from here.
 import { intendedPublicUrl } from '../system/cloudflared';
+import { isReservedPathSegment } from './paths';
 import { suppressOfflineAlert } from '../system/offline-suppress';
 import { desiredBaseUrl, usableAppHost } from '../system/platform-address';
 import { isNewerVersion } from '../util/version';
+import { STILL_DOWNLOADING, STILL_WORKING, withHeartbeat } from '../util/heartbeat';
 import { getSettings } from '../settings/store';
 import type { Channel } from '../system/channel';
 import type {
   AppMeta,
+  AppReview,
   InstalledApp,
   CatalogApp,
   DeclaredAlert,
@@ -112,9 +115,7 @@ const metaPath = (id: string) => path.join(appDir(id), 'meta.json');
 export function appsPendingChannel(): { id: string; name: string; from: Channel }[] {
   const target = getSettings().updateChannel;
   const out: { id: string; name: string; from: Channel }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     // Only catalog apps track a channel: community and custom apps come from a URL
     // or a pasted compose the admin owns, so the OS has no other version of them
     // to offer and must not claim they are "pending".
@@ -134,13 +135,26 @@ function prettify(id: string): string {
     .join(' ');
 }
 
+/**
+ * An app's record — null when there is none, or when the file there is not this app's
+ * record. One whose `id` names another folder (or none) is not: every write goes to the
+ * folder its `id` names, so a restored apps/X/meta.json saying `"id": "Y"` had X's review
+ * verdict saved into apps/Y/, and X started unheld. Such a file is unreadable, as one that
+ * will not parse is (`startBlockedReason` holds the app).
+ */
 function loadMeta(id: string): AppMeta | null {
   try {
     if (!fs.existsSync(metaPath(id))) return null;
-    return JSON.parse(fs.readFileSync(metaPath(id), 'utf8')) as AppMeta;
+    const meta = JSON.parse(fs.readFileSync(metaPath(id), 'utf8')) as AppMeta | null;
+    return meta?.id === id ? meta : null;
   } catch {
     return null;
   }
+}
+
+/** A record file exists for this app, but it is not one we can read as its own. */
+function recordUnreadable(id: string): boolean {
+  return fs.existsSync(metaPath(id)) && !loadMeta(id);
 }
 
 function saveMeta(meta: AppMeta): void {
@@ -157,32 +171,95 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CAPABILITY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const GRANT_RE = /^[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,39}$/;
 
-function writeEnvFile(id: string, env: Record<string, string>): void {
+/** A value can never span lines: CR/LF become a space. */
+const oneLine = (v: string | undefined): string => String(v ?? '').replace(/[\r\n]+/g, ' ');
+
+/** What `docker compose` reads differently in an UNQUOTED .env value: `$` interpolates,
+ *  ` #` starts a comment, quotes and backslashes are syntax, and edge whitespace is trimmed. */
+const NEEDS_QUOTES = /[$#"'\\]|^[\s\u0085]|[\s\u0085]$/;
+
+/**
+ * A literal value as .env text that compose reads back unchanged. A plain value is left
+ * exactly as it is; anything else is double-quoted with `\` and `"` escaped and `$`
+ * doubled (compose-go's dotenv rules: double quotes interpolate, and `$$` is one `$`).
+ */
+export function encodeEnvValue(value: string): string {
+  const v = oneLine(value);
+  if (!NEEDS_QUOTES.test(v)) return v;
+  return `"${v.replace(/[\\"$]/g, (c) => (c === '$' ? '$$' : `\\${c}`))}"`;
+}
+
+/** The inverse of encodeEnvValue. A value the platform did not quote is returned as written. */
+export function decodeEnvValue(raw: string): string {
+  const quoted = /^"(.*)"$/.exec(raw);
+  if (!quoted) return raw;
+  return quoted[1].replace(/\\([\\"])|\$\$/g, (_seq, escaped?: string) => escaped ?? '$');
+}
+
+/** The key a .env line sets, or null for a blank line or a comment. */
+function envKeyOf(line: string): string | null {
+  const t = line.trim();
+  if (!t || t.startsWith('#')) return null;
+  const i = t.indexOf('=');
+  return i > 0 ? t.slice(0, i) : null;
+}
+
+function readEnvLines(id: string): string[] {
+  try {
+    return fs.readFileSync(envPath(id), 'utf8').split('\n');
+  } catch {
+    return []; // no env file yet
+  }
+}
+
+/**
+ * Write an app's .env afresh, at install. `values` are literal (a setting as typed, a
+ * platform address) and are encoded; `pasted` is a custom app's .env as the admin pasted
+ * it — .env text already — and is written as given, as it always has been.
+ */
+function writeEnvFile(id: string, values: Record<string, string>, pasted: Record<string, string> = {}): void {
   const lines: string[] = [];
-  for (const [k, v] of Object.entries(env)) {
+  for (const [k, v] of Object.entries({ ...pasted, ...values })) {
     if (!ENV_KEY_RE.test(k)) {
       log.warn(`Ignoring invalid env key for ${id}: ${JSON.stringify(k)}`);
       continue;
     }
-    // Strip CR/LF from values so a single value can never span multiple lines.
-    lines.push(`${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`);
+    lines.push(`${k}=${Object.hasOwn(values, k) ? encodeEnvValue(v) : oneLine(v)}`);
   }
   fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
 }
 
-/** Parse an app's .env back into a map. Used on update to keep the user's
- *  settings + the install-time base URL while reconciling the Fabric secret. */
+/**
+ * Set some keys of an app's .env (`undefined` removes one) and leave every other line
+ * exactly as it is, so a platform rewrite never changes what the app reads elsewhere.
+ */
+function updateEnvFile(id: string, changes: Record<string, string | undefined>): void {
+  const changed = new Map(Object.entries(changes));
+  const placed = new Set<string>();
+  const lines: string[] = [];
+  const place = (key: string): void => {
+    placed.add(key);
+    const value = changed.get(key);
+    if (value !== undefined) lines.push(`${key}=${encodeEnvValue(value)}`);
+  };
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null && changed.has(key)) {
+      if (!placed.has(key)) place(key); // where it was, and only once
+    } else if (line) {
+      lines.push(line);
+    }
+  }
+  for (const key of changed.keys()) if (!placed.has(key)) place(key);
+  fs.writeFileSync(envPath(id), lines.join('\n') + '\n', 'utf8');
+}
+
+/** An app's .env as a map of values. */
 function readEnvFile(id: string): Record<string, string> {
   const out: Record<string, string> = {};
-  try {
-    for (const line of fs.readFileSync(envPath(id), 'utf8').split('\n')) {
-      const t = line.trim();
-      if (!t || t.startsWith('#')) continue;
-      const i = t.indexOf('=');
-      if (i > 0) out[t.slice(0, i)] = t.slice(i + 1);
-    }
-  } catch {
-    /* no env file yet */
+  for (const line of readEnvLines(id)) {
+    const key = envKeyOf(line);
+    if (key !== null) out[key] = decodeEnvValue(line.trim().slice(key.length + 1));
   }
   return out;
 }
@@ -211,18 +288,16 @@ function resolveBaseUrl(reqHost?: string | null): string {
  * Rewrite `OPENMASJID_BASE_URL` in every installed app's .env to the current
  * platform address, and report which apps need restarting to pick it up.
  *
- * Mirrors `reconcilePublicUrls`: read-modify-write through readEnvFile/writeEnvFile
- * so `ENV_KEY_RE` filtering still applies and the app's own settings +
- * `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty value — that
- * would de-authorise every Fabric app at once.
+ * Mirrors `reconcilePublicUrls`: only that one line of the .env changes, so the app's
+ * own settings and `OPENMASJID_APP_SECRET` survive untouched. Never writes an empty
+ * value — that would de-authorise every Fabric app at once.
  */
 export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] } {
   const changed: string[] = [];
   const needRestart: string[] = [];
   const want = desiredBaseUrl();
   if (!want) return { changed, needRestart };
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
+  for (const { id, meta } of listMetas()) {
     const env = readEnvFile(id);
     // Write when the app already has the key, or when it plainly wants one (its
     // compose interpolates it, or it holds a Fabric secret) — an app installed
@@ -236,11 +311,10 @@ export function reconcileBaseUrls(): { changed: string[]; needRestart: string[] 
     const wantsIt =
       env.OPENMASJID_BASE_URL !== undefined ||
       compose.includes('OPENMASJID_BASE_URL') ||
-      loadMeta(id)?.ssoSecret !== undefined;
+      meta?.ssoSecret !== undefined;
     if (!wantsIt) continue;
     if (env.OPENMASJID_BASE_URL === want) continue;
-    env.OPENMASJID_BASE_URL = want;
-    writeEnvFile(id, env);
+    updateEnvFile(id, { OPENMASJID_BASE_URL: want });
     changed.push(id);
     // A restart is only useful if the container actually reads the var through
     // compose interpolation; otherwise the new .env is picked up next time anyway.
@@ -278,6 +352,8 @@ export interface FabricApp {
 
 interface FabricEntry extends FabricApp {
   ssoSecret: string;
+  /** The alert ids its manifest declared — the gate for POST /api/fabric/alert. */
+  alerts: string[];
 }
 
 // In-memory index of issued Fabric secrets. /api/fabric/* is reachable
@@ -295,8 +371,8 @@ export function invalidateFabricIndex(): void {
 function fabricEntries(): FabricEntry[] {
   if (fabricCache) return fabricCache;
   const out: FabricEntry[] = [];
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  // Platform infrastructure ids are NOT skipped here, unlike every other listing.
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (meta?.ssoSecret) {
       out.push({
         id,
@@ -310,6 +386,8 @@ function fabricEntries(): FabricEntry[] {
         provides: Array.isArray(meta.fabricProvides) ? meta.fabricProvides : [],
         consumes: Array.isArray(meta.fabricConsumes) ? meta.fabricConsumes : [],
         ssoSecret: meta.ssoSecret,
+        // Defensive: one malformed record must not break every app's Fabric lookups.
+        alerts: Array.isArray(meta.appAlerts) ? meta.appAlerts.map((a) => a?.id).filter((x) => typeof x === 'string') : [],
       });
     }
   }
@@ -428,9 +506,7 @@ export function parseAlerts(alerts: unknown, appId: string): DeclaredAlert[] {
 /** Every installed app's declared alert types — for the granular Settings list. */
 export function listAppAlerts(): { appId: string; appName: string; alerts: DeclaredAlert[] }[] {
   const out: { appId: string; appName: string; alerts: DeclaredAlert[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appAlerts) && meta.appAlerts.length) {
       out.push({ appId: id, appName: meta.name ?? id, alerts: meta.appAlerts });
     }
@@ -438,10 +514,10 @@ export function listAppAlerts(): { appId: string; appName: string; alerts: Decla
   return out;
 }
 
-/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.) */
+/** Did this app declare `alertId` in its manifest? (Gate for POST /api/fabric/alert.)
+ *  Read from the Fabric index: declaring an alert issues the secret the caller proved. */
 export function appDeclaresAlert(appId: string, alertId: string): boolean {
-  const meta = loadMeta(appId);
-  return Boolean(meta?.appAlerts?.some((a) => a.id === alertId));
+  return fabricEntries().find((e) => e.id === appId)?.alerts.includes(alertId) ?? false;
 }
 
 /**
@@ -537,9 +613,7 @@ export function parseCommands(commands: unknown, appId: string): DeclaredCommand
  *  arriving message, so it must not wait on Docker. */
 export function listAppCommands(): { appId: string; appName: string; commands: DeclaredCommand[] }[] {
   const out: { appId: string; appName: string; commands: DeclaredCommand[] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta && Array.isArray(meta.appCommands) && meta.appCommands.length) {
       out.push({ appId: id, appName: meta.name ?? id, commands: meta.appCommands });
     }
@@ -559,9 +633,7 @@ export function getAppCommand(appId: string, commandId: string): DeclaredCommand
  *  listInstalled() when you need running state or ports. */
 export function listMetaSummaries(): { id: string; name: string; kind: AppMeta['kind'] }[] {
   const out: { id: string; name: string; kind: AppMeta['kind'] }[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (meta) out.push({ id, name: meta.name ?? id, kind: meta.kind });
   }
   return out;
@@ -633,16 +705,31 @@ function platformEnv(
   return env;
 }
 
-function listMetaIds(): string[] {
+/** The app folders holding this file. */
+function appIdsWith(file: (id: string) => string): string[] {
   try {
     return fs
       .readdirSync(APPS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
-      .filter((id) => fs.existsSync(metaPath(id)));
+      .filter((id) => fs.existsSync(file(id)));
   } catch {
     return [];
   }
+}
+
+const listMetaIds = () => appIdsWith(metaPath);
+/** Every app folder with a compose.yml, record or not: a restored backup's need not have one. */
+const listComposeIds = () => appIdsWith(composePath);
+
+/**
+ * Every app that has a meta.json, with its record (null when the file cannot be read).
+ * OpenMasjidOS's own infrastructure ids (RESERVED_APP_IDS) are left out unless asked for.
+ */
+function listMetas({ includeInfra = false } = {}): { id: string; meta: AppMeta | null }[] {
+  return listMetaIds()
+    .filter((id) => includeInfra || !RESERVED_APP_IDS.has(id))
+    .map((id) => ({ id, meta: loadMeta(id) }));
 }
 
 /** The open target for an app: its dedicated HTTPS proxy port when it's a flagged
@@ -656,17 +743,22 @@ function openTarget(meta: AppMeta | null, ports: number[]): { https: boolean; op
  *  assigned to other apps and any live proxy. Null if the range is exhausted. */
 function pickHttpsPort(): number | null {
   const used = activeProxyPorts();
-  for (const id of listMetaIds()) {
-    const hp = loadMeta(id)?.httpsPort;
-    if (hp) used.add(hp);
+  for (const { meta } of listMetas({ includeInfra: true })) {
+    if (meta?.httpsPort) used.add(meta.httpsPort);
   }
   return allocateHttpsPort(used);
 }
 
+/** How long to wait before asking Docker again, when it could not be read at boot. */
+const PROXY_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
+
 /** Re-establish the TLS proxy for every flagged app on boot (their ports are
- *  fixed, so this points each proxy at the app's published HTTP port again). */
-export async function restoreAppProxies(): Promise<void> {
-  const apps = await listInstalled();
+ *  fixed, so this points each proxy at the app's published HTTP port again).
+ *  `attempt` counts the earlier tries Docker could not be read for. */
+export async function restoreAppProxies(attempt = 0): Promise<void> {
+  const { apps, discoveryOk } = await listInstalledWithHealth();
+  // Docker unreadable is not "no app has a port": decide nothing, and ask again.
+  if (!discoveryOk) return retryAppProxies(attempt);
   for (const a of apps) {
     const meta = loadMeta(a.id);
     if (meta?.https && meta.httpsPort && a.ports[0] != null) {
@@ -679,6 +771,20 @@ export async function restoreAppProxies(): Promise<void> {
       }
     }
   }
+}
+
+/** Try restoreAppProxies again after the next wait; after the last, say whose HTTPS is down. */
+function retryAppProxies(attempt: number): void {
+  const flagged = listMetas().filter(({ meta }) => meta?.https && meta.httpsPort);
+  if (flagged.length === 0) return; // no app has an HTTPS address to restore
+  const wait = PROXY_RETRY_MS[attempt];
+  if (wait === undefined) {
+    const names = flagged.map(({ id, meta }) => meta?.name ?? id).join(', ');
+    log.warn(`Docker could not be read, so the HTTPS address of ${names} was not restored. Restarting OpenMasjidOS tries again.`);
+    return;
+  }
+  const retry = () => restoreAppProxies(attempt + 1).catch((err) => log.error('Could not restore app HTTPS proxies.', err));
+  setTimeout(retry, wait).unref(); // never what keeps the process (or a test) alive
 }
 
 /** Merge on-disk metadata with live Docker state; recover orphans. */
@@ -716,22 +822,7 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
     }
     const meta = loadMeta(id);
     if (!meta) continue;
-    const disc = discovered.get(projectOf(id));
-    byId.set(id, {
-      id: meta.id,
-      name: meta.name,
-      kind: meta.kind,
-      icon: meta.icon,
-      category: meta.category,
-      running: disc?.running ?? false,
-      ports: disc?.ports ?? [],
-      createdAt: meta.createdAt,
-      // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
-      fabric: meta.sso === true || meta.notify === true,
-      managed: isPlatformManaged(meta.id),
-      exposed: isExposedMeta(meta),
-      ...openTarget(meta, disc?.ports ?? []),
-    });
+    byId.set(id, toInstalled(meta, discovered.get(projectOf(id))));
   }
 
   // 2. Running/known projects without metadata — recover them (golden rule).
@@ -752,19 +843,32 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
     // apps an admin actually installed — a stack we just found running and cannot
     // vet must not be published to the internet on its own say-so. The admin can
     // switch it on in Settings, which is the point at which a person has looked.
+    const createdAt = new Date().toISOString();
+    // Its compose.yml, when the folder has one, is what Start would run — a backup can
+    // bring one in with no record beside it, for an app whose containers are already on
+    // the box — so the fresh record carries the gate's verdict on it, as an install's would.
+    const review = verdictWithoutRecord(disc.id, createdAt);
     const recovered: AppMeta = {
       id: disc.id,
       name: disc.name || prettify(disc.id),
       kind: 'custom',
       exposed: false,
-      createdAt: new Date().toISOString(),
+      createdAt,
+      review: review ?? undefined,
     };
-    try {
-      ensureDir(appDir(disc.id));
-      saveMeta(recovered);
-      log.warn(`Recovered orphaned app from Docker: ${disc.id}`);
-    } catch {
-      /* best-effort persistence; still show it this session */
+    // A record that EXISTS but cannot be read is not an orphan: it is shown held, as
+    // startBlockedReason holds it, and left on disk. Recovering it wrote a fresh record
+    // with no review over it, so a backup pairing a broken meta.json with a privileged
+    // compose, for an app already on the box, became an ordinary Start button.
+    const unreadable = fs.existsSync(metaPath(disc.id));
+    if (!unreadable) {
+      try {
+        ensureDir(appDir(disc.id));
+        saveMeta(recovered);
+        log.warn(`Recovered orphaned app from Docker: ${disc.id}`);
+      } catch {
+        /* best-effort persistence; still show it this session */
+      }
     }
     byId.set(disc.id, {
       ...recovered,
@@ -778,6 +882,11 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
       // other app: a recovered catalog app stays reachable, a recovered
       // custom/community one — which we cannot vet at all — starts private.
       exposed: isExposedMeta(recovered),
+      path: appPathOf(disc.id, recovered),
+      // Held only for what its compose asks for (or, when its record cannot be read, for
+      // that) — exactly what startBlockedReason answers. One with no compose of ours is
+      // un-held: it is already running, and there is nothing of ours to have vetted.
+      review,
       ...openTarget(recovered, disc.ports),
     });
   }
@@ -785,9 +894,34 @@ async function buildInstalled(discovered: Awaited<ReturnType<typeof discoverApps
   return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The dashboard row for an app we hold a record for, given what Docker reports for it. */
+function toInstalled(meta: AppMeta, disc: DiscoveredApp | undefined): InstalledApp {
+  return {
+    id: meta.id,
+    name: meta.name,
+    kind: meta.kind,
+    icon: meta.icon,
+    category: meta.category,
+    running: disc?.running ?? false,
+    ports: disc?.ports ?? [],
+    createdAt: meta.createdAt,
+    // Only Fabric-opted-in catalog apps receive the appearance hand-off on Open.
+    fabric: meta.sso === true || meta.notify === true,
+    managed: isPlatformManaged(meta.id),
+    exposed: isExposedMeta(meta),
+    path: appPathOf(meta.id, meta),
+    review: meta.review ?? null,
+    ...openTarget(meta, disc?.ports ?? []),
+  };
+}
+
+/** One installed app — the same row listInstalled() gives, without reading every app. */
 export async function getInstalled(id: string): Promise<InstalledApp | null> {
-  const all = await listInstalled();
-  return all.find((a) => a.id === id) ?? null;
+  if (RESERVED_APP_IDS.has(id)) return null;
+  const meta = loadMeta(id);
+  // No record of our own (an orphan): only the full listing recovers one.
+  if (!meta) return (await listInstalled()).find((a) => a.id === id) ?? null;
+  return toInstalled(meta, (await discoverApps()).get(projectOf(id)));
 }
 
 /** Install a catalog app: write its files (with settings as env) and start it. */
@@ -797,6 +931,8 @@ export async function installCatalogApp(
   baseUrl?: string | null,
   expose?: boolean,
 ): Promise<InstalledApp> {
+  // Not while a restore, an update of this app or of the core is under way (system/update-lock.ts).
+  assertAppFree(app.id, 'install');
   // Validate the manifest FIRST — a malformed grant or command must fail before we
   // write any files (throws a friendly error surfaced by the install mutation).
   const fabric = parseFabric(app.fabric, app.id);
@@ -805,6 +941,7 @@ export async function installCatalogApp(
   if (isReservedAppId(app.id)) {
     throw new Error(`"${app.id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
   }
+  const address = addressForNewApp(app.id);
   ensureDir(appDir(app.id));
   fs.writeFileSync(composePath(app.id), app.compose, 'utf8');
   // Fabric capabilities are opt-in per app. An app that uses SSO, notifications,
@@ -845,12 +982,14 @@ export async function installCatalogApp(
   writeEnvFile(app.id, {
     ...settings,
     ...platformEnv(app.id, baseUrl, ssoSecret),
-    OPENMASJID_PUBLIC_URL: intendedPublicUrl(app.id, exposed),
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(app.id, exposed, address.path),
   });
+  noteDisplacedAddress(app.id, address);
   saveMeta({
     id: app.id,
     name: app.name,
     kind: 'catalog',
+    path: address.path,
     icon: app.icon,
     category: app.category,
     version: app.version,
@@ -901,6 +1040,7 @@ async function installStack(opts: {
   baseUrl?: string | null;
   expose?: boolean;
 }): Promise<InstalledApp> {
+  assertAppFree(opts.id, 'install');
   const { id, name, kind, composeText, env, icon, baseUrl, expose } = opts;
   // Before anything is written: a custom/community id the admin chose freely must
   // not be a word the platform uses for itself (it would shadow `!os` in a
@@ -908,15 +1048,17 @@ async function installStack(opts: {
   if (isReservedAppId(id)) {
     throw new Error(`"${id}" is a name OpenMasjidOS uses for itself, so it can't be an app id.`);
   }
+  const address = addressForNewApp(id);
   ensureDir(appDir(id));
   fs.writeFileSync(composePath(id), composeText, 'utf8');
-  writeEnvFile(id, { ...env, ...platformEnv(id, baseUrl) });
+  writeEnvFile(id, platformEnv(id, baseUrl), env);
+  noteDisplacedAddress(id, address);
   // Record the exposure decision EXPLICITLY, exactly like the catalog path
   // (`exposed = expose === true`). Omitting the key used to leave it `undefined`,
   // which the old grandfather rule read as "public" — so every pasted or
   // community stack was internet-facing without anyone being asked.
   const exposed = expose === true;
-  saveMeta({ id, name, kind, icon, exposed, createdAt: new Date().toISOString() });
+  saveMeta({ id, name, kind, icon, exposed, path: address.path, createdAt: new Date().toISOString() });
   if (exposed) log.warn(`Third-party app ${id} was installed shared over the internet, at the admin's request.`);
 
   const res = await composeUp(projectOf(id), composePath(id), envPath(id));
@@ -938,6 +1080,16 @@ export function installCustomApp(opts: {
   return installStack({ ...opts, kind: 'custom' });
 }
 
+/** Say why a new app did not get its own name as its address, where an admin looks. */
+function noteDisplacedAddress(id: string, address: { path?: string; displaced?: string }): void {
+  if (!address.displaced || !address.path) return;
+  log.warn(
+    address.displaced === 'OpenMasjidOS'
+      ? `"${id}" cannot use /${id} (OpenMasjidOS uses it), so it gets /${address.path}. Change it in Settings → Remote access.`
+      : `"${id}" cannot use /${id} (the app "${address.displaced}" already does), so it gets /${address.path}. Change either in Settings → Remote access.`,
+  );
+}
+
 export function installCommunityApp(opts: {
   id: string;
   name: string;
@@ -957,18 +1109,52 @@ export function installCommunityApp(opts: {
  * reliable way to corrupt a SQLite database. Stop first, refill, then reup.
  * Best-effort per app — one stubborn stack must not abort the restore.
  */
-export async function stopAllApps(onLine: (s: string) => void): Promise<void> {
+export async function stopAllApps(onLine: (s: string) => void): Promise<string[]> {
+  // The apps that could NOT be paused, by name: their data was put back under a running
+  // container, so a restore that touched them is not "complete". `composeStop` reports a
+  // failure in its exit code and never throws, so the catch below alone never fired —
+  // and a container Docker refused to stop was listed as paused.
+  const notPaused: string[] = [];
   const ids = listMetaIds();
-  if (ids.length === 0) return;
+  if (ids.length === 0) return notPaused;
   onLine('Pausing your apps while the data is put back…');
   for (const id of ids) {
     const name = loadMeta(id)?.name ?? id;
+    // A pause the restore asked for is not an outage (system/alert-monitor.ts skips its
+    // checks for the whole restore too).
+    suppressOfflineAlert(id);
+    let problem: string | null = null;
     try {
-      await composeStop(projectOf(id));
-      onLine(`• ${name}`);
+      const res = await composeStop(projectOf(id));
+      if (res.code !== 0) problem = res.stderr.trim().split('\n')[0] || 'error';
     } catch (err) {
-      log.warn(`Restore: could not stop ${id} before restoring its data.`, err);
+      problem = (err as Error).message;
+    }
+    if (problem === null) {
+      onLine(`• ${name}`);
+    } else {
+      log.warn(`Restore: could not stop ${id} before restoring its data — ${problem}`);
       onLine(`• ${name} (couldn't pause it — its data may not restore cleanly)`);
+      notPaused.push(name);
+    }
+  }
+  return notPaused;
+}
+
+/**
+ * Record a fresh review verdict for every app with a compose file (`reviewCompose`) — for a
+ * restore, straight after it moves the backup's apps/ into place, so the verdict on disk is
+ * this platform's own from that moment rather than the backup's. Folders with no record of
+ * their own too: there is nowhere to keep their verdict, so `startBlockedReason` and the
+ * listing's recovery work it out from the same compose. A compose that cannot even be read
+ * is logged and left to `reupAllApps`, which holds it.
+ */
+export function reviewEveryApp(): void {
+  for (const id of listComposeIds()) {
+    try {
+      reviewCompose(id);
+    } catch (err) {
+      log.warn(`Restore: could not check ${id}'s compose file.`, err);
     }
   }
 }
@@ -978,11 +1164,16 @@ export async function stopAllApps(onLine: (s: string) => void): Promise<void> {
  * restore so apps run with the restored data (and so a fresh-box restore
  * actually recreates them). Streams a friendly line per app via onLine.
  */
-export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
+export async function reupAllApps(onLine: (s: string) => void): Promise<string[]> {
+  // The apps it could NOT start — held for review, or refused by Docker — by name. A
+  // restore that left the donations page down must not end on "Restore complete."
+  const notStarted: string[] = [];
+  // Only apps with a record: a folder without one is not installed (a removed app keeps its
+  // folder) and is never started here. `reviewEveryApp` checks its compose all the same.
   const ids = listMetaIds().filter((id) => fs.existsSync(composePath(id)));
   if (ids.length === 0) {
     onLine('No apps to restart.');
-    return;
+    return notStarted;
   }
   for (const id of ids) {
     const name = loadMeta(id)?.name ?? id;
@@ -991,15 +1182,28 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
     // stack through the SAME risk gate a fresh install uses. We never auto-start
     // a dangerous compose (privileged, host namespaces, socket/sensitive binds…)
     // that a crafted backup could smuggle in without the usual consent (audit).
+    //
+    // The verdict is PERSISTED (`AppMeta.review`), not just printed. Declining to
+    // auto-start it here and then forgetting was the whole bug: restore writes
+    // apps/ to disk ungated, so once this stream closed the app was an ordinary
+    // Stopped card and its Start button ran the unvetted compose as root with the
+    // Docker socket — host root, with no warning at the moment of the click.
+    // `reviewCompose` also CLEARS a stale review when the compose now passes.
+    //
+    // Its own try/catch, and FAIL CLOSED: an unexpected throw here (an I/O
+    // error, an unwritable meta.json) used to abort the whole loop, which left
+    // every app after this one in the list unreviewed and unheld — one crafted
+    // entry early in the alphabet would have disarmed the gate for the rest.
+    let review: AppReview | null;
     try {
-      const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
-      const blocking = [...refusals, ...dangers];
-      if (blocking.length > 0) {
-        onLine(`  (not started — needs review: ${blocking[0]})`);
-        continue;
-      }
+      review = reviewCompose(id);
     } catch (err) {
-      onLine(`  (not started — couldn't check it safely: ${(err as Error).message})`);
+      log.warn(`Could not check ${id}'s compose file.`, err);
+      review = { kind: 'unreadable', reasons: ["we couldn't check what it does"], at: new Date().toISOString() };
+    }
+    if (review) {
+      onLine(`  (not started — needs review: ${review.reasons[0]})`);
+      notStarted.push(name);
       continue;
     }
     // Migration fix: a backup restored onto a NEW machine carries the old
@@ -1012,22 +1216,28 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
       if (env.OPENMASJID_BASE_URL) {
         const base = resolveBaseUrl(null);
         if (base && base !== env.OPENMASJID_BASE_URL) {
-          writeEnvFile(id, { ...env, OPENMASJID_BASE_URL: base });
-          onLine(`  (updated platform address → ${base})`);
+          updateEnvFile(id, { OPENMASJID_BASE_URL: base });
+          log.info(`${id} now reaches the platform at ${base}.`);
         }
       }
     } catch {
       /* keep going — a failed base-URL refresh shouldn't block the restart */
     }
+    // Docker's own words go to the log; the window says it plainly.
     try {
-      const res = await composeUp(projectOf(id), composePath(id), envPath(id));
+      const res = await withHeartbeat(onLine, STILL_WORKING, () => composeUp(projectOf(id), composePath(id), envPath(id)));
       if (res.code !== 0) {
-        onLine(`  (couldn't start — ${res.stderr.trim().split('\n')[0] || 'error'})`);
+        log.warn(`Could not start ${id} — ${res.stderr.trim() || 'no output'}`);
+        onLine("  (couldn't start it)");
+        notStarted.push(name);
       }
     } catch (err) {
-      onLine(`  (couldn't start — ${(err as Error).message})`);
+      log.warn(`Could not start ${id}.`, err);
+      onLine("  (couldn't start it)");
+      notStarted.push(name);
     }
   }
+  return notStarted;
 }
 
 /**
@@ -1040,13 +1250,11 @@ export async function reupAllApps(onLine: (s: string) => void): Promise<void> {
  */
 export function rotateAllFabricSecrets(onLine?: (s: string) => void): number {
   let rotated = 0;
-  for (const id of listMetaIds()) {
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas({ includeInfra: true })) {
     if (!meta?.ssoSecret) continue; // only apps that opted into the Fabric hold a secret
     const secret = crypto.randomBytes(32).toString('base64url');
     saveMeta({ ...meta, ssoSecret: secret });
-    const env = readEnvFile(id);
-    writeEnvFile(id, { ...env, OPENMASJID_APP_SECRET: secret });
+    updateEnvFile(id, { OPENMASJID_APP_SECRET: secret });
     rotated += 1;
     onLine?.(`• ${meta.name ?? id}`);
   }
@@ -1070,18 +1278,112 @@ function sanitizePath(p: string): string {
  *  Public-Hostname path AND the Fabric `basePath`. Admin-configurable; defaults
  *  to the app id (e.g. donations → "donations"; the admin can change it to "donate"). */
 export function getAppPath(id: string): string {
-  const raw = loadMeta(id)?.path;
-  const clean = raw ? sanitizePath(raw) : '';
+  return appPathOf(id, loadMeta(id));
+}
+
+/** getAppPath, for a record already in hand. */
+function appPathOf(id: string, meta: AppMeta | null): string {
+  const recorded = recordedPath(id, meta);
+  return meta && isReservedPathSegment(recorded) ? moveOffReservedPath(id, meta, recorded) : recorded;
+}
+
+/** The address an app's record names: its own path when one is set, otherwise its id. */
+function recordedPath(id: string, meta: AppMeta | null): string {
+  const clean = meta?.path ? sanitizePath(meta.path) : '';
   return clean || id;
 }
 
-/** Set an app's public path (or reset to the id when blank). Returns the effective path. */
+/**
+ * Move an app off an address OpenMasjidOS has since taken for itself (0.51.2-dev.17
+ * reserved the dashboard's pages), once and for good, to the address a new app would get.
+ * Left there it had no public page, and its links and QR codes opened the dashboard.
+ */
+function moveOffReservedPath(id: string, meta: AppMeta, recorded: string): string {
+  const moved = freeAddress(id);
+  // This runs on reads — the ingress rebuilds every 10 s — so not while a restore runs: the
+  // record is about to be replaced, and a write could land in the tree it puts in place. The
+  // first read after the restore records the move. Nor over a record that cannot be read:
+  // the listing shows such an app held, and writing `meta` there replaced the hold, the
+  // Fabric secret and the exposure setting with a fresh, unheld record.
+  if (isUpdating('restore') || recordUnreadable(id)) return moved;
+  try {
+    saveMeta({ ...meta, path: moved === id ? undefined : moved });
+    const url = intendedPublicUrl(id, isExposedMeta(meta), moved);
+    if ((readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '') !== url) updateEnvFile(id, { OPENMASJID_PUBLIC_URL: url });
+    unrecordedMoves.delete(id);
+    log.warn(`"${id}" was at /${recorded}, which OpenMasjidOS now uses for itself, so it moves to /${moved}. Change it in Settings → Remote access.`);
+  } catch (err) {
+    // Retried on every read; said once, not every ten seconds.
+    if (!unrecordedMoves.has(id)) log.warn(`Could not record "${id}"'s move from /${recorded} to /${moved}.`, err);
+    unrecordedMoves.add(id);
+  }
+  return moved;
+}
+const unrecordedMoves = new Set<string>();
+
+/**
+ * Set an app's public path (or reset to the id when blank). Returns the effective path.
+ *
+ * Refuses a path another installed app already answers to. Two apps on one address
+ * used to be possible and silent: the routing table kept whichever it met last, so
+ * an app nobody had shared could take a shared app's public page offline, with
+ * Settings still showing the shared one as published (system/ingress.ts `placeRoute`
+ * now keeps a shared app's path either way, for installs that already have a clash).
+ */
 export function setAppPath(id: string, path: string): string {
   const meta = loadMeta(id);
   if (!meta) throw new Error('That app is not installed.');
   const clean = sanitizePath(path);
+  const effective = clean || id;
+  if (isReservedPathSegment(effective)) {
+    throw new Error(`/${effective} is used by OpenMasjidOS itself. Choose a different address for this app.`);
+  }
+  if (pathTakenBy(effective, id)) {
+    throw new Error(`Another app already uses /${effective}. Choose a different address for this one.`);
+  }
   saveMeta({ ...meta, path: clean || undefined });
-  return clean || id;
+  return effective;
+}
+
+/** The installed app (other than `exceptId`) that answers to `seg`, or null. */
+function pathTakenBy(seg: string, exceptId: string): string | null {
+  for (const { id, meta } of listMetas()) {
+    if (id !== exceptId && recordedPath(id, meta) === seg) return id;
+  }
+  return null;
+}
+
+/**
+ * The address a NEW app gets: its own id when that is free (stored as nothing, so it
+ * keeps following the id), otherwise the id with the first free number after it.
+ *
+ * Installing used to take the id unconditionally, and that is the half of "no two
+ * apps on one address" that `setAppPath` could not see. Give a community app the
+ * address /donations, install the official Donations app later, and the two shared
+ * one address: the newer one took the public page, Settings listed both as published
+ * there, and opening the older one from outside opened the other. Decided before
+ * anything is written, so a refused install leaves nothing behind.
+ */
+function addressForNewApp(id: string): { path?: string; displaced?: string } {
+  const existing = loadMeta(id)?.path;
+  // A reinstall keeps the address it had, unless OpenMasjidOS has since taken it.
+  if (existing && !isReservedPathSegment(sanitizePath(existing))) return { path: existing };
+  const taken = isReservedPathSegment(id) ? 'OpenMasjidOS' : pathTakenBy(id, id);
+  if (!taken) return {};
+  return { path: freeAddress(id), displaced: taken };
+}
+
+/** The app's id when no app answers to it and OpenMasjidOS does not keep it, otherwise
+ *  the id with the first free number after it. */
+function freeAddress(id: string): string {
+  if (!isReservedPathSegment(id) && !pathTakenBy(id, id)) return id;
+  for (let n = 2; n < 1000; n++) {
+    // Room for the number inside sanitizePath's 40 characters, so what is stored is
+    // exactly what getAppPath will read back.
+    const candidate = sanitizePath(`${id.slice(0, 34)}-${n}`);
+    if (!isReservedPathSegment(candidate) && !pathTakenBy(candidate, id)) return candidate;
+  }
+  throw new Error('Every address for this app is taken. Change another app’s address in Settings → Remote access, then try again.');
 }
 
 /**
@@ -1114,9 +1416,7 @@ export function setExposed(id: string, exposed: boolean): void {
   const meta = loadMeta(id);
   if (!meta) throw new Error('That app is not installed.');
   saveMeta({ ...meta, exposed });
-  const env = readEnvFile(id);
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, exposed);
-  writeEnvFile(id, env);
+  updateEnvFile(id, { OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, exposed) });
 }
 
 /** Recompute OPENMASJID_PUBLIC_URL for every installed app from the current
@@ -1125,39 +1425,205 @@ export function setExposed(id: string, exposed: boolean): void {
  *  is enabled/disabled or the domain/path changes, so exposed apps learn their URL. */
 export function reconcilePublicUrls(): string[] {
   const changed: string[] = [];
-  for (const id of listMetaIds()) {
-    if (RESERVED_APP_IDS.has(id)) continue;
-    const meta = loadMeta(id);
+  for (const { id, meta } of listMetas()) {
     if (!meta) continue;
+    // Read before working out the URL: that can move the app off a reserved address,
+    // which rewrites this line itself, and the app still needs its reup.
+    const had = readEnvFile(id).OPENMASJID_PUBLIC_URL ?? '';
     const want = intendedPublicUrl(id, isExposedMeta(meta));
-    const env = readEnvFile(id);
-    if ((env.OPENMASJID_PUBLIC_URL ?? '') !== want) {
-      env.OPENMASJID_PUBLIC_URL = want;
-      writeEnvFile(id, env);
+    if (had !== want) {
+      updateEnvFile(id, { OPENMASJID_PUBLIC_URL: want });
       changed.push(id);
     }
   }
   return changed;
 }
 
-export async function startApp(id: string): Promise<void> {
+/**
+ * Thrown when an app is held for review and something asked to start it anyway.
+ * A distinct type so each caller can say the right thing: the dashboard offers
+ * the acknowledgement, WhatsApp explicitly cannot (see `startApp`).
+ */
+export class AppNeedsReviewError extends Error {
+  readonly review: AppReview;
+  /** True when the finding can never be acknowledged, however emphatically. */
+  readonly refusal: boolean;
+  constructor(review: AppReview) {
+    super(review.reasons[0] ?? 'This app needs to be looked at before it can start.');
+    this.name = 'AppNeedsReviewError';
+    this.review = review;
+    this.refusal = review.kind === 'refusal';
+  }
+}
+
+/** Two verdicts are the same only if BOTH the kind and every reason match. */
+function sameReview(a: AppReview | null | undefined, b: AppReview | null): boolean {
+  if (!a || !b) return !a && !b;
+  return a.kind === b.kind && a.reasons.length === b.reasons.length && a.reasons.every((r, i) => r === b.reasons[i]);
+}
+
+/** The verdict for an app whose own record we cannot read. */
+const unreadableMeta = (at: string): AppReview => ({
+  kind: 'unreadable',
+  reasons: ["We couldn't read this app's record, so we couldn't check what it does."],
+  at,
+});
+
+/** The install-time risk gate's verdict on the compose.yml on disk: null when it passes, held
+ *  when it cannot even be read ("couldn't check it" is not "it is fine"). */
+function composeVerdict(id: string, at: string): AppReview | null {
+  try {
+    const { dangers, refusals } = checkCompose(fs.readFileSync(composePath(id), 'utf8'));
+    // A refusal outranks a danger: the app can never be started, so the admin
+    // must not be shown a tickbox. Dangers are still listed, because if the
+    // refusal is ever removed they are what remains to agree to.
+    if (refusals.length > 0) return { kind: 'refusal', reasons: [...refusals, ...dangers], at };
+    if (dangers.length > 0) return { kind: 'danger', reasons: dangers, at };
+    return null;
+  } catch (err) {
+    return { kind: 'unreadable', reasons: [(err as Error).message], at };
+  }
+}
+
+/**
+ * The verdict for an app with no record of its own to keep one in — worked out from its
+ * compose.yml, which is what Start would run. A record that exists but cannot be read holds
+ * the app whatever the compose says; with no record at all, only what the compose asks for
+ * does. A finding in the compose comes first either way, so a refusal is never offered as
+ * the acknowledgeable "couldn't read its record".
+ */
+function verdictWithoutRecord(id: string, at: string): AppReview | null {
+  const fromCompose = fs.existsSync(composePath(id)) ? composeVerdict(id, at) : null;
+  return fs.existsSync(metaPath(id)) ? fromCompose ?? unreadableMeta(at) : fromCompose;
+}
+
+/**
+ * Re-run the install-time risk gate over an app's on-disk compose and record the
+ * verdict on its meta. Returns the review when it is blocked, else null (having
+ * CLEARED any stale review, so an app fixed by a legitimate update or reinstall
+ * stops being held).
+ *
+ * Called wherever a compose arrives from outside our control — today that is
+ * `reupAllApps`, i.e. every restore. A file we cannot even read is treated as
+ * blocking: "couldn't check it" is not "it is fine" (CLAUDE.md §15's rule that a
+ * failure to ask records nothing applies here as a refusal to proceed).
+ */
+export function reviewCompose(id: string): AppReview | null {
+  const at = new Date().toISOString();
+
+  // Compute the verdict FIRST, from the compose alone, and never let meta.json
+  // decide whether the gate runs. meta.json arrives in the SAME backup as the
+  // compose, so making it a precondition hands the attacker an off switch: the
+  // first cut of this function opened with `loadMeta(id); if (!meta) return null`,
+  // which meant one unparseable byte in an attacker-supplied meta.json produced
+  // "no finding" and `reupAllApps` then AUTO-STARTED the unvetted stack — worse
+  // than the hole this whole change exists to close.
+  const review = composeVerdict(id, at);
+
+  const meta = loadMeta(id);
+  if (!meta) {
+    // Nowhere to persist it (`startBlockedReason` and the listing work it out the same way).
+    // Say so instead of implying there was no finding — an app whose own record is
+    // unreadable is held on that ground alone.
+    if (fs.existsSync(metaPath(id))) log.warn(`App ${id}: meta.json is unreadable; holding the app rather than trusting it.`);
+    else if (review) log.warn(`App ${id} has no record, and its compose file is held: ${review.reasons[0]}`);
+    return verdictWithoutRecord(id, at);
+  }
+  // The persisted record is what every downstream decision reads (the start
+  // guard, the acknowledgement, the tRPC status code) — and it came out of the
+  // same backup, so the freshly COMPUTED verdict always wins. Comparing only the
+  // reason text let a pre-seeded `refusal: false` survive a genuine refusal and
+  // turn a never-acknowledgeable finding into a tickbox the admin could clear.
+  if (!sameReview(meta.review, review)) saveMeta({ ...meta, review: review ?? undefined });
+  return review;
+}
+
+/**
+ * Why this app must not be started, or null when it is free to go.
+ *
+ * Consulted inside `startApp` and `restartApp` rather than at each of their
+ * callers. The bug this closes existed because a verdict was computed in one
+ * place and acted on nowhere; putting the check at the four call sites (tRPC,
+ * WhatsApp `!os start`, and the exposure toggle twice) would be the same mistake
+ * with more steps — the fifth caller is always the one that gets forgotten.
+ *
+ * BOTH functions, not just `startApp`: `composeRestart` starts a stopped
+ * container, so "restart" is a start path. `stopApp` is deliberately NOT guarded
+ * — stopping a held app is exactly what you want to be able to do.
+ */
+export function startBlockedReason(id: string): AppReview | null {
+  const meta = loadMeta(id);
+  if (meta) return meta.review ?? null;
+  // FAIL CLOSED when the record exists but cannot be read (it will not parse, or it is
+  // another app's): meta.json is security state, it arrives in the backup, and "we
+  // couldn't read it" must never read as "there is nothing to worry about" (§15's rule,
+  // applied to a file rather than to Docker). With no record at all, the compose.yml in
+  // the folder — a backup's, say — is still what Start would run, so it is checked now.
+  return verdictWithoutRecord(id, new Date().toISOString());
+}
+
+/** Record the admin's explicit "I understand the risk" for a held app, freeing
+ *  it to start. Refusals are NEVER acknowledgeable — the same rule the custom
+ *  (paste-a-compose) installer applies, for the same reason: a stack reaching
+ *  into another app's data cannot be consented into safety. */
+export function acknowledgeReview(id: string): void {
+  const meta = loadMeta(id);
+  if (!meta?.review) return;
+  if (meta.review.kind === 'refusal') throw new AppNeedsReviewError(meta.review);
+  log.warn(`App ${id}: admin acknowledged a held compose — ${meta.review.reasons.join('; ')}`);
+  saveMeta({ ...meta, review: undefined });
+}
+
+/**
+ * Start an app.
+ *
+ * `acknowledgeRisk` is the admin's explicit consent, and ONLY the dashboard
+ * passes it. A WhatsApp `!os start` deliberately cannot: possession of a phone
+ * already authorises a lot (§13.2b-iii), and consenting to a `privileged: true`
+ * compose on a daemon running as root with the Docker socket is not something a
+ * chat message should be able to do. That path gets the refusal and a pointer to
+ * the dashboard, which is where a person can actually read what they are agreeing to.
+ */
+export async function startApp(id: string, acknowledgeRisk = false): Promise<void> {
+  assertAppFree(id, 'start');
+  const held = startBlockedReason(id);
+  if (held) {
+    if (!acknowledgeRisk || held.kind === 'refusal') throw new AppNeedsReviewError(held);
+    acknowledgeReview(id);
+  }
   // Prefer a fresh `up` when we have the compose file (recreates if needed),
   // otherwise fall back to `start` for orphaned projects.
-  if (fs.existsSync(composePath(id))) {
-    await composeUp(projectOf(id), composePath(id), envPath(id));
-  } else {
-    await composeStart(projectOf(id));
-  }
+  const res = fs.existsSync(composePath(id))
+    ? await composeUp(projectOf(id), composePath(id), envPath(id))
+    : await composeStart(projectOf(id));
+  throwIfFailed(res, id, "This app couldn't be started. Its logs may say why.");
 }
 
 export async function stopApp(id: string): Promise<void> {
   suppressOfflineAlert(id); // admin-initiated stop — don't fire the offline alert
-  await composeStop(projectOf(id));
+  throwIfFailed(await composeStop(projectOf(id)), id, "This app couldn't be stopped. Please try again.");
+}
+
+/** docker/compose.ts reports a failure only in the exit code, so say it here: in plain
+ *  words to whoever asked, with Docker's own output in the log. */
+function throwIfFailed(res: RunResult, id: string, message: string): void {
+  if (res.code === 0) return;
+  log.warn(`App ${id}: ${message} ${res.stderr.trim() || `(docker exited with ${res.code})`}`);
+  throw new Error(message);
 }
 
 export async function restartApp(id: string): Promise<void> {
+  // `docker compose restart` STARTS a stopped container, so this is a start path
+  // too — it simply doesn't re-read the compose file. Guarding only `startApp`
+  // left `!os restart` able to run a held app from the very phone that is
+  // deliberately not allowed to consent to one, using the neighbouring verb.
+  // There is no `acknowledgeRisk` here on purpose: agreeing is Start's job, and
+  // a Restart that silently doubled as consent would be the same trap again.
+  assertAppFree(id, 'start');
+  const held = startBlockedReason(id);
+  if (held) throw new AppNeedsReviewError(held);
   suppressOfflineAlert(id); // brief intended downtime
-  await composeRestart(projectOf(id));
+  throwIfFailed(await composeRestart(projectOf(id)), id, "This app couldn't be restarted. Its logs may say why.");
 }
 
 export async function appLogs(id: string, tail = 200): Promise<string> {
@@ -1167,6 +1633,11 @@ export async function appLogs(id: string, tail = 200): Promise<string> {
 /** How long to give a container to prove it is going to stay up. */
 const SETTLE_MS = 3_000;
 const SETTLE_SAMPLES = 3;
+/** Shown where an app's last log lines would be, when it is down and left none to read. */
+const NO_LOGS_TO_SHOW = "(It isn't running, and it left no logs we could read.)";
+
+/** What `verifyStayedUp` found. */
+export type StayedUp = { result: 'up' } | { result: 'down'; logs: string } | { result: 'unknown' };
 
 /**
  * Did the app actually STAY running?
@@ -1182,21 +1653,31 @@ const SETTLE_SAMPLES = 3;
  * Sampled a few times rather than once, because a crash-loop spends part of its cycle
  * genuinely `running` and a single check can land in that window.
  *
- * Returns null when it is up, or the last few log lines when it is not.
+ * `down` carries the last few log lines (a sentence saying so when there are none to show).
+ * `unknown` means Docker could not be asked on some sample and none it answered was down:
+ * a failure to ask decides nothing (CLAUDE.md §15), so it is neither "up" nor "it stopped".
  */
-export async function verifyStayedUp(id: string): Promise<string | null> {
-  let up = false;
+export async function verifyStayedUp(id: string): Promise<StayedUp> {
+  let unknown = false;
   for (let i = 0; i < SETTLE_SAMPLES; i++) {
     await new Promise((r) => setTimeout(r, SETTLE_MS));
-    up = (await getInstalled(id))?.running === true;
-    if (!up) break; // one bad sample is enough — a healthy app is up on every one
+    const { apps, ok } = await discoverAppsResult();
+    if (!ok) {
+      unknown = true;
+      continue;
+    }
+    // One bad sample is enough — a healthy app is up on every one.
+    if (apps.get(projectOf(id))?.running !== true) return { result: 'down', logs: await lastWords(id) };
   }
-  if (up) return null;
+  return unknown ? { result: 'unknown' } : { result: 'up' };
+}
+
+/** The app's last log lines — words even when there are none, since it is down. */
+async function lastWords(id: string): Promise<string> {
   try {
-    const logs = await composeLogs(projectOf(id), 40);
-    return logs.trim() || null;
+    return (await composeLogs(projectOf(id), 40)).trim() || NO_LOGS_TO_SHOW;
   } catch {
-    return null;
+    return NO_LOGS_TO_SHOW;
   }
 }
 
@@ -1260,12 +1741,21 @@ export async function checkCatalogUpdate(id: string): Promise<UpdateCheck> {
 }
 
 /**
- * Update a catalog app to the store's current version, streaming progress via
- * onLine. The user's existing settings (.env) are kept; only the compose +
- * image change. Re-runs `pull` then `up -d` so the new image is fetched and the
- * container recreated.
+ * How an app's update ended, for whoever is watching (api/app-update.ts turns it into the
+ * window's close code). `updated`; `unchanged` — refused, already current, or put back
+ * after a download or start that failed, so the version that was running still is; or
+ * `not-running` — updated, but the new version does not stay up. The window used to say
+ * "<app> is up to date now." whatever had happened.
  */
-export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<void> {
+export type AppUpdateOutcome = 'updated' | 'unchanged' | 'not-running';
+
+/**
+ * Update a catalog app to the store's current version, streaming plain progress via
+ * onLine (Docker's own output goes to the log). The user's existing settings (.env)
+ * are kept; only the compose + image change. Re-runs `pull` then `up -d` so the new
+ * image is fetched and the container recreated.
+ */
+export async function updateCatalogApp(id: string, onLine: (s: string) => void): Promise<AppUpdateOutcome> {
   // One at a time per app. Two of these at once rewrite the same compose.yml while two
   // `compose up` runs race for the same project — which is how an app stops coming back
   // after its progress window was closed and the update pressed again.
@@ -1274,16 +1764,16 @@ export async function updateCatalogApp(id: string, onLine: (s: string) => void):
   );
 }
 
-async function updateCatalogAppInner(id: string, onLine: (s: string) => void): Promise<void> {
+async function updateCatalogAppInner(id: string, onLine: (s: string) => void): Promise<AppUpdateOutcome> {
   const meta = loadMeta(id);
   if (!meta || meta.kind !== 'catalog') {
     onLine('This app cannot be updated from the store.');
-    return;
+    return 'unchanged';
   }
   const app = await findCatalogApp(id);
   if (!app) {
     onLine("Could not find this app in the store anymore. Nothing was changed.");
-    return;
+    return 'unchanged';
   }
 
   const channel = getSettings().updateChannel;
@@ -1303,7 +1793,7 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   // stop here rather than pull-and-recreate on the chance something changed.
   if (!switching && !isNewerVersion(meta.version ?? '', app.version)) {
     onLine(`${meta.name} is already up to date (v${app.version}).`);
-    return;
+    return 'unchanged';
   }
 
   // Re-apply the INSTALL-TIME risk gate. The refreshed catalog entry is fresh
@@ -1316,15 +1806,16 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   try {
     ({ dangers, refusals } = checkCompose(app.compose));
   } catch (err) {
-    onLine(`The update couldn't be checked safely, so nothing was changed. (${(err as Error).message})`);
-    return;
+    log.warn(`App ${id}: the update's compose file could not be checked.`, err);
+    onLine("The update couldn't be checked safely, so nothing was changed.");
+    return 'unchanged';
   }
   const blocking = [...refusals, ...dangers];
   if (blocking.length > 0) {
     onLine('This update asks for powerful permissions, so it was blocked for safety.');
     onLine(`Reason: ${blocking[0]}`);
     onLine(`Nothing was changed — ${meta.name} is still running its current version.`);
-    return;
+    return 'unchanged';
   }
 
   if (switching) {
@@ -1407,13 +1898,12 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   } else {
     ssoSecret = undefined;
   }
-  const env = readEnvFile(id);
-  env.OPENMASJID_APP_ID = id;
-  if (ssoSecret) env.OPENMASJID_APP_SECRET = ssoSecret;
-  else delete env.OPENMASJID_APP_SECRET;
-  // Keep the app's public URL in sync with its exposure (preserved from meta).
-  env.OPENMASJID_PUBLIC_URL = intendedPublicUrl(id, meta.exposed !== false);
-  writeEnvFile(id, env);
+  updateEnvFile(id, {
+    OPENMASJID_APP_ID: id,
+    OPENMASJID_APP_SECRET: ssoSecret, // removed when the app no longer needs one
+    // Keep the app's public URL in sync with its exposure (preserved from meta).
+    OPENMASJID_PUBLIC_URL: intendedPublicUrl(id, meta.exposed !== false),
+  });
 
   // Reconcile per-app HTTPS the same way — an app can gain (or lose) the Stripe
   // HTTPS requirement on update. Keep an already-assigned port; allocate one if
@@ -1428,24 +1918,25 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
 
   onLine('');
   onLine('Downloading the new version…');
-  if ((await composePull(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
+  // Docker's own output goes to the log (docker/compose.ts `streamSpawn`), not this window.
+  if ((await withHeartbeat(onLine, STILL_DOWNLOADING, () => composePull(projectOf(id), composePath(id), envPath(id)))) !== 0) {
     onLine('');
     onLine('Could not download the update. Please check the connection and try again.');
     // Nothing was applied, so leave nothing new behind for a later Start to pick up.
     rollback();
-    return;
+    return 'unchanged';
   }
 
   onLine('');
   onLine('Applying the update…');
   suppressOfflineAlert(id); // recreate briefly stops the container — not an outage
-  if ((await composeUpStream(projectOf(id), composePath(id), envPath(id), onLine)) !== 0) {
+  if ((await withHeartbeat(onLine, STILL_WORKING, () => composeUpStream(projectOf(id), composePath(id), envPath(id)))) !== 0) {
     onLine('');
     onLine('The update could not start. The previous version may still be running.');
     // The old container is still the running one; put its compose back so a later Start
     // recreates THAT, not the version that just failed to come up.
     rollback();
-    return;
+    return 'unchanged';
   }
 
   saveMeta({
@@ -1470,6 +1961,11 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
     // The app now tracks the selected channel. Written on every update so a switch
     // converges: once each app has been through here, none are pending.
     channel,
+    // This compose is FRESH catalogue data that has just been through the risk
+    // gate above and then actually started, so any review held against the file
+    // it replaced no longer describes anything on disk. Leaving a stale hold here
+    // would make "update the app" the one fix an admin cannot apply.
+    review: undefined,
   });
 
   // Start (or tear down) the per-app HTTPS proxy to match the new state.
@@ -1486,19 +1982,22 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
   // sends the admin hunting through container logs for a reason we already have.
   onLine('');
   onLine('Checking it stayed running…');
-  const crash = await verifyStayedUp(id);
-  if (crash !== null) {
+  const stayed = await verifyStayedUp(id);
+  if (stayed.result === 'down') {
     onLine('');
     onLine(`${meta.name} was updated to v${app.version}, but it is not staying running.`);
     onLine('This usually means the new version needs a setting the app does not have yet.');
     onLine('');
     onLine('The last thing it printed before stopping:');
-    for (const line of crash.split('\n').slice(-12)) onLine(`  ${line}`);
-    return;
+    for (const line of stayed.logs.split('\n').slice(-12)) onLine(`  ${line}`);
+    return 'not-running';
   }
 
   onLine('');
   onLine(`Done — ${meta.name} is now on v${app.version}.`);
+  // Updated all the same: only the check after it could not be made.
+  if (stayed.result === 'unknown') onLine("We couldn't check that it stayed running. Have a look on the dashboard in a minute.");
+  return 'updated';
 }
 
 /**
@@ -1506,10 +2005,19 @@ async function updateCatalogAppInner(id: string, onLine: (s: string) => void): P
  * When deleteData is true, also remove its volumes and on-disk files.
  */
 export async function removeApp(id: string, deleteData = false): Promise<void> {
-  stopProxy(id); // tear down any per-app HTTPS proxy first
+  assertAppFree(id, 'remove');
+  // `compose down` stops it for some seconds before its record goes: not an outage.
+  suppressOfflineAlert(id);
   const file = fs.existsSync(composePath(id)) ? composePath(id) : undefined;
   // When deleting data, also drop the app's images so the space is reclaimed.
-  await composeDown(projectOf(id), file, deleteData, deleteData);
+  let res = await composeDown(projectOf(id), file, deleteData, deleteData);
+  // A compose file compose cannot read (damaged, or naming a setting that is gone) must not
+  // make an app impossible to remove: compose finds a project's containers by its label.
+  if (res.code !== 0 && file) res = await composeDown(projectOf(id), undefined, deleteData, deleteData);
+  // Docker refusing is another matter: removing the files under containers that still run
+  // brought the app back as a recovered orphan, with the data the admin asked to delete.
+  throwIfFailed(res, id, "This app couldn't be removed. Please try again.");
+  stopProxy(id); // its per-app HTTPS proxy, once the app is really gone
   try {
     if (deleteData) {
       fs.rmSync(appDir(id), { recursive: true, force: true });

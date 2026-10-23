@@ -19,18 +19,20 @@ import {
   areCommandsEnabled,
   listCommandPeople,
   removeCommandPerson,
-  renameCommandPerson,
   setCommandScope,
   setCommandsEnabled,
 } from '../../store/commands';
-import { isGrantable, listGrants, listNamespaces } from '../../commands/registry';
+import { isGrantable, listGrants } from '../../commands/registry';
 import { inboundStatus, observedEventShapes } from '../../notify/whatsapp-inbound';
-import { gatewayTraffic } from '../../notify/whatsapp';
-import { menuText } from '../../commands/reply';
+import { gatewayTraffic } from '../../notify/whatsapp-gateway';
 import { getAdminName, getAdminPhone } from '../../auth/store';
 
-const phone = z.string().trim().min(6).max(24);
-const label = z.string().trim().min(1).max(60);
+const phone = z
+  .string()
+  .trim()
+  .min(6, 'Enter the whole number, with its country code.')
+  .max(24, 'That number is too long.');
+const label = z.string().trim().min(1, 'Give this person a name.').max(60, 'Keep the name under 60 characters.');
 const scopeKey = z.string().min(1).max(80);
 
 /** Turn a store error ("that needs a country code") into a friendly 400. */
@@ -78,21 +80,13 @@ export const commandsRouter = router({
       return { ok: true };
     }),
 
+  /** Grants nothing: scopes are given one at a time through setScope, which checks each.
+   *  Adding someone already listed renames them and keeps their grants. */
   addPerson: protectedProcedure
-    .input(z.object({ phone, label, scopes: z.array(scopeKey).max(64).optional() }))
-    .mutation(({ input }) => {
-      try {
-        return { people: addCommandPerson(input.phone, input.label, input.scopes ?? []) };
-      } catch (err) {
-        bad(err);
-      }
-    }),
-
-  renamePerson: protectedProcedure
     .input(z.object({ phone, label }))
     .mutation(({ input }) => {
       try {
-        return { people: renameCommandPerson(input.phone, input.label) };
+        return { people: addCommandPerson(input.phone, input.label) };
       } catch (err) {
         bad(err);
       }
@@ -116,14 +110,5 @@ export const commandsRouter = router({
       } catch (err) {
         bad(err);
       }
-    }),
-
-  /** The literal text a volunteer would receive, so an admin can see what they are
-   *  granting before they grant it. Read-only — this sends nothing. */
-  preview: protectedProcedure
-    .input(z.object({ word: z.string().min(1).max(80) }))
-    .query(({ input }) => {
-      const ns = listNamespaces().find((n) => n.word === input.word);
-      return { text: ns ? menuText(ns) : '' };
     }),
 });

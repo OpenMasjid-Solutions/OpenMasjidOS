@@ -17,7 +17,10 @@ import {
   restartApp,
   removeApp,
   checkCatalogUpdate,
+  AppNeedsReviewError,
 } from '../../apps/manager';
+import { APP_OPEN_PATH, mintAppTicket } from '../../system/app-access';
+import { appHostname, remoteAdminEnabled } from '../../system/remote-admin';
 
 // App ids are used as filesystem segments + compose project names, so they are
 // strictly validated to a kebab-case allowlist (no slashes/dots/traversal).
@@ -28,12 +31,61 @@ async function wrap<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
+    // A held app is not a server fault — it is the platform asking a question,
+    // and it must reach the dashboard as one so the UI can offer the
+    // acknowledgement instead of showing "something went wrong". A refusal is
+    // FORBIDDEN because no amount of agreeing will change it; anything else is
+    // PRECONDITION_FAILED, the same code the paste-a-compose installer uses for
+    // exactly this consent step.
+    if (err instanceof AppNeedsReviewError) {
+      throw new TRPCError({
+        code: err.refusal ? 'FORBIDDEN' : 'PRECONDITION_FAILED',
+        message: err.message,
+      });
+    }
+    // Refused because a restore or this app's update is under way (system/update-lock.ts
+    // assertAppFree): information to say plainly, not a fault.
+    if ((err as Error).name === 'UpdateBusyError') {
+      throw new TRPCError({ code: 'CONFLICT', message: (err as Error).message });
+    }
     throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message });
   }
 }
 
 export const appsRouter = router({
   list: protectedProcedure.query(() => listInstalled()),
+
+  /**
+   * Open an app from OUTSIDE the masjid: a one-use address on the apps' hostname that
+   * signs this browser in to this one app (system/app-access.ts says how, and why the
+   * dashboard's own cookie is never what an app sees).
+   *
+   * Only from the remote dashboard, and only for an app with a web port — the tunnel
+   * reaches an app through the same port the masjid's network does. On the masjid's
+   * network an app is opened at its own port and needs none of this.
+   */
+  openRemote: protectedProcedure.input(idInput).mutation(async ({ input, ctx }) => {
+    // The remote dashboard — a request the front door handed over — and nothing that
+    // merely LOOKS remote: a reverse proxy on the masjid's own network sends
+    // `X-Forwarded-Proto: https` too, and its admin opens apps at their own ports.
+    if (!ctx.handedOver || !remoteAdminEnabled()) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Apps open this way only when you are managing from outside.' });
+    }
+    const host = appHostname();
+    if (!host) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Your apps have no web address yet. Set one in Settings → Remote access.',
+      });
+    }
+    const app = await getInstalled(input.id).catch(() => null);
+    if (!app || app.openPort == null) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'That app has no page to open.' });
+    }
+    const ticket = mintAppTicket(ctx.sessionToken ?? '', input.id);
+    if (!ticket) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Please sign in to continue.' });
+    return { url: `https://${host}${APP_OPEN_PATH}?t=${encodeURIComponent(ticket)}` };
+  }),
 
   get: protectedProcedure.input(idInput).query(({ input }) => getInstalled(input.id)),
 
@@ -78,12 +130,17 @@ export const appsRouter = router({
     return out;
   }),
 
-  start: protectedProcedure.input(idInput).mutation(({ input }) =>
-    wrap(async () => {
-      await startApp(input.id);
-      return { ok: true };
-    }),
-  ),
+  // `acknowledgeRisk` is the admin's explicit consent for an app being held for
+  // review after a restore. Absent = no consent, which is the only safe default:
+  // this is the click that runs an unvetted compose as root with the Docker socket.
+  start: protectedProcedure
+    .input(z.object({ id: appId, acknowledgeRisk: z.boolean().optional() }))
+    .mutation(({ input }) =>
+      wrap(async () => {
+        await startApp(input.id, input.acknowledgeRisk ?? false);
+        return { ok: true };
+      }),
+    ),
 
   stop: protectedProcedure.input(idInput).mutation(({ input }) =>
     wrap(async () => {

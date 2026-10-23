@@ -4,7 +4,7 @@
  * Home: a live system-stats strip (tRPC subscription, seeded by a query for
  * instant first paint) above the installed-apps grid.
  */
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
@@ -40,6 +40,16 @@ function greetingKey(): 'morning' | 'afternoon' | 'evening' {
   return 'evening';
 }
 
+function subscribeVisibility(onChange: () => void): () => void {
+  document.addEventListener('visibilitychange', onChange);
+  return () => document.removeEventListener('visibilitychange', onChange);
+}
+
+/** Whether this tab is the one on screen. */
+function usePageVisible(): boolean {
+  return useSyncExternalStore(subscribeVisibility, () => document.visibilityState === 'visible');
+}
+
 /** True when any metric is high enough to warrant an "under load" tagline. */
 function isUnderLoad(s: StatsSnapshot | null): boolean {
   if (!s) return false;
@@ -59,7 +69,11 @@ export function Dashboard() {
   // first paint, with a slow refetch as a fallback that self-disables while the
   // socket is healthy (no redundant 30s poll once live data is flowing).
   const initial = trpc.stats.get.useQuery(undefined, { refetchInterval: live ? false : 30000 });
+  // Only while this tab is in front: a hidden one has nobody watching it, and the
+  // server sends a fresh sample the moment the stream is asked for again.
+  const visible = usePageVisible();
   trpc.stats.stream.useSubscription(undefined, {
+    enabled: visible,
     onData: (d: StatsSnapshot) => setLive(d),
   });
   const stats = live ?? initial.data ?? null;
@@ -88,6 +102,15 @@ export function Dashboard() {
   // App updates — same idea as the core check: surface them right on the dashboard.
   const appUpdatesQ = trpc.apps.updates.useQuery(undefined, { refetchInterval: 21_600_000 });
   const appUpdates = appUpdatesQ.data ?? [];
+  // What went wrong in the last restore. Its own window is gone once the core restarts
+  // and everyone signs in again, so the apps that need a look are named here instead,
+  // until the admin says they have checked them.
+  const utils = trpc.useUtils();
+  const restoreReportQ = trpc.backups.restoreReport.useQuery();
+  const dismissRestoreReport = trpc.backups.dismissRestoreReport.useMutation({
+    onSuccess: () => utils.backups.restoreReport.invalidate(),
+  });
+  const restoreReport = restoreReportQ.data ?? null;
   /**
    * Is WhatsApp signed out right now?
    *
@@ -102,7 +125,7 @@ export function Dashboard() {
   const waDown = waHeldQ.data?.health.down === true;
   const waHeld = waHeldQ.data?.total ?? 0;
   // Genuine version upgrades only — a channel move is a different operation with a
-  // different follow-up (the OS has to move too, which only Settings → Updates does),
+  // different follow-up (the OS has to move too, which only Settings → Advanced does),
   // so it must not be swept into "Update all" from here.
   const versionUpdates = appUpdates.filter((u) => u.reason === 'version');
   const windows = useWindows();
@@ -124,7 +147,7 @@ export function Dashboard() {
    * Update every app that has a genuine version update, in one window.
    *
    * Channel moves are deliberately EXCLUDED. They are already driven by "Update all" in
-   * Settings → Updates, which also brings the OS across afterwards; running them from
+   * Settings → Advanced, which also brings the OS across afterwards; running them from
    * here would do half that job and leave the platform on the other channel's image —
    * the mixed state the channel feature exists to prevent.
    */
@@ -155,6 +178,7 @@ export function Dashboard() {
   })();
 
   const diskPct = percent(stats?.diskUsed ?? 0, stats?.diskTotal ?? 0);
+  const diskSub = `/ ${formatBytes(stats?.diskTotal ?? 0)}`;
   const diskLow = (stats?.diskTotal ?? 0) > 0 && diskPct >= 80;
 
   // A random tagline per load (stable across re-renders), switching to the
@@ -196,7 +220,7 @@ export function Dashboard() {
           label={t('dashboard.stats.disk')}
           icon={DISK_ICON}
           value={formatBytes(stats?.diskUsed ?? 0)}
-          sub={`/ ${formatBytes(stats?.diskTotal ?? 0)}`}
+          sub={diskSub}
           percent={diskPct}
           warn={diskLow}
         />
@@ -216,6 +240,33 @@ export function Dashboard() {
           value={stats?.appsRunning ?? allApps.filter((a) => a.running).length}
         />
       </motion.section>
+
+      {restoreReport && (
+        <div className="warn-banner glass" role="status">
+          <AlertTriangle size={22} />
+          <div style={{ flex: 1 }}>
+            <div className="warn-banner__title">{t('dashboard.restoreReportTitle')}</div>
+            {restoreReport.appsWithoutData.length > 0 && (
+              <div className="warn-banner__body">
+                {t('dashboard.restoreReportNoData', { apps: restoreReport.appsWithoutData.join(', ') })}
+              </div>
+            )}
+            {restoreReport.appsNotStarted.length > 0 && (
+              <div className="warn-banner__body">
+                {t('dashboard.restoreReportNotStarted', { apps: restoreReport.appsNotStarted.join(', ') })}
+              </div>
+            )}
+            {restoreReport.appsNotPaused.length > 0 && (
+              <div className="warn-banner__body">
+                {t('dashboard.restoreReportNotPaused', { apps: restoreReport.appsNotPaused.join(', ') })}
+              </div>
+            )}
+          </div>
+          <button className="btn" disabled={dismissRestoreReport.isPending} onClick={() => dismissRestoreReport.mutate()}>
+            {t('dashboard.restoreReportDismiss')}
+          </button>
+        </div>
+      )}
 
       {onDevChannel && (
         <div className="warn-banner glass" role="status" style={{ borderInlineStart: '3px solid var(--color-gold)' }}>
