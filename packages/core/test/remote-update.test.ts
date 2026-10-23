@@ -105,15 +105,24 @@ test('managesFromOutside: the first build that can be managed from outside, and 
   assert.equal(ra.managesFromOutside(VERSION), true, VERSION);
 });
 
+/** The channel the running build belongs to, and the other one with a build on it that has no
+ *  remote dashboard — so these tests hold on a Development build and on a release alike. */
+const RUNNING_DEV = VERSION.includes('-');
+const OTHER = RUNNING_DEV
+  ? ({ channel: 'main', branch: 'master', old: '0.51.1' } as const)
+  : ({ channel: 'dev', branch: 'dev', old: '0.51.2-dev.13' } as const);
+const OWN_CHANNEL = RUNNING_DEV ? 'dev' : 'main';
+const escaped = (v: string) => v.replace(/[.]/g, '\\.');
+
 test('FROM OUTSIDE, AN UPDATE TO A VERSION THAT CANNOT BE MANAGED FROM OUTSIDE IS REFUSED — before anything is downloaded', POSIX_ONLY, async () => {
   const docker = fakeDocker();
-  const unpublish = publishes({ master: '0.51.1', dev: '0.51.2-dev.99' });
+  const unpublish = publishes({ [OTHER.branch]: OTHER.old });
   try {
-    // Just switched back to Stable, whose newest build has no remote dashboard.
-    settings.updateSettings({ updateChannel: 'main' });
+    // Just switched to the other channel, whose newest build has no remote dashboard.
+    settings.updateSettings({ updateChannel: OTHER.channel });
     const lines: string[] = [];
     assert.equal(await runUpdate((l) => lines.push(l), { remote: true }), 'unchanged');
-    assert.ok(lines.some((l) => /0\.51\.1 can't be managed from outside the masjid/.test(l)), lines.join(' | '));
+    assert.ok(lines.some((l) => new RegExp(`${escaped(OTHER.old)} can't be managed from outside the masjid`).test(l)), lines.join(' | '));
     assert.ok(lines.some((l) => /Nothing was changed/.test(l)));
     assert.equal(docker.log(), '', 'docker was asked to do something for a refused update');
 
@@ -128,19 +137,19 @@ test('FROM OUTSIDE, AN UPDATE TO A VERSION THAT CANNOT BE MANAGED FROM OUTSIDE I
 
     // At the masjid the same update goes ahead (and fails here only because the
     // stand-in refuses every download).
-    const again = publishes({ master: '0.51.1' });
+    const again = publishes({ [OTHER.branch]: OTHER.old });
     const lan: string[] = [];
     assert.equal(await runUpdate((l) => lan.push(l), {}), 'unchanged');
-    assert.match(docker.log(), /^pull .*:0\.51\.1$/m, 'at the masjid the update was not attempted');
+    assert.match(docker.log(), new RegExp(`^pull .*:${escaped(OTHER.old)}$`, 'm'), 'at the masjid the update was not attempted');
     assert.ok(!lan.some((l) => /from outside/.test(l)), lan.join(' | '));
     again();
 
     // And from outside, to a version that has it, the guard stands aside.
     settings.updateSettings({ updateChannel: 'dev' });
-    const forward = publishes({ dev: '0.51.2-dev.99' });
+    const forward = publishes({ dev: '99.0.0-dev.1' });
     const fwd: string[] = [];
     await runUpdate((l) => fwd.push(l), { remote: true });
-    assert.match(docker.log(), /^pull .*:0\.51\.2-dev\.99$/m, 'a newer Development build was refused from outside');
+    assert.match(docker.log(), /^pull .*:99\.0\.0-dev\.1$/m, 'a newer Development build was refused from outside');
     forward();
   } finally {
     unpublish();
@@ -259,7 +268,7 @@ test('FROM OUTSIDE, THE CHANNEL SWITCH TO A VERSION THAT CANNOT BE MANAGED FROM 
 test('a version that cannot be read is never "already up to date" — on the same channel, nothing is pulled and it says it could not check', POSIX_ONLY, async () => {
   // An admin pressed "Update now" for a version found a moment earlier; the next check
   // failed, and the window said "already up to date" over a newer build it knew about.
-  settings.updateSettings({ updateChannel: 'dev' }); // the box runs a Development build
+  settings.updateSettings({ updateChannel: OWN_CHANNEL }); // the channel of the build that is running
   const docker = fakeDocker();
   const unread = publishes({});
   try {
@@ -387,7 +396,7 @@ test('A CORE PINNED TO ONE EXACT BUILD IS NOT "UPDATED" ONTO THAT SAME BUILD, AG
   fs.writeFileSync(compose, `services:\n  core:\n    image: ghcr.io/openmasjid-solutions/openmasjid-core@sha256:${'cd'.repeat(32)}\n`);
   settings.updateSettings({ updateChannel: 'dev' });
   const docker = fakeDocker();
-  const unpublish = publishes({ dev: '0.51.2-dev.99' });
+  const unpublish = publishes({ dev: '99.0.0-dev.1' }); // newer than whatever is running
   try {
     const lines: string[] = [];
     assert.equal(await runUpdate((l) => lines.push(l), {}), 'unchanged');
